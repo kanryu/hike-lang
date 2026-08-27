@@ -1,124 +1,376 @@
 package main
 
-// トークン種別
-// 1: 即値(Number), 2: 加算(+), 3: 減算(-), 4: 乗算(*), 5: 除算(/)
+// C言語 標準ライブラリ
+func printf(format *byte, ...) int
+func malloc(size int) *byte
+func free(ptr *byte)
+
+// ==========================================
+// 1. Arena Allocator
+// ==========================================
+
+type Arena struct {
+	Buffer   *byte
+	Capacity int
+	Offset   int
+}
+
+func ArenaInit(a *Arena, cap int) {
+	a.Buffer = malloc(cap)
+	a.Capacity = cap
+	a.Offset = 0
+}
+
+func ArenaAlloc(a *Arena, size int) *byte {
+	aligned := (size + 7) / 8 * 8
+	if a.Offset+aligned > a.Capacity {
+		return nil
+	}
+	ptr := a.Buffer + a.Offset
+	a.Offset = a.Offset + aligned
+	return ptr
+}
+
+func ArenaFree(a *Arena) {
+	if a.Buffer != nil {
+		free(a.Buffer)
+		a.Buffer = nil
+	}
+	a.Capacity = 0
+	a.Offset = 0
+}
+
+// ==========================================
+// 2. Lexer & Token
+// ==========================================
+
 type Token struct {
-	kind int
-	val  int
-	next *Token
+	Type int
+	Lit  *byte
 }
 
-type StackNode struct {
-	val  int
-	next *StackNode
+type Lexer struct {
+	Input        *byte
+	Position     int
+	ReadPosition int
+	Ch           int
 }
 
-type Stack struct {
-	top  *StackNode
-	size int
+func isDigit(ch int) int {
+	if ch >= '0' && ch <= '9' {
+		return 1
+	}
+	return 0
 }
 
-func Push(arena *Arena, s *Stack, val int) {
-	node, _ := mem.Alloc[StackNode](arena)
-	node.val = val
-	node.next = s.top
-	s.top = node
-	s.size = s.size + 1
+func readChar(l *Lexer) {
+	ch := l.Input[l.ReadPosition]
+	l.Ch = ch
+	l.Position = l.ReadPosition
+	if ch != 0 {
+		l.ReadPosition = l.ReadPosition + 1
+	}
 }
 
-func Pop(s *Stack) int {
-	if s.top == nil {
+func skipWhitespace(l *Lexer) {
+	for l.Ch == ' ' || l.Ch == '\t' || l.Ch == '\r' || l.Ch == '\n' {
+		readChar(l)
+	}
+}
+
+func readNumber(l *Lexer) *byte {
+	start := l.Position
+	for isDigit(l.Ch) != 0 {
+		readChar(l)
+	}
+	length := l.Position - start
+	buf := malloc(length + 1)
+	for i := 0; i < length; i = i + 1 {
+		buf[i] = l.Input[start+i]
+	}
+	buf[length] = 0
+	return buf
+}
+
+func NextToken(l *Lexer, tok *Token) {
+	skipWhitespace(l)
+	ch := l.Ch
+
+	switch ch {
+	case 0:
+		tok.Type = 0
+		tok.Lit = "EOF"
+	case '+':
+		tok.Type = 6
+		tok.Lit = "+"
+		readChar(l)
+	case '-':
+		tok.Type = 7
+		tok.Lit = "-"
+		readChar(l)
+	case '*':
+		tok.Type = 8
+		tok.Lit = "*"
+		readChar(l)
+	case '/':
+		tok.Type = 9
+		tok.Lit = "/"
+		readChar(l)
+	case '(':
+		tok.Type = 10
+		tok.Lit = "("
+		readChar(l)
+	case ')':
+		tok.Type = 11
+		tok.Lit = ")"
+		readChar(l)
+	default:
+		if isDigit(ch) != 0 {
+			tok.Type = 2
+			tok.Lit = readNumber(l)
+		} else {
+			tok.Type = 99
+			tok.Lit = "UNKNOWN"
+			readChar(l)
+		}
+	}
+}
+
+// ==========================================
+// 3. AST (構文木ノード)
+// ==========================================
+
+// Node Types: 1=INT_LITERAL, 2=BINARY_EXPR, 3=PREFIX_EXPR
+type AstNode struct {
+	NodeType int
+	Op       int
+	Val      int
+	Left     *AstNode
+	Right    *AstNode
+}
+
+func parseNumber(str *byte) int {
+	res := 0
+	i := 0
+	for str[i] != 0 {
+		res = res*10 + (str[i] - '0')
+		i = i + 1
+	}
+	return res
+}
+
+// ==========================================
+// 4. Pratt Parser
+// ==========================================
+
+type Parser struct {
+	L       *Lexer
+	CurTok  *Token
+	PeekTok *Token
+	Arena   *Arena
+}
+
+func nextToken(p *Parser) {
+	p.CurTok.Type = p.PeekTok.Type
+	p.CurTok.Lit = p.PeekTok.Lit
+	NextToken(p.L, p.PeekTok)
+}
+
+func getPrecedence(tokType int) int {
+	switch tokType {
+	case 6: // +
+		return 2
+	case 7: // -
+		return 2
+	case 8: // *
+		return 3
+	case 9: // /
+		return 3
+	default:
+		return 1 // LOWEST
+	}
+}
+
+func parseExpression(p *Parser, precedence int) *AstNode {
+	left := (*AstNode)(nil)
+
+	// 前置パース (Prefix)
+	if p.CurTok.Type == 2 { // INT
+		left = (*AstNode)(ArenaAlloc(p.Arena, 40))
+		left.NodeType = 1
+		left.Op = 0
+		left.Val = parseNumber(p.CurTok.Lit)
+		left.Left = nil
+		left.Right = nil
+		nextToken(p)
+	} else if p.CurTok.Type == 7 { // 単項マイナス '-'
+		op := p.CurTok.Type
+		nextToken(p)
+		right := parseExpression(p, 4)
+		left = (*AstNode)(ArenaAlloc(p.Arena, 40))
+		left.NodeType = 3
+		left.Op = op
+		left.Val = 0
+		left.Left = nil
+		left.Right = right
+	} else if p.CurTok.Type == 10 { // '('
+		nextToken(p)
+		left = parseExpression(p, 1)
+		if p.CurTok.Type == 11 { // ')'
+			nextToken(p)
+		}
+	} else {
+		return nil
+	}
+
+	// 中置パース (Infix)
+	for p.CurTok.Type != 0 && precedence < getPrecedence(p.CurTok.Type) {
+		op := p.CurTok.Type
+		nextToken(p)
+		right := parseExpression(p, getPrecedence(op))
+
+		node := (*AstNode)(ArenaAlloc(p.Arena, 40))
+		node.NodeType = 2
+		node.Op = op
+		node.Val = 0
+		node.Left = left
+		node.Right = right
+		left = node
+	}
+
+	return left
+}
+
+// ==========================================
+// 5. AST Evaluator & Printer
+// ==========================================
+
+func evalAst(node *AstNode) int {
+	if node == nil {
 		return 0
 	}
-	val := s.top.val
-	s.top = s.top.next
-	s.size = s.size - 1
-	return val
-}
-
-// トークン列の末尾に追加するヘルパー関数
-func AddToken(arena *Arena, head *Token, kind int, val int) *Token {
-	tok, _ := mem.Alloc[Token](arena)
-	tok.kind = kind
-	tok.val = val
-
-	if head == nil {
-		return tok
+	if node.NodeType == 1 {
+		return node.Val
 	}
-
-	curr := head
-	for curr.next != nil {
-		curr = curr.next
+	if node.NodeType == 3 {
+		return 0 - evalAst(node.Right)
 	}
-	curr.next = tok
-	return head
-}
-
-// RPN式の評価実行
-func EvalRPN(arena *Arena, tokens *Token) int {
-	s, _ := mem.Alloc[Stack](arena)
-	curr := tokens
-
-	for curr != nil {
-		switch curr.kind {
-		case 1:
-			// 数値トークン: スタックへプッシュ
-			Push(arena, s, curr.val)
-		case 2:
-			// 加算: b + a
-			a := Pop(s)
-			b := Pop(s)
-			Push(arena, s, b+a)
-		case 3:
-			// 減算: b - a
-			a := Pop(s)
-			b := Pop(s)
-			Push(arena, s, b-a)
-		case 4:
-			// 乗算: b * a
-			a := Pop(s)
-			b := Pop(s)
-			Push(arena, s, b*a)
-		case 5:
-			// 除算: b / a
-			a := Pop(s)
-			b := Pop(s)
-			Push(arena, s, b/a)
-		default:
+	if node.NodeType == 2 {
+		lVal := evalAst(node.Left)
+		rVal := evalAst(node.Right)
+		if node.Op == 6 {
+			return lVal + rVal
+		}
+		if node.Op == 7 {
+			return lVal - rVal
+		}
+		if node.Op == 8 {
+			return lVal * rVal
+		}
+		if node.Op == 9 {
+			if rVal != 0 {
+				return lVal / rVal
+			}
 			return 0
 		}
-		curr = curr.next
 	}
+	return 0
+}
 
-	return Pop(s)
+func printAst(node *AstNode) {
+	if node == nil {
+		return
+	}
+	if node.NodeType == 1 {
+		printf("%d", node.Val)
+		return
+	}
+	if node.NodeType == 3 {
+		printf("(-")
+		printAst(node.Right)
+		printf(")")
+		return
+	}
+	if node.NodeType == 2 {
+		printf("(")
+		if node.Op == 6 {
+			printf("+ ")
+		} else if node.Op == 7 {
+			printf("- ")
+		} else if node.Op == 8 {
+			printf("* ")
+		} else if node.Op == 9 {
+			printf("/ ")
+		}
+		printAst(node.Left)
+		printf(" ")
+		printAst(node.Right)
+		printf(")")
+	}
+}
+
+// ==========================================
+// 6. Test Runner & Verification
+// ==========================================
+
+func testParse(arena *Arena, input *byte) int {
+	printf("Input Expression : %s\n", input)
+
+	l := (*Lexer)(malloc(32))
+	l.Input = input
+	l.Position = 0
+	l.ReadPosition = 0
+	l.Ch = 0
+	readChar(l)
+
+	p := (*Parser)(malloc(32))
+	p.L = l
+	p.CurTok = (*Token)(malloc(16))
+	p.PeekTok = (*Token)(malloc(16))
+	p.Arena = arena
+
+	NextToken(l, p.CurTok)
+	NextToken(l, p.PeekTok)
+
+	ast := parseExpression(p, 1)
+
+	printf("Parsed AST (S-Exp): ")
+	printAst(ast)
+	printf("\n")
+
+	res := evalAst(ast)
+	printf("Evaluation Result: %d\n", res)
+	printf("Memory Allocated : %d bytes\n\n", arena.Offset)
+
+	free((*byte)(p.PeekTok))
+	free((*byte)(p.CurTok))
+	free((*byte)(p))
+	free((*byte)(l))
+
+	return res
 }
 
 func main() int {
-	arena := mem.NewArena()
-	defer arena.FreeAll()
+	printf("=== HIKE Runtime Pratt Parser & AST Test ===\n\n")
 
-	// 評価するRPN式: 15 3 2 + * 10 - 2 /
-	// 中置換算: ((15 * (3 + 2)) - 10) / 2
-	// 計算手順:
-	// 1. 3 + 2 = 5
-	// 2. 15 * 5 = 75
-	// 3. 75 - 10 = 65
-	// 4. 65 / 2 = 32
-	tokens := AddToken(arena, nil, 1, 15)
-	AddToken(arena, tokens, 1, 3)
-	AddToken(arena, tokens, 1, 2)
-	AddToken(arena, tokens, 2, 0) // '+'
-	AddToken(arena, tokens, 4, 0) // '*'
-	AddToken(arena, tokens, 1, 10)
-	AddToken(arena, tokens, 3, 0) // '-'
-	AddToken(arena, tokens, 1, 2)
-	AddToken(arena, tokens, 5, 0) // '/'
+	arena := (*Arena)(malloc(24))
+	ArenaInit(arena, 65536)
 
-	result := EvalRPN(arena, tokens)
+	// Test 1: 優先順位 (* > +) -> 期待値: 70
+	res1 := testParse(arena, "10 + 20 * 3")
 
-	// 計算結果が 32 であればテスト#10成功として「10」を返す
-	if result == 32 {
-		return 10
+	// Test 2: 括弧によるグループ化 -> 期待値: 90
+	res2 := testParse(arena, "(10 + 20) * 3")
+
+	// Test 3: 複合四則演算 -> 期待値: 105
+	res3 := testParse(arena, "100 - 4 * 5 + 50 / 2")
+
+	ArenaFree(arena)
+	free((*byte)(arena))
+
+	// 3つのテストがすべて正しく評価された場合にテスト#12成功として「12」を返却
+	if res1 == 70 && res2 == 90 && res3 == 105 {
+		return 12
 	}
 
 	return 0

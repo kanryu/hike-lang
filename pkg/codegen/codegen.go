@@ -29,6 +29,7 @@ type CodeGenerator struct {
 	stringLiterals []StringConst
 	symbols        map[string]Symbol
 	deferStack     []string
+	entryAllocas   *strings.Builder // entry ブロック用のアロケーションバッファ
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
@@ -200,15 +201,17 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		params = append(params, fmt.Sprintf("%s %%%s_arg", pTypeStr, p.Name.Value))
 	}
 
-	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, fn.Name.Value, strings.Join(params, ", ")))
+	var entryAllocas strings.Builder
+	var bodyBuilder strings.Builder
+	g.entryAllocas = &entryAllocas
 
 	for i, p := range fn.Params {
 		var pType sema.Type = sema.TypeInt
 		if exists && i < len(fnMeta.ParamTypes) {
 			pType = fnMeta.ParamTypes[i]
 		}
-		b.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
-		b.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
+		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
+		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
 		g.symbols[p.Name.Value] = Symbol{
 			Name:     p.Name.Value,
 			LLVMName: "%" + p.Name.Value,
@@ -217,22 +220,24 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	}
 
 	for _, s := range fn.Body.Statements {
-		g.emitStatement(b, s, fn.Name.Value)
+		g.emitStatement(&bodyBuilder, s, fn.Name.Value)
 	}
 
-	// 関数の末尾ラベル（switch.end 等）が空のまま閉じないようフォールバック終端命令を出力
 	if retType == "void" {
-		b.WriteString("  ret void\n")
+		bodyBuilder.WriteString("  ret void\n")
 	} else if retType == "i32" {
-		b.WriteString("  ret i32 0\n")
+		bodyBuilder.WriteString("  ret i32 0\n")
 	} else if retType == "i64" {
-		b.WriteString("  ret i64 0\n")
+		bodyBuilder.WriteString("  ret i64 0\n")
 	} else if strings.HasSuffix(retType, "*") {
-		b.WriteString(fmt.Sprintf("  ret %s null\n", retType))
+		bodyBuilder.WriteString(fmt.Sprintf("  ret %s null\n", retType))
 	} else {
-		b.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
+		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
 	}
 
+	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, fn.Name.Value, strings.Join(params, ", ")))
+	b.WriteString(entryAllocas.String())
+	b.WriteString(bodyBuilder.String())
 	b.WriteString("}\n\n")
 }
 
@@ -401,29 +406,22 @@ func (g *CodeGenerator) emitCallExpr(b *strings.Builder, call *ast.CallExpr) (st
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok {
 		fnType := g.semaCtx.Functions[fnIdent.Value]
 		args := []string{}
-		sigParamTypes := []string{}
 
 		for i, arg := range call.Args {
-			targetType := fnType.ParamTypes[i]
+			valReg, valType := g.resolveValue(b, arg)
+			targetType := valType
 
-			// 実体変数をポインタ型引数に渡す場合はロードせずアドレスを渡す
-			if id, ok := arg.(*ast.Identifier); ok {
-				if sym, exists := g.symbols[id.Value]; exists {
-					if strings.HasSuffix(targetType.LLVMType(), "*") && sym.Type.LLVMType()+"*" == targetType.LLVMType() {
-						args = append(args, fmt.Sprintf("%s %s", targetType.LLVMType(), sym.LLVMName))
-						sigParamTypes = append(sigParamTypes, targetType.LLVMType())
-						continue
-					}
-				}
+			// 仮引数の定義範囲内であればその型に合わせ、可変長部分（i >= len）は実引数の型を維持する
+			if fnType != nil && i < len(fnType.ParamTypes) {
+				targetType = fnType.ParamTypes[i]
 			}
 
-			valReg, _ := g.resolveValue(b, arg)
 			args = append(args, fmt.Sprintf("%s %s", targetType.LLVMType(), valReg))
-			sigParamTypes = append(sigParamTypes, targetType.LLVMType())
 		}
 
 		retType := "void"
 		var actualRetType sema.Type = sema.TypeVoid
+		sigParamTypes := []string{}
 
 		if fnType != nil {
 			if len(fnType.ReturnTypes) == 1 {
@@ -435,6 +433,11 @@ func (g *CodeGenerator) emitCallExpr(b *strings.Builder, call *ast.CallExpr) (st
 					types[i] = t.LLVMType()
 				}
 				retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+			}
+
+			// シグネチャには宣言時の仮引数型のみを格納
+			for _, p := range fnType.ParamTypes {
+				sigParamTypes = append(sigParamTypes, p.LLVMType())
 			}
 			if fnType.IsVariadic {
 				sigParamTypes = append(sigParamTypes, "...")
@@ -516,7 +519,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		if lhsIdent, isLhsIdent := s.Left[0].(*ast.Identifier); isLhsIdent {
 			if call, ok := s.Right[0].(*ast.CallExpr); ok {
 				if memExpr, ok := call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "NewArena" {
-					b.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.Arena\n", lhsIdent.Value))
+					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.Arena\n", lhsIdent.Value))
 					b.WriteString(fmt.Sprintf("  call void @hike_arena_init(%%struct.Arena* %%%s, i64 65536)\n", lhsIdent.Value))
 					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: &sema.BasicType{Name: "Arena", LLVM: "%struct.Arena"}}
 					return
@@ -525,7 +528,8 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			valReg, valType := g.resolveValue(b, s.Right[0])
 			if _, exists := g.symbols[lhsIdent.Value]; !exists {
-				b.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", lhsIdent.Value, valType.LLVMType()))
+				// alloca を entry ブロックへ集約
+				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", lhsIdent.Value, valType.LLVMType()))
 				g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: valType}
 			}
 			sym := g.symbols[lhsIdent.Value]
@@ -894,38 +898,39 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			if exists {
 				args := []string{}
 				for i, arg := range e.Args {
-					var t sema.Type = sema.TypeInt
+					argReg, argType := g.resolveValue(b, arg)
+					t := argType
 					if i < len(targetFn.ParamTypes) {
 						t = targetFn.ParamTypes[i]
 					}
-
-					// ポインタを期待する引数に実体変数（Arena等）が渡された場合は load せずアドレスを渡す
-					if id, ok := arg.(*ast.Identifier); ok {
-						if sym, symExists := g.symbols[id.Value]; symExists {
-							if strings.HasSuffix(t.LLVMType(), "*") && sym.Type.LLVMType()+"*" == t.LLVMType() {
-								args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), sym.LLVMName))
-								continue
-							}
-						}
-					}
-
-					argReg, _ := g.resolveValue(b, arg)
 					args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), argReg))
 				}
-
 				retType := "void"
 				var semaRet sema.Type = sema.TypeVoid
 				if len(targetFn.ReturnTypes) == 1 {
 					retType = targetFn.ReturnTypes[0].LLVMType()
 					semaRet = targetFn.ReturnTypes[0]
 				}
+
+				sigParamTypes := []string{}
+				for _, p := range targetFn.ParamTypes {
+					sigParamTypes = append(sigParamTypes, p.LLVMType())
+				}
+				if targetFn.IsVariadic {
+					sigParamTypes = append(sigParamTypes, "...")
+				}
+
 				callReg := g.nextReg()
 				if retType == "void" {
-					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
+					if len(sigParamTypes) > 0 {
+						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), targetFn.Name, strings.Join(args, ", ")))
+					} else {
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
+					}
 					return "0", sema.TypeVoid
 				} else {
-					if targetFn.IsVariadic {
-						b.WriteString(fmt.Sprintf("  %s = call %s (i8*, ...) @%s(%s)\n", callReg, retType, targetFn.Name, strings.Join(args, ", ")))
+					if len(sigParamTypes) > 0 {
+						b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), targetFn.Name, strings.Join(args, ", ")))
 					} else {
 						b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, targetFn.Name, strings.Join(args, ", ")))
 					}
