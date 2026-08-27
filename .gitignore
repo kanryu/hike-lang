@@ -1,0 +1,37 @@
+# Binaries & Executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+app
+app.exe
+hikec
+hikec.exe
+
+# Intermediate / Compiler Output files
+*.ll
+*.bc
+*.s
+*.o
+*.obj
+output.ll
+output_*.ll
+
+# Go Build & Test Artifacts
+*.test
+*.prof
+/vendor/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Generated files
+.DS_Store
+Thumbs.db
+desktop.ini

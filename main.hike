@@ -1,0 +1,109 @@
+package main
+
+type Node struct {
+	val   int
+	left  *Node
+	right *Node
+}
+
+// BSTへの要素挿入（再帰）
+func Insert(arena *Arena, root *Node, val int) *Node {
+	if root == nil {
+		newNode, _ := mem.Alloc[Node](arena)
+		newNode.val = val
+		return newNode
+	}
+
+	if val < root.val {
+		root.left = Insert(arena, root.left, val)
+	} else {
+		root.right = Insert(arena, root.right, val)
+	}
+
+	return root
+}
+
+// BSTの要素検索（再帰: 存在すれば1、存在しなければ0）
+func Contains(root *Node, target int) int {
+	if root == nil {
+		return 0
+	}
+	if root.val == target {
+		return 1
+	}
+	if target < root.val {
+		return Contains(root.left, target)
+	}
+	return Contains(root.right, target)
+}
+
+// BSTの最小値を探索（ループ）
+func FindMin(root *Node) int {
+	curr := root
+	for curr.left != nil {
+		curr = curr.left
+	}
+	return curr.val
+}
+
+// BSTの最大値を探索（ループ）
+func FindMax(root *Node) int {
+	curr := root
+	for curr.right != nil {
+		curr = curr.right
+	}
+	return curr.val
+}
+
+// 中順走査（In-Order Traversal）による全ノード値の合計
+func InOrderSum(root *Node) int {
+	if root == nil {
+		return 0
+	}
+	return InOrderSum(root.left) + root.val + InOrderSum(root.right)
+}
+
+func main() int {
+	arena := mem.NewArena()
+	defer arena.FreeAll()
+
+	// 1. BSTの構築（値: 50, 30, 70, 20, 40, 60, 80）
+	root := Insert(arena, nil, 50)
+	root = Insert(arena, root, 30)
+	root = Insert(arena, root, 70)
+	root = Insert(arena, root, 20)
+	root = Insert(arena, root, 40)
+	root = Insert(arena, root, 60)
+	root = Insert(arena, root, 80)
+
+	// 2. 検索の検証
+	c40 := Contains(root, 40) // 1 (存在する)
+	c99 := Contains(root, 99) // 0 (存在しない)
+	c20 := Contains(root, 20) // 1 (存在する)
+
+	// 3. 最小値・最大値の検証
+	minVal := FindMin(root) // 20
+	maxVal := FindMax(root) // 80
+
+	// 4. 全ノードの合計値検証
+	// 50 + 30 + 70 + 20 + 40 + 60 + 80 = 350
+	totalSum := InOrderSum(root)
+
+	// 全条件のチェック
+	if c40 == 1 {
+		if c99 == 0 {
+			if c20 == 1 {
+				if minVal == 20 {
+					if maxVal == 80 {
+						if totalSum == 350 {
+							// すべて一致すればテスト#7成功として「7」を返す
+							return 7
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return 0
+}
