@@ -1,108 +1,158 @@
 package main
 
-type Node struct {
-	val   int
-	left  *Node
-	right *Node
+type DNode struct {
+	val  int
+	prev *DNode
+	next *DNode
 }
 
-// BSTへの要素挿入（再帰）
-func Insert(arena *Arena, root *Node, val int) *Node {
-	if root == nil {
-		newNode, _ := mem.Alloc[Node](arena)
-		newNode.val = val
-		return newNode
-	}
+type DList struct {
+	head  *DNode
+	tail  *DNode
+	count int
+}
 
-	if val < root.val {
-		root.left = Insert(arena, root.left, val)
+// 末尾にノードを追加
+func Append(arena *Arena, list *DList, val int) *DNode {
+	node, _ := mem.Alloc[DNode](arena)
+	node.val = val
+
+	if list.head == nil {
+		list.head = node
+		list.tail = node
 	} else {
-		root.right = Insert(arena, root.right, val)
+		node.prev = list.tail
+		list.tail.next = node
+		list.tail = node
 	}
 
-	return root
+	list.count = list.count + 1
+	return node
 }
 
-// BSTの要素検索（再帰: 存在すれば1、存在しなければ0）
-func Contains(root *Node, target int) int {
-	if root == nil {
-		return 0
+// 先頭にノードを追加
+func Prepend(arena *Arena, list *DList, val int) *DNode {
+	node, _ := mem.Alloc[DNode](arena)
+	node.val = val
+
+	if list.head == nil {
+		list.head = node
+		list.tail = node
+	} else {
+		node.next = list.head
+		list.head.prev = node
+		list.head = node
 	}
-	if root.val == target {
-		return 1
-	}
-	if target < root.val {
-		return Contains(root.left, target)
-	}
-	return Contains(root.right, target)
+
+	list.count = list.count + 1
+	return node
 }
 
-// BSTの最小値を探索（ループ）
-func FindMin(root *Node) int {
-	curr := root
-	for curr.left != nil {
-		curr = curr.left
+// 指定ノードをリストから削除（前後のリンクを繋ぎ替え）
+func Remove(list *DList, node *DNode) {
+	if node == nil {
+		return
 	}
-	return curr.val
+
+	if node.prev != nil {
+		node.prev.next = node.next
+	} else {
+		list.head = node.next
+	}
+
+	if node.next != nil {
+		node.next.prev = node.prev
+	} else {
+		list.tail = node.prev
+	}
+
+	list.count = list.count - 1
 }
 
-// BSTの最大値を探索（ループ）
-func FindMax(root *Node) int {
-	curr := root
-	for curr.right != nil {
-		curr = curr.right
+// 前方走査で全ノードの値を合計
+func SumForward(list *DList) int {
+	total := 0
+	curr := list.head
+	for curr != nil {
+		total = total + curr.val
+		curr = curr.next
 	}
-	return curr.val
+	return total
 }
 
-// 中順走査（In-Order Traversal）による全ノード値の合計
-func InOrderSum(root *Node) int {
-	if root == nil {
-		return 0
+// 後方走査で全ノードの値を合計
+func SumBackward(list *DList) int {
+	total := 0
+	curr := list.tail
+	for curr != nil {
+		total = total + curr.val
+		curr = curr.prev
 	}
-	return InOrderSum(root.left) + root.val + InOrderSum(root.right)
+	return total
 }
 
 func main() int {
 	arena := mem.NewArena()
 	defer arena.FreeAll()
 
-	// 1. BSTの構築（値: 50, 30, 70, 20, 40, 60, 80）
-	root := Insert(arena, nil, 50)
-	root = Insert(arena, root, 30)
-	root = Insert(arena, root, 70)
-	root = Insert(arena, root, 20)
-	root = Insert(arena, root, 40)
-	root = Insert(arena, root, 60)
-	root = Insert(arena, root, 80)
+	list, _ := mem.Alloc[DList](arena)
 
-	// 2. 検索の検証
-	c40 := Contains(root, 40) // 1 (存在する)
-	c99 := Contains(root, 99) // 0 (存在しない)
-	c20 := Contains(root, 20) // 1 (存在する)
+	// 1. ノードの追加: [5, 10, 20, 30, 40]
+	Append(arena, list, 10)
+	node20 := Append(arena, list, 20)
+	Append(arena, list, 30)
+	Prepend(arena, list, 5)
+	Append(arena, list, 40)
 
-	// 3. 最小値・最大値の検証
-	minVal := FindMin(root) // 20
-	maxVal := FindMax(root) // 80
+	// 前方合計: 5 + 10 + 20 + 30 + 40 = 105
+	fSum1 := SumForward(list)
+	// 後方合計: 40 + 30 + 20 + 10 + 5 = 105
+	bSum1 := SumBackward(list)
 
-	// 4. 全ノードの合計値検証
-	// 50 + 30 + 70 + 20 + 40 + 60 + 80 = 350
-	totalSum := InOrderSum(root)
+	if fSum1 != 105 {
+		return 0
+	}
+	if bSum1 != 105 {
+		return 0
+	}
+	if list.count != 5 {
+		return 0
+	}
 
-	// 全条件のチェック
-	if c40 == 1 {
-		if c99 == 0 {
-			if c20 == 1 {
-				if minVal == 20 {
-					if maxVal == 80 {
-						if totalSum == 350 {
-							// すべて一致すればテスト#7成功として「7」を返す
-							return 7
-						}
-					}
-				}
-			}
-		}
+	// 2. 中間ノード (20) の削除 -> リストは [5, 10, 30, 40]
+	Remove(list, node20)
+
+	fSum2 := SumForward(list)  // 5 + 10 + 30 + 40 = 85
+	bSum2 := SumBackward(list) // 40 + 30 + 10 + 5 = 85
+
+	if fSum2 != 85 {
+		return 0
+	}
+	if bSum2 != 85 {
+		return 0
+	}
+
+	// 3. 境界ノード（先頭 5 と末尾 40）の削除 -> リストは [10, 30]
+	Remove(list, list.head)
+	Remove(list, list.tail)
+
+	fSum3 := SumForward(list)  // 10 + 30 = 40
+	bSum3 := SumBackward(list) // 30 + 10 = 40
+
+	if fSum3 != 40 {
+		return 0
+	}
+	if bSum3 != 40 {
+		return 0
+	}
+	if list.count != 2 {
+		return 0
+	}
+
+	// 総合検証: 85 + 40 + 2 = 127
+	totalCheck := fSum2 + fSum3 + list.count
+	if totalCheck == 127 {
+		return 8
 	}
 
 	return 0
