@@ -1,158 +1,136 @@
 package main
 
-type DNode struct {
-	val  int
-	prev *DNode
-	next *DNode
+type TreeNode struct {
+	val   int
+	left  *TreeNode
+	right *TreeNode
 }
 
-type DList struct {
-	head  *DNode
-	tail  *DNode
-	count int
+type QueueNode struct {
+	treeNode *TreeNode
+	next     *QueueNode
 }
 
-// 末尾にノードを追加
-func Append(arena *Arena, list *DList, val int) *DNode {
-	node, _ := mem.Alloc[DNode](arena)
-	node.val = val
-
-	if list.head == nil {
-		list.head = node
-		list.tail = node
-	} else {
-		node.prev = list.tail
-		list.tail.next = node
-		list.tail = node
-	}
-
-	list.count = list.count + 1
-	return node
+type Queue struct {
+	head *QueueNode
+	tail *QueueNode
+	size int
 }
 
-// 先頭にノードを追加
-func Prepend(arena *Arena, list *DList, val int) *DNode {
-	node, _ := mem.Alloc[DNode](arena)
-	node.val = val
-
-	if list.head == nil {
-		list.head = node
-		list.tail = node
-	} else {
-		node.next = list.head
-		list.head.prev = node
-		list.head = node
-	}
-
-	list.count = list.count + 1
-	return node
-}
-
-// 指定ノードをリストから削除（前後のリンクを繋ぎ替え）
-func Remove(list *DList, node *DNode) {
-	if node == nil {
+// キューの末尾にツリーノードを追加
+func Enqueue(arena *Arena, q *Queue, tn *TreeNode) {
+	if tn == nil {
 		return
 	}
 
-	if node.prev != nil {
-		node.prev.next = node.next
+	qn, _ := mem.Alloc[QueueNode](arena)
+	qn.treeNode = tn
+
+	if q.head == nil {
+		q.head = qn
+		q.tail = qn
 	} else {
-		list.head = node.next
+		q.tail.next = qn
+		q.tail = qn
 	}
 
-	if node.next != nil {
-		node.next.prev = node.prev
-	} else {
-		list.tail = node.prev
-	}
-
-	list.count = list.count - 1
+	q.size = q.size + 1
 }
 
-// 前方走査で全ノードの値を合計
-func SumForward(list *DList) int {
-	total := 0
-	curr := list.head
-	for curr != nil {
-		total = total + curr.val
-		curr = curr.next
+// キューの先頭からツリーノードを取り出し
+func Dequeue(q *Queue) *TreeNode {
+	if q.head == nil {
+		return nil
 	}
-	return total
+
+	res := q.head.treeNode
+	q.head = q.head.next
+
+	if q.head == nil {
+		q.tail = nil
+	}
+
+	q.size = q.size - 1
+	return res
 }
 
-// 後方走査で全ノードの値を合計
-func SumBackward(list *DList) int {
-	total := 0
-	curr := list.tail
-	for curr != nil {
-		total = total + curr.val
-		curr = curr.prev
+// 幅優先探索（BFS: Breadth-First Search）による走査
+// 訪問順にステップ番号の重みを掛けて合計値を計算
+func BFSWeightedSum(arena *Arena, root *TreeNode) int {
+	if root == nil {
+		return 0
 	}
-	return total
+
+	q, _ := mem.Alloc[Queue](arena)
+	Enqueue(arena, q, root)
+
+	weightedSum := 0
+	step := 1
+
+	for q.size > 0 {
+		curr := Dequeue(q)
+
+		// 訪問順: 10 -> 20 -> 30 -> 40 -> 50 -> 60
+		weightedSum = weightedSum + (curr.val * step)
+		step = step + 1
+
+		if curr.left != nil {
+			Enqueue(arena, q, curr.left)
+		}
+		if curr.right != nil {
+			Enqueue(arena, q, curr.right)
+		}
+	}
+
+	return weightedSum
 }
 
 func main() int {
 	arena := mem.NewArena()
 	defer arena.FreeAll()
 
-	list, _ := mem.Alloc[DList](arena)
+	// 以下の木構造を構築:
+	//          10
+	//        /    \
+	//      20      30
+	//     /  \       \
+	//    40   50      60
 
-	// 1. ノードの追加: [5, 10, 20, 30, 40]
-	Append(arena, list, 10)
-	node20 := Append(arena, list, 20)
-	Append(arena, list, 30)
-	Prepend(arena, list, 5)
-	Append(arena, list, 40)
+	n10, _ := mem.Alloc[TreeNode](arena)
+	n10.val = 10
 
-	// 前方合計: 5 + 10 + 20 + 30 + 40 = 105
-	fSum1 := SumForward(list)
-	// 後方合計: 40 + 30 + 20 + 10 + 5 = 105
-	bSum1 := SumBackward(list)
+	n20, _ := mem.Alloc[TreeNode](arena)
+	n20.val = 20
 
-	if fSum1 != 105 {
-		return 0
-	}
-	if bSum1 != 105 {
-		return 0
-	}
-	if list.count != 5 {
-		return 0
-	}
+	n30, _ := mem.Alloc[TreeNode](arena)
+	n30.val = 30
 
-	// 2. 中間ノード (20) の削除 -> リストは [5, 10, 30, 40]
-	Remove(list, node20)
+	n40, _ := mem.Alloc[TreeNode](arena)
+	n40.val = 40
 
-	fSum2 := SumForward(list)  // 5 + 10 + 30 + 40 = 85
-	bSum2 := SumBackward(list) // 40 + 30 + 10 + 5 = 85
+	n50, _ := mem.Alloc[TreeNode](arena)
+	n50.val = 50
 
-	if fSum2 != 85 {
-		return 0
-	}
-	if bSum2 != 85 {
-		return 0
-	}
+	n60, _ := mem.Alloc[TreeNode](arena)
+	n60.val = 60
 
-	// 3. 境界ノード（先頭 5 と末尾 40）の削除 -> リストは [10, 30]
-	Remove(list, list.head)
-	Remove(list, list.tail)
+	// 木構造の連結
+	n10.left = n20
+	n10.right = n30
 
-	fSum3 := SumForward(list)  // 10 + 30 = 40
-	bSum3 := SumBackward(list) // 30 + 10 = 40
+	n20.left = n40
+	n20.right = n50
 
-	if fSum3 != 40 {
-		return 0
-	}
-	if bSum3 != 40 {
-		return 0
-	}
-	if list.count != 2 {
-		return 0
-	}
+	n30.right = n60
 
-	// 総合検証: 85 + 40 + 2 = 127
-	totalCheck := fSum2 + fSum3 + list.count
-	if totalCheck == 127 {
-		return 8
+	// BFS走査実行
+	// 計算式: (10*1) + (20*2) + (30*3) + (40*4) + (50*5) + (60*6)
+	// = 10 + 40 + 90 + 160 + 250 + 360 = 910
+	result := BFSWeightedSum(arena, n10)
+
+	// 重み付き走査結果が 910 ならテスト#9成功として「9」を返す
+	if result == 910 {
+		return 9
 	}
 
 	return 0
