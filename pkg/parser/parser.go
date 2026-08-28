@@ -71,7 +71,8 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(token.NIL, p.parseNilLiteral)
 	p.registerPrefix(token.NOT, p.parsePrefixExpr)
 	p.registerPrefix(token.MINUS, p.parsePrefixExpr)
-	p.registerPrefix(token.ASTERISK, p.parsePrefixExpr) // 単項前置ポインタ演算子 (*) を登録
+	p.registerPrefix(token.ASTERISK, p.parsePrefixExpr)  // 単項前置ポインタ演算子 (*) を登録
+	p.registerPrefix(token.AMPERSAND, p.parsePrefixExpr) // ここを追加
 	p.registerPrefix(token.LPAREN, p.parseGroupedExpression)
 
 	p.infixParseFns = make(map[token.TokenType]infixParseFn)
@@ -388,11 +389,32 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		ReturnTypes: []ast.TypeExpr{},
 	}
 
+	// 1. レシーバの解析: func の次が '(' の場合 (例: func (b *Builder) ...)
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // '(' へ
+		p.nextToken() // レシーバ変数名へ (例: b)
+
+		recvName := p.parseIdentifier()
+		p.nextToken() // 型へ進む (例: *Builder)
+		recvType := p.parseType()
+
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+
+		fn.Receiver = &ast.ParamDecl{
+			Name: recvName,
+			Type: recvType,
+		}
+	}
+
+	// 2. 関数名 / メソッド名の取得
 	if !p.expectPeek(token.IDENT) {
 		return nil
 	}
 	fn.Name = p.parseIdentifier()
 
+	// 3. 引数リスト '('
 	if !p.expectPeek(token.LPAREN) {
 		return nil
 	}
@@ -420,6 +442,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		p.nextToken()
 	}
 
+	// 4. 戻り値の型 (既存ロジックをそのまま維持)
 	if p.curTokenIs(token.LPAREN) {
 		p.nextToken()
 		for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
@@ -440,6 +463,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		p.nextToken()
 	}
 
+	// 5. 関数本体 '{' (本体がない外部宣言の場合は nil)
 	if p.curTokenIs(token.LBRACE) {
 		fn.Body = p.parseBlockStmt()
 		if p.curTokenIs(token.RBRACE) {

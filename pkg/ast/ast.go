@@ -182,6 +182,7 @@ func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
 
 type FuncDecl struct {
 	Token       token.Token
+	Receiver    *ParamDecl // 追加: メソッドの場合は非nil (例: b *Builder)、通常関数は nil
 	Name        *Identifier
 	Params      []*ParamDecl
 	IsVariadic  bool

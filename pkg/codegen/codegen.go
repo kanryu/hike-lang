@@ -177,7 +177,45 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 
 	g.symbols = make(map[string]Symbol)
 
+	// 1. レシーバの解析と関数名マングリング (シンボル重複衝突の防止)
+	funcMangledName := fn.Name.Value
+	var recvType sema.Type = nil
+	var recvTypeName string = ""
+
+	if fn.Receiver != nil {
+		if pt, ok := fn.Receiver.Type.(*ast.PointerType); ok {
+			if named, ok := pt.Base.(*ast.NamedType); ok {
+				recvTypeName = named.Name.Value
+				if st, ok := g.semaCtx.Structs[recvTypeName]; ok {
+					recvType = &sema.PointerType{Base: st}
+				}
+			}
+		} else if named, ok := fn.Receiver.Type.(*ast.NamedType); ok {
+			recvTypeName = named.Name.Value
+			if st, ok := g.semaCtx.Structs[recvTypeName]; ok {
+				recvType = st
+			}
+		}
+
+		if recvType == nil {
+			recvType = &sema.PointerType{Base: sema.TypeByte}
+		}
+
+		// strings_Len と重複しないよう strings_Builder_Len または Builder_Len にマングリング
+		if strings.Contains(funcMangledName, "_") {
+			parts := strings.SplitN(funcMangledName, "_", 2)
+			funcMangledName = parts[0] + "_" + recvTypeName + "_" + parts[1]
+		} else {
+			funcMangledName = recvTypeName + "_" + funcMangledName
+		}
+	}
+
+	// 2. 戻り値の型の解決 (semaCtx または AST の ReturnTypes から判定)
 	fnMeta, exists := g.semaCtx.Functions[fn.Name.Value]
+	if !exists && fn.Receiver != nil {
+		fnMeta, exists = g.semaCtx.Functions[funcMangledName]
+	}
+
 	retType := "void"
 	if exists && len(fnMeta.ReturnTypes) == 1 {
 		retType = fnMeta.ReturnTypes[0].LLVMType()
@@ -187,16 +225,49 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 			types = append(types, rt.LLVMType())
 		}
 		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	} else if len(fn.ReturnTypes) == 1 {
+		// AST からのフォールバック判定
+		if pt, ok := fn.ReturnTypes[0].(*ast.PointerType); ok {
+			if named, ok := pt.Base.(*ast.NamedType); ok {
+				if named.Name.Value == "byte" {
+					retType = "i8*"
+				} else if st, ok := g.semaCtx.Structs[named.Name.Value]; ok {
+					retType = fmt.Sprintf("%%struct.%s*", st.Name)
+				} else {
+					retType = "i8*"
+				}
+			}
+		} else if named, ok := fn.ReturnTypes[0].(*ast.NamedType); ok {
+			if named.Name.Value == "int" {
+				retType = "i64"
+			} else if named.Name.Value == "bool" {
+				retType = "i1"
+			}
+		}
 	}
+
 	if fn.Name.Value == "main" {
 		retType = "i32"
 	}
 
+	// 3. 引数リストの構築 (レシーバが存在する場合は第1引数へ挿入)
 	params := []string{}
+	if fn.Receiver != nil {
+		params = append(params, fmt.Sprintf("%s %%%s_arg", recvType.LLVMType(), fn.Receiver.Name.Value))
+	}
+
 	for i, p := range fn.Params {
 		pTypeStr := "i64"
 		if exists && i < len(fnMeta.ParamTypes) {
 			pTypeStr = fnMeta.ParamTypes[i].LLVMType()
+		} else if pt, ok := p.Type.(*ast.PointerType); ok {
+			if named, ok := pt.Base.(*ast.NamedType); ok {
+				if named.Name.Value == "byte" {
+					pTypeStr = "i8*"
+				} else if st, ok := g.semaCtx.Structs[named.Name.Value]; ok {
+					pTypeStr = fmt.Sprintf("%%struct.%s*", st.Name)
+				}
+			}
 		}
 		params = append(params, fmt.Sprintf("%s %%%s_arg", pTypeStr, p.Name.Value))
 	}
@@ -205,11 +276,32 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	var bodyBuilder strings.Builder
 	g.entryAllocas = &entryAllocas
 
+	// 4. 引数変数のローカルスタック割り当てと初期化 (alloca & store)
+	if fn.Receiver != nil {
+		recvName := fn.Receiver.Name.Value
+		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", recvName, recvType.LLVMType()))
+		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", recvType.LLVMType(), recvName, recvType.LLVMType(), recvName))
+		g.symbols[recvName] = Symbol{
+			Name:     recvName,
+			LLVMName: "%" + recvName,
+			Type:     recvType,
+		}
+	}
+
 	for i, p := range fn.Params {
 		var pType sema.Type = sema.TypeInt
 		if exists && i < len(fnMeta.ParamTypes) {
 			pType = fnMeta.ParamTypes[i]
+		} else if pt, ok := p.Type.(*ast.PointerType); ok {
+			if named, ok := pt.Base.(*ast.NamedType); ok {
+				if named.Name.Value == "byte" {
+					pType = &sema.PointerType{Base: sema.TypeByte}
+				} else if st, ok := g.semaCtx.Structs[named.Name.Value]; ok {
+					pType = &sema.PointerType{Base: st}
+				}
+			}
 		}
+
 		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
 		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
 		g.symbols[p.Name.Value] = Symbol{
@@ -219,23 +311,28 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		}
 	}
 
+	// 5. 関数本体の文を生成
 	for _, s := range fn.Body.Statements {
-		g.emitStatement(&bodyBuilder, s, fn.Name.Value)
+		g.emitStatement(&bodyBuilder, s, funcMangledName)
 	}
 
+	// 6. デフォルトリターンの出力
 	if retType == "void" {
 		bodyBuilder.WriteString("  ret void\n")
 	} else if retType == "i32" {
 		bodyBuilder.WriteString("  ret i32 0\n")
 	} else if retType == "i64" {
 		bodyBuilder.WriteString("  ret i64 0\n")
+	} else if retType == "i1" {
+		bodyBuilder.WriteString("  ret i1 false\n")
 	} else if strings.HasSuffix(retType, "*") {
 		bodyBuilder.WriteString(fmt.Sprintf("  ret %s null\n", retType))
 	} else {
 		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
 	}
 
-	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, fn.Name.Value, strings.Join(params, ", ")))
+	// 7. LLVM IR 関数定義を出力
+	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, funcMangledName, strings.Join(params, ", ")))
 	b.WriteString(entryAllocas.String())
 	b.WriteString(bodyBuilder.String())
 	b.WriteString("}\n\n")
@@ -392,119 +489,197 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 }
 
 func (g *CodeGenerator) emitCallExpr(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// パッケージ関数呼び出し (fmt.PrintLn(...) など)
+	// 1. メンバ経由の呼び出し (パッケージ関数 または オブジェクトメソッド)
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {
+		// パターンA: パッケージ関数呼び出し (fmt.PrintLn, strings.Equal 等)
 		if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
 			targetFnName := pkgIdent.Value + "_" + memExpr.Field.Value
-			if fnType, exists := g.semaCtx.Functions[targetFnName]; exists {
+			if targetFn := g.lookupFunction(targetFnName); targetFn != nil {
 				args := []string{}
 				for i, arg := range call.Args {
 					valReg, valType := g.resolveValue(b, arg)
 					t := valType
-					if i < len(fnType.ParamTypes) {
-						t = fnType.ParamTypes[i]
+					if i < len(targetFn.ParamTypes) {
+						t = targetFn.ParamTypes[i]
 					}
 					args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), valReg))
 				}
 
 				retType := "void"
 				var actualRetType sema.Type = sema.TypeVoid
-				if len(fnType.ReturnTypes) == 1 {
-					retType = fnType.ReturnTypes[0].LLVMType()
-					actualRetType = fnType.ReturnTypes[0]
+				if len(targetFn.ReturnTypes) == 1 {
+					retType = targetFn.ReturnTypes[0].LLVMType()
+					actualRetType = targetFn.ReturnTypes[0]
 				}
 
 				if retType == "void" {
-					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFnName, strings.Join(args, ", ")))
+					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
 					return "", sema.TypeVoid
 				}
 
 				retReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, targetFnName, strings.Join(args, ", ")))
+				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, targetFn.Name, strings.Join(args, ", ")))
 				return retReg, actualRetType
+			}
+		}
+
+		// パターンB: レシーバオブジェクトに対するメソッド呼び出し (builder.WriteString, builder.Free 等)
+		objReg, objType := g.resolveValue(b, memExpr.Object)
+		if objType != nil {
+			_, structName := g.findStruct(objType, "")
+			if structName != "" {
+				candidates := []string{
+					"strings_" + structName + "_" + memExpr.Field.Value,
+					structName + "_" + memExpr.Field.Value,
+					"strings_" + memExpr.Field.Value,
+					memExpr.Field.Value,
+				}
+
+				var targetFn *sema.FuncType
+				for _, cand := range candidates {
+					if fn := g.lookupFunction(cand); fn != nil {
+						targetFn = fn
+						break
+					}
+				}
+
+				if targetFn != nil {
+					// emitFuncDecl の定義名に合わせてマングリング名を構築
+					emitTargetName := "strings_" + structName + "_" + memExpr.Field.Value
+
+					// 第1引数にレシーバ (objReg) を自動挿入
+					args := []string{fmt.Sprintf("%s %s", objType.LLVMType(), objReg)}
+					for i, arg := range call.Args {
+						valReg, valType := g.resolveValue(b, arg)
+						t := valType
+						if i+1 < len(targetFn.ParamTypes) {
+							t = targetFn.ParamTypes[i+1]
+						}
+						args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), valReg))
+					}
+
+					retType := "void"
+					var actualRetType sema.Type = sema.TypeVoid
+					if len(targetFn.ReturnTypes) == 1 {
+						retType = targetFn.ReturnTypes[0].LLVMType()
+						actualRetType = targetFn.ReturnTypes[0]
+					}
+
+					if retType == "void" {
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitTargetName, strings.Join(args, ", ")))
+						return "", sema.TypeVoid
+					}
+
+					retReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, emitTargetName, strings.Join(args, ", ")))
+					return retReg, actualRetType
+				}
 			}
 		}
 	}
 
+	// 2. 通常の識別子関数呼び出し (malloc, free, assert, strlen 等)
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok {
-		fnType := g.semaCtx.Functions[fnIdent.Value]
-		args := []string{}
+		targetFn := g.lookupFunction(fnIdent.Value)
+		if targetFn != nil {
+			args := []string{}
+			for i, arg := range call.Args {
+				valReg, valType := g.resolveValue(b, arg)
+				targetType := valType
 
-		for i, arg := range call.Args {
-			valReg, valType := g.resolveValue(b, arg)
-			targetType := valType
+				// 仮引数の定義範囲内であればその型に合わせ、可変長部分（i >= len）は実引数の型を維持する
+				if i < len(targetFn.ParamTypes) {
+					targetType = targetFn.ParamTypes[i]
+				}
 
-			// 仮引数の定義範囲内であればその型に合わせ、可変長部分（i >= len）は実引数の型を維持する
-			if fnType != nil && i < len(fnType.ParamTypes) {
-				targetType = fnType.ParamTypes[i]
+				args = append(args, fmt.Sprintf("%s %s", targetType.LLVMType(), valReg))
 			}
 
-			args = append(args, fmt.Sprintf("%s %s", targetType.LLVMType(), valReg))
-		}
+			retType := "void"
+			var actualRetType sema.Type = sema.TypeVoid
+			sigParamTypes := []string{}
 
-		retType := "void"
-		var actualRetType sema.Type = sema.TypeVoid
-		sigParamTypes := []string{}
-
-		if fnType != nil {
-			if len(fnType.ReturnTypes) == 1 {
-				retType = fnType.ReturnTypes[0].LLVMType()
-				actualRetType = fnType.ReturnTypes[0]
-			} else if len(fnType.ReturnTypes) > 1 {
-				types := make([]string, len(fnType.ReturnTypes))
-				for i, t := range fnType.ReturnTypes {
+			if len(targetFn.ReturnTypes) == 1 {
+				retType = targetFn.ReturnTypes[0].LLVMType()
+				actualRetType = targetFn.ReturnTypes[0]
+			} else if len(targetFn.ReturnTypes) > 1 {
+				types := make([]string, len(targetFn.ReturnTypes))
+				for i, t := range targetFn.ReturnTypes {
 					types[i] = t.LLVMType()
 				}
 				retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 			}
 
 			// シグネチャには宣言時の仮引数型のみを格納
-			for _, p := range fnType.ParamTypes {
+			for _, p := range targetFn.ParamTypes {
 				sigParamTypes = append(sigParamTypes, p.LLVMType())
 			}
-			if fnType.IsVariadic {
+			if targetFn.IsVariadic {
 				sigParamTypes = append(sigParamTypes, "...")
 			}
-		}
 
-		retReg := ""
-		if retType != "void" {
-			retReg = g.nextReg()
-			if len(sigParamTypes) > 0 {
-				b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", retReg, retType, strings.Join(sigParamTypes, ", "), fnIdent.Value, strings.Join(args, ", ")))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, fnIdent.Value, strings.Join(args, ", ")))
+			emitFnName := targetFn.Name
+			if targetFn.IsExtern {
+				emitFnName = fnIdent.Value
 			}
-		} else {
-			if len(sigParamTypes) > 0 {
-				b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), fnIdent.Value, strings.Join(args, ", ")))
+
+			retReg := ""
+			if retType != "void" {
+				retReg = g.nextReg()
+				if len(sigParamTypes) > 0 {
+					b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", retReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+				} else {
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, emitFnName, strings.Join(args, ", ")))
+				}
 			} else {
-				b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", fnIdent.Value, strings.Join(args, ", ")))
+				if len(sigParamTypes) > 0 {
+					b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+				} else {
+					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
+				}
 			}
+			return retReg, actualRetType
 		}
-		return retReg, actualRetType
 	}
+
 	return "", sema.TypeVoid
 }
 
-// 構造体定義を安全に特定するヘルパー
+func (g *CodeGenerator) findStructByName(name string) (*sema.StructType, string) {
+	if st, ok := g.semaCtx.Structs[name]; ok {
+		return st, st.Name
+	}
+	for sName, st := range g.semaCtx.Structs {
+		if strings.HasSuffix(sName, "_"+name) || strings.HasSuffix(sName, name) {
+			return st, st.Name
+		}
+	}
+	return nil, ""
+}
+
+// findStruct を厳密化（誤爆フォールバックを排除）
 func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructType, string) {
 	if t != nil {
-		// 1. StructType 直接の場合
+		// 1. StructType 直接
 		if st, ok := t.(*sema.StructType); ok {
 			return st, st.Name
 		}
-		// 2. ポインタ型を剥がしてチェック
+		// 2. ポインタ型を剥がして判定
 		if ptr, ok := t.(*sema.PointerType); ok {
 			if st, ok := ptr.Base.(*sema.StructType); ok {
 				return st, st.Name
 			}
+			if basic, ok := ptr.Base.(*sema.BasicType); ok {
+				if st, name := g.findStructByName(basic.Name); st != nil {
+					return st, name
+				}
+			}
 		}
-		// 3. LLVMType 文字列から構造体名を逆引き (%struct.AstNode* -> AstNode)
+		// 3. LLVMType 文字列から構造体名を逆引き (%struct.Builder* -> Builder)
 		llvmStr := t.LLVMType()
 		cleanName := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(llvmStr, "*", ""), "%struct.", ""))
-		if st, ok := g.semaCtx.Structs[cleanName]; ok {
-			return st, st.Name
+		if st, name := g.findStructByName(cleanName); st != nil {
+			return st, name
 		}
 	}
 
@@ -560,7 +735,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
-		// 構造体フィールド代入: u.ID = id
+		// 構造体フィールド代入: b.buf = ...
 		if lhsMember, isLhsMember := s.Left[0].(*ast.MemberExpr); isLhsMember {
 			objReg, objType := g.resolveValue(b, lhsMember.Object)
 			st, structName := g.findStruct(objType, lhsMember.Field.Value)
@@ -581,13 +756,29 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				panic(fmt.Sprintf("unknown field %s in struct %s", lhsMember.Field.Value, structName))
 			}
 
-			valReg, _ := g.resolveValue(b, s.Right[0])
+			valReg, valType := g.resolveValue(b, s.Right[0])
+
+			// 型キャストの整合性 (ポインタ型フィールドへの安全な代入)
+			valToStore := valReg
+			if strings.HasSuffix(fieldType.LLVMType(), "*") {
+				if valReg == "0" || valReg == "null" || valReg == "" {
+					valToStore = "null"
+				} else if valType != nil && !strings.HasSuffix(valType.LLVMType(), "*") {
+					convReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", convReg, valType.LLVMType(), valReg, fieldType.LLVMType()))
+					valToStore = convReg
+				} else if valType != nil && valType.LLVMType() != fieldType.LLVMType() {
+					convReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, fieldType.LLVMType()))
+					valToStore = convReg
+				}
+			}
 
 			gepReg := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
 				gepReg, structName, structName, objReg, fieldIdx))
 			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n",
-				fieldType.LLVMType(), valReg, fieldType.LLVMType(), gepReg))
+				fieldType.LLVMType(), valToStore, fieldType.LLVMType(), gepReg))
 			return
 		}
 	}
@@ -775,6 +966,7 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		b.WriteString(fmt.Sprintf("  %s\n", deferCall))
 	}
 
+	// main 関数の場合
 	if currentFn == "main" {
 		if len(s.Values) == 1 {
 			valReg, valType := g.resolveValue(b, s.Values[0])
@@ -787,39 +979,68 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		return
 	}
 
-	fnType := g.semaCtx.Functions[currentFn]
-	if len(fnType.ReturnTypes) == 0 {
+	fnType := g.lookupFunction(currentFn)
+
+	// 1. 引数なし return (void)
+	if len(s.Values) == 0 {
 		b.WriteString("  ret void\n")
 		return
 	}
 
-	if len(fnType.ReturnTypes) == 1 {
-		targetType := fnType.ReturnTypes[0]
-		valReg, _ := g.resolveValue(b, s.Values[0])
+	// 2. 単一値返却
+	if len(s.Values) == 1 {
+		valReg, valType := g.resolveValue(b, s.Values[0])
+
+		targetTypeStr := valType.LLVMType()
+		if fnType != nil && len(fnType.ReturnTypes) == 1 {
+			targetTypeStr = fnType.ReturnTypes[0].LLVMType()
+		}
+
 		if _, isNil := s.Values[0].(*ast.NilLiteral); isNil {
-			b.WriteString(fmt.Sprintf("  ret %s null\n", targetType.LLVMType()))
+			b.WriteString(fmt.Sprintf("  ret %s null\n", targetTypeStr))
 			return
 		}
-		b.WriteString(fmt.Sprintf("  ret %s %s\n", targetType.LLVMType(), valReg))
+
+		// 型の整合性チェック (i1 <-> i64 の自動変換)
+		if valType != nil && valType.LLVMType() != targetTypeStr {
+			if targetTypeStr == "i64" && valType.LLVMType() == "i1" {
+				zextReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", zextReg, valReg))
+				valReg = zextReg
+			} else if targetTypeStr == "i1" && valType.LLVMType() == "i64" {
+				cmpReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = icmp ne i64 %s, 0\n", cmpReg, valReg))
+				valReg = cmpReg
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("  ret %s %s\n", targetTypeStr, valReg))
 		return
 	}
 
-	// 多値返却
-	types := make([]string, len(fnType.ReturnTypes))
-	for i, t := range fnType.ReturnTypes {
-		types[i] = t.LLVMType()
+	// 3. 多値返却
+	var types []string
+	if fnType != nil && len(fnType.ReturnTypes) == len(s.Values) {
+		for _, t := range fnType.ReturnTypes {
+			types = append(types, t.LLVMType())
+		}
+	} else {
+		for _, v := range s.Values {
+			_, t := g.resolveValue(b, v)
+			types = append(types, t.LLVMType())
+		}
 	}
 	retTupleType := fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 
 	currentTuple := "undef"
 	for i, valExpr := range s.Values {
-		targetType := fnType.ReturnTypes[i]
+		targetTypeStr := types[i]
 		valReg, _ := g.resolveValue(b, valExpr)
 		if _, isNil := valExpr.(*ast.NilLiteral); isNil {
 			valReg = "null"
 		}
 		nextTuple := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %s, %d\n", nextTuple, retTupleType, currentTuple, targetType.LLVMType(), valReg, i))
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %s, %d\n", nextTuple, retTupleType, currentTuple, targetTypeStr, valReg, i))
 		currentTuple = nextTuple
 	}
 	b.WriteString(fmt.Sprintf("  ret %s %s\n", retTupleType, currentTuple))
@@ -835,11 +1056,19 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 
 	case *ast.StringLiteral:
 		label, length := g.addStringLiteral(e.Value)
-		ptrReg := g.nextReg() // ← 末尾の "emitMemberPtr" を削除
+		ptrReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* %s, i64 0, i64 0\n", ptrReg, length, length, label))
 		return ptrReg, &sema.PointerType{Base: sema.TypeByte}
 
 	case *ast.Identifier:
+		// ブール定数リテラルの解決
+		if e.Value == "true" {
+			return "true", sema.TypeBool
+		}
+		if e.Value == "false" {
+			return "false", sema.TypeBool
+		}
+
 		sym, exists := g.symbols[e.Value]
 		if !exists {
 			return "0", sema.TypeInt
@@ -889,11 +1118,65 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		return loadReg, fieldType
 
 	case *ast.CallExpr:
-		// パッケージ関数呼び出し (os.Alloc(...) など)
+		// 1. 型キャスト: (*Type)(expr) (例: (*Builder)(malloc(24)), (*byte)(b))
+		if pref, ok := e.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+			if ident, ok := pref.Right.(*ast.Identifier); ok {
+				argReg, argType := g.resolveValue(b, e.Args[0])
+				castReg := g.nextReg()
+				srcTypeStr := "i8*"
+				if argType != nil && argType.LLVMType() != "" {
+					srcTypeStr = argType.LLVMType()
+				}
+
+				var targetType sema.Type
+				var targetTypeStr string
+				if ident.Value == "byte" {
+					targetType = &sema.PointerType{Base: sema.TypeByte}
+					targetTypeStr = "i8*"
+				} else if ident.Value == "int" {
+					targetType = &sema.PointerType{Base: sema.TypeInt}
+					targetTypeStr = "i64*"
+				} else {
+					st, structName := g.findStructByName(ident.Value)
+					if st != nil {
+						targetType = &sema.PointerType{Base: st}
+						targetTypeStr = fmt.Sprintf("%%struct.%s*", structName)
+					} else {
+						targetType = &sema.PointerType{Base: &sema.BasicType{Name: ident.Value, ByteSize: 8, LLVM: "%struct." + ident.Value}}
+						targetTypeStr = fmt.Sprintf("%%struct.%s*", ident.Value)
+					}
+				}
+
+				if targetType != nil {
+					if !strings.HasSuffix(srcTypeStr, "*") {
+						b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", castReg, srcTypeStr, argReg, targetTypeStr))
+					} else {
+						b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castReg, srcTypeStr, argReg, targetTypeStr))
+					}
+					return castReg, targetType
+				}
+			}
+		}
+
+		// 2. 型キャスト: int(ptr)
+		if fnIdent, ok := e.Function.(*ast.Identifier); ok && fnIdent.Value == "int" {
+			argReg, argType := g.resolveValue(b, e.Args[0])
+			castReg := g.nextReg()
+			srcTypeStr := argType.LLVMType()
+			if strings.HasSuffix(srcTypeStr, "*") {
+				b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", castReg, srcTypeStr, argReg))
+			} else {
+				b.WriteString(fmt.Sprintf("  %s = sext %s %s to i64\n", castReg, srcTypeStr, argReg))
+			}
+			return castReg, sema.TypeInt
+		}
+
+		// 3. メンバ経由の呼び出し (パッケージ関数 または オブジェクトメソッド)
 		if memExpr, ok := e.Function.(*ast.MemberExpr); ok {
+			// パターンA: パッケージ関数呼び出し (fmt.PrintLn, strings.Equal 等)
 			if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
 				targetFnName := pkgIdent.Value + "_" + memExpr.Field.Value
-				if targetFn, exists := g.semaCtx.Functions[targetFnName]; exists {
+				if targetFn := g.lookupFunction(targetFnName); targetFn != nil {
 					args := []string{}
 					for i, arg := range e.Args {
 						argReg, argType := g.resolveValue(b, arg)
@@ -921,39 +1204,67 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 					return callReg, semaRet
 				}
 			}
-		}
 
-		// 2. 型キャスト: (*byte)(ptr), (*Arena)(ptr) 等
-		if pref, ok := e.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
-			if ident, ok := pref.Right.(*ast.Identifier); ok {
-				argReg, argType := g.resolveValue(b, e.Args[0])
-				castReg := g.nextReg()
-				srcTypeStr := "i8*"
-				if argType != nil && argType.LLVMType() != "" {
-					srcTypeStr = argType.LLVMType()
-				}
-				if ident.Value == "byte" {
-					targetType := &sema.PointerType{Base: sema.TypeByte}
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castReg, srcTypeStr, argReg))
-					return castReg, targetType
-				}
-				if ident.Value == "int" {
-					targetType := &sema.PointerType{Base: sema.TypeInt}
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i64*\n", castReg, srcTypeStr, argReg))
-					return castReg, targetType
-				}
-				if st, ok := g.semaCtx.Structs[ident.Value]; ok {
-					targetType := &sema.PointerType{Base: st}
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %%struct.%s*\n", castReg, srcTypeStr, argReg, ident.Value))
-					return castReg, targetType
+			// パターンB: レシーバオブジェクトに対するメソッド呼び出し (builder.String(), builder.Len() 等)
+			objReg, objType := g.resolveValue(b, memExpr.Object)
+			if objType != nil {
+				_, structName := g.findStruct(objType, "")
+				if structName != "" {
+					candidates := []string{
+						"strings_" + structName + "_" + memExpr.Field.Value,
+						structName + "_" + memExpr.Field.Value,
+						"strings_" + memExpr.Field.Value,
+						memExpr.Field.Value,
+					}
+
+					var targetFn *sema.FuncType
+					for _, cand := range candidates {
+						if fn := g.lookupFunction(cand); fn != nil {
+							targetFn = fn
+							break
+						}
+					}
+
+					if targetFn != nil {
+						// emitFuncDecl の定義名に合わせてマングリング名を構築
+						emitTargetName := "strings_" + structName + "_" + memExpr.Field.Value
+
+						// 第1引数にレシーバ (objReg) を自動挿入
+						args := []string{fmt.Sprintf("%s %s", objType.LLVMType(), objReg)}
+						for i, arg := range e.Args {
+							argReg, argType := g.resolveValue(b, arg)
+							t := argType
+							if i+1 < len(targetFn.ParamTypes) {
+								t = targetFn.ParamTypes[i+1]
+							}
+							args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), argReg))
+						}
+
+						retType := "void"
+						var semaRet sema.Type = sema.TypeVoid
+						if len(targetFn.ReturnTypes) == 1 {
+							retType = targetFn.ReturnTypes[0].LLVMType()
+							semaRet = targetFn.ReturnTypes[0]
+						}
+
+						if retType == "void" {
+							b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitTargetName, strings.Join(args, ", ")))
+							return "0", sema.TypeVoid
+						}
+
+						callReg := g.nextReg()
+						// targetFn.Name ではなく emitTargetName を呼び出す
+						b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitTargetName, strings.Join(args, ", ")))
+						return callReg, semaRet
+					}
 				}
 			}
 		}
 
-		// 通常の単一値返却関数の呼び出し
+		// 4. 通常の識別子関数呼び出し (malloc, free, assert, strlen 等)
 		if fnIdent, ok := e.Function.(*ast.Identifier); ok {
-			targetFn, exists := g.semaCtx.Functions[fnIdent.Value]
-			if exists {
+			targetFn := g.lookupFunction(fnIdent.Value)
+			if targetFn != nil {
 				args := []string{}
 				for i, arg := range e.Args {
 					argReg, argType := g.resolveValue(b, arg)
@@ -979,18 +1290,23 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				}
 
 				callReg := g.nextReg()
+				emitFnName := targetFn.Name
+				if targetFn.IsExtern {
+					emitFnName = fnIdent.Value
+				}
+
 				if retType == "void" {
 					if len(sigParamTypes) > 0 {
-						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), targetFn.Name, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
 					} else {
-						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
 					}
 					return "0", sema.TypeVoid
 				} else {
 					if len(sigParamTypes) > 0 {
-						b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), targetFn.Name, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
 					} else {
-						b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, targetFn.Name, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
 					}
 					return callReg, semaRet
 				}
@@ -998,6 +1314,22 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		}
 
 	case *ast.PrefixExpr:
+		// 単項アドレス演算子 (&)
+		if e.Operator == "&" {
+			if idxExpr, ok := e.Right.(*ast.IndexExpr); ok {
+				baseReg, _ := g.resolveValue(b, idxExpr.Left)
+				idxReg, _ := g.resolveValue(b, idxExpr.Index)
+				gepReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", gepReg, baseReg, idxReg))
+				return gepReg, &sema.PointerType{Base: sema.TypeByte}
+			}
+			if ident, ok := e.Right.(*ast.Identifier); ok {
+				if sym, exists := g.symbols[ident.Value]; exists {
+					return sym.LLVMName, &sema.PointerType{Base: sym.Type}
+				}
+			}
+		}
+
 		rightReg, rightType := g.resolveValue(b, e.Right)
 		resReg := g.nextReg()
 
@@ -1011,7 +1343,7 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			} else {
 				b.WriteString(fmt.Sprintf("  %s = icmp eq %s %s, 0\n", resReg, rightType.LLVMType(), rightReg))
 			}
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		}
 
 	case *ast.BinaryExpr:
@@ -1036,7 +1368,7 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			} else {
 				b.WriteString(fmt.Sprintf("  %s = or i1 %s, %s\n", resReg, lBool, rBool))
 			}
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		}
 
 		switch e.Operator {
@@ -1058,16 +1390,16 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return resReg, sema.TypeInt
 		case "<":
 			b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		case ">":
 			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		case "<=":
 			b.WriteString(fmt.Sprintf("  %s = icmp sle i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		case ">=":
 			b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		case "==":
 			cmpType := "i64"
 			if lhsType != nil && lhsType.LLVMType() != "" && lhs != "null" {
@@ -1076,7 +1408,7 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				cmpType = rhsType.LLVMType()
 			}
 			b.WriteString(fmt.Sprintf("  %s = icmp eq %s %s, %s\n", resReg, cmpType, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		case "!=":
 			cmpType := "i64"
 			if lhsType != nil && lhsType.LLVMType() != "" && lhs != "null" {
@@ -1085,8 +1417,37 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				cmpType = rhsType.LLVMType()
 			}
 			b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, %s\n", resReg, cmpType, lhs, rhs))
-			return resReg, &sema.BasicType{Name: "bool", LLVM: "i1"}
+			return resReg, sema.TypeBool
 		}
 	}
 	return "0", sema.TypeInt
+}
+
+func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
+	// 1. 完全一致
+	if fn, ok := g.semaCtx.Functions[name]; ok {
+		return fn
+	}
+
+	// 2. サフィックス一致 (例: "malloc" -> "strings_malloc", "Len" -> "strings_Len")
+	for fnName, fn := range g.semaCtx.Functions {
+		if strings.HasSuffix(fnName, "_"+name) || strings.HasSuffix(fnName, name) {
+			return fn
+		}
+	}
+
+	// 3. マングリングされたメソッド名からの逆引き (例: "strings_Builder_Len" -> "strings_Len" または "Len")
+	parts := strings.Split(name, "_")
+	if len(parts) >= 3 {
+		baseMethod := parts[len(parts)-1]
+		pkgName := parts[0]
+		if fn, ok := g.semaCtx.Functions[pkgName+"_"+baseMethod]; ok {
+			return fn
+		}
+		if fn, ok := g.semaCtx.Functions[baseMethod]; ok {
+			return fn
+		}
+	}
+
+	return nil
 }

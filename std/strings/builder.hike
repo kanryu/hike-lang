@@ -1,0 +1,77 @@
+package strings
+
+// C標準関数の宣言
+func strlen(s *byte) int
+func memcpy(dest *byte, src *byte, n int) *byte
+func malloc(size int) *byte
+func free(ptr *byte)
+
+type Builder struct {
+	buf *byte
+	len int
+	cap int
+}
+
+// NewBuilder: 初期キャパシティを指定して Builder を作成します
+func NewBuilder(initCap int) *Builder {
+	if initCap <= 0 {
+		initCap = 32
+	}
+	b := (*Builder)(malloc(24)) // 構造体サイズ 24バイト (buf:8, len:8, cap:8)
+	b.buf = malloc(initCap)
+	b.len = 0
+	b.cap = initCap
+	b.buf[0] = 0
+	return b
+}
+
+// WriteString: 文字列をバッファ末尾に追記します
+func (b *Builder) WriteString(s *byte) {
+	if s == nil {
+		return
+	}
+	addLen := strlen(s)
+	if addLen == 0 {
+		return
+	}
+
+	// キャパシティ不足時は2倍に拡張
+	needCap := b.len + addLen + 1
+	if needCap > b.cap {
+		newCap := b.cap * 2
+		for newCap < needCap {
+			newCap = newCap * 2
+		}
+		newBuf := malloc(newCap)
+		if b.len > 0 {
+			memcpy(newBuf, b.buf, b.len)
+		}
+		free(b.buf)
+		b.buf = newBuf
+		b.cap = newCap
+	}
+
+	// データをコピーして末尾をヌル終端
+	memcpy(&b.buf[b.len], s, addLen)
+	b.len = b.len + addLen
+	b.buf[b.len] = 0
+}
+
+// String: 現在蓄積されている文字列ポインタを返します
+func (b *Builder) String() *byte {
+	return b.buf
+}
+
+// Len: 現在の文字列長を返します
+func (b *Builder) Len() int {
+	return b.len
+}
+
+// Free: バッファを破棄してメモリを解放します
+func (b *Builder) Free() {
+	if b.buf != nil {
+		free(b.buf)
+		b.buf = nil
+	}
+	free((*byte)(b))
+}

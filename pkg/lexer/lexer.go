@@ -138,7 +138,7 @@ func (l *Lexer) NextToken() token.Token {
 			l.readChar()
 			tok = token.Token{Type: token.LAND, Literal: string(ch) + string(l.ch), Line: line, Col: col}
 		} else {
-			tok = token.Token{Type: token.ILLEGAL, Literal: string(l.ch), Line: line, Col: col}
+			tok = token.Token{Type: token.AMPERSAND, Literal: string(l.ch), Line: line, Col: col}
 		}
 	case '|':
 		if l.peekChar() == '|' {

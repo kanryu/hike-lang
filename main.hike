@@ -2,22 +2,92 @@ package main
 
 import (
 	"std/fmt"
-	"std/os"
+	"std/strings"
 )
 
+func assert(cond bool, testName *byte) {
+	if cond {
+		fmt.PrintStr("[PASS] ")
+		fmt.PrintLn(testName)
+	} else {
+		fmt.PrintStr("[FAIL] ")
+		fmt.PrintLn(testName)
+	}
+}
+
 func main() int {
-	fmt.PrintLn("=== Test #13: Standard Library Import Test ===")
+	fmt.PrintLn("=== Running std/strings Unit Tests ===")
 
-	// os パッケージによる動的メモリ確保 (i8* を取得)
-	buf := os.Alloc(64)
-	fmt.PrintLn("Allocated 64 bytes memory via std/os.")
+	// 1. strings.Len のテスト
+	s1 := "HikeLang"
+	assert(strings.Len(s1) == 8, "strings.Len: valid string")
+	assert(strings.Len(nil) == 0, "strings.Len: nil string")
+	assert(strings.Len("") == 0, "strings.Len: empty string")
 
-	// os パッケージによるメモリ解放
-	os.Free(buf)
-	fmt.PrintLn("Memory freed successfully via std/os.")
+	// 2. strings.Equal のテスト
+	assert(strings.Equal("compiler", "compiler") == true, "strings.Equal: identical strings")
+	assert(strings.Equal("compiler", "compileX") == false, "strings.Equal: different contents")
+	assert(strings.Equal("short", "longer_string") == false, "strings.Equal: different length")
+	assert(strings.Equal(nil, nil) == true, "strings.Equal: both nil")
+	assert(strings.Equal("test", nil) == false, "strings.Equal: one nil")
 
-	fmt.PrintInt(13)
+	// 3. strings.HasPrefix のテスト
+	target := "package main"
+	assert(strings.HasPrefix(target, "package") == true, "strings.HasPrefix: match")
+	assert(strings.HasPrefix(target, "import") == false, "strings.HasPrefix: mismatch")
+	assert(strings.HasPrefix(target, "") == true, "strings.HasPrefix: empty prefix")
+	assert(strings.HasPrefix("short", "longer_prefix") == false, "strings.HasPrefix: prefix longer than string")
+	assert(strings.HasPrefix(nil, "pkg") == false, "strings.HasPrefix: nil string")
 
-	// テスト#13成功コード 13 を返却
-	return 13
+	// 4. strings.HasSuffix のテスト
+	filename := "main.hike"
+	assert(strings.HasSuffix(filename, ".hike") == true, "strings.HasSuffix: match")
+	assert(strings.HasSuffix(filename, ".go") == false, "strings.HasSuffix: mismatch")
+	assert(strings.HasSuffix(filename, "") == true, "strings.HasSuffix: empty suffix")
+	assert(strings.HasSuffix("file", "long_suffix_file") == false, "strings.HasSuffix: suffix longer than string")
+	assert(strings.HasSuffix(nil, ".hike") == false, "strings.HasSuffix: nil string")
+
+	// 5. strings.Index のテスト
+	haystack := "abcdefg_hike_xyz"
+	assert(strings.Index(haystack, "hike") == 8, "strings.Index: found in middle")
+	assert(strings.Index(haystack, "abc") == 0, "strings.Index: found at start")
+	assert(strings.Index(haystack, "notfound") == -1, "strings.Index: not found")
+	assert(strings.Index(haystack, "") == 0, "strings.Index: empty needle")
+	assert(strings.Index(nil, "abc") == -1, "strings.Index: nil haystack")
+
+	// 6. strings.Contains のテスト
+	assert(strings.Contains(haystack, "hike") == true, "strings.Contains: exists")
+	assert(strings.Contains(haystack, "rust") == false, "strings.Contains: not exists")
+	assert(strings.Contains(haystack, "") == true, "strings.Contains: empty query")
+
+	// 7〜11. strings.Builder の全メソッドテスト
+	fmt.PrintLn("--- Testing strings.Builder ---")
+
+	// 7. strings.NewBuilder (初期容量小さめで確保し、拡張処理も誘発させる)
+	builder := strings.NewBuilder(8)
+	assert(builder != nil, "strings.NewBuilder: initialization")
+
+	// 8. builder.WriteString
+	builder.WriteString("struct ")
+	builder.WriteString("Token")
+	builder.WriteString(" { Type: int }") // 8バイトを大幅に超えて自動拡張（Realloc）が走る
+
+	// 9. builder.Len
+	expectedLen := strings.Len("struct Token { Type: int }")
+	assert(builder.Len() == expectedLen, "builder.Len: matches accumulated content length")
+
+	// 10. builder.String
+	builtStr := builder.String()
+	assert(strings.Equal(builtStr, "struct Token { Type: int }") == true, "builder.String: matches expected string")
+
+	// 追記テスト
+	builder.WriteString(" // end")
+	assert(strings.HasSuffix(builder.String(), "// end") == true, "builder.WriteString: append after resize")
+
+	// 11. builder.Free
+	builder.Free()
+	fmt.PrintLn("[PASS] builder.Free: memory deallocated successfully")
+
+	fmt.PrintLn("=== All std/strings Unit Tests Completed ===")
+	return 0
 }

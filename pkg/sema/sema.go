@@ -25,6 +25,7 @@ func (t *BasicType) LLVMType() string { return t.LLVM }
 var (
 	TypeInt   = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
 	TypeByte  = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
+	TypeBool  = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"} // 追加
 	TypeError = &BasicType{Name: "error", ByteSize: 8, LLVM: "i64"}
 	TypeVoid  = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
@@ -199,6 +200,9 @@ func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
 		}
 		if t.Name.Value == "byte" {
 			return TypeByte
+		}
+		if t.Name.Value == "bool" { // 追加
+			return TypeBool
 		}
 		if t.Name.Value == "error" {
 			return TypeError

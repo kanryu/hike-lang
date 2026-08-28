@@ -18,8 +18,9 @@ const (
 	SLASH    TokenType = "/"
 	NOT      TokenType = "!"
 
-	LAND TokenType = "&&"
-	LOR  TokenType = "||"
+	LAND      TokenType = "&&"
+	AMPERSAND TokenType = "&" // アドレス演算子 / ビットAND用に追加
+	LOR       TokenType = "||"
 
 	EQ  TokenType = "=="
 	NEQ TokenType = "!="

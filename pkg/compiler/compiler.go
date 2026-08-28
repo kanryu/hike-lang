@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/codegen"
@@ -22,17 +23,21 @@ func New() *Compiler {
 	}
 }
 
+// pkg/compiler/compiler.go 内の parseFile
 func (c *Compiler) parseFile(path string) (*ast.Program, error) {
-	data, err := os.ReadFile(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file %s: %w", path, err)
+		return nil, err
 	}
-	l := lexer.New(string(data))
+
+	l := lexer.New(string(src))
 	p := parser.New(l)
 	prog := p.ParseProgram()
-	if prog == nil {
-		return nil, fmt.Errorf("failed to parse file: %s", path)
+
+	if len(p.Errors()) > 0 {
+		return nil, fmt.Errorf("parse errors in %s:\n%s", path, strings.Join(p.Errors(), "\n"))
 	}
+
 	return prog, nil
 }
 
