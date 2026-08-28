@@ -26,10 +26,16 @@ type TypeExpr interface {
 	Node
 	typeExprNode()
 }
+type ImportDecl struct {
+	Path string
+}
 
-// プログラム全体ルートノード
+func (i *ImportDecl) declNode() {}
+
+// Program 構造体に Imports を追加
 type Program struct {
-	Package *Identifier
+	Package string
+	Imports []*ImportDecl
 	Decls   []Decl
 }
 

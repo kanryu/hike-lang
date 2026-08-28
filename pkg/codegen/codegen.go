@@ -392,14 +392,37 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 }
 
 func (g *CodeGenerator) emitCallExpr(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// メソッド呼び出し: arena.Allocator() 等
+	// パッケージ関数呼び出し (fmt.PrintLn(...) など)
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {
-		if memExpr.Field.Value == "Allocator" {
-			allocReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = alloca %%struct.Allocator\n", allocReg))
-			loadAllocReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = load %%struct.Allocator, %%struct.Allocator* %s\n", loadAllocReg, allocReg))
-			return loadAllocReg, &sema.BasicType{Name: "mem.Allocator", LLVM: "%struct.Allocator"}
+		if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
+			targetFnName := pkgIdent.Value + "_" + memExpr.Field.Value
+			if fnType, exists := g.semaCtx.Functions[targetFnName]; exists {
+				args := []string{}
+				for i, arg := range call.Args {
+					valReg, valType := g.resolveValue(b, arg)
+					t := valType
+					if i < len(fnType.ParamTypes) {
+						t = fnType.ParamTypes[i]
+					}
+					args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), valReg))
+				}
+
+				retType := "void"
+				var actualRetType sema.Type = sema.TypeVoid
+				if len(fnType.ReturnTypes) == 1 {
+					retType = fnType.ReturnTypes[0].LLVMType()
+					actualRetType = fnType.ReturnTypes[0]
+				}
+
+				if retType == "void" {
+					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFnName, strings.Join(args, ", ")))
+					return "", sema.TypeVoid
+				}
+
+				retReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", retReg, retType, targetFnName, strings.Join(args, ", ")))
+				return retReg, actualRetType
+			}
 		}
 	}
 
@@ -866,7 +889,41 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		return loadReg, fieldType
 
 	case *ast.CallExpr:
-		// ポインタ型キャスト (*Lexer)(ptr) / (*Token)(ptr) / (*byte)(ptr) の処理
+		// パッケージ関数呼び出し (os.Alloc(...) など)
+		if memExpr, ok := e.Function.(*ast.MemberExpr); ok {
+			if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
+				targetFnName := pkgIdent.Value + "_" + memExpr.Field.Value
+				if targetFn, exists := g.semaCtx.Functions[targetFnName]; exists {
+					args := []string{}
+					for i, arg := range e.Args {
+						argReg, argType := g.resolveValue(b, arg)
+						t := argType
+						if i < len(targetFn.ParamTypes) {
+							t = targetFn.ParamTypes[i]
+						}
+						args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), argReg))
+					}
+
+					retType := "void"
+					var semaRet sema.Type = sema.TypeVoid
+					if len(targetFn.ReturnTypes) == 1 {
+						retType = targetFn.ReturnTypes[0].LLVMType()
+						semaRet = targetFn.ReturnTypes[0]
+					}
+
+					if retType == "void" {
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
+						return "0", sema.TypeVoid
+					}
+
+					callReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, targetFn.Name, strings.Join(args, ", ")))
+					return callReg, semaRet
+				}
+			}
+		}
+
+		// 2. 型キャスト: (*byte)(ptr), (*Arena)(ptr) 等
 		if pref, ok := e.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 			if ident, ok := pref.Right.(*ast.Identifier); ok {
 				argReg, argType := g.resolveValue(b, e.Args[0])
@@ -875,19 +932,20 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				if argType != nil && argType.LLVMType() != "" {
 					srcTypeStr = argType.LLVMType()
 				}
-
+				if ident.Value == "byte" {
+					targetType := &sema.PointerType{Base: sema.TypeByte}
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castReg, srcTypeStr, argReg))
+					return castReg, targetType
+				}
+				if ident.Value == "int" {
+					targetType := &sema.PointerType{Base: sema.TypeInt}
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i64*\n", castReg, srcTypeStr, argReg))
+					return castReg, targetType
+				}
 				if st, ok := g.semaCtx.Structs[ident.Value]; ok {
 					targetType := &sema.PointerType{Base: st}
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %%struct.%s*\n",
-						castReg, srcTypeStr, argReg, ident.Value))
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %%struct.%s*\n", castReg, srcTypeStr, argReg, ident.Value))
 					return castReg, targetType
-				} else if ident.Value == "byte" {
-					if srcTypeStr == "i8*" {
-						return argReg, &sema.PointerType{Base: sema.TypeByte}
-					}
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n",
-						castReg, srcTypeStr, argReg))
-					return castReg, &sema.PointerType{Base: sema.TypeByte}
 				}
 			}
 		}

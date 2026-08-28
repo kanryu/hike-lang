@@ -150,34 +150,51 @@ func (p *Parser) curPrecedence() int {
 	}
 	return LOWEST
 }
-
 func (p *Parser) ParseProgram() *ast.Program {
-	prog := &ast.Program{Decls: []ast.Decl{}}
+	prog := &ast.Program{
+		Imports: []*ast.ImportDecl{},
+		Decls:   []ast.Decl{},
+	}
 
-	for !p.curTokenIs(token.EOF) {
-		switch p.curToken.Type {
-		case token.PACKAGE:
+	// 1. package 句の解析
+	if p.curToken.Type == token.PACKAGE {
+		p.nextToken()
+		if p.curToken.Type == token.IDENT {
+			prog.Package = p.curToken.Literal
 			p.nextToken()
-			prog.Package = p.parseIdentifier()
+		}
+	}
+
+	// 2. import 句の解析
+	for p.curToken.Type == token.IMPORT {
+		p.nextToken()
+		if p.curToken.Type == token.LPAREN {
 			p.nextToken()
-		case token.IMPORT:
-			p.nextToken()
-			p.nextToken()
-		case token.TYPE:
-			decl := p.parseTypeDecl()
-			if decl != nil {
-				prog.Decls = append(prog.Decls, decl)
+			for p.curToken.Type != token.RPAREN && p.curToken.Type != token.EOF {
+				if p.curToken.Type == token.STRING {
+					prog.Imports = append(prog.Imports, &ast.ImportDecl{Path: p.curToken.Literal})
+					p.nextToken()
+				}
+				if p.curToken.Type == token.SEMICOLON {
+					p.nextToken()
+				}
 			}
-		case token.FUNC:
-			decl := p.parseFuncDecl()
-			if decl != nil {
-				prog.Decls = append(prog.Decls, decl)
+			if p.curToken.Type == token.RPAREN {
+				p.nextToken()
 			}
-		case token.SEMICOLON:
+		} else if p.curToken.Type == token.STRING {
+			prog.Imports = append(prog.Imports, &ast.ImportDecl{Path: p.curToken.Literal})
 			p.nextToken()
-		default:
-			p.errors = append(p.errors, fmt.Sprintf("[%d:%d] unexpected token at top level: %s",
-				p.curToken.Line, p.curToken.Col, p.curToken.Type))
+		}
+	}
+
+	// 3. 宣言群の解析
+	for p.curToken.Type != token.EOF {
+		decl := p.parseDecl()
+		if decl != nil {
+			prog.Decls = append(prog.Decls, decl)
+		} else {
+			// パース失敗時のみトークンを1つ進めてリカバリ
 			p.nextToken()
 		}
 	}
@@ -318,6 +335,17 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	}
 
 	return leftExp
+}
+
+func (p *Parser) parseDecl() ast.Decl {
+	switch p.curToken.Type {
+	case token.TYPE:
+		return p.parseTypeDecl()
+	case token.FUNC:
+		return p.parseFuncDecl()
+	default:
+		return nil
+	}
 }
 
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {

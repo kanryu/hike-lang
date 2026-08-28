@@ -1,0 +1,16 @@
+package fmt
+
+// C標準ライブラリの直叩き
+func printf(format *byte, ...) int
+
+func PrintStr(s *byte) {
+	printf("%s", s)
+}
+
+func PrintInt(val int) {
+	printf("%d\n", val)
+}
+
+func PrintLn(s *byte) {
+	printf("%s\n", s)
+}

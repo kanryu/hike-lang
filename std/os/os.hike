@@ -1,0 +1,18 @@
+package os
+
+// C標準ライブラリの直叩き
+func malloc(size int) *byte
+func free(ptr *byte)
+func exit(code int)
+
+func Alloc(size int) *byte {
+	return malloc(size)
+}
+
+func Free(ptr *byte) {
+	free(ptr)
+}
+
+func Exit(code int) {
+	exit(code)
+}
