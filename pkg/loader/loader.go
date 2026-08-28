@@ -85,6 +85,19 @@ func (l *Loader) loadFileRecursive(absPath string) error {
 		return fmt.Errorf("parse error in %s: %s", absPath, strings.Join(p.Errors(), "; "))
 	}
 
+	// 非mainパッケージ関数の名前マングリング (シンボル衝突の完全防止)
+	if prog.Package != "main" && prog.Package != "" {
+		for _, decl := range prog.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok {
+				if fd.Body != nil && fd.Receiver == nil {
+					if !strings.HasPrefix(fd.Name.Value, prog.Package+"_") {
+						fd.Name.Value = prog.Package + "_" + fd.Name.Value
+					}
+				}
+			}
+		}
+	}
+
 	for _, imp := range prog.Imports {
 		importPath := strings.Trim(imp.Path, "\"")
 		resolvedFiles, err := l.resolveImport(importPath)

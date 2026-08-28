@@ -95,6 +95,7 @@ func (t *NamedType) LLVMType() string {
 type Context struct {
 	Structs   map[string]*StructType
 	Functions map[string]*FuncType
+	Constants map[string]int64 // 定数テーブル
 	Errors    []string
 }
 
@@ -102,7 +103,22 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := &Context{
 		Structs:   make(map[string]*StructType),
 		Functions: make(map[string]*FuncType),
+		Constants: make(map[string]int64),
 		Errors:    []string{},
+	}
+
+	// 0. 定数宣言の登録
+	for _, decl := range prog.Decls {
+		if cd, ok := decl.(*ast.ConstDecl); ok {
+			if cd.Name != nil && cd.Value != nil {
+				if intLit, isInt := cd.Value.(*ast.IntegerLiteral); isInt {
+					ctx.Constants[cd.Name.Value] = intLit.Value
+					if prog.Package != "" && prog.Package != "main" {
+						ctx.Constants[prog.Package+"_"+cd.Name.Value] = intLit.Value
+					}
+				}
+			}
+		}
 	}
 
 	// ビルトイン Arena 構造体の登録

@@ -1,0 +1,127 @@
+package token
+
+func malloc(size int) *byte
+func free(ptr *byte)
+import "std/strings"
+
+// トークン種別定数
+const ILLEGAL = 0
+const EOF = 1
+
+// 識別子・リテラル
+const IDENT = 2
+const INT = 3
+const STRING = 4
+
+// 演算子
+const ASSIGN = 5    // =
+const PLUS = 6      // +
+const MINUS = 7     // -
+const ASTERISK = 8  // *
+const SLASH = 9     // /
+const BANG = 10     // !
+const LT = 11       // <
+const GT = 12       // >
+const EQ = 13       // ==
+const NOT_EQ = 14   // !=
+const LAND = 15     // &&
+const LOR = 16      // ||
+const DEFINE = 17   // :=
+
+// 区切り文字
+const COMMA = 18     // ,
+const SEMICOLON = 19 // ;
+const COLON = 20     // :
+const DOT = 21       // .
+const LPAREN = 22    // (
+const RPAREN = 23    // )
+const LBRACE = 24    // {
+const RBRACE = 25    // }
+const LBRACKET = 26  // [
+const RBRACKET = 27  // ]
+
+// キーワード
+const FUNCTION = 28  // func
+const TYPE = 29      // type
+const STRUCT = 30    // struct
+const RETURN = 31    // return
+const IF = 32        // if
+const ELSE = 33      // else
+const FOR = 34       // for
+const SWITCH = 35    // switch
+const CASE = 36      // case
+const DEFAULT = 37   // default
+const DEFER = 38     // defer
+const PACKAGE = 39   // package
+const IMPORT = 40    // import
+const NIL = 41       // nil
+const TRUE = 42      // true
+const FALSE = 43     // false
+
+type Token struct {
+	Type    int
+	Literal *byte
+	Line    int
+	Col     int
+}
+
+func New(tokType int, literal *byte, line int, col int) *Token {
+	tok := (*Token)(malloc(32))
+	tok.Type = tokType
+	tok.Literal = literal
+	tok.Line = line
+	tok.Col = col
+	return tok
+}
+
+func LookupIdent(ident *byte) int {
+	if strings.Equal(ident, "func") {
+		return FUNCTION
+	}
+	if strings.Equal(ident, "type") {
+		return TYPE
+	}
+	if strings.Equal(ident, "struct") {
+		return STRUCT
+	}
+	if strings.Equal(ident, "return") {
+		return RETURN
+	}
+	if strings.Equal(ident, "if") {
+		return IF
+	}
+	if strings.Equal(ident, "else") {
+		return ELSE
+	}
+	if strings.Equal(ident, "for") {
+		return FOR
+	}
+	if strings.Equal(ident, "switch") {
+		return SWITCH
+	}
+	if strings.Equal(ident, "case") {
+		return CASE
+	}
+	if strings.Equal(ident, "default") {
+		return DEFAULT
+	}
+	if strings.Equal(ident, "defer") {
+		return DEFER
+	}
+	if strings.Equal(ident, "package") {
+		return PACKAGE
+	}
+	if strings.Equal(ident, "import") {
+		return IMPORT
+	}
+	if strings.Equal(ident, "nil") {
+		return NIL
+	}
+	if strings.Equal(ident, "true") {
+		return TRUE
+	}
+	if strings.Equal(ident, "false") {
+		return FALSE
+	}
+	return IDENT
+}

@@ -19,7 +19,7 @@ const (
 	NOT      TokenType = "!"
 
 	LAND      TokenType = "&&"
-	AMPERSAND TokenType = "&" // アドレス演算子 / ビットAND用に追加
+	AMPERSAND TokenType = "&"
 	LOR       TokenType = "||"
 
 	EQ  TokenType = "=="
@@ -47,6 +47,7 @@ const (
 	TYPE    TokenType = "type"
 	STRUCT  TokenType = "struct"
 	FUNC    TokenType = "func"
+	CONST   TokenType = "const" // 追加
 	RETURN  TokenType = "return"
 	DEFER   TokenType = "defer"
 	IF      TokenType = "if"
@@ -64,6 +65,7 @@ var keywords = map[string]TokenType{
 	"type":    TYPE,
 	"struct":  STRUCT,
 	"func":    FUNC,
+	"const":   CONST, // 追加
 	"return":  RETURN,
 	"defer":   DEFER,
 	"if":      IF,

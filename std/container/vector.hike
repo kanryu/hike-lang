@@ -1,0 +1,83 @@
+package container
+
+func malloc(size int) *byte
+func free(ptr *byte)
+func memcpy(dst *byte, src *byte, n int) *byte
+
+type Vector struct {
+	data *byte
+	len  int
+	cap  int
+}
+
+func NewVector(initCap int) *Vector {
+	if initCap <= 0 {
+		initCap = 16
+	}
+	v := (*Vector)(malloc(24))
+	v.data = malloc(initCap * 8)
+	v.len = 0
+	v.cap = initCap
+	return v
+}
+
+func (v *Vector) Push(item *byte) {
+	if v == nil {
+		return
+	}
+	if v.len >= v.cap {
+		newCap := v.cap * 2
+		newBuf := malloc(newCap * 8)
+		if v.len > 0 {
+			memcpy(newBuf, v.data, v.len*8)
+		}
+		free(v.data)
+		v.data = newBuf
+		v.cap = newCap
+	}
+
+	offset := v.len * 8
+	destPtr := v.data + offset
+	itemPtr := item
+	memcpy(destPtr, (*byte)(&itemPtr), 8)
+	v.len = v.len + 1
+}
+
+func (v *Vector) Get(idx int) *byte {
+	if v == nil || idx < 0 || idx >= v.len {
+		return nil
+	}
+	offset := idx * 8
+	srcPtr := v.data + offset
+	result := (*byte)(nil)
+	memcpy((*byte)(&result), srcPtr, 8)
+	return result
+}
+
+func (v *Vector) Set(idx int, item *byte) {
+	if v == nil || idx < 0 || idx >= v.len {
+		return
+	}
+	offset := idx * 8
+	destPtr := v.data + offset
+	itemPtr := item
+	memcpy(destPtr, (*byte)(&itemPtr), 8)
+}
+
+func (v *Vector) Len() int {
+	if v == nil {
+		return 0
+	}
+	return v.len
+}
+
+func (v *Vector) Free() {
+	if v == nil {
+		return
+	}
+	if v.data != nil {
+		free(v.data)
+		v.data = nil
+	}
+	free((*byte)(v))
+}

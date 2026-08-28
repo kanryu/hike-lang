@@ -29,8 +29,8 @@ type CodeGenerator struct {
 	stringLiterals []StringConst
 	symbols        map[string]Symbol
 	deferStack     []string
-	entryAllocas   *strings.Builder // entry ブロック用のアロケーションバッファ
-	emittedFuncs   map[string]bool  // 出力済み関数シンボルの重複防止用
+	entryAllocas   *strings.Builder
+	emittedFuncs   map[string]bool
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
@@ -54,7 +54,6 @@ func (g *CodeGenerator) nextLabel(prefix string) string {
 }
 
 func escapeLLVMString(str string) (string, int) {
-	// 1. Goのエスケープシーケンスを実バイト列にデコード
 	var raw []byte
 	for i := 0; i < len(str); i++ {
 		if str[i] == '\\' && i+1 < len(str) {
@@ -85,9 +84,8 @@ func escapeLLVMString(str string) (string, int) {
 		}
 	}
 
-	length := len(raw) + 1 // ヌル終端 (+1)
+	length := len(raw) + 1
 
-	// 2. LLVM IR c"..." 形式にエスケープ
 	var sb strings.Builder
 	for _, b := range raw {
 		if b >= 32 && b <= 126 && b != '"' && b != '\\' {
@@ -125,7 +123,6 @@ func (g *CodeGenerator) Generate() string {
 	g.emitPrologue()
 
 	for _, sc := range g.stringLiterals {
-		// sc.Value は escapeLLVMString で既に完全エスケープ済み
 		g.output.WriteString(fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\", align 1\n", sc.Label, sc.Length, sc.Value))
 	}
 	g.output.WriteString("\n")
@@ -164,7 +161,6 @@ func (g *CodeGenerator) emitPrologue() {
 	}
 	g.output.WriteString("\n")
 
-	// 1. ソースコード内で定義された全構造体を最上段に出力
 	for _, st := range g.semaCtx.Structs {
 		fields := make([]string, len(st.Fields))
 		for i, f := range st.Fields {
@@ -173,7 +169,6 @@ func (g *CodeGenerator) emitPrologue() {
 		g.output.WriteString(fmt.Sprintf("%%struct.%s = type { %s }\n", st.Name, strings.Join(fields, ", ")))
 	}
 
-	// 2. ユーザーコードで未定義の場合のみビルトイン構造体をフォールバック出力
 	if _, ok := g.semaCtx.Structs["Arena"]; !ok {
 		g.output.WriteString("%struct.Arena = type { i8*, i64, i64 }\n")
 	}
@@ -182,7 +177,6 @@ func (g *CodeGenerator) emitPrologue() {
 	}
 	g.output.WriteString("\n")
 
-	// 3. ビルトイン関数（calloc で 0 クリアして確保）
 	g.output.WriteString("define void @hike_arena_init(%struct.Arena* %a, i64 %size) {\n")
 	g.output.WriteString("  %buf = call i8* @calloc(i64 1, i64 %size)\n")
 	g.output.WriteString("  %pbuf = getelementptr inbounds %struct.Arena, %struct.Arena* %a, i32 0, i32 0\n")
@@ -222,7 +216,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 
 	g.symbols = make(map[string]Symbol)
 
-	// 1. レシーバの解析と関数名マングリング (シンボル重複衝突の防止)
 	funcMangledName := fn.Name.Value
 	var recvType sema.Type = nil
 	var recvTypeName string = ""
@@ -254,13 +247,11 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		}
 	}
 
-	// --- 重複出力防止ガード ---
 	if g.emittedFuncs[funcMangledName] {
 		return
 	}
 	g.emittedFuncs[funcMangledName] = true
 
-	// 2. 戻り値の型の解決 (semaCtx または AST の ReturnTypes から判定)
 	fnMeta, exists := g.semaCtx.Functions[fn.Name.Value]
 	if !exists && fn.Receiver != nil {
 		fnMeta, exists = g.semaCtx.Functions[funcMangledName]
@@ -276,7 +267,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		}
 		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 	} else if len(fn.ReturnTypes) == 1 {
-		// AST からのフォールバック判定
 		if pt, ok := fn.ReturnTypes[0].(*ast.PointerType); ok {
 			if named, ok := pt.Base.(*ast.NamedType); ok {
 				if named.Name.Value == "byte" {
@@ -300,7 +290,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		retType = "i32"
 	}
 
-	// 3. 引数リストの構築 (レシーバが存在する場合は第1引数へ挿入)
 	params := []string{}
 	if fn.Receiver != nil {
 		params = append(params, fmt.Sprintf("%s %%%s_arg", recvType.LLVMType(), fn.Receiver.Name.Value))
@@ -326,7 +315,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	var bodyBuilder strings.Builder
 	g.entryAllocas = &entryAllocas
 
-	// 4. 引数変数のローカルスタック割り当てと初期化 (alloca & store)
 	if fn.Receiver != nil {
 		recvName := fn.Receiver.Name.Value
 		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", recvName, recvType.LLVMType()))
@@ -361,12 +349,10 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		}
 	}
 
-	// 5. 関数本体の文を生成
 	for _, s := range fn.Body.Statements {
 		g.emitStatement(&bodyBuilder, s, funcMangledName)
 	}
 
-	// 6. デフォルトリターンの出力
 	if retType == "void" {
 		bodyBuilder.WriteString("  ret void\n")
 	} else if retType == "i32" {
@@ -381,7 +367,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
 	}
 
-	// 7. LLVM IR 関数定義を出力
 	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, funcMangledName, strings.Join(params, ", ")))
 	b.WriteString(entryAllocas.String())
 	b.WriteString(bodyBuilder.String())
@@ -462,7 +447,7 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 	valReg, _ := g.resolveValue(b, s.Value)
 
 	lblEnd := g.nextLabel("switch.end")
-	lblDefault := lblEnd // default節がない場合はそのまま end へジャンプ
+	lblDefault := lblEnd
 
 	type caseTarget struct {
 		valReg string
@@ -476,7 +461,6 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 	for _, c := range s.Cases {
 		lblCase := g.nextLabel("switch.case")
 		if len(c.Values) == 0 {
-			// default
 			lblDefault = lblCase
 			defaultBody = c.Body
 		} else {
@@ -491,14 +475,12 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 		}
 	}
 
-	// 1. switch 分岐テーブルを出力
 	b.WriteString(fmt.Sprintf("  switch i64 %s, label %%%s [\n", valReg, lblDefault))
 	for _, t := range targets {
 		b.WriteString(fmt.Sprintf("    i64 %s, label %%%s\n", t.valReg, t.label))
 	}
 	b.WriteString("  ]\n\n")
 
-	// 2. 各 case のブロック本体を出力（重複ラベルの出力抑止）
 	emittedLabels := make(map[string]bool)
 
 	for _, t := range targets {
@@ -520,7 +502,6 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 		}
 	}
 
-	// 3. default ブロックの出力
 	if len(defaultBody) > 0 && !emittedLabels[lblDefault] {
 		b.WriteString(fmt.Sprintf("%s:\n", lblDefault))
 		hasTerminator := false
@@ -550,14 +531,11 @@ func (g *CodeGenerator) findStructByName(name string) (*sema.StructType, string)
 	return nil, ""
 }
 
-// findStruct を厳密化（誤爆フォールバックを排除）
 func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructType, string) {
 	if t != nil {
-		// 1. StructType 直接
 		if st, ok := t.(*sema.StructType); ok {
 			return st, st.Name
 		}
-		// 2. ポインタ型を剥がして判定
 		if ptr, ok := t.(*sema.PointerType); ok {
 			if st, ok := ptr.Base.(*sema.StructType); ok {
 				return st, st.Name
@@ -568,7 +546,6 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 				}
 			}
 		}
-		// 3. LLVMType 文字列から構造体名を逆引き (%struct.Builder* -> Builder)
 		llvmStr := t.LLVMType()
 		cleanName := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(llvmStr, "*", ""), "%struct.", ""))
 		if st, name := g.findStructByName(cleanName); st != nil {
@@ -576,7 +553,6 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 		}
 	}
 
-	// 4. フォールバック: 対象フィールドを持つ構造体を semaCtx から探索
 	if fieldName != "" {
 		for _, st := range g.semaCtx.Structs {
 			for _, f := range st.Fields {
@@ -592,7 +568,6 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 	if len(s.Left) == 1 && len(s.Right) == 1 {
-		// インデックス代入: buf[i] = val
 		if lhsIndex, isLhsIndex := s.Left[0].(*ast.IndexExpr); isLhsIndex {
 			baseReg, _ := g.resolveValue(b, lhsIndex.Left)
 			idxReg, _ := g.resolveValue(b, lhsIndex.Index)
@@ -606,7 +581,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
-		// 変数宣言または代入
 		if lhsIdent, isLhsIdent := s.Left[0].(*ast.Identifier); isLhsIdent {
 			if call, ok := s.Right[0].(*ast.CallExpr); ok {
 				if memExpr, ok := call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "NewArena" {
@@ -619,7 +593,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			valReg, valType := g.resolveValue(b, s.Right[0])
 			if _, exists := g.symbols[lhsIdent.Value]; !exists {
-				// alloca を entry ブロックへ集約
 				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", lhsIdent.Value, valType.LLVMType()))
 				g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: valType}
 			}
@@ -628,7 +601,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
-		// 構造体フィールド代入: b.buf = ...
 		if lhsMember, isLhsMember := s.Left[0].(*ast.MemberExpr); isLhsMember {
 			objReg, objType := g.resolveValue(b, lhsMember.Object)
 			st, structName := g.findStruct(objType, lhsMember.Field.Value)
@@ -651,7 +623,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			valReg, valType := g.resolveValue(b, s.Right[0])
 
-			// 型キャストの整合性 (ポインタ型フィールドへの安全な代入)
 			valToStore := valReg
 			if strings.HasSuffix(fieldType.LLVMType(), "*") {
 				if valReg == "0" || valReg == "null" || valReg == "" {
@@ -676,7 +647,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		}
 	}
 
-	// 多値代入: u, err := ...
 	if len(s.Left) >= 2 && len(s.Right) == 1 {
 		if call, ok := s.Right[0].(*ast.CallExpr); ok {
 			var targetTypeName string
@@ -688,7 +658,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				}
 			}
 
-			// mem.Alloc[T](alloc) の場合
 			if targetTypeName != "" {
 				st := g.semaCtx.Structs[targetTypeName]
 				v1 := s.Left[0].(*ast.Identifier).Value
@@ -722,14 +691,12 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 				b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %%struct.%s*\n", ptrReg, rawPtr, st.Name))
 
-				// v1 が "_" でない場合のみメモリ確保・代入
 				if v1 != "_" {
 					b.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.%s*\n", v1, st.Name))
 					b.WriteString(fmt.Sprintf("  store %%struct.%s* %s, %%struct.%s** %%%s\n", st.Name, ptrReg, st.Name, v1))
 					g.symbols[v1] = Symbol{Name: v1, LLVMName: "%" + v1, Type: &sema.PointerType{Base: st}}
 				}
 
-				// v2 が "_" でない場合のみメモリ確保・代入
 				if v2 != "_" {
 					b.WriteString(fmt.Sprintf("  %%%s = alloca i64\n", v2))
 					b.WriteString(fmt.Sprintf("  store i64 0, i64* %%%s\n", v2))
@@ -738,11 +705,9 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				return
 			}
 
-			// 汎用多値返却関数の呼び出し
 			if fnIdent, isIdent := call.Function.(*ast.Identifier); isIdent {
 				targetFn := g.semaCtx.Functions[fnIdent.Value]
 
-				// 引数の評価
 				args := []string{}
 				sigTypes := []string{}
 				for i, arg := range call.Args {
@@ -814,7 +779,6 @@ func (g *CodeGenerator) emitIfStmtWithEnd(b *strings.Builder, s *ast.IfStmt, cur
 		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condBool, lblThen, lblEnd))
 	}
 
-	// then ブロック
 	b.WriteString(fmt.Sprintf("%s:\n", lblThen))
 	hasTerminatorThen := false
 	for _, stmt := range s.Consequence.Statements {
@@ -827,7 +791,6 @@ func (g *CodeGenerator) emitIfStmtWithEnd(b *strings.Builder, s *ast.IfStmt, cur
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
 	}
 
-	// else / else if ブロック
 	if s.Alternative != nil {
 		b.WriteString(fmt.Sprintf("%s:\n", lblElse))
 		switch alt := s.Alternative.(type) {
@@ -843,12 +806,10 @@ func (g *CodeGenerator) emitIfStmtWithEnd(b *strings.Builder, s *ast.IfStmt, cur
 				b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
 			}
 		case *ast.IfStmt:
-			// else if の場合は外側の lblEnd を引き継ぐ
 			g.emitIfStmtWithEnd(b, alt, currentFn, lblEnd)
 		}
 	}
 
-	// 最も外側の if のみ終了ラベルを出力
 	if isOuter {
 		b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
 	}
@@ -859,7 +820,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		b.WriteString(fmt.Sprintf("  %s\n", deferCall))
 	}
 
-	// main 関数の場合
 	if currentFn == "main" {
 		if len(s.Values) == 1 {
 			valReg, valType := g.resolveValue(b, s.Values[0])
@@ -874,13 +834,11 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 
 	fnType := g.lookupFunction(currentFn)
 
-	// 1. 引数なし return (void)
 	if len(s.Values) == 0 {
 		b.WriteString("  ret void\n")
 		return
 	}
 
-	// 2. 単一値返却
 	if len(s.Values) == 1 {
 		valReg, valType := g.resolveValue(b, s.Values[0])
 
@@ -894,7 +852,13 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			return
 		}
 
-		// 型の整合性チェック (i1 <-> i64 の自動変換)
+		// ポインタ型戻り値への安全な null ガード
+		if strings.HasSuffix(targetTypeStr, "*") {
+			if valReg == "0" || valReg == "null" || valReg == "" {
+				valReg = "null"
+			}
+		}
+
 		if valType != nil && valType.LLVMType() != targetTypeStr {
 			if targetTypeStr == "i64" && valType.LLVMType() == "i1" {
 				zextReg := g.nextReg()
@@ -911,7 +875,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		return
 	}
 
-	// 3. 多値返却
 	var types []string
 	if fnType != nil && len(fnType.ReturnTypes) == len(s.Values) {
 		for _, t := range fnType.ReturnTypes {
@@ -930,6 +893,9 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		targetTypeStr := types[i]
 		valReg, _ := g.resolveValue(b, valExpr)
 		if _, isNil := valExpr.(*ast.NilLiteral); isNil {
+			valReg = "null"
+		}
+		if strings.HasSuffix(targetTypeStr, "*") && (valReg == "0" || valReg == "null") {
 			valReg = "null"
 		}
 		nextTuple := g.nextReg()
@@ -957,13 +923,47 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* %s, i64 0, i64 0\n", ptrReg, length, length, label))
 		return ptrReg, &sema.PointerType{Base: sema.TypeByte}
 
+	case *ast.PrefixExpr:
+		if e.Operator == "&" {
+			if ident, ok := e.Right.(*ast.Identifier); ok {
+				if sym, exists := g.symbols[ident.Value]; exists {
+					return sym.LLVMName, &sema.PointerType{Base: sym.Type}
+				}
+			}
+		} else if e.Operator == "*" {
+			valReg, valType := g.resolveValue(b, e.Right)
+			if ptrType, ok := valType.(*sema.PointerType); ok {
+				loadReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, ptrType.Base.LLVMType(), ptrType.Base.LLVMType(), valReg))
+				return loadReg, ptrType.Base
+			}
+		} else if e.Operator == "!" {
+			valReg, valType := g.resolveValue(b, e.Right)
+			bReg := valReg
+			if valType != nil && valType.LLVMType() != "i1" {
+				bReg = g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, 0\n", bReg, valType.LLVMType(), valReg))
+			}
+			notReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", notReg, bReg))
+			return notReg, sema.TypeBool
+		} else if e.Operator == "-" {
+			valReg, _ := g.resolveValue(b, e.Right)
+			negReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = sub i64 0, %s\n", negReg, valReg))
+			return negReg, sema.TypeInt
+		}
+
 	case *ast.Identifier:
-		// ブール定数リテラルの解決
 		if e.Value == "true" {
 			return "true", sema.TypeBool
 		}
 		if e.Value == "false" {
 			return "false", sema.TypeBool
+		}
+
+		if val, ok := g.semaCtx.Constants[e.Value]; ok {
+			return fmt.Sprintf("%d", val), sema.TypeInt
 		}
 
 		sym, exists := g.symbols[e.Value]
@@ -974,19 +974,21 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
 		return loadReg, sym.Type
 
-	case *ast.IndexExpr:
-		baseReg, _ := g.resolveValue(b, e.Left)
-		idxReg, _ := g.resolveValue(b, e.Index)
-		gepReg := g.nextReg()
-		loadReg := g.nextReg()
-		extReg := g.nextReg()
-
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", gepReg, baseReg, idxReg))
-		b.WriteString(fmt.Sprintf("  %s = load i8, i8* %s\n", loadReg, gepReg))
-		b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", extReg, loadReg))
-		return extReg, sema.TypeInt
-
 	case *ast.MemberExpr:
+		if pkgIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
+			if _, isVar := g.symbols[pkgIdent.Value]; !isVar {
+				candNames := []string{
+					pkgIdent.Value + "_" + e.Field.Value,
+					e.Field.Value,
+				}
+				for _, cand := range candNames {
+					if val, ok := g.semaCtx.Constants[cand]; ok {
+						return fmt.Sprintf("%d", val), sema.TypeInt
+					}
+				}
+			}
+		}
+
 		objReg, objType := g.resolveValue(b, e.Object)
 		st, structName := g.findStruct(objType, e.Field.Value)
 		if st == nil {
@@ -1013,6 +1015,18 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n",
 			loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
 		return loadReg, fieldType
+
+	case *ast.IndexExpr:
+		baseReg, _ := g.resolveValue(b, e.Left)
+		idxReg, _ := g.resolveValue(b, e.Index)
+		gepReg := g.nextReg()
+		loadReg := g.nextReg()
+		extReg := g.nextReg()
+
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", gepReg, baseReg, idxReg))
+		b.WriteString(fmt.Sprintf("  %s = load i8, i8* %s\n", loadReg, gepReg))
+		b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", extReg, loadReg))
+		return extReg, sema.TypeInt
 
 	case *ast.CallExpr:
 		reg, retType := g.emitCallInternal(b, e)
@@ -1099,11 +1113,9 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 }
 
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// 1. 型キャスト: (*Type)(expr) (例: (*Builder)(malloc(24)), (*byte)(b))
 	if pref, ok := call.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		if ident, ok := pref.Right.(*ast.Identifier); ok {
 			argReg, argType := g.resolveValue(b, call.Args[0])
-			castReg := g.nextReg()
 			srcTypeStr := "i8*"
 			if argType != nil && argType.LLVMType() != "" {
 				srcTypeStr = argType.LLVMType()
@@ -1129,6 +1141,10 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			}
 
 			if targetType != nil {
+				if srcTypeStr == targetTypeStr {
+					return argReg, targetType
+				}
+				castReg := g.nextReg()
 				if !strings.HasSuffix(srcTypeStr, "*") {
 					b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", castReg, srcTypeStr, argReg, targetTypeStr))
 				} else {
@@ -1139,22 +1155,27 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 2. 型キャスト: int(ptr)
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "int" && len(call.Args) == 1 {
 		argReg, argType := g.resolveValue(b, call.Args[0])
+		srcTypeStr := "i64"
+		if argType != nil && argType.LLVMType() != "" {
+			srcTypeStr = argType.LLVMType()
+		}
+		if srcTypeStr == "i64" {
+			return argReg, sema.TypeInt
+		}
 		castReg := g.nextReg()
-		srcTypeStr := argType.LLVMType()
 		if strings.HasSuffix(srcTypeStr, "*") {
 			b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", castReg, srcTypeStr, argReg))
+		} else if srcTypeStr == "i1" {
+			b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", castReg, argReg))
 		} else {
 			b.WriteString(fmt.Sprintf("  %s = sext %s %s to i64\n", castReg, srcTypeStr, argReg))
 		}
 		return castReg, sema.TypeInt
 	}
 
-	// 3. メンバ経由の呼び出し (パッケージ関数 または オブジェクトメソッド)
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {
-		// オブジェクトが変数テーブル (symbols) に存在するか判定
 		isVariable := false
 		if objIdent, ok := memExpr.Object.(*ast.Identifier); ok {
 			if _, exists := g.symbols[objIdent.Value]; exists {
@@ -1162,8 +1183,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			}
 		}
 
-		// パターンA: パッケージ関数呼び出し (fmt.PrintLn, os.WriteFile, strings.Len 等)
-		// ※ 変数でない識別子 (パッケージ名) の場合のみ実行
 		if !isVariable {
 			if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
 				methodName := memExpr.Field.Value
@@ -1205,7 +1224,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			}
 		}
 
-		// パターンB: レシーバオブジェクトに対するメソッド呼び出し (f.Read, builder.WriteString 等)
 		objReg, objType := g.resolveValue(b, memExpr.Object)
 		if objType != nil {
 			_, structName := g.findStruct(objType, "")
@@ -1230,7 +1248,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 				}
 
 				if targetFn != nil {
-					// 第1引数にレシーバ (objReg) を挿入
 					args := []string{fmt.Sprintf("%s %s", objType.LLVMType(), objReg)}
 					for i, arg := range call.Args {
 						valReg, valType := g.resolveValue(b, arg)
@@ -1261,7 +1278,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 4. 通常の識別子関数呼び出し (malloc, free, assert, strlen 等)
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok {
 		targetFn := g.lookupFunction(fnIdent.Value)
 		if targetFn != nil {
@@ -1325,18 +1341,15 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 }
 
 func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
-	// 1. 完全一致
 	if fn, ok := g.semaCtx.Functions[name]; ok {
 		return fn
 	}
 
-	// 2. パッケージプレフィックスの剥離 (例: "fmt_PrintStr" -> "PrintStr", "strings_NewBuilder" -> "NewBuilder")
 	if idx := strings.Index(name, "_"); idx != -1 {
 		baseName := name[idx+1:]
 		if fn, ok := g.semaCtx.Functions[baseName]; ok {
 			return fn
 		}
-		// メソッド名付き (例: "strings_Builder_Len" -> "Len" または "Builder_Len")
 		if lastIdx := strings.LastIndex(name, "_"); lastIdx != idx {
 			lastBase := name[lastIdx+1:]
 			if fn, ok := g.semaCtx.Functions[lastBase]; ok {
@@ -1349,7 +1362,6 @@ func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
 		}
 	}
 
-	// 3. サフィックス一致 (例: "PrintStr" -> "fmt_PrintStr")
 	for fnName, fn := range g.semaCtx.Functions {
 		if strings.HasSuffix(fnName, "_"+name) {
 			return fn

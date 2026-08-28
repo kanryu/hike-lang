@@ -344,8 +344,33 @@ func (p *Parser) parseDecl() ast.Decl {
 		return p.parseTypeDecl()
 	case token.FUNC:
 		return p.parseFuncDecl()
+	case token.CONST:
+		return p.parseConstDecl()
 	default:
 		return nil
+	}
+}
+
+func (p *Parser) parseConstDecl() *ast.ConstDecl {
+	tok := p.curToken
+	p.nextToken() // 'const' を消費
+
+	if !p.curTokenIs(token.IDENT) {
+		return nil
+	}
+	ident := p.parseIdentifier()
+
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	p.nextToken() // '=' を消費
+	val := p.parseExpression(LOWEST)
+
+	return &ast.ConstDecl{
+		Token: tok,
+		Name:  ident,
+		Value: val,
 	}
 }
 

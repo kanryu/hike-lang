@@ -32,6 +32,18 @@ type ImportDecl struct {
 
 func (i *ImportDecl) declNode() {}
 
+type ConstDecl struct {
+	Token token.Token
+	Name  *Identifier
+	Value Expression
+}
+
+func (cd *ConstDecl) declNode() {}
+
+func (cd *ConstDecl) TokenLiteral() string {
+	return cd.Token.Literal
+}
+
 // Program 構造体に Imports を追加
 type Program struct {
 	Package string
