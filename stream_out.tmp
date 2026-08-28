@@ -1,0 +1,5 @@
+; ModuleID = 'test'
+target triple = "x86_64-w64-windows-gnu"
+define i32 @main() {
+  ret i32 42
+}

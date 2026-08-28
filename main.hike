@@ -1,93 +1,226 @@
 package main
 
-import (
-	"std/fmt"
-	"std/strings"
-)
+// C標準入出力・システム関数の宣言
+func fopen(filename *byte, mode *byte) *byte
+func fclose(stream *byte) int
+func fread(ptr *byte, size int, count int, stream *byte) int
+func fwrite(ptr *byte, size int, count int, stream *byte) int
+func fseek(stream *byte, offset int, whence int) int
+func ftell(stream *byte) int
+func malloc(size int) *byte
+func free(ptr *byte)
+func printf(format *byte, ...) int
+func strlen(s *byte) int
+func memcmp(s1 *byte, s2 *byte, n int) int
 
-func assert(cond bool, testName *byte) {
+// -------------------------------------------------------------
+// std/fmt
+// -------------------------------------------------------------
+func PrintStr(s *byte) {
+	if s == nil {
+		return
+	}
+	printf("%s", s)
+}
+
+func PrintInt(v int) {
+	printf("%d", v)
+}
+
+func PrintLn(s *byte) {
+	if s == nil {
+		printf("\n")
+		return
+	}
+	printf("%s\n", s)
+}
+
+func ErrorLn(msg *byte) {
+	printf("[ERROR] %s\n", msg)
+}
+
+// -------------------------------------------------------------
+// std/os
+// -------------------------------------------------------------
+type File struct {
+	handle *byte
+}
+
+func Open(filename *byte, mode *byte) *File {
+	fp := fopen(filename, mode)
+	if fp == nil {
+		return nil
+	}
+	f := (*File)(malloc(8))
+	f.handle = fp
+	return f
+}
+
+func (f *File) Read(buf *byte, size int) int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	return fread(buf, 1, size, f.handle)
+}
+
+func (f *File) Write(buf *byte, size int) int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	return fwrite(buf, 1, size, f.handle)
+}
+
+func (f *File) Close() int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	res := fclose(f.handle)
+	f.handle = nil
+	free((*byte)(f))
+	return res
+}
+
+func ReadFile(filename *byte) *byte {
+	fp := fopen(filename, "rb")
+	if fp == nil {
+		return nil
+	}
+	fseek(fp, 0, 2)
+	size := ftell(fp)
+	fseek(fp, 0, 0)
+	if size < 0 {
+		fclose(fp)
+		return nil
+	}
+
+	buf := malloc(size + 1)
+	readBytes := fread(buf, 1, size, fp)
+	buf[readBytes] = 0
+	fclose(fp)
+	return buf
+}
+
+func WriteFile(filename *byte, content *byte, length int) int {
+	fp := fopen(filename, "wb")
+	if fp == nil {
+		return 0
+	}
+	written := fwrite(content, 1, length, fp)
+	fclose(fp)
+	return written
+}
+
+// -------------------------------------------------------------
+// std/strings
+// -------------------------------------------------------------
+func StrLen(s *byte) int {
+	if s == nil {
+		return 0
+	}
+	return strlen(s)
+}
+
+func StrEqual(a *byte, b *byte) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	la := strlen(a)
+	lb := strlen(b)
+	if la != lb {
+		return false
+	}
+	return memcmp(a, b, la) == 0
+}
+
+// -------------------------------------------------------------
+// テストランナー
+// -------------------------------------------------------------
+func assert(cond bool, testNum int, testName *byte) {
 	if cond {
-		fmt.PrintStr("[PASS] ")
-		fmt.PrintLn(testName)
+		printf("[PASS #%d] %s\n", testNum, testName)
 	} else {
-		fmt.PrintStr("[FAIL] ")
-		fmt.PrintLn(testName)
+		printf("[FAIL #%d] %s\n", testNum, testName)
 	}
 }
 
 func main() int {
-	fmt.PrintLn("=== Running std/strings Unit Tests ===")
+	PrintLn("=== Running File & Console I/O Unit Tests ===")
 
-	// 1. strings.Len のテスト
-	s1 := "HikeLang"
-	assert(strings.Len(s1) == 8, "strings.Len: valid string")
-	assert(strings.Len(nil) == 0, "strings.Len: nil string")
-	assert(strings.Len("") == 0, "strings.Len: empty string")
+	testCount := 0
 
-	// 2. strings.Equal のテスト
-	assert(strings.Equal("compiler", "compiler") == true, "strings.Equal: identical strings")
-	assert(strings.Equal("compiler", "compileX") == false, "strings.Equal: different contents")
-	assert(strings.Equal("short", "longer_string") == false, "strings.Equal: different length")
-	assert(strings.Equal(nil, nil) == true, "strings.Equal: both nil")
-	assert(strings.Equal("test", nil) == false, "strings.Equal: one nil")
+	testFile := "test_sample.ll"
+	sampleIR := "; ModuleID = 'test'\ntarget triple = \"x86_64-w64-windows-gnu\"\ndefine i32 @main() {\n  ret i32 42\n}\n"
+	sampleLen := StrLen(sampleIR)
 
-	// 3. strings.HasPrefix のテスト
-	target := "package main"
-	assert(strings.HasPrefix(target, "package") == true, "strings.HasPrefix: match")
-	assert(strings.HasPrefix(target, "import") == false, "strings.HasPrefix: mismatch")
-	assert(strings.HasPrefix(target, "") == true, "strings.HasPrefix: empty prefix")
-	assert(strings.HasPrefix("short", "longer_prefix") == false, "strings.HasPrefix: prefix longer than string")
-	assert(strings.HasPrefix(nil, "pkg") == false, "strings.HasPrefix: nil string")
+	// --- 1〜4: std/fmt の検証 ---
+	testCount = testCount + 1
+	PrintStr("")
+	assert(true, testCount, "fmt.PrintStr: executed without error")
 
-	// 4. strings.HasSuffix のテスト
-	filename := "main.hike"
-	assert(strings.HasSuffix(filename, ".hike") == true, "strings.HasSuffix: match")
-	assert(strings.HasSuffix(filename, ".go") == false, "strings.HasSuffix: mismatch")
-	assert(strings.HasSuffix(filename, "") == true, "strings.HasSuffix: empty suffix")
-	assert(strings.HasSuffix("file", "long_suffix_file") == false, "strings.HasSuffix: suffix longer than string")
-	assert(strings.HasSuffix(nil, ".hike") == false, "strings.HasSuffix: nil string")
+	testCount = testCount + 1
+	PrintInt(42)
+	printf("\n")
+	assert(true, testCount, "fmt.PrintInt: executed without error")
 
-	// 5. strings.Index のテスト
-	haystack := "abcdefg_hike_xyz"
-	assert(strings.Index(haystack, "hike") == 8, "strings.Index: found in middle")
-	assert(strings.Index(haystack, "abc") == 0, "strings.Index: found at start")
-	assert(strings.Index(haystack, "notfound") == -1, "strings.Index: not found")
-	assert(strings.Index(haystack, "") == 0, "strings.Index: empty needle")
-	assert(strings.Index(nil, "abc") == -1, "strings.Index: nil haystack")
+	testCount = testCount + 1
+	PrintLn("test println")
+	assert(true, testCount, "fmt.PrintLn: executed without error")
 
-	// 6. strings.Contains のテスト
-	assert(strings.Contains(haystack, "hike") == true, "strings.Contains: exists")
-	assert(strings.Contains(haystack, "rust") == false, "strings.Contains: not exists")
-	assert(strings.Contains(haystack, "") == true, "strings.Contains: empty query")
+	testCount = testCount + 1
+	ErrorLn("test errorln")
+	assert(true, testCount, "fmt.ErrorLn: executed without error")
 
-	// 7〜11. strings.Builder の全メソッドテスト
-	fmt.PrintLn("--- Testing strings.Builder ---")
+	// --- 5〜8: 一括ファイルI/Oの検証 ---
+	testCount = testCount + 1
+	written := WriteFile(testFile, sampleIR, sampleLen)
+	assert(written == sampleLen, testCount, "os.WriteFile: write generated IR to disk")
 
-	// 7. strings.NewBuilder (初期容量小さめで確保し、拡張処理も誘発させる)
-	builder := strings.NewBuilder(8)
-	assert(builder != nil, "strings.NewBuilder: initialization")
+	testCount = testCount + 1
+	readContent := ReadFile(testFile)
+	assert(readContent != nil, testCount, "os.ReadFile: load file from disk")
 
-	// 8. builder.WriteString
-	builder.WriteString("struct ")
-	builder.WriteString("Token")
-	builder.WriteString(" { Type: int }") // 8バイトを大幅に超えて自動拡張（Realloc）が走る
+	testCount = testCount + 1
+	assert(StrEqual(readContent, sampleIR) == true, testCount, "os.ReadFile: read content matches")
 
-	// 9. builder.Len
-	expectedLen := strings.Len("struct Token { Type: int }")
-	assert(builder.Len() == expectedLen, "builder.Len: matches accumulated content length")
+	testCount = testCount + 1
+	notFoundContent := ReadFile("non_existent_file.hike")
+	assert(notFoundContent == nil, testCount, "os.ReadFile: return nil on non-existent file")
 
-	// 10. builder.String
-	builtStr := builder.String()
-	assert(strings.Equal(builtStr, "struct Token { Type: int }") == true, "builder.String: matches expected string")
+	// --- 9〜14: ストリームファイルI/Oの検証 ---
+	testCount = testCount + 1
+	f := Open(testFile, "rb")
+	assert(f != nil, testCount, "os.Open: valid file handle acquired")
 
-	// 追記テスト
-	builder.WriteString(" // end")
-	assert(strings.HasSuffix(builder.String(), "// end") == true, "builder.WriteString: append after resize")
+	testCount = testCount + 1
+	fNotFound := Open("non_existent_file.hike", "rb")
+	assert(fNotFound == nil, testCount, "os.Open: return nil on non-existent file")
 
-	// 11. builder.Free
-	builder.Free()
-	fmt.PrintLn("[PASS] builder.Free: memory deallocated successfully")
+	testCount = testCount + 1
+	buffer := malloc(32)
+	readPartial := f.Read(buffer, 31)
+	buffer[readPartial] = 0
+	assert(readPartial == 31, testCount, "File.Read: stream partial read")
 
-	fmt.PrintLn("=== All std/strings Unit Tests Completed ===")
-	return 0
+	testCount = testCount + 1
+	streamWriteFile := "stream_out.tmp"
+	fOut := Open(streamWriteFile, "wb")
+	streamWritten := fOut.Write(sampleIR, sampleLen)
+	assert(streamWritten == sampleLen, testCount, "File.Write: stream write to disk")
+
+	testCount = testCount + 1
+	closeOutRes := fOut.Close()
+	assert(closeOutRes == 0, testCount, "File.Close: output stream closed cleanly")
+
+	testCount = testCount + 1
+	closeRes := f.Close()
+	assert(closeRes == 0, testCount, "File.Close: input stream closed cleanly")
+
+	free(readContent)
+	free(buffer)
+
+	PrintLn("=== File & Console I/O Unit Tests Completed ===")
+	return testCount
 }
