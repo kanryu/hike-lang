@@ -46,6 +46,13 @@ func (p *Program) TokenLiteral() string {
 	return ""
 }
 
+type File struct {
+	Filename string
+	Package  *Identifier
+	Imports  []*ImportDecl
+	Decls    []Decl
+}
+
 // 識別子・リテラル
 type Identifier struct {
 	Token token.Token

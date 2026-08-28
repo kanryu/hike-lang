@@ -5,31 +5,57 @@ import (
 	"fmt"
 	"os"
 
-	"hikec-go/pkg/compiler"
+	"hikec-go/pkg/ast"
+	"hikec-go/pkg/codegen"
+	"hikec-go/pkg/loader"
+	"hikec-go/pkg/sema"
 )
 
 func main() {
-	outputPath := flag.String("o", "output.ll", "output LLVM IR file path")
+	outPath := flag.String("o", "output.ll", "output LLVM IR path")
 	flag.Parse()
 
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Usage: hikec <input.hike> [-o <output.ll>]")
+	if len(flag.Args()) < 1 {
+		fmt.Println("Usage: hikec <entry_file.hike> -o <output.ll>")
 		os.Exit(1)
 	}
-	inputFile := args[0]
+	entryFile := flag.Args()[0]
 
-	c := compiler.New()
-	llvmIR, err := c.CompileFile(inputFile)
+	// 1. ローダーによる依存ファイル・パッケージの収集
+	ld := loader.New(".", "./std")
+	progs, err := ld.LoadProgram(entryFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Compilation failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Load Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := os.WriteFile(*outputPath, []byte(llvmIR), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write output file: %v\n", err)
+	// 2. 全ファイルの AST を単一の Program にマージ
+	mergedProg := &ast.Program{
+		Package: "main",
+		Imports: []*ast.ImportDecl{},
+		Decls:   []ast.Decl{},
+	}
+	for _, p := range progs {
+		mergedProg.Imports = append(mergedProg.Imports, p.Imports...)
+		mergedProg.Decls = append(mergedProg.Decls, p.Decls...)
+	}
+
+	// 3. セマンティック解析 (sema.Analyze を呼び出し)
+	semaCtx, err := sema.Analyze(mergedProg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Semantic Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Compiled %s -> %s\n", inputFile, *outputPath)
+	// 4. コード生成
+	cg := codegen.New(mergedProg, semaCtx)
+	llvmIR := cg.Generate()
+
+	// 5. IR ファイル出力
+	if err := os.WriteFile(*outPath, []byte(llvmIR), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Write Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Compiled %s -> %s\n", entryFile, *outPath)
 }

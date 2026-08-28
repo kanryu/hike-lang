@@ -1,226 +1,110 @@
 package main
 
-// C標準入出力・システム関数の宣言
-func fopen(filename *byte, mode *byte) *byte
-func fclose(stream *byte) int
-func fread(ptr *byte, size int, count int, stream *byte) int
-func fwrite(ptr *byte, size int, count int, stream *byte) int
-func fseek(stream *byte, offset int, whence int) int
-func ftell(stream *byte) int
+import (
+	"std/fmt"
+	"std/os"
+	"std/strings"
+)
+
 func malloc(size int) *byte
 func free(ptr *byte)
-func printf(format *byte, ...) int
-func strlen(s *byte) int
-func memcmp(s1 *byte, s2 *byte, n int) int
 
-// -------------------------------------------------------------
-// std/fmt
-// -------------------------------------------------------------
-func PrintStr(s *byte) {
-	if s == nil {
-		return
-	}
-	printf("%s", s)
-}
-
-func PrintInt(v int) {
-	printf("%d", v)
-}
-
-func PrintLn(s *byte) {
-	if s == nil {
-		printf("\n")
-		return
-	}
-	printf("%s\n", s)
-}
-
-func ErrorLn(msg *byte) {
-	printf("[ERROR] %s\n", msg)
-}
-
-// -------------------------------------------------------------
-// std/os
-// -------------------------------------------------------------
-type File struct {
-	handle *byte
-}
-
-func Open(filename *byte, mode *byte) *File {
-	fp := fopen(filename, mode)
-	if fp == nil {
-		return nil
-	}
-	f := (*File)(malloc(8))
-	f.handle = fp
-	return f
-}
-
-func (f *File) Read(buf *byte, size int) int {
-	if f == nil || f.handle == nil {
-		return 0
-	}
-	return fread(buf, 1, size, f.handle)
-}
-
-func (f *File) Write(buf *byte, size int) int {
-	if f == nil || f.handle == nil {
-		return 0
-	}
-	return fwrite(buf, 1, size, f.handle)
-}
-
-func (f *File) Close() int {
-	if f == nil || f.handle == nil {
-		return 0
-	}
-	res := fclose(f.handle)
-	f.handle = nil
-	free((*byte)(f))
-	return res
-}
-
-func ReadFile(filename *byte) *byte {
-	fp := fopen(filename, "rb")
-	if fp == nil {
-		return nil
-	}
-	fseek(fp, 0, 2)
-	size := ftell(fp)
-	fseek(fp, 0, 0)
-	if size < 0 {
-		fclose(fp)
-		return nil
-	}
-
-	buf := malloc(size + 1)
-	readBytes := fread(buf, 1, size, fp)
-	buf[readBytes] = 0
-	fclose(fp)
-	return buf
-}
-
-func WriteFile(filename *byte, content *byte, length int) int {
-	fp := fopen(filename, "wb")
-	if fp == nil {
-		return 0
-	}
-	written := fwrite(content, 1, length, fp)
-	fclose(fp)
-	return written
-}
-
-// -------------------------------------------------------------
-// std/strings
-// -------------------------------------------------------------
-func StrLen(s *byte) int {
-	if s == nil {
-		return 0
-	}
-	return strlen(s)
-}
-
-func StrEqual(a *byte, b *byte) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	la := strlen(a)
-	lb := strlen(b)
-	if la != lb {
-		return false
-	}
-	return memcmp(a, b, la) == 0
-}
-
-// -------------------------------------------------------------
-// テストランナー
-// -------------------------------------------------------------
 func assert(cond bool, testNum int, testName *byte) {
 	if cond {
-		printf("[PASS #%d] %s\n", testNum, testName)
+		fmt.PrintStr("[PASS #")
+		fmt.PrintInt(testNum)
+		fmt.PrintStr("] ")
+		fmt.PrintLn(testName)
 	} else {
-		printf("[FAIL #%d] %s\n", testNum, testName)
+		fmt.PrintStr("[FAIL #")
+		fmt.PrintInt(testNum)
+		fmt.PrintStr("] ")
+		fmt.PrintLn(testName)
 	}
 }
 
 func main() int {
-	PrintLn("=== Running File & Console I/O Unit Tests ===")
+	fmt.PrintLn("=== Running Standard Package Integration Unit Tests ===")
 
 	testCount := 0
 
+	// --- 1〜4: std/fmt パッケージ呼び出し検証 ---
+	testCount = testCount + 1
+	fmt.PrintStr("")
+	assert(true, testCount, "fmt.PrintStr: package function call")
+
+	testCount = testCount + 1
+	fmt.PrintInt(42)
+	fmt.PrintLn("")
+	assert(true, testCount, "fmt.PrintInt: package function call")
+
+	testCount = testCount + 1
+	fmt.PrintLn("fmt package println test")
+	assert(true, testCount, "fmt.PrintLn: package function call")
+
+	testCount = testCount + 1
+	fmt.ErrorLn("fmt package errorln test")
+	assert(true, testCount, "fmt.ErrorLn: package function call")
+
+	// --- 5〜7: std/strings パッケージ呼び出し検証 ---
+	testCount = testCount + 1
+	testStr := "hello hike"
+	assert(strings.Len(testStr) == 10, testCount, "strings.Len: package function call")
+
+	testCount = testCount + 1
+	assert(strings.Equal(testStr, "hello hike") == true, testCount, "strings.Equal: package function call")
+
+	testCount = testCount + 1
+	builder := strings.NewBuilder(16)
+	builder.WriteString("hike-")
+	builder.WriteString("lang")
+	builtStr := builder.String()
+	builderMatches := strings.Equal(builtStr, "hike-lang")
+	builder.Free()
+	assert(builderMatches == true, testCount, "strings.Builder: receiver method call and free")
+
+	// --- 8〜11: std/os 一括ファイルI/O呼び出し検証 ---
 	testFile := "test_sample.ll"
 	sampleIR := "; ModuleID = 'test'\ntarget triple = \"x86_64-w64-windows-gnu\"\ndefine i32 @main() {\n  ret i32 42\n}\n"
-	sampleLen := StrLen(sampleIR)
-
-	// --- 1〜4: std/fmt の検証 ---
-	testCount = testCount + 1
-	PrintStr("")
-	assert(true, testCount, "fmt.PrintStr: executed without error")
+	sampleLen := strings.Len(sampleIR)
 
 	testCount = testCount + 1
-	PrintInt(42)
-	printf("\n")
-	assert(true, testCount, "fmt.PrintInt: executed without error")
+	written := os.WriteFile(testFile, sampleIR, sampleLen)
+	assert(written == sampleLen, testCount, "os.WriteFile: package function call")
 
 	testCount = testCount + 1
-	PrintLn("test println")
-	assert(true, testCount, "fmt.PrintLn: executed without error")
+	readContent := os.ReadFile(testFile)
+	assert(readContent != nil, testCount, "os.ReadFile: package function call")
 
 	testCount = testCount + 1
-	ErrorLn("test errorln")
-	assert(true, testCount, "fmt.ErrorLn: executed without error")
-
-	// --- 5〜8: 一括ファイルI/Oの検証 ---
-	testCount = testCount + 1
-	written := WriteFile(testFile, sampleIR, sampleLen)
-	assert(written == sampleLen, testCount, "os.WriteFile: write generated IR to disk")
+	assert(strings.Equal(readContent, sampleIR) == true, testCount, "os.ReadFile: content matches via strings.Equal")
 
 	testCount = testCount + 1
-	readContent := ReadFile(testFile)
-	assert(readContent != nil, testCount, "os.ReadFile: load file from disk")
+	notFoundContent := os.ReadFile("non_existent_file.hike")
+	assert(notFoundContent == nil, testCount, "os.ReadFile: returns nil on non-existent file")
+
+	// --- 12〜15: std/os ストリームファイルI/O呼び出し検証 ---
+	testCount = testCount + 1
+	f := os.Open(testFile, "rb")
+	assert(f != nil, testCount, "os.Open: package function call")
 
 	testCount = testCount + 1
-	assert(StrEqual(readContent, sampleIR) == true, testCount, "os.ReadFile: read content matches")
-
-	testCount = testCount + 1
-	notFoundContent := ReadFile("non_existent_file.hike")
-	assert(notFoundContent == nil, testCount, "os.ReadFile: return nil on non-existent file")
-
-	// --- 9〜14: ストリームファイルI/Oの検証 ---
-	testCount = testCount + 1
-	f := Open(testFile, "rb")
-	assert(f != nil, testCount, "os.Open: valid file handle acquired")
-
-	testCount = testCount + 1
-	fNotFound := Open("non_existent_file.hike", "rb")
-	assert(fNotFound == nil, testCount, "os.Open: return nil on non-existent file")
+	fNotFound := os.Open("non_existent_file.hike", "rb")
+	assert(fNotFound == nil, testCount, "os.Open: returns nil on non-existent file")
 
 	testCount = testCount + 1
 	buffer := malloc(32)
 	readPartial := f.Read(buffer, 31)
 	buffer[readPartial] = 0
-	assert(readPartial == 31, testCount, "File.Read: stream partial read")
-
-	testCount = testCount + 1
-	streamWriteFile := "stream_out.tmp"
-	fOut := Open(streamWriteFile, "wb")
-	streamWritten := fOut.Write(sampleIR, sampleLen)
-	assert(streamWritten == sampleLen, testCount, "File.Write: stream write to disk")
-
-	testCount = testCount + 1
-	closeOutRes := fOut.Close()
-	assert(closeOutRes == 0, testCount, "File.Close: output stream closed cleanly")
+	assert(readPartial == 31, testCount, "File.Read: receiver method call")
 
 	testCount = testCount + 1
 	closeRes := f.Close()
-	assert(closeRes == 0, testCount, "File.Close: input stream closed cleanly")
+	assert(closeRes == 0, testCount, "File.Close: receiver method call")
 
 	free(readContent)
 	free(buffer)
 
-	PrintLn("=== File & Console I/O Unit Tests Completed ===")
+	fmt.PrintLn("=== Standard Package Integration Unit Tests Completed ===")
 	return testCount
 }

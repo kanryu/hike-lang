@@ -1,11 +1,8 @@
 package strings
 
-// C標準関数の宣言
 func strlen(s *byte) int
 func memcmp(s1 *byte, s2 *byte, n int) int
-func strstr(haystack *byte, needle *byte) *byte
 
-// Len: 文字列の長さを返します
 func Len(s *byte) int {
 	if s == nil {
 		return 0
@@ -13,7 +10,6 @@ func Len(s *byte) int {
 	return strlen(s)
 }
 
-// Equal: 2つの文字列が同一であるかを判定します
 func Equal(a *byte, b *byte) bool {
 	if a == b {
 		return true
@@ -21,15 +17,14 @@ func Equal(a *byte, b *byte) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	lenA := strlen(a)
-	lenB := strlen(b)
-	if lenA != lenB {
+	la := strlen(a)
+	lb := strlen(b)
+	if la != lb {
 		return false
 	}
-	return memcmp(a, b, lenA) == 0
+	return memcmp(a, b, la) == 0
 }
 
-// HasPrefix: 文字列 s が prefix から始まっているかを判定します
 func HasPrefix(s *byte, prefix *byte) bool {
 	if s == nil || prefix == nil {
 		return false
@@ -42,7 +37,6 @@ func HasPrefix(s *byte, prefix *byte) bool {
 	return memcmp(s, prefix, prefixLen) == 0
 }
 
-// HasSuffix: 文字列 s が suffix で終わっているかを判定します
 func HasSuffix(s *byte, suffix *byte) bool {
 	if s == nil || suffix == nil {
 		return false
@@ -53,27 +47,5 @@ func HasSuffix(s *byte, suffix *byte) bool {
 		return false
 	}
 	offset := sLen - suffixLen
-	return memcmp(&s[offset], suffix, suffixLen) == 0
-}
-
-// Index: s 内で substr が最初に出現するインデックスを返します（見つからない場合は -1）
-func Index(s *byte, substr *byte) int {
-	if s == nil || substr == nil {
-		return -1
-	}
-	subLen := strlen(substr)
-	if subLen == 0 {
-		return 0
-	}
-	ptr := strstr(s, substr)
-	if ptr == nil {
-		return -1
-	}
-	// ポインタの差分からインデックスを計算
-	return int(ptr) - int(s)
-}
-
-// Contains: s に substr が含まれているかを判定します
-func Contains(s *byte, substr *byte) bool {
-	return Index(s, substr) >= 0
+	return memcmp(s+offset, suffix, suffixLen) == 0
 }

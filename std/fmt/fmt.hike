@@ -1,16 +1,26 @@
 package fmt
 
-// C標準ライブラリの直叩き
 func printf(format *byte, ...) int
 
 func PrintStr(s *byte) {
+	if s == nil {
+		return
+	}
 	printf("%s", s)
 }
 
-func PrintInt(val int) {
-	printf("%d\n", val)
+func PrintInt(v int) {
+	printf("%d", v)
 }
 
 func PrintLn(s *byte) {
+	if s == nil {
+		printf("\n")
+		return
+	}
 	printf("%s\n", s)
+}
+
+func ErrorLn(msg *byte) {
+	printf("[ERROR] %s\n", msg)
 }

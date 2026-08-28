@@ -1,16 +1,81 @@
 package os
 
-// C標準ライブラリの直叩き
+func fopen(filename *byte, mode *byte) *byte
+func fclose(stream *byte) int
+func fread(ptr *byte, size int, count int, stream *byte) int
+func fwrite(ptr *byte, size int, count int, stream *byte) int
+func fseek(stream *byte, offset int, whence int) int
+func ftell(stream *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
-func exit(code int)
+func exit(status int)
 
-func Alloc(size int) *byte {
-	return malloc(size)
+type File struct {
+	handle *byte
 }
 
-func Free(ptr *byte) {
-	free(ptr)
+func Open(filename *byte, mode *byte) *File {
+	fp := fopen(filename, mode)
+	if fp == nil {
+		return nil
+	}
+	f := (*File)(malloc(8))
+	f.handle = fp
+	return f
+}
+
+func (f *File) Read(buf *byte, size int) int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	return fread(buf, 1, size, f.handle)
+}
+
+func (f *File) Write(buf *byte, size int) int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	return fwrite(buf, 1, size, f.handle)
+}
+
+func (f *File) Close() int {
+	if f == nil || f.handle == nil {
+		return 0
+	}
+	res := fclose(f.handle)
+	f.handle = nil
+	free((*byte)(f))
+	return res
+}
+
+func ReadFile(filename *byte) *byte {
+	fp := fopen(filename, "rb")
+	if fp == nil {
+		return nil
+	}
+	fseek(fp, 0, 2)
+	size := ftell(fp)
+	fseek(fp, 0, 0)
+	if size < 0 {
+		fclose(fp)
+		return nil
+	}
+
+	buf := malloc(size + 1)
+	readBytes := fread(buf, 1, size, fp)
+	buf[readBytes] = 0
+	fclose(fp)
+	return buf
+}
+
+func WriteFile(filename *byte, content *byte, length int) int {
+	fp := fopen(filename, "wb")
+	if fp == nil {
+		return 0
+	}
+	written := fwrite(content, 1, length, fp)
+	fclose(fp)
+	return written
 }
 
 func Exit(code int) {

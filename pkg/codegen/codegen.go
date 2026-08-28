@@ -30,6 +30,7 @@ type CodeGenerator struct {
 	symbols        map[string]Symbol
 	deferStack     []string
 	entryAllocas   *strings.Builder // entry ブロック用のアロケーションバッファ
+	emittedFuncs   map[string]bool  // 出力済み関数シンボルの重複防止用
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
@@ -38,6 +39,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
 		semaCtx:        semaCtx,
 		symbols:        make(map[string]Symbol),
 		stringLiterals: []StringConst{},
+		emittedFuncs:   make(map[string]bool),
 	}
 }
 
@@ -244,7 +246,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 			recvType = &sema.PointerType{Base: sema.TypeByte}
 		}
 
-		// strings_Len と重複しないよう strings_Builder_Len または Builder_Len にマングリング
 		if strings.Contains(funcMangledName, "_") {
 			parts := strings.SplitN(funcMangledName, "_", 2)
 			funcMangledName = parts[0] + "_" + recvTypeName + "_" + parts[1]
@@ -252,6 +253,12 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 			funcMangledName = recvTypeName + "_" + funcMangledName
 		}
 	}
+
+	// --- 重複出力防止ガード ---
+	if g.emittedFuncs[funcMangledName] {
+		return
+	}
+	g.emittedFuncs[funcMangledName] = true
 
 	// 2. 戻り値の型の解決 (semaCtx または AST の ReturnTypes から判定)
 	fnMeta, exists := g.semaCtx.Functions[fn.Name.Value]
@@ -1147,35 +1154,54 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 
 	// 3. メンバ経由の呼び出し (パッケージ関数 または オブジェクトメソッド)
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {
-		// パターンA: パッケージ関数呼び出し (fmt.PrintLn, os.WriteFile 等)
-		if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
-			targetFnName := pkgIdent.Value + "_" + memExpr.Field.Value
-			if targetFn := g.lookupFunction(targetFnName); targetFn != nil {
-				args := []string{}
-				for i, arg := range call.Args {
-					argReg, argType := g.resolveValue(b, arg)
-					t := argType
-					if i < len(targetFn.ParamTypes) {
-						t = targetFn.ParamTypes[i]
+		// オブジェクトが変数テーブル (symbols) に存在するか判定
+		isVariable := false
+		if objIdent, ok := memExpr.Object.(*ast.Identifier); ok {
+			if _, exists := g.symbols[objIdent.Value]; exists {
+				isVariable = true
+			}
+		}
+
+		// パターンA: パッケージ関数呼び出し (fmt.PrintLn, os.WriteFile, strings.Len 等)
+		// ※ 変数でない識別子 (パッケージ名) の場合のみ実行
+		if !isVariable {
+			if pkgIdent, isIdent := memExpr.Object.(*ast.Identifier); isIdent {
+				methodName := memExpr.Field.Value
+				targetFnName := pkgIdent.Value + "_" + methodName
+				targetFn := g.lookupFunction(targetFnName)
+				if targetFn == nil {
+					targetFn = g.lookupFunction(methodName)
+				}
+
+				if targetFn != nil {
+					args := []string{}
+					for i, arg := range call.Args {
+						argReg, argType := g.resolveValue(b, arg)
+						t := argType
+						if i < len(targetFn.ParamTypes) {
+							t = targetFn.ParamTypes[i]
+						}
+						args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), argReg))
 					}
-					args = append(args, fmt.Sprintf("%s %s", t.LLVMType(), argReg))
-				}
 
-				retType := "void"
-				var semaRet sema.Type = sema.TypeVoid
-				if len(targetFn.ReturnTypes) == 1 {
-					retType = targetFn.ReturnTypes[0].LLVMType()
-					semaRet = targetFn.ReturnTypes[0]
-				}
+					retType := "void"
+					var semaRet sema.Type = sema.TypeVoid
+					if len(targetFn.ReturnTypes) == 1 {
+						retType = targetFn.ReturnTypes[0].LLVMType()
+						semaRet = targetFn.ReturnTypes[0]
+					}
 
-				if retType == "void" {
-					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFn.Name, strings.Join(args, ", ")))
-					return "", sema.TypeVoid
-				}
+					emitFnName := targetFn.Name
 
-				callReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, targetFn.Name, strings.Join(args, ", ")))
-				return callReg, semaRet
+					if retType == "void" {
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
+						return "", sema.TypeVoid
+					}
+
+					callReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
+					return callReg, semaRet
+				}
 			}
 		}
 
@@ -1187,25 +1213,18 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 				methodName := memExpr.Field.Value
 				var targetFn *sema.FuncType
 
-				// 優先順位順に semaCtx から関数型メタデータを探索
 				candidates := []string{
+					structName + "_" + methodName,
 					"os_" + structName + "_" + methodName,
 					"strings_" + structName + "_" + methodName,
-					structName + "_" + methodName,
-					"os_" + methodName,
-					"strings_" + methodName,
 					methodName,
 				}
 
-				// 実際に LLVM IR 上で call する関数名 (emitFuncDecl のマングリング規則と一致させる)
 				emitTargetName := structName + "_" + methodName
 
 				for _, cand := range candidates {
 					if fn, ok := g.semaCtx.Functions[cand]; ok {
 						targetFn = fn
-						if strings.Contains(cand, structName) {
-							emitTargetName = cand
-						}
 						break
 					}
 				}
@@ -1216,7 +1235,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 					for i, arg := range call.Args {
 						valReg, valType := g.resolveValue(b, arg)
 						t := valType
-						// i+1 ではなく i を参照して引数型を合わせる
 						if i < len(targetFn.ParamTypes) {
 							t = targetFn.ParamTypes[i]
 						}
@@ -1312,22 +1330,28 @@ func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
 		return fn
 	}
 
-	// 2. サフィックス一致 (例: "malloc" -> "strings_malloc", "Len" -> "strings_Len")
-	for fnName, fn := range g.semaCtx.Functions {
-		if strings.HasSuffix(fnName, "_"+name) || strings.HasSuffix(fnName, name) {
+	// 2. パッケージプレフィックスの剥離 (例: "fmt_PrintStr" -> "PrintStr", "strings_NewBuilder" -> "NewBuilder")
+	if idx := strings.Index(name, "_"); idx != -1 {
+		baseName := name[idx+1:]
+		if fn, ok := g.semaCtx.Functions[baseName]; ok {
 			return fn
+		}
+		// メソッド名付き (例: "strings_Builder_Len" -> "Len" または "Builder_Len")
+		if lastIdx := strings.LastIndex(name, "_"); lastIdx != idx {
+			lastBase := name[lastIdx+1:]
+			if fn, ok := g.semaCtx.Functions[lastBase]; ok {
+				return fn
+			}
+			structMethod := name[idx+1:]
+			if fn, ok := g.semaCtx.Functions[structMethod]; ok {
+				return fn
+			}
 		}
 	}
 
-	// 3. マングリングされたメソッド名からの逆引き (例: "strings_Builder_Len" -> "strings_Len" または "Len")
-	parts := strings.Split(name, "_")
-	if len(parts) >= 3 {
-		baseMethod := parts[len(parts)-1]
-		pkgName := parts[0]
-		if fn, ok := g.semaCtx.Functions[pkgName+"_"+baseMethod]; ok {
-			return fn
-		}
-		if fn, ok := g.semaCtx.Functions[baseMethod]; ok {
+	// 3. サフィックス一致 (例: "PrintStr" -> "fmt_PrintStr")
+	for fnName, fn := range g.semaCtx.Functions {
+		if strings.HasSuffix(fnName, "_"+name) {
 			return fn
 		}
 	}
