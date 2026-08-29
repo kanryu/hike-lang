@@ -35,50 +35,52 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Append Builtin Unit Tests ===")
+	fmt.PrintLn("=== Running Slice Advanced & Edge-Case Tests ===")
 
 	testCount := 0
 
-	// 1. 空スライス (len=0, cap=0) への初回 append
-	s := makeEmptySlice()
-	s = append(s, 100)
+	// ==========================================
+	// 検証1: 基底配列の共有検証 (サブスライスへの append による親配列の上書き)
+	// ==========================================
+	orig := makeEmptySlice()
+	orig = append(orig, 100, 200, 300, 400, 500) // len=5, cap=8
 
-	// テスト1: 初回 append 後の len=1, cap=4
+	sub := orig[1:3]       // sub=[200, 300], len=2, cap=7 (共有配列)
+	sub = append(sub, 999) // cap内なので再確保されず orig[3] (400) が 999 に上書きされる
+
 	testCount = testCount + 1
-	assert(len(s) == 1 && cap(s) == 4 && s[0] == 100, testCount, "Append: initial append on empty slice sets len=1, cap=4")
+	assert(sub[2] == 999 && orig[3] == 999, testCount, "Verify 1: append within sub-slice capacity overwrites parent backing array at index 3")
 
-	// 2. キャパシティ内での連続 append (cap=4 の範囲内)
-	s = append(s, 200)
-	s = append(s, 300)
-	s = append(s, 400)
+	// ==========================================
+	// 検証2: 複数要素の一括追加 append(s, e1, e2, e3, e4)
+	// ==========================================
+	multi := makeEmptySlice()
+	multi = append(multi, 10, 20, 30) // 一括で 3 要素追加 (len=3, cap=4)
 
-	// テスト2: cap=4 上限まで追加したときの検証
 	testCount = testCount + 1
-	assert(len(s) == 4 && cap(s) == 4, testCount, "Append: append up to capacity preserves cap=4 and len=4")
+	assert(len(multi) == 3 && cap(multi) == 4 && multi[0] == 10 && multi[1] == 20 && multi[2] == 30, testCount, "Verify 2-A: append 3 elements at once")
 
-	// テスト3: 格納された各要素値の検証
+	// さらに容量(4)を超える 4 要素を一括追加 (len=3+4=7, 拡張後のcap=8)
+	multi = append(multi, 40, 50, 60, 70)
+
 	testCount = testCount + 1
-	assert(s[0] == 100 && s[1] == 200 && s[2] == 300 && s[3] == 400, testCount, "Append: elements within capacity match expected values")
+	assert(len(multi) == 7 && cap(multi) == 8 && multi[3] == 40 && multi[6] == 70, testCount, "Verify 2-B: multi-element append exceeding capacity grows to cap=8")
 
-	// 3. キャパシティ超過による自動拡張 (4 -> 8)
-	s = append(s, 500)
+	// ==========================================
+	// 検証3: 大量データ連続追加と多段階拡張 (100要素ループ)
+	// ==========================================
+	large := makeEmptySlice()
+	for i := 0; i < 100; i = i + 1 {
+		large = append(large, i*3)
+	}
 
-	// テスト4: 自動拡張後の len=5, cap=8
 	testCount = testCount + 1
-	assert(len(s) == 5 && cap(s) == 8, testCount, "Append: exceeding capacity triggers reallocation to cap=8")
+	assert(len(large) == 100 && cap(large) >= 100, testCount, "Verify 3-A: loop append 100 elements reaches len=100")
 
-	// テスト5: 拡張後も過去データと新データが保持されているか検証
+	// 先頭、中間、末尾データの整合性検証
 	testCount = testCount + 1
-	assert(s[0] == 100 && s[3] == 400 && s[4] == 500, testCount, "Append: reallocated slice retains old data and appends new element")
+	assert(large[0] == 0 && large[50] == 150 && large[99] == 297, testCount, "Verify 3-B: all elements in large slice retain correct values after multiple reallocations")
 
-	// 4. スライス切り出し結果への append
-	sub := s[1:3] // [200, 300], len=2, cap=7
-	sub = append(sub, 999)
-
-	// テスト6: sub への append (len=3, sub[2]=999)
-	testCount = testCount + 1
-	assert(len(sub) == 3 && sub[2] == 999, testCount, "Append: append to sub-slice works correctly")
-
-	fmt.PrintLn("=== Append Unit Tests Completed ===")
+	fmt.PrintLn("=== All Advanced Tests Completed ===")
 	return testCount
 }

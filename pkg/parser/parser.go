@@ -393,39 +393,71 @@ func (p *Parser) parseIfStmt() *ast.IfStmt {
 
 func (p *Parser) parseForStmt() *ast.ForStmt {
 	stmt := &ast.ForStmt{Token: p.curToken}
-	p.nextToken()
+	p.nextToken() // 'for' を消費
 
+	// 1. 無限ループ: for { ... }
 	if p.curTokenIs(token.LBRACE) {
 		stmt.Body = p.parseBlockStmt()
 		return stmt
 	}
 
-	expr := p.parseExpression(LOWEST)
-	if p.peekTokenIs(token.LBRACE) {
-		stmt.Cond = expr
-		p.expectPeek(token.LBRACE)
-		stmt.Body = p.parseBlockStmt()
-		return stmt
-	}
-
-	if p.curTokenIs(token.SEMICOLON) || p.peekTokenIs(token.SEMICOLON) {
-		if !p.curTokenIs(token.SEMICOLON) {
-			p.nextToken()
-		}
+	// 2. 空の初期化節で始まる 3節 for: for ; cond; post { ... }
+	if p.curTokenIs(token.SEMICOLON) {
 		p.nextToken()
 		if !p.curTokenIs(token.SEMICOLON) {
 			stmt.Cond = p.parseExpression(LOWEST)
 		}
-		if p.expectPeek(token.SEMICOLON) {
+		p.expectPeek(token.SEMICOLON)
+		p.nextToken()
+		if !p.curTokenIs(token.LBRACE) {
+			stmt.Post = p.parseAssignOrExprStmt()
+		}
+		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
+			stmt.Body = p.parseBlockStmt()
+		}
+		return stmt
+	}
+
+	// 最初の要素を文として解析 (代入文 'i := 0' または 式文 'i < 100')
+	firstStmt := p.parseAssignOrExprStmt()
+
+	// 3. 3節 for: for init; cond; post { ... }
+	if p.peekTokenIs(token.SEMICOLON) {
+		stmt.Init = firstStmt
+		p.nextToken() // ';' に移動
+		p.nextToken() // ';' の次へ
+
+		// 条件節 (cond)
+		if !p.curTokenIs(token.SEMICOLON) {
+			stmt.Cond = p.parseExpression(LOWEST)
+		}
+
+		// 後処理節 (post)
+		if p.peekTokenIs(token.SEMICOLON) {
+			p.nextToken() // ';' に移動
+			p.nextToken() // ';' の次へ
 			if !p.curTokenIs(token.LBRACE) {
 				stmt.Post = p.parseAssignOrExprStmt()
 			}
 		}
-		if p.expectPeek(token.LBRACE) {
+
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
 			stmt.Body = p.parseBlockStmt()
 		}
+		return stmt
 	}
+
+	// 4. 単一条件 for: for cond { ... }
+	if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
+		stmt.Cond = exprStmt.Expr
+	}
+	if p.peekTokenIs(token.LBRACE) {
+		p.nextToken()
+		stmt.Body = p.parseBlockStmt()
+	}
+
 	return stmt
 }
 
