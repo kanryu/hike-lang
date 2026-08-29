@@ -57,43 +57,47 @@ const (
 	RBRACKET = "]"
 
 	// キーワード
-	PACKAGE = "PACKAGE"
-	IMPORT  = "IMPORT"
-	FUNC    = "FUNC"
-	RETURN  = "RETURN"
-	TYPE    = "TYPE"
-	STRUCT  = "STRUCT"
-	CONST   = "CONST"
-	IOTA    = "IOTA"  // 追加
-	RANGE   = "RANGE" // 追加
-	IF      = "IF"
-	ELSE    = "ELSE"
-	FOR     = "FOR"
-	SWITCH  = "SWITCH"
-	CASE    = "CASE"
-	DEFAULT = "DEFAULT"
-	DEFER   = "DEFER"
-	NIL     = "NIL"
+	PACKAGE  = "PACKAGE"
+	IMPORT   = "IMPORT"
+	FUNC     = "FUNC"
+	RETURN   = "RETURN"
+	TYPE     = "TYPE"
+	STRUCT   = "STRUCT"
+	CONST    = "CONST"
+	IOTA     = "IOTA"
+	RANGE    = "RANGE"
+	BREAK    = "BREAK"    // 追加
+	CONTINUE = "CONTINUE" // 追加
+	IF       = "IF"
+	ELSE     = "ELSE"
+	FOR      = "FOR"
+	SWITCH   = "SWITCH"
+	CASE     = "CASE"
+	DEFAULT  = "DEFAULT"
+	DEFER    = "DEFER"
+	NIL      = "NIL"
 )
 
 var keywords = map[string]TokenType{
-	"package": PACKAGE,
-	"import":  IMPORT,
-	"func":    FUNC,
-	"return":  RETURN,
-	"type":    TYPE,
-	"struct":  STRUCT,
-	"const":   CONST,
-	"iota":    IOTA,  // 追加
-	"range":   RANGE, // 追加
-	"if":      IF,
-	"else":    ELSE,
-	"for":     FOR,
-	"switch":  SWITCH,
-	"case":    CASE,
-	"default": DEFAULT,
-	"defer":   DEFER,
-	"nil":     NIL,
+	"package":  PACKAGE,
+	"import":   IMPORT,
+	"func":     FUNC,
+	"return":   RETURN,
+	"type":     TYPE,
+	"struct":   STRUCT,
+	"const":    CONST,
+	"iota":     IOTA,
+	"range":    RANGE,
+	"break":    BREAK,    // 追加
+	"continue": CONTINUE, // 追加
+	"if":       IF,
+	"else":     ELSE,
+	"for":      FOR,
+	"switch":   SWITCH,
+	"case":     CASE,
+	"default":  DEFAULT,
+	"defer":    DEFER,
+	"nil":      NIL,
 }
 
 func LookupIdent(ident string) TokenType {

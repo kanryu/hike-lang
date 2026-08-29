@@ -4,15 +4,6 @@ import (
 	"std/fmt"
 )
 
-// 1. const (...) ブロックと iota
-const (
-	STATUS_OK = iota
-	STATUS_CREATED
-	STATUS_ACCEPTED
-	STATUS_BAD_REQUEST  = 400
-	STATUS_UNAUTHORIZED = 401
-)
-
 func assert(cond bool, testNum int, testName *byte) {
 	if cond {
 		fmt.PrintStr("[PASS #")
@@ -28,66 +19,71 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Const/iota, For-Range & Blank Identifier Tests ===")
+	fmt.PrintLn("=== Running Break, Continue & Init-Statement Branch Tests ===")
 
 	testCount := 0
 
-	// ==========================================
-	// 1. const (...) ブロック & iota テスト
-	// ==========================================
-	testCount++
-	assert(STATUS_OK == 0, testCount, "Const/iota: STATUS_OK == 0")
-
-	testCount++
-	assert(STATUS_CREATED == 1, testCount, "Const/iota: STATUS_CREATED == 1")
-
-	testCount++
-	assert(STATUS_ACCEPTED == 2, testCount, "Const/iota: STATUS_ACCEPTED == 2")
-
-	testCount++
-	assert(STATUS_BAD_REQUEST == 400, testCount, "Const: STATUS_BAD_REQUEST == 400")
-
-	testCount++
-	assert(STATUS_UNAUTHORIZED == 401, testCount, "Const: STATUS_UNAUTHORIZED == 401")
-
-	// ==========================================
-	// 2. ブランク識別子 (_) テスト
-	// ==========================================
-	_ = 9999
-	_ = "ignored message"
-	testCount++
-	assert(true, testCount, "Blank Identifier: _ = expr executes without error")
-
-	// ==========================================
-	// 3. for ... range ループ テスト
-	// ==========================================
-	nums := []int{10, 20, 30}
-
-	// 3-A. インデックス & 値 (for i, v := range nums)
-	sumVal := 0
-	sumIdx := 0
-	for i, v := range nums {
-		sumIdx += i
-		sumVal += v
+	// 1. 3節 for ループ内での break
+	sumBreak := 0
+	for i := 0; i < 10; i++ {
+		if i == 5 {
+			break
+		}
+		sumBreak += i
 	}
 	testCount++
-	assert(sumIdx == 3 && sumVal == 60, testCount, "For-Range: for i, v := range nums correctly iterates index and values")
+	assert(sumBreak == 10, testCount, "For Break: loop stopped at i == 5, sum is 10")
 
-	// 3-B. インデックスのみ (for i := range nums)
-	idxCount := 0
-	for i := range nums {
-		idxCount += i
+	// 2. 3節 for ループ内での continue
+	sumContinue := 0
+	for i := 0; i < 6; i++ {
+		if i == 3 {
+			continue
+		}
+		sumContinue += i
 	}
 	testCount++
-	assert(idxCount == 3, testCount, "For-Range: for i := range nums iterates keys")
+	assert(sumContinue == 12, testCount, "For Continue: skipped i == 3, sum is 12")
 
-	// 3-C. ブランク識別子との併用 (for _, v := range nums)
-	valOnlySum := 0
+	// 3. for ... range ループ内での break
+	nums := []int{10, 20, 30, 40, 50}
+	rangeBreakSum := 0
 	for _, v := range nums {
-		valOnlySum += v
+		if v == 40 {
+			break
+		}
+		rangeBreakSum += v
 	}
 	testCount++
-	assert(valOnlySum == 60, testCount, "For-Range: for _, v := range nums ignores index and sums values")
+	assert(rangeBreakSum == 60, testCount, "For-Range Break: stopped at v == 40, sum is 60")
+
+	// 4. for ... range ループ内での continue
+	rangeContinueSum := 0
+	for _, v := range nums {
+		if v == 20 || v == 40 {
+			continue
+		}
+		rangeContinueSum += v
+	}
+	testCount++
+	assert(rangeContinueSum == 90, testCount, "For-Range Continue: skipped 20 and 40, sum is 90")
+
+	// 5. 初期化付き if 文: if init; cond { ... }
+	testCount++
+	if val := 50; val > 30 {
+		assert(val == 50, testCount, "If Init: val := 50 scoped in if condition")
+	} else {
+		assert(false, testCount, "If Init: unreachable else")
+	}
+
+	// 6. 初期化付き switch 文: switch init; expr { ... }
+	testCount++
+	switch code := 200; code {
+	case 200:
+		assert(code == 200, testCount, "Switch Init: code := 200 matched case 200")
+	default:
+		assert(false, testCount, "Switch Init: unreachable default")
+	}
 
 	fmt.PrintLn("=== All Tests Completed Successfully ===")
 	return testCount

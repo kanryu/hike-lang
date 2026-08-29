@@ -2,7 +2,6 @@ package ast
 
 import "hikec-go/pkg/token"
 
-// 基本ノードインターフェース
 type Node interface {
 	TokenLiteral() string
 }
@@ -44,7 +43,6 @@ type ConstDecl struct {
 func (cd *ConstDecl) declNode()            {}
 func (cd *ConstDecl) TokenLiteral() string { return cd.Token.Literal }
 
-// Program 構造体に Imports を追加
 type Program struct {
 	Package string
 	Imports []*ImportDecl
@@ -75,7 +73,6 @@ func (f *File) TokenLiteral() string {
 	return ""
 }
 
-// 識別子・リテラル
 type Identifier struct {
 	Token token.Token
 	Value string
@@ -107,7 +104,6 @@ type NilLiteral struct {
 func (nl *NilLiteral) expressionNode()      {}
 func (nl *NilLiteral) TokenLiteral() string { return nl.Token.Literal }
 
-// 式 (Expressions)
 type PrefixExpr struct {
 	Token    token.Token
 	Operator string
@@ -154,22 +150,20 @@ type MemberExpr struct {
 func (me *MemberExpr) expressionNode()      {}
 func (me *MemberExpr) TokenLiteral() string { return me.Token.Literal }
 
-// CallExpr に HasEllipsis を追加
 type CallExpr struct {
 	Token       token.Token
 	Function    Expression
 	Args        []Expression
-	HasEllipsis bool // 追加: fn(a, b...) の展開フラグ
+	HasEllipsis bool
 }
 
 func (ce *CallExpr) expressionNode()      {}
 func (ce *CallExpr) TokenLiteral() string { return ce.Token.Literal }
 
-// 型表現 (TypeExpr)
 type NamedType struct {
 	Token   token.Token
-	Package *Identifier // "mem.Allocator" の "mem"（修飾がない場合は nil）
-	Name    *Identifier // 型名本体
+	Package *Identifier
+	Name    *Identifier
 }
 
 func (nt *NamedType) typeExprNode()        {}
@@ -217,7 +211,6 @@ func (pd *ParamDecl) TokenLiteral() string {
 	return pd.Token.Literal
 }
 
-// 宣言 (Declarations)
 type TypeDecl struct {
 	Token token.Token
 	Name  *Identifier
@@ -229,7 +222,7 @@ func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
 
 type FuncDecl struct {
 	Token       token.Token
-	Receiver    *ParamDecl // 追加: メソッドの場合は非nil (例: b *Builder)、通常関数は nil
+	Receiver    *ParamDecl
 	Name        *Identifier
 	Params      []*ParamDecl
 	IsVariadic  bool
@@ -240,7 +233,6 @@ type FuncDecl struct {
 func (fd *FuncDecl) declNode()            {}
 func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
 
-// 文 (Statements)
 type BlockStmt struct {
 	Token      token.Token
 	Statements []Statement
@@ -287,11 +279,26 @@ type DeferStmt struct {
 func (ds *DeferStmt) statementNode()       {}
 func (ds *DeferStmt) TokenLiteral() string { return ds.Token.Literal }
 
+type BreakStmt struct {
+	Token token.Token
+}
+
+func (bs *BreakStmt) statementNode()       {}
+func (bs *BreakStmt) TokenLiteral() string { return bs.Token.Literal }
+
+type ContinueStmt struct {
+	Token token.Token
+}
+
+func (cs *ContinueStmt) statementNode()       {}
+func (cs *ContinueStmt) TokenLiteral() string { return cs.Token.Literal }
+
 type IfStmt struct {
 	Token       token.Token
+	Init        Statement // 追加: if init; cond
 	Condition   Expression
 	Consequence *BlockStmt
-	Alternative Statement // *BlockStmt (else) または *IfStmt (else if)
+	Alternative Statement
 }
 
 func (is *IfStmt) statementNode()       {}
@@ -308,9 +315,28 @@ type ForStmt struct {
 func (fs *ForStmt) statementNode()       {}
 func (fs *ForStmt) TokenLiteral() string { return fs.Token.Literal }
 
+type ForRangeStmt struct {
+	Token token.Token
+	Key   Expression
+	Value Expression
+	X     Expression
+	Body  *BlockStmt
+}
+
+func (fr *ForRangeStmt) statementNode()       {}
+func (fr *ForRangeStmt) TokenLiteral() string { return fr.Token.Literal }
+
+type IotaExpr struct {
+	Token token.Token
+	Value int64
+}
+
+func (ie *IotaExpr) expressionNode()      {}
+func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }
+
 type CaseClause struct {
-	Token  token.Token  // 'case' または 'default'
-	Values []Expression // default の場合は空
+	Token  token.Token
+	Values []Expression
 	Body   []Statement
 }
 
@@ -318,7 +344,8 @@ func (cc *CaseClause) statementNode()       {}
 func (cc *CaseClause) TokenLiteral() string { return cc.Token.Literal }
 
 type SwitchStmt struct {
-	Token token.Token // 'switch'
+	Token token.Token
+	Init  Statement // 追加: switch init; expr
 	Value Expression
 	Cases []*CaseClause
 }
@@ -326,11 +353,8 @@ type SwitchStmt struct {
 func (ss *SwitchStmt) statementNode()       {}
 func (ss *SwitchStmt) TokenLiteral() string { return ss.Token.Literal }
 
-// --- 型表現ノード ---
-
-// []T
 type SliceType struct {
-	Token token.Token // '['
+	Token token.Token
 	Elem  TypeExpr
 }
 
@@ -340,24 +364,18 @@ func (s *SliceType) expressionNode()      {}
 func (pt *PointerType) expressionNode()   {}
 func (nt *NamedType) expressionNode()     {}
 
-// --- 式ノード ---
-
-// arr[low:high]
 type SliceExpr struct {
-	Token token.Token // '['
+	Token token.Token
 	Left  Expression
-	Low   Expression // nil 許容 (例: arr[:high])
-	High  Expression // nil 許容 (例: arr[low:])
+	Low   Expression
+	High  Expression
 }
 
 func (s *SliceExpr) expressionNode()      {}
 func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }
 
-// --- 式ノードに追加 ---
-
-// []T{elem1, elem2, ...}
 type SliceLiteral struct {
-	Token    token.Token // '['
+	Token    token.Token
 	Type     *SliceType
 	Elements []Expression
 }
@@ -365,39 +383,16 @@ type SliceLiteral struct {
 func (sl *SliceLiteral) expressionNode()      {}
 func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
 
-// 構造体のフィールド初期化: Field: Expr または Expr
 type StructFieldValue struct {
-	Name  *Identifier // フィールド名 (省略時は nil)
+	Name  *Identifier
 	Value Expression
 }
 
-// TypeName{ Field: Val, ... }
 type StructLiteral struct {
-	Token  token.Token // IDENT
+	Token  token.Token
 	Type   *NamedType
 	Fields []*StructFieldValue
 }
 
 func (sl *StructLiteral) expressionNode()      {}
 func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
-
-// for i, v := range slice { ... }
-type ForRangeStmt struct {
-	Token token.Token // 'for'
-	Key   Expression  // インデックス変数 (例: i または _、省略時は nil)
-	Value Expression  // 要素変数 (例: v または _、省略時は nil)
-	X     Expression  // スライス式
-	Body  *BlockStmt
-}
-
-func (fr *ForRangeStmt) statementNode()       {}
-func (fr *ForRangeStmt) TokenLiteral() string { return fr.Token.Literal }
-
-// iota 式ノード
-type IotaExpr struct {
-	Token token.Token
-	Value int64
-}
-
-func (ie *IotaExpr) expressionNode()      {}
-func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }

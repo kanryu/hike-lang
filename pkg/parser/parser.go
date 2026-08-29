@@ -392,6 +392,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseReturnStmt()
 	case token.DEFER:
 		return p.parseDeferStmt()
+	case token.BREAK:
+		stmt := &ast.BreakStmt{Token: p.curToken}
+		return stmt
+	case token.CONTINUE:
+		stmt := &ast.ContinueStmt{Token: p.curToken}
+		return stmt
 	default:
 		return p.parseAssignOrExprStmt()
 	}
@@ -416,7 +422,19 @@ func (p *Parser) parseIfStmt() *ast.IfStmt {
 
 	oldAllow := p.allowStructLit
 	p.allowStructLit = false
-	stmt.Condition = p.parseExpression(LOWEST)
+
+	firstStmt := p.parseAssignOrExprStmt()
+
+	if p.peekTokenIs(token.SEMICOLON) {
+		stmt.Init = firstStmt
+		p.nextToken() // ';'
+		p.nextToken() // condへ
+		stmt.Condition = p.parseExpression(LOWEST)
+	} else {
+		if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
+			stmt.Condition = exprStmt.Expr
+		}
+	}
 	p.allowStructLit = oldAllow
 
 	if !p.expectPeek(token.LBRACE) {
@@ -449,7 +467,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 	}
 
 	oldAllow := p.allowStructLit
-	p.allowStructLit = false // for ループヘッダー内での { 誤認を抑止
+	p.allowStructLit = false
 
 	// A. for range X { ... }
 	if p.curTokenIs(token.RANGE) {
@@ -561,7 +579,19 @@ func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
 
 	oldAllow := p.allowStructLit
 	p.allowStructLit = false
-	stmt.Value = p.parseExpression(LOWEST)
+
+	firstStmt := p.parseAssignOrExprStmt()
+
+	if p.peekTokenIs(token.SEMICOLON) {
+		stmt.Init = firstStmt
+		p.nextToken() // ';'
+		p.nextToken() // exprへ
+		stmt.Value = p.parseExpression(LOWEST)
+	} else {
+		if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
+			stmt.Value = exprStmt.Expr
+		}
+	}
 	p.allowStructLit = oldAllow
 
 	if !p.expectPeek(token.LBRACE) {
