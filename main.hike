@@ -1,12 +1,25 @@
 package main
 
 import (
-	"hikec/ast"
-	"hikec/lexer"
-	"hikec/parser"
 	"std/fmt"
-	"std/strings"
 )
+
+func malloc(size int) *byte
+
+type SliceHeader struct {
+	Data *byte
+	Len  int
+	Cap  int
+}
+
+func makeIntSlice(capacity int) []int {
+	raw := malloc(capacity * 8)
+	header := (*SliceHeader)(malloc(24))
+	header.Data = raw
+	header.Len = capacity
+	header.Cap = capacity
+	return *(*[]int)((*byte)(header))
+}
 
 func assert(cond bool, testNum int, testName *byte) {
 	if cond {
@@ -23,62 +36,60 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Slice Syntax & Parser Unit Tests ===")
+	fmt.PrintLn("=== Running Slice Runtime & Execution Tests ===")
 
 	testCount := 0
 
-	// スライス型引数・戻り値およびスライス式を含む検証用HIKEソース
-	sampleSource := "package main\n\nfunc sliceDemo(arr []int) []int {\n  sub := arr[1:3]\n  head := arr[:2]\n  tail := arr[2:]\n  return sub\n}\n"
+	// 1. スライスの作成 (要素数 5)
+	s := makeIntSlice(5)
 
-	lex := lexer.New(sampleSource)
-	p := parser.New(lex)
-	prog := p.ParseProgram()
-
-	// テスト1: ASTルート（Program）の構築検証
+	// テスト1: 初期スライスの len / cap
 	testCount = testCount + 1
-	assert(prog != nil, testCount, "Parser: construct program AST node with slice syntax")
+	assert(len(s) == 5 && cap(s) == 5, testCount, "Slice: initial len and cap match 5")
 
-	// テスト2: パッケージ名の検証
+	// 2. 要素の書き込み
+	s[0] = 10
+	s[1] = 20
+	s[2] = 30
+	s[3] = 40
+	s[4] = 50
+
+	// テスト2: 書き込んだ要素のインデックス読み出し
 	testCount = testCount + 1
-	assert(strings.Equal(prog.Package, "main") == true, testCount, "Parser: parse package identifier 'main'")
+	assert(s[0] == 10 && s[2] == 30 && s[4] == 50, testCount, "Slice: read and write element values")
 
-	// テスト3: トップレベル宣言数の検証
+	// 3. スライス式による部分切り出し: sub := s[1:4] (要素: [20, 30, 40], len: 3, cap: 4)
+	sub := s[1:4]
+
+	// テスト3: sub スライスの len / cap
 	testCount = testCount + 1
-	assert(prog.Decls.Len() == 1, testCount, "Parser: top-level declaration count is 1")
+	assert(len(sub) == 3 && cap(sub) == 4, testCount, "Slice: sub-slice [1:4] has len=3 and cap=4")
 
-	// テスト4: 関数宣言ノードの検証
-	fnDecl := (*ast.FuncDecl)(prog.Decls.Get(0))
+	// テスト4: sub スライスの要素オフセットアクセス
 	testCount = testCount + 1
-	assert(fnDecl.Kind == ast.KIND_FUNC_DECL, testCount, "Parser: declaration node is FuncDecl")
+	assert(sub[0] == 20 && sub[1] == 30 && sub[2] == 40, testCount, "Slice: sub-slice elements match original data")
 
-	// テスト5: 関数名の検証
+	// 4. 先頭省略スライス: head := s[:3] (要素: [10, 20, 30], len: 3, cap: 5)
+	head := s[:3]
+
+	// テスト5: head スライスの検証
 	testCount = testCount + 1
-	assert(strings.Equal(fnDecl.Name, "sliceDemo") == true, testCount, "Parser: func name matches 'sliceDemo'")
+	assert(len(head) == 3 && head[2] == 30, testCount, "Slice: head slice [:3] len=3, head[2]=30")
 
-	// テスト6: スライス型引数リスト長の検証
+	// 5. 末尾省略スライス: tail := s[2:] (要素: [30, 40, 50], len: 3, cap: 3)
+	tail := s[2:]
+
+	// テスト6: tail スライスの検証
 	testCount = testCount + 1
-	assert(fnDecl.Params.Len() == 1, testCount, "Parser: function has 1 parameter")
+	assert(len(tail) == 3 && tail[0] == 30 && tail[2] == 50, testCount, "Slice: tail slice [2:] elements match")
 
-	// テスト7: 第1引数名の検証
-	param0 := (*ast.ParamDecl)(fnDecl.Params.Get(0))
+	// 6. スライス経由の変更が元のバッキング配列に波及することの検証
+	sub[0] = 999
+
+	// テスト7: sub[0] = 999 が s[1] および head[1] に反映されているか
 	testCount = testCount + 1
-	assert(strings.Equal(param0.Name, "arr") == true, testCount, "Parser: parameter name is 'arr'")
+	assert(s[1] == 999 && head[1] == 999, testCount, "Slice: mutation via slice affects shared backing array")
 
-	// テスト8: スライス戻り値型数の検証
-	testCount = testCount + 1
-	assert(fnDecl.ReturnTypes.Len() == 1, testCount, "Parser: function has 1 return type")
-
-	// テスト9: 関数ブロック本体（4つの文）の検証
-	body := (*ast.BlockStmt)(fnDecl.Body)
-	testCount = testCount + 1
-	assert(body != nil && body.Statements.Len() == 4, testCount, "Parser: function body contains 4 statements")
-
-	// テスト10: スライス代入文およびリターン文のノード種別検証
-	stmt0 := (*ast.AssignStmt)(body.Statements.Get(0))
-	stmt3 := (*ast.ReturnStmt)(body.Statements.Get(3))
-	testCount = testCount + 1
-	assert(stmt0.Kind == ast.KIND_ASSIGN_STMT && stmt3.Kind == ast.KIND_RETURN_STMT, testCount, "Parser: statement kinds match AssignStmt and ReturnStmt")
-
-	fmt.PrintLn("=== Slice Syntax Unit Tests Completed ===")
+	fmt.PrintLn("=== Slice Runtime Tests Completed ===")
 	return testCount
 }

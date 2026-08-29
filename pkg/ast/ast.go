@@ -334,6 +334,9 @@ type SliceType struct {
 
 func (s *SliceType) typeExprNode()        {}
 func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
+func (s *SliceType) expressionNode()      {}
+func (pt *PointerType) expressionNode()   {}
+func (nt *NamedType) expressionNode()     {}
 
 // --- 式ノード ---
 

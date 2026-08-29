@@ -19,16 +19,16 @@ type BasicType struct {
 	LLVM     string
 }
 
-func (t *BasicType) TypeName() string { return t.Name }
-func (t *BasicType) Size() int        { return t.ByteSize }
-func (t *BasicType) LLVMType() string { return t.LLVM }
+func (b *BasicType) TypeName() string { return b.Name }
+func (b *BasicType) Size() int        { return b.ByteSize }
+func (b *BasicType) LLVMType() string { return b.LLVM }
 
 var (
 	TypeInt   = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
 	TypeByte  = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
 	TypeBool  = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
-	TypeError = &BasicType{Name: "error", ByteSize: 8, LLVM: "i64"}
 	TypeVoid  = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
+	TypeError = &BasicType{Name: "error", ByteSize: 8, LLVM: "i8*"}
 )
 
 type PointerType struct {
@@ -37,222 +37,127 @@ type PointerType struct {
 
 func (p *PointerType) TypeName() string { return "*" + p.Base.TypeName() }
 func (p *PointerType) Size() int        { return 8 }
-func (p *PointerType) LLVMType() string { return p.Base.LLVMType() + "*" }
-
-type StructField struct {
-	Name   string
-	Type   Type
-	Offset int
-	Index  int
-}
-
-type StructType struct {
-	Name      string
-	Fields    []StructField
-	FieldMap  map[string]StructField
-	TotalSize int
-}
-
-func (s *StructType) TypeName() string { return s.Name }
-func (s *StructType) Size() int        { return s.TotalSize }
-func (s *StructType) LLVMType() string { return "%struct." + s.Name }
-
-type FuncType struct {
-	Name        string
-	ParamTypes  []Type
-	ParamNames  []string
-	ReturnTypes []Type
-	IsExtern    bool
-	IsVariadic  bool
-}
-
-type NamedType struct {
-	Name         string
-	ResolvedType Type
-}
-
-func (t *NamedType) TypeName() string {
-	if t.ResolvedType != nil {
-		return t.ResolvedType.TypeName()
+func (p *PointerType) LLVMType() string {
+	if p.Base == TypeByte {
+		return "i8*"
 	}
-	return t.Name
-}
-
-func (t *NamedType) Size() int {
-	if t.ResolvedType != nil {
-		return t.ResolvedType.Size()
+	if st, ok := p.Base.(*StructType); ok {
+		return fmt.Sprintf("%%struct.%s*", st.Name)
 	}
-	return 8
+	return p.Base.LLVMType() + "*"
 }
 
-func (t *NamedType) LLVMType() string {
-	if t.ResolvedType != nil {
-		return t.ResolvedType.LLVMType()
-	}
-	return "%struct." + t.Name
-}
-
+// スライス型: { i8* data, i64 len, i64 cap }
 type SliceType struct {
 	Elem Type
 }
 
 func (s *SliceType) TypeName() string { return "[]" + s.Elem.TypeName() }
-func (s *SliceType) Size() int        { return 24 } // ptr(8) + len(8) + cap(8)
+func (s *SliceType) Size() int        { return 24 }
 func (s *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
+
+type Field struct {
+	Name string
+	Type Type
+}
+
+type StructType struct {
+	Name      string
+	Fields    []Field
+	TotalSize int
+}
+
+func (s *StructType) TypeName() string { return s.Name }
+func (s *StructType) Size() int        { return s.TotalSize }
+func (s *StructType) LLVMType() string { return fmt.Sprintf("%%struct.%s", s.Name) }
+
+type FuncType struct {
+	Name        string
+	Receiver    Type
+	ParamTypes  []Type
+	ReturnTypes []Type
+	IsVariadic  bool
+	IsExtern    bool
+}
+
+func (f *FuncType) TypeName() string { return f.Name }
+func (f *FuncType) Size() int        { return 8 }
+func (f *FuncType) LLVMType() string { return "i8*" }
 
 type Context struct {
 	Structs   map[string]*StructType
 	Functions map[string]*FuncType
 	Constants map[string]int64
-	Errors    []string
 }
 
-func Analyze(prog *ast.Program) (*Context, error) {
+func NewContext() *Context {
 	ctx := &Context{
 		Structs:   make(map[string]*StructType),
 		Functions: make(map[string]*FuncType),
 		Constants: make(map[string]int64),
-		Errors:    []string{},
 	}
-
-	// 0. 定数宣言の登録
-	for _, decl := range prog.Decls {
-		if cd, ok := decl.(*ast.ConstDecl); ok {
-			if cd.Name != nil && cd.Value != nil {
-				if intLit, isInt := cd.Value.(*ast.IntegerLiteral); isInt {
-					ctx.Constants[cd.Name.Value] = intLit.Value
-					if strings.Contains(cd.Name.Value, "_") {
-						parts := strings.SplitN(cd.Name.Value, "_", 2)
-						ctx.Constants[parts[1]] = intLit.Value
-					}
-				}
-			}
-		}
-	}
-
-	// ビルトイン Arena 構造体の登録
-	arenaStruct := &StructType{
-		Name: "Arena",
-		Fields: []StructField{
-			{Name: "buf", Type: &PointerType{Base: TypeByte}, Offset: 0, Index: 0},
-			{Name: "cap", Type: TypeInt, Offset: 8, Index: 1},
-			{Name: "offset", Type: TypeInt, Offset: 16, Index: 2},
-		},
-		TotalSize: 24,
-	}
-	arenaStruct.FieldMap = make(map[string]StructField)
-	for _, f := range arenaStruct.Fields {
-		arenaStruct.FieldMap[f.Name] = f
-	}
-	ctx.Structs["Arena"] = arenaStruct
-
-	// 1-1. 全構造体名を先行登録 (プレフィックス付き・なし両方で登録)
-	for _, decl := range prog.Decls {
-		if td, ok := decl.(*ast.TypeDecl); ok {
-			if _, ok := td.Type.(*ast.StructType); ok {
-				st := &StructType{
-					Name:     td.Name.Value,
-					Fields:   []StructField{},
-					FieldMap: make(map[string]StructField),
-				}
-				ctx.Structs[td.Name.Value] = st
-				if strings.Contains(td.Name.Value, "_") {
-					parts := strings.SplitN(td.Name.Value, "_", 2)
-					ctx.Structs[parts[1]] = st
-				}
-			}
-		}
-	}
-
-	// 1-2. 各構造体のフィールド解決とレイアウト計算
-	for _, decl := range prog.Decls {
-		if td, ok := decl.(*ast.TypeDecl); ok {
-			if st, ok := td.Type.(*ast.StructType); ok {
-				structType := ctx.Structs[td.Name.Value]
-				totalOffset := 0
-				for idx, field := range st.Fields {
-					fType := ctx.resolveTypeExpr(field.Type)
-					sf := StructField{
-						Name:   field.Name.Value,
-						Type:   fType,
-						Offset: totalOffset,
-						Index:  idx,
-					}
-					structType.Fields = append(structType.Fields, sf)
-					structType.FieldMap[field.Name.Value] = sf
-					totalOffset += fType.Size()
-				}
-				structType.TotalSize = totalOffset
-			}
-		}
-	}
-
-	// 2. 関数シグネチャの収集
-	for _, decl := range prog.Decls {
-		if fd, ok := decl.(*ast.FuncDecl); ok {
-			fnType := &FuncType{
-				Name:        fd.Name.Value,
-				ParamTypes:  []Type{},
-				ParamNames:  []string{},
-				ReturnTypes: []Type{},
-				IsExtern:    fd.Body == nil,
-				IsVariadic:  fd.IsVariadic,
-			}
-
-			for _, p := range fd.Params {
-				fnType.ParamTypes = append(fnType.ParamTypes, ctx.resolveTypeExpr(p.Type))
-				fnType.ParamNames = append(fnType.ParamNames, p.Name.Value)
-			}
-
-			for _, r := range fd.ReturnTypes {
-				fnType.ReturnTypes = append(fnType.ReturnTypes, ctx.resolveTypeExpr(r))
-			}
-
-			// 基本名で登録
-			ctx.Functions[fd.Name.Value] = fnType
-
-			// レシーバ付きメソッドの場合、多様な組み合わせでエイリアス登録
-			if fd.Receiver != nil {
-				recvTypeName := ""
-				if pt, ok := fd.Receiver.Type.(*ast.PointerType); ok {
-					if named, ok := pt.Base.(*ast.NamedType); ok {
-						recvTypeName = named.Name.Value
-					}
-				} else if named, ok := fd.Receiver.Type.(*ast.NamedType); ok {
-					recvTypeName = named.Name.Value
-				}
-
-				if recvTypeName != "" {
-					ctx.Functions[recvTypeName+"_"+fd.Name.Value] = fnType
-					if strings.Contains(recvTypeName, "_") {
-						parts := strings.SplitN(recvTypeName, "_", 2)
-						ctx.Functions[parts[1]+"_"+fd.Name.Value] = fnType
-					}
-					if strings.Contains(fd.Name.Value, "_") {
-						parts := strings.SplitN(fd.Name.Value, "_", 2)
-						ctx.Functions[recvTypeName+"_"+parts[1]] = fnType
-						ctx.Functions[parts[0]+"_"+recvTypeName+"_"+parts[1]] = fnType
-					}
-				}
-			}
-		}
-	}
-
-	if len(ctx.Errors) > 0 {
-		return nil, fmt.Errorf("semantic error: %s", ctx.Errors[0])
-	}
-
-	return ctx, nil
+	ctx.registerBuiltins()
+	return ctx
 }
 
-func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
+func (ctx *Context) registerBuiltins() {
+	// 標準Cライブラリ組み込み関数
+	ctx.Functions["malloc"] = &FuncType{
+		Name:        "malloc",
+		ParamTypes:  []Type{TypeInt},
+		ReturnTypes: []Type{&PointerType{Base: TypeByte}},
+		IsExtern:    true,
+	}
+	ctx.Functions["free"] = &FuncType{
+		Name:        "free",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}},
+		ReturnTypes: []Type{},
+		IsExtern:    true,
+	}
+	ctx.Functions["calloc"] = &FuncType{
+		Name:        "calloc",
+		ParamTypes:  []Type{TypeInt, TypeInt},
+		ReturnTypes: []Type{&PointerType{Base: TypeByte}},
+		IsExtern:    true,
+	}
+	ctx.Functions["printf"] = &FuncType{
+		Name:        "printf",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}},
+		ReturnTypes: []Type{TypeInt},
+		IsVariadic:  true,
+		IsExtern:    true,
+	}
+	ctx.Functions["strlen"] = &FuncType{
+		Name:        "strlen",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}},
+		ReturnTypes: []Type{TypeInt},
+		IsExtern:    true,
+	}
+	ctx.Functions["memcpy"] = &FuncType{
+		Name:        "memcpy",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}, &PointerType{Base: TypeByte}, TypeInt},
+		ReturnTypes: []Type{&PointerType{Base: TypeByte}},
+		IsExtern:    true,
+	}
+	ctx.Functions["memcmp"] = &FuncType{
+		Name:        "memcmp",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}, &PointerType{Base: TypeByte}, TypeInt},
+		ReturnTypes: []Type{TypeInt},
+		IsExtern:    true,
+	}
+}
+
+func (ctx *Context) ResolveType(expr ast.TypeExpr) Type {
 	if expr == nil {
 		return TypeVoid
 	}
 	switch t := expr.(type) {
 	case *ast.SliceType:
-		elem := ctx.resolveTypeExpr(t.Elem)
+		elem := ctx.ResolveType(t.Elem)
 		return &SliceType{Elem: elem}
+	case *ast.PointerType:
+		base := ctx.ResolveType(t.Base)
+		return &PointerType{Base: base}
 	case *ast.NamedType:
 		name := t.Name.Value
 		if t.Package != nil {
@@ -285,18 +190,95 @@ func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
 			}
 		}
 		return &BasicType{Name: name, ByteSize: 8, LLVM: "%struct." + name}
-
-	case *ast.PointerType:
-		base := ctx.resolveTypeExpr(t.Base)
-		return &PointerType{Base: base}
 	}
 	return TypeInt
 }
 
-func (ctx *Context) LookupField(st *StructType, fieldName string) (*StructField, error) {
-	field, ok := st.FieldMap[fieldName]
-	if !ok {
-		return nil, fmt.Errorf("struct %s has no field named %s", st.Name, fieldName)
+// Analyze はAST全体を解析し、型情報・関数シグネチャ・定数テーブルを構築します
+func Analyze(prog *ast.Program) (*Context, error) {
+	ctx := NewContext()
+
+	// パス1: 構造体型宣言（TypeDecl）の収集
+	for _, decl := range prog.Decls {
+		if td, ok := decl.(*ast.TypeDecl); ok {
+			if st, ok := td.Type.(*ast.StructType); ok {
+				structType := &StructType{
+					Name:   td.Name.Value,
+					Fields: []Field{},
+				}
+				totalSize := 0
+				for _, f := range st.Fields {
+					fType := ctx.ResolveType(f.Type)
+					structType.Fields = append(structType.Fields, Field{
+						Name: f.Name.Value,
+						Type: fType,
+					})
+					totalSize += fType.Size()
+				}
+				structType.TotalSize = totalSize
+				ctx.Structs[td.Name.Value] = structType
+			}
+		}
 	}
-	return &field, nil
+
+	// パス2: 定数宣言（ConstDecl）の収集
+	for _, decl := range prog.Decls {
+		if cd, ok := decl.(*ast.ConstDecl); ok {
+			if il, ok := cd.Value.(*ast.IntegerLiteral); ok {
+				ctx.Constants[cd.Name.Value] = il.Value
+			}
+		}
+	}
+
+	// パス3: 関数宣言（FuncDecl）のシグネチャ収集
+	for _, decl := range prog.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok {
+			var recvType Type = nil
+			var mangledName = fd.Name.Value
+
+			if fd.Receiver != nil {
+				recvType = ctx.ResolveType(fd.Receiver.Type)
+				var recvTypeName = ""
+				if named, ok := fd.Receiver.Type.(*ast.NamedType); ok {
+					recvTypeName = named.Name.Value
+				} else if pt, ok := fd.Receiver.Type.(*ast.PointerType); ok {
+					if named, ok := pt.Base.(*ast.NamedType); ok {
+						recvTypeName = named.Name.Value
+					}
+				}
+				if strings.Contains(mangledName, "_") {
+					parts := strings.SplitN(mangledName, "_", 2)
+					mangledName = parts[0] + "_" + recvTypeName + "_" + parts[1]
+				} else {
+					mangledName = recvTypeName + "_" + mangledName
+				}
+			}
+
+			paramTypes := []Type{}
+			for _, p := range fd.Params {
+				paramTypes = append(paramTypes, ctx.ResolveType(p.Type))
+			}
+
+			retTypes := []Type{}
+			for _, rt := range fd.ReturnTypes {
+				retTypes = append(retTypes, ctx.ResolveType(rt))
+			}
+
+			fnType := &FuncType{
+				Name:        mangledName,
+				Receiver:    recvType,
+				ParamTypes:  paramTypes,
+				ReturnTypes: retTypes,
+				IsVariadic:  fd.IsVariadic,
+				IsExtern:    fd.Body == nil,
+			}
+
+			ctx.Functions[fd.Name.Value] = fnType
+			if fd.Receiver != nil {
+				ctx.Functions[mangledName] = fnType
+			}
+		}
+	}
+
+	return ctx, nil
 }

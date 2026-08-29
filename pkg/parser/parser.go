@@ -16,9 +16,9 @@ const (
 	LESSGREATER // <, >, <=, >=
 	SUM         // +, -
 	PRODUCT     // *, /
-	PREFIX      // -X, !X
+	PREFIX      // -X, !X, *X
 	CALL        // myFunction(X)
-	INDEX       // array[index]
+	INDEX       // array[index], slice[low:high]
 	DOT         // obj.field
 )
 
@@ -119,7 +119,7 @@ func (p *Parser) curPrecedence() int {
 
 func isTypeStart(tok token.Token) bool {
 	switch tok.Type {
-	case token.IDENT, token.ASTERISK, token.LPAREN, token.STRUCT:
+	case token.IDENT, token.ASTERISK, token.LPAREN, token.STRUCT, token.LBRACKET:
 		return true
 	default:
 		return false
@@ -144,7 +144,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 		if p.peekTokenIs(token.STRING) {
 			p.nextToken()
 			p.log(fmt.Sprintf("Imported '%s'", p.curToken.Literal))
-			prog.Imports = append(prog.Imports, &ast.ImportDecl{Path: p.curToken.Literal})
+			prog.Imports = append(prog.Imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
 			p.nextToken()
 		} else if p.peekTokenIs(token.LPAREN) {
 			p.nextToken()
@@ -152,7 +152,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 			for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
 				if p.curTokenIs(token.STRING) {
 					p.log(fmt.Sprintf("Imported '%s'", p.curToken.Literal))
-					prog.Imports = append(prog.Imports, &ast.ImportDecl{Path: p.curToken.Literal})
+					prog.Imports = append(prog.Imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
 				}
 				p.nextToken()
 			}
@@ -228,7 +228,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		if !p.expectPeek(token.RPAREN) {
 			return nil
 		}
-		recv = &ast.ParamDecl{Name: rName, Type: rType}
+		recv = &ast.ParamDecl{Token: rName.Token, Name: rName, Type: rType}
 	}
 
 	if !p.expectPeek(token.IDENT) {
@@ -267,7 +267,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 			}
 
 			pType := p.parseTypeExpr()
-			params = append(params, &ast.ParamDecl{Name: pName, Type: pType})
+			params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
 
 			if p.peekTokenIs(token.COMMA) {
 				p.nextToken()
@@ -478,13 +478,16 @@ func (p *Parser) parseDeferStmt() *ast.DeferStmt {
 }
 
 func (p *Parser) parseAssignOrExprStmt() ast.Statement {
+	startTok := p.curToken
 	leftExpr := p.parseExpression(LOWEST)
 
 	if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
+		assignTok := p.curToken
 		p.nextToken()
 		rhs := p.parseExpression(LOWEST)
 		return &ast.AssignStmt{
+			Token: assignTok,
 			Left:  []ast.Expression{leftExpr},
 			Right: []ast.Expression{rhs},
 		}
@@ -497,7 +500,9 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 			p.nextToken()
 			lefts = append(lefts, p.parseExpression(LOWEST))
 		}
-		if p.expectPeek(token.DEFINE) || p.expectPeek(token.ASSIGN) {
+		if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
+			p.nextToken()
+			assignTok := p.curToken
 			p.nextToken()
 			rights := []ast.Expression{}
 			for {
@@ -509,11 +514,11 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 					break
 				}
 			}
-			return &ast.AssignStmt{Left: lefts, Right: rights}
+			return &ast.AssignStmt{Token: assignTok, Left: lefts, Right: rights}
 		}
 	}
 
-	return &ast.ExprStmt{Expr: leftExpr}
+	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
 }
 
 func (p *Parser) parseExpression(precedence int) ast.Expression {
@@ -530,6 +535,16 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.NilLiteral{Token: p.curToken}
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND:
 		leftExp = p.parsePrefixExpr()
+	case token.LBRACKET:
+		// []T スライス型表現
+		tok := p.curToken
+		if p.expectPeek(token.RBRACKET) {
+			p.nextToken() // ']' の次（要素型）へ
+			elem := p.parseTypeExpr()
+			leftExp = &ast.SliceType{Token: tok, Elem: elem}
+		} else {
+			return nil
+		}
 	case token.LPAREN:
 		p.nextToken()
 		leftExp = p.parseExpression(LOWEST)
@@ -610,6 +625,42 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	return &ast.CallExpr{Token: tok, Function: fn, Args: args}
 }
 
+// インデックス式およびスライス式の解析
+func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
+	tok := p.curToken // '['
+
+	// s[:high] または s[:] (low省略)
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':'
+		var high ast.Expression = nil
+		if !p.peekTokenIs(token.RBRACKET) {
+			p.nextToken()
+			high = p.parseExpression(LOWEST)
+		}
+		p.expectPeek(token.RBRACKET)
+		return &ast.SliceExpr{Token: tok, Left: left, Low: nil, High: high}
+	}
+
+	p.nextToken()
+	low := p.parseExpression(LOWEST)
+
+	// s[low:high] または s[low:]
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':'
+		var high ast.Expression = nil
+		if !p.peekTokenIs(token.RBRACKET) {
+			p.nextToken()
+			high = p.parseExpression(LOWEST)
+		}
+		p.expectPeek(token.RBRACKET)
+		return &ast.SliceExpr{Token: tok, Left: left, Low: low, High: high}
+	}
+
+	// s[i] (通常インデックス)
+	p.expectPeek(token.RBRACKET)
+	return &ast.IndexExpr{Token: tok, Left: left, Index: low}
+}
+
 func (p *Parser) parseMemberExpr(obj ast.Expression) *ast.MemberExpr {
 	tok := p.curToken
 	p.nextToken()
@@ -617,23 +668,25 @@ func (p *Parser) parseMemberExpr(obj ast.Expression) *ast.MemberExpr {
 	return &ast.MemberExpr{Token: tok, Object: obj, Field: field}
 }
 
-// parseTypeExpr 内の先頭に追加
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	// []T の判定
 	if p.curTokenIs(token.LBRACKET) {
 		tok := p.curToken
 		if p.expectPeek(token.RBRACKET) {
-			p.nextToken() // ']' を消費して要素型へ
+			p.nextToken() // ']' の次 (要素型) へ
 			elem := p.parseTypeExpr()
 			return &ast.SliceType{Token: tok, Elem: elem}
 		}
+		return nil
 	}
+
 	if p.curTokenIs(token.ASTERISK) {
 		tok := p.curToken
 		p.nextToken()
 		base := p.parseTypeExpr()
 		return &ast.PointerType{Token: tok, Base: base}
 	}
+
 	if p.curTokenIs(token.STRUCT) {
 		tok := p.curToken
 		p.expectPeek(token.LBRACE)
@@ -647,7 +700,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			fName := p.parseIdentifier()
 			p.nextToken()
 			fType := p.parseTypeExpr()
-			fields = append(fields, &ast.FieldDecl{Name: fName, Type: fType})
+			fields = append(fields, &ast.FieldDecl{Token: fName.Token, Name: fName, Type: fType})
 			p.nextToken()
 		}
 		return &ast.StructType{Token: tok, Fields: fields}
@@ -662,40 +715,4 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	}
 
 	return &ast.NamedType{Token: name.Token, Package: nil, Name: name}
-}
-
-// インデックス式またはスライス式のパース
-func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
-	tok := p.curToken // '['
-	p.nextToken()
-
-	// arr[:high] or arr[:]
-	if p.curTokenIs(token.COLON) {
-		p.nextToken()
-		var high ast.Expression = nil
-		if !p.curTokenIs(token.RBRACKET) {
-			high = p.parseExpression(LOWEST)
-			p.nextToken()
-		}
-		p.expectPeek(token.RBRACKET)
-		return &ast.SliceExpr{Token: tok, Left: left, Low: nil, High: high}
-	}
-
-	low := p.parseExpression(LOWEST)
-
-	// arr[low:high] or arr[low:]
-	if p.peekTokenIs(token.COLON) {
-		p.nextToken() // ':'
-		p.nextToken()
-		var high ast.Expression = nil
-		if !p.curTokenIs(token.RBRACKET) {
-			high = p.parseExpression(LOWEST)
-			p.nextToken()
-		}
-		p.expectPeek(token.RBRACKET)
-		return &ast.SliceExpr{Token: tok, Left: left, Low: low, High: high}
-	}
-
-	p.expectPeek(token.RBRACKET)
-	return &ast.IndexExpr{Token: tok, Left: left, Index: low}
 }
