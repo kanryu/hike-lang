@@ -4,9 +4,14 @@ import (
 	"std/fmt"
 )
 
-type Counter struct {
-	Value int
-}
+// 1. const (...) ブロックと iota
+const (
+	STATUS_OK = iota
+	STATUS_CREATED
+	STATUS_ACCEPTED
+	STATUS_BAD_REQUEST  = 400
+	STATUS_UNAUTHORIZED = 401
+)
 
 func assert(cond bool, testNum int, testName *byte) {
 	if cond {
@@ -23,60 +28,67 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Compound Assignment & Inc/Dec Tests ===")
+	fmt.PrintLn("=== Running Const/iota, For-Range & Blank Identifier Tests ===")
 
 	testCount := 0
 
-	// 1. 変数のインクリメント・デクリメント
-	x := 10
-	x++
-	x++
+	// ==========================================
+	// 1. const (...) ブロック & iota テスト
+	// ==========================================
 	testCount++
-	assert(x == 12, testCount, "Inc: x++ from 10 twice becomes 12")
+	assert(STATUS_OK == 0, testCount, "Const/iota: STATUS_OK == 0")
 
-	x--
 	testCount++
-	assert(x == 11, testCount, "Dec: x-- from 12 becomes 11")
+	assert(STATUS_CREATED == 1, testCount, "Const/iota: STATUS_CREATED == 1")
 
-	// 2. 変数の複合代入 (+=, -=, *=, /=)
-	x += 9 // 20
 	testCount++
-	assert(x == 20, testCount, "Compound +=: 11 += 9 becomes 20")
+	assert(STATUS_ACCEPTED == 2, testCount, "Const/iota: STATUS_ACCEPTED == 2")
 
-	x -= 5 // 15
 	testCount++
-	assert(x == 15, testCount, "Compound -=: 20 -= 5 becomes 15")
+	assert(STATUS_BAD_REQUEST == 400, testCount, "Const: STATUS_BAD_REQUEST == 400")
 
-	x *= 3 // 45
 	testCount++
-	assert(x == 45, testCount, "Compound *=: 15 *= 3 becomes 45")
+	assert(STATUS_UNAUTHORIZED == 401, testCount, "Const: STATUS_UNAUTHORIZED == 401")
 
-	x /= 9 // 5
+	// ==========================================
+	// 2. ブランク識別子 (_) テスト
+	// ==========================================
+	_ = 9999
+	_ = "ignored message"
 	testCount++
-	assert(x == 5, testCount, "Compound /=: 45 /= 9 becomes 5")
+	assert(true, testCount, "Blank Identifier: _ = expr executes without error")
 
-	// 3. 構造体フィールドへの ++, +=
-	c := Counter{Value: 100}
-	c.Value++
-	c.Value += 49
-	testCount++
-	assert(c.Value == 150, testCount, "Struct Field: c.Value++ and += 49 becomes 150")
+	// ==========================================
+	// 3. for ... range ループ テスト
+	// ==========================================
+	nums := []int{10, 20, 30}
 
-	// 4. スライス要素への ++, +=
-	s := []int{10, 20, 30}
-	s[0]++
-	s[1] += 80
-	testCount++
-	assert(s[0] == 11 && s[1] == 100, testCount, "Slice Elem: s[0]++ and s[1] += 80 work correctly")
-
-	// 5. for ループ後処理節での i++
-	sum := 0
-	for i := 0; i < 5; i++ {
-		sum += i
+	// 3-A. インデックス & 値 (for i, v := range nums)
+	sumVal := 0
+	sumIdx := 0
+	for i, v := range nums {
+		sumIdx += i
+		sumVal += v
 	}
 	testCount++
-	assert(sum == 10, testCount, "For Loop Post: for i := 0; i < 5; i++ correctly sums to 10")
+	assert(sumIdx == 3 && sumVal == 60, testCount, "For-Range: for i, v := range nums correctly iterates index and values")
 
-	fmt.PrintLn("=== All Compound Assignment Tests Completed ===")
+	// 3-B. インデックスのみ (for i := range nums)
+	idxCount := 0
+	for i := range nums {
+		idxCount += i
+	}
+	testCount++
+	assert(idxCount == 3, testCount, "For-Range: for i := range nums iterates keys")
+
+	// 3-C. ブランク識別子との併用 (for _, v := range nums)
+	valOnlySum := 0
+	for _, v := range nums {
+		valOnlySum += v
+	}
+	testCount++
+	assert(valOnlySum == 60, testCount, "For-Range: for _, v := range nums ignores index and sums values")
+
+	fmt.PrintLn("=== All Tests Completed Successfully ===")
 	return testCount
 }

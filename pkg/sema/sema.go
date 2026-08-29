@@ -229,9 +229,8 @@ func Analyze(prog *ast.Program) (*Context, error) {
 
 	for _, decl := range prog.Decls {
 		if cd, ok := decl.(*ast.ConstDecl); ok {
-			if il, ok := cd.Value.(*ast.IntegerLiteral); ok {
-				ctx.Constants[cd.Name.Value] = il.Value
-			}
+			val := evalConstExpr(cd.Value, ctx.Constants)
+			ctx.Constants[cd.Name.Value] = val
 		}
 	}
 
@@ -285,4 +284,44 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	}
 
 	return ctx, nil
+}
+
+func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
+	if expr == nil {
+		return 0
+	}
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return e.Value
+	case *ast.IotaExpr:
+		return e.Value
+	case *ast.Identifier:
+		if val, ok := consts[e.Value]; ok {
+			return val
+		}
+	case *ast.BinaryExpr:
+		left := evalConstExpr(e.Left, consts)
+		right := evalConstExpr(e.Right, consts)
+		switch e.Operator {
+		case "+":
+			return left + right
+		case "-":
+			return left - right
+		case "*":
+			return left * right
+		case "/":
+			if right != 0 {
+				return left / right
+			}
+		case "<<":
+			return left << uint(right)
+		case ">>":
+			return left >> uint(right)
+		case "|":
+			return left | right
+		case "&":
+			return left & right
+		}
+	}
+	return 0
 }

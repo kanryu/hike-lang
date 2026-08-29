@@ -380,3 +380,24 @@ type StructLiteral struct {
 
 func (sl *StructLiteral) expressionNode()      {}
 func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+// for i, v := range slice { ... }
+type ForRangeStmt struct {
+	Token token.Token // 'for'
+	Key   Expression  // インデックス変数 (例: i または _、省略時は nil)
+	Value Expression  // 要素変数 (例: v または _、省略時は nil)
+	X     Expression  // スライス式
+	Body  *BlockStmt
+}
+
+func (fr *ForRangeStmt) statementNode()       {}
+func (fr *ForRangeStmt) TokenLiteral() string { return fr.Token.Literal }
+
+// iota 式ノード
+type IotaExpr struct {
+	Token token.Token
+	Value int64
+}
+
+func (ie *IotaExpr) expressionNode()      {}
+func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }

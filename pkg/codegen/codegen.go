@@ -403,6 +403,8 @@ func (g *CodeGenerator) emitStatement(b *strings.Builder, stmt ast.Statement, cu
 		g.emitIfStmt(b, s, currentFn)
 	case *ast.ForStmt:
 		g.emitForStmt(b, s, currentFn)
+	case *ast.ForRangeStmt:
+		g.emitForRangeStmt(b, s, currentFn)
 	case *ast.SwitchStmt:
 		g.emitSwitchStmt(b, s, currentFn)
 	case *ast.ReturnStmt:
@@ -456,6 +458,105 @@ func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentF
 	} else {
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
 	}
+
+	b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
+}
+
+// 2. emitForRangeStmt の実装
+func (g *CodeGenerator) emitForRangeStmt(b *strings.Builder, s *ast.ForRangeStmt, currentFn string) {
+	sliceReg, sliceType := g.resolveValue(b, s.X)
+	sl, isSlice := sliceType.(*sema.SliceType)
+	if !isSlice {
+		panic("[Codegen Error] range expression must be a slice")
+	}
+
+	elemType := sl.Elem
+
+	// スライスからポインタと長さを取得
+	sPtr := g.nextReg()
+	sLen := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", sPtr, sl.LLVMType(), sliceReg))
+	b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", sLen, sl.LLVMType(), sliceReg))
+
+	// ループインデックスカウンターをスタック上に確保
+	idxAlloca := g.nextReg()
+	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", idxAlloca))
+	b.WriteString(fmt.Sprintf("  store i64 0, i64* %s\n", idxAlloca))
+
+	// Key 変数（インデックス）のシンボル登録
+	var keySymName string
+	if s.Key != nil {
+		if kIdent, ok := s.Key.(*ast.Identifier); ok && kIdent.Value != "_" {
+			if _, exists := g.symbols[kIdent.Value]; !exists {
+				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i64\n", kIdent.Value))
+				g.symbols[kIdent.Value] = Symbol{Name: kIdent.Value, LLVMName: "%" + kIdent.Value, Type: sema.TypeInt}
+			}
+			keySymName = "%" + kIdent.Value
+		}
+	}
+
+	// Value 変数（要素）のシンボル登録
+	var valSymName string
+	if s.Value != nil {
+		if vIdent, ok := s.Value.(*ast.Identifier); ok && vIdent.Value != "_" {
+			if _, exists := g.symbols[vIdent.Value]; !exists {
+				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, elemType.LLVMType()))
+				g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: elemType}
+			}
+			valSymName = "%" + vIdent.Value
+		}
+	}
+
+	lblCond := g.nextLabel("range.cond")
+	lblBody := g.nextLabel("range.body")
+	lblPost := g.nextLabel("range.post")
+	lblEnd := g.nextLabel("range.end")
+
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
+
+	// 条件判定: idx < len
+	b.WriteString(fmt.Sprintf("%s:\n", lblCond))
+	curIdxReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", curIdxReg, idxAlloca))
+	cmpReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", cmpReg, curIdxReg, sLen))
+	b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cmpReg, lblBody, lblEnd))
+
+	// ループ本体
+	b.WriteString(fmt.Sprintf("%s:\n", lblBody))
+
+	// Key への書き込み
+	if keySymName != "" {
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", curIdxReg, keySymName))
+	}
+
+	// Value への書き込み
+	if valSymName != "" {
+		typedPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, sPtr, elemType.LLVMType()))
+		elemPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", elemPtr, elemType.LLVMType(), elemType.LLVMType(), typedPtr, curIdxReg))
+		elemVal := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", elemVal, elemType.LLVMType(), elemType.LLVMType(), elemPtr))
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", elemType.LLVMType(), elemVal, elemType.LLVMType(), valSymName))
+	}
+
+	if s.Body != nil {
+		for _, stmt := range s.Body.Statements {
+			g.emitStatement(b, stmt, currentFn)
+		}
+	}
+
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblPost))
+
+	// 後処理: idx++
+	b.WriteString(fmt.Sprintf("%s:\n", lblPost))
+	postIdx := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", postIdx, idxAlloca))
+	nextIdx := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = add i64 %s, 1\n", nextIdx, postIdx))
+	b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", nextIdx, idxAlloca))
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
 
 	b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
 }
@@ -586,6 +687,12 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 // 2. emitAssignStmt の複合代入判定を更新
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 	if len(s.Left) == 1 && len(s.Right) == 1 {
+		// ブランク識別子: _ = expr または _ := expr
+		if lhsIdent, ok := s.Left[0].(*ast.Identifier); ok && lhsIdent.Value == "_" {
+			g.resolveValue(b, s.Right[0])
+			return
+		}
+
 		op := s.Token.Literal
 		if op == "++" {
 			op = "+="
@@ -1119,6 +1226,9 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } %s, i64 %d, 2\n", t3, t2, allocCap))
 
 		return t3, slType
+
+	case *ast.IotaExpr:
+		return fmt.Sprintf("%d", e.Value), sema.TypeInt
 
 	// 1. resolveValue 内に StructLiteral の処理を追加
 	case *ast.StructLiteral:

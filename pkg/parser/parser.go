@@ -128,6 +128,9 @@ func (p *Parser) ParseProgram() *ast.Program {
 		case token.IMPORT:
 			imports := p.parseImportDecl()
 			prog.Imports = append(prog.Imports, imports...)
+		case token.CONST:
+			constDecls := p.parseConstDecl()
+			prog.Decls = append(prog.Decls, constDecls...)
 		default:
 			decl := p.parseTopLevelDecl()
 			if decl != nil {
@@ -143,8 +146,6 @@ func (p *Parser) parseTopLevelDecl() ast.Decl {
 	switch p.curToken.Type {
 	case token.TYPE:
 		return p.parseTypeDecl()
-	case token.CONST:
-		return p.parseConstDecl()
 	case token.FUNC:
 		return p.parseFuncDecl()
 	default:
@@ -154,7 +155,7 @@ func (p *Parser) parseTopLevelDecl() ast.Decl {
 
 func (p *Parser) parseImportDecl() []*ast.ImportDecl {
 	imports := []*ast.ImportDecl{}
-	p.nextToken() // 'import' を消費
+	p.nextToken()
 	if p.curTokenIs(token.LPAREN) {
 		for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
 			p.nextToken()
@@ -197,23 +198,83 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	return stmt
 }
 
-func (p *Parser) parseConstDecl() *ast.ConstDecl {
-	stmt := &ast.ConstDecl{Token: p.curToken}
+func (p *Parser) parseConstDecl() []ast.Decl {
+	decls := []ast.Decl{}
 	p.nextToken()
-	stmt.Name = p.parseIdentifier()
-	if p.peekTokenIs(token.ASSIGN) {
+
+	if p.curTokenIs(token.LPAREN) {
 		p.nextToken()
-		p.nextToken()
-		stmt.Value = p.parseExpression(LOWEST)
+		iotaVal := int64(0)
+		var lastExpr ast.Expression = nil
+
+		for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+			if p.curTokenIs(token.IDENT) {
+				name := p.parseIdentifier()
+				var valExpr ast.Expression = nil
+
+				if p.peekTokenIs(token.ASSIGN) {
+					p.nextToken()
+					p.nextToken()
+					valExpr = p.parseExpression(LOWEST)
+					lastExpr = valExpr
+				} else if lastExpr != nil {
+					valExpr = lastExpr
+				} else {
+					valExpr = &ast.IotaExpr{Token: name.Token, Value: iotaVal}
+				}
+
+				valExpr = replaceIota(valExpr, iotaVal)
+
+				decls = append(decls, &ast.ConstDecl{
+					Token: name.Token,
+					Name:  name,
+					Value: valExpr,
+				})
+				iotaVal++
+			}
+			p.nextToken()
+		}
+	} else {
+		name := p.parseIdentifier()
+		var valExpr ast.Expression = nil
+		if p.peekTokenIs(token.ASSIGN) {
+			p.nextToken()
+			p.nextToken()
+			valExpr = p.parseExpression(LOWEST)
+		}
+		decls = append(decls, &ast.ConstDecl{
+			Token: name.Token,
+			Name:  name,
+			Value: valExpr,
+		})
 	}
-	return stmt
+	return decls
+}
+
+func replaceIota(expr ast.Expression, iotaVal int64) ast.Expression {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if e.Value == "iota" {
+			return &ast.IotaExpr{Token: e.Token, Value: iotaVal}
+		}
+	case *ast.BinaryExpr:
+		return &ast.BinaryExpr{
+			Token:    e.Token,
+			Operator: e.Operator,
+			Left:     replaceIota(e.Left, iotaVal),
+			Right:    replaceIota(e.Right, iotaVal),
+		}
+	}
+	return expr
 }
 
 func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	fn := &ast.FuncDecl{Token: p.curToken}
 	p.nextToken()
 
-	// レシーバー: func (c *Counter) Method(...)
 	if p.curTokenIs(token.LPAREN) {
 		p.nextToken()
 		recvName := p.parseIdentifier()
@@ -232,7 +293,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
 		for {
-			// 1. Cスタイル可変長: func printf(fmt *byte, ...)
 			if p.curTokenIs(token.ELLIPSIS) {
 				fn.IsVariadic = true
 				if p.peekTokenIs(token.RPAREN) {
@@ -242,7 +302,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 			} else {
 				pName := p.parseIdentifier()
 				p.nextToken()
-				// 2. Goスタイル可変長: func fn(args ...int)
 				if p.curTokenIs(token.ELLIPSIS) {
 					fn.IsVariadic = true
 					p.nextToken()
@@ -380,73 +439,120 @@ func (p *Parser) parseIfStmt() *ast.IfStmt {
 	return stmt
 }
 
-func (p *Parser) parseForStmt() *ast.ForStmt {
-	stmt := &ast.ForStmt{Token: p.curToken}
+func (p *Parser) parseForStmt() ast.Statement {
+	forTok := p.curToken
 	p.nextToken()
 
 	if p.curTokenIs(token.LBRACE) {
-		stmt.Body = p.parseBlockStmt()
-		return stmt
+		body := p.parseBlockStmt()
+		return &ast.ForStmt{Token: forTok, Body: body}
 	}
 
-	if p.curTokenIs(token.SEMICOLON) {
+	oldAllow := p.allowStructLit
+	p.allowStructLit = false // for ループヘッダー内での { 誤認を抑止
+
+	// A. for range X { ... }
+	if p.curTokenIs(token.RANGE) {
 		p.nextToken()
+		x := p.parseExpression(LOWEST)
+		p.allowStructLit = oldAllow
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		body := p.parseBlockStmt()
+		return &ast.ForRangeStmt{Token: forTok, Key: nil, Value: nil, X: x, Body: body}
+	}
+
+	// B. for i, v := range X または for i := range X
+	var firstStmt ast.Statement = nil
+	if p.curTokenIs(token.IDENT) && (p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN)) {
+		firstIdent := p.parseIdentifier()
+
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			secondIdent := p.parseIdentifier()
+
+			if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
+				p.nextToken()
+				if p.peekTokenIs(token.RANGE) {
+					p.nextToken()
+					p.nextToken()
+					x := p.parseExpression(LOWEST)
+					p.allowStructLit = oldAllow
+					if !p.expectPeek(token.LBRACE) {
+						return nil
+					}
+					body := p.parseBlockStmt()
+					return &ast.ForRangeStmt{Token: forTok, Key: firstIdent, Value: secondIdent, X: x, Body: body}
+				} else {
+					p.nextToken()
+					rights := []ast.Expression{p.parseExpression(LOWEST)}
+					for p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						p.nextToken()
+						rights = append(rights, p.parseExpression(LOWEST))
+					}
+					firstStmt = &ast.AssignStmt{Token: p.curToken, Left: []ast.Expression{firstIdent, secondIdent}, Right: rights}
+				}
+			}
+		} else if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
+			assignTok := p.peekToken
+			p.nextToken()
+			if p.peekTokenIs(token.RANGE) {
+				p.nextToken()
+				p.nextToken()
+				x := p.parseExpression(LOWEST)
+				p.allowStructLit = oldAllow
+				if !p.expectPeek(token.LBRACE) {
+					return nil
+				}
+				body := p.parseBlockStmt()
+				return &ast.ForRangeStmt{Token: forTok, Key: firstIdent, Value: nil, X: x, Body: body}
+			} else {
+				p.nextToken()
+				rhs := p.parseExpression(LOWEST)
+				firstStmt = &ast.AssignStmt{Token: assignTok, Left: []ast.Expression{firstIdent}, Right: []ast.Expression{rhs}}
+			}
+		}
+	} else {
+		firstStmt = p.parseAssignOrExprStmt()
+	}
+
+	// 3-clause for loop: init; cond; post
+	if p.peekTokenIs(token.SEMICOLON) {
+		init := firstStmt
+		p.nextToken()
+		p.nextToken()
+		var cond ast.Expression = nil
 		if !p.curTokenIs(token.SEMICOLON) {
-			oldAllow := p.allowStructLit
-			p.allowStructLit = false
-			stmt.Cond = p.parseExpression(LOWEST)
-			p.allowStructLit = oldAllow
+			cond = p.parseExpression(LOWEST)
 		}
 		p.expectPeek(token.SEMICOLON)
 		p.nextToken()
+		var post ast.Statement = nil
 		if !p.curTokenIs(token.LBRACE) {
-			stmt.Post = p.parseAssignOrExprStmt()
+			post = p.parseAssignOrExprStmt()
 		}
+		p.allowStructLit = oldAllow
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
-			stmt.Body = p.parseBlockStmt()
 		}
-		return stmt
+		body := p.parseBlockStmt()
+		return &ast.ForStmt{Token: forTok, Init: init, Cond: cond, Post: post, Body: body}
 	}
 
-	firstStmt := p.parseAssignOrExprStmt()
-
-	if p.peekTokenIs(token.SEMICOLON) {
-		stmt.Init = firstStmt
-		p.nextToken()
-		p.nextToken()
-
-		if !p.curTokenIs(token.SEMICOLON) {
-			oldAllow := p.allowStructLit
-			p.allowStructLit = false
-			stmt.Cond = p.parseExpression(LOWEST)
-			p.allowStructLit = oldAllow
-		}
-
-		if p.peekTokenIs(token.SEMICOLON) {
-			p.nextToken()
-			p.nextToken()
-			if !p.curTokenIs(token.LBRACE) {
-				stmt.Post = p.parseAssignOrExprStmt()
-			}
-		}
-
-		if p.peekTokenIs(token.LBRACE) {
-			p.nextToken()
-			stmt.Body = p.parseBlockStmt()
-		}
-		return stmt
-	}
-
+	// Single condition loop: for cond { ... }
+	var cond ast.Expression = nil
 	if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
-		stmt.Cond = exprStmt.Expr
+		cond = exprStmt.Expr
 	}
+	p.allowStructLit = oldAllow
 	if p.peekTokenIs(token.LBRACE) {
 		p.nextToken()
-		stmt.Body = p.parseBlockStmt()
 	}
-
-	return stmt
+	body := p.parseBlockStmt()
+	return &ast.ForStmt{Token: forTok, Cond: cond, Body: body}
 }
 
 func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {

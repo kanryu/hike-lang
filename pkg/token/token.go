@@ -64,6 +64,8 @@ const (
 	TYPE    = "TYPE"
 	STRUCT  = "STRUCT"
 	CONST   = "CONST"
+	IOTA    = "IOTA"  // 追加
+	RANGE   = "RANGE" // 追加
 	IF      = "IF"
 	ELSE    = "ELSE"
 	FOR     = "FOR"
@@ -82,6 +84,8 @@ var keywords = map[string]TokenType{
 	"type":    TYPE,
 	"struct":  STRUCT,
 	"const":   CONST,
+	"iota":    IOTA,  // 追加
+	"range":   RANGE, // 追加
 	"if":      IF,
 	"else":    ELSE,
 	"for":     FOR,
