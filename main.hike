@@ -4,52 +4,80 @@ import (
 	"std/fmt"
 )
 
-var traceStep int = 0
-
-func logStep(expectedStep int, name *byte) {
-	traceStep++
-	if traceStep == expectedStep {
-		fmt.PrintStr("[PASS] Defer Order Step ")
-		fmt.PrintInt(traceStep)
-		fmt.PrintStr(": ")
-		fmt.PrintLn(name)
+func assert(cond bool, testNum int, testName *byte) {
+	if cond {
+		fmt.PrintStr("[PASS #")
+		fmt.PrintInt(testNum)
+		fmt.PrintStr("] ")
+		fmt.PrintLn(testName)
 	} else {
-		fmt.PrintStr("[FAIL] Defer Order Mismatch: expected ")
-		fmt.PrintInt(expectedStep)
-		fmt.PrintStr(", got ")
-		fmt.PrintInt(traceStep)
-		fmt.PrintStr(" (")
-		fmt.PrintLn(name)
+		fmt.PrintStr("[FAIL #")
+		fmt.PrintInt(testNum)
+		fmt.PrintStr("] ")
+		fmt.PrintLn(testName)
 	}
 }
 
-func testDeferLIFO() int {
-	defer logStep(3, "First defer registered -> executed 3rd (last)")
-	defer logStep(2, "Second defer registered -> executed 2nd")
-	defer logStep(1, "Third defer registered -> executed 1st")
-
-	fmt.PrintLn("--> Function body executing...")
-	return 100
+// 1. テスト対象の通常関数
+func add(a int, b int) int {
+	return a + b
 }
 
-func testEarlyReturn(flag bool) int {
-	defer logStep(4, "Early return defer cleanup")
-	if flag {
-		return 42
-	}
-	return 0
+func multiply(a int, b int) int {
+	return a * b
+}
+
+// 2. コールバックを受け取る高階関数
+func applyOp(op func(int, int) int, x int, y int) int {
+	return op(x, y)
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Generic Defer Tests ===")
+	fmt.PrintLn("=== Running First-Class Function & Callback Tests ===")
+	testCount := 0
 
-	res := testDeferLIFO()
-	if res == 100 {
-		fmt.PrintLn("[PASS] Return value preserved after defers")
+	// ==========================================
+	// 1. 関数ポインタの変数代入と直接呼び出し
+	// ==========================================
+	var myOp func(int, int) int = add
+	res1 := myOp(10, 20)
+	testCount++
+	assert(res1 == 30, testCount, "Function Variable: myOp(10, 20) == 30")
+
+	// 別の関数を再代入
+	myOp = multiply
+	res2 := myOp(10, 20)
+	testCount++
+	assert(res2 == 200, testCount, "Function Reassignment: myOp(10, 20) == 200")
+
+	// ==========================================
+	// 2. 高階関数への関数渡し（コールバック）
+	// ==========================================
+	res3 := applyOp(add, 50, 25)
+	testCount++
+	assert(res3 == 75, testCount, "Callback: applyOp(add, 50, 25) == 75")
+
+	res4 := applyOp(multiply, 5, 6)
+	testCount++
+	assert(res4 == 30, testCount, "Callback: applyOp(multiply, 5, 6) == 30")
+
+	// ==========================================
+	// 3. 無名関数（関数リテラル）の定義・代入・実行
+	// ==========================================
+	sub := func(a int, b int) int {
+		return a - b
 	}
+	res5 := sub(100, 30)
+	testCount++
+	assert(res5 == 70, testCount, "Anonymous Function: sub(100, 30) == 70")
 
-	testEarlyReturn(true)
+	// 無名関数をコールバックとして直接引数渡し
+	res6 := applyOp(func(a int, b int) int {
+		return a + b + 1
+	}, 10, 20)
+	testCount++
+	assert(res6 == 31, testCount, "Anonymous Callback: applyOp(func..., 10, 20) == 31")
 
-	fmt.PrintLn("=== All Generic Defer Tests Passed ===")
-	return 0
+	fmt.PrintLn("=== All Tests Completed Successfully ===")
+	return testCount
 }

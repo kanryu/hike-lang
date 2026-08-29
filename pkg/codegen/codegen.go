@@ -25,16 +25,17 @@ type loopContext struct {
 	continueLabel string
 }
 
-// 1. 構造体定義
 type CodeGenerator struct {
 	prog           *ast.Program
 	semaCtx        *sema.Context
 	output         strings.Builder
 	regCount       int
 	labelCount     int
+	anonFuncCount  int
+	anonFuncs      []*ast.FuncDecl
 	stringLiterals []StringConst
 	symbols        map[string]Symbol
-	deferStack     []*ast.CallExpr // 修正: *ast.CallExpr のスライス
+	deferStack     []*ast.CallExpr
 	loopStack      []loopContext
 	entryAllocas   *strings.Builder
 	emittedFuncs   map[string]bool
@@ -48,7 +49,8 @@ func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
 		symbols:        make(map[string]Symbol),
 		stringLiterals: []StringConst{},
 		loopStack:      []loopContext{},
-		deferStack:     []*ast.CallExpr{}, // 初期化
+		deferStack:     []*ast.CallExpr{},
+		anonFuncs:      []*ast.FuncDecl{},
 		emittedFuncs:   make(map[string]bool),
 		verbose:        false,
 	}
@@ -138,6 +140,10 @@ func (g *CodeGenerator) Generate() string {
 		if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Body != nil {
 			g.emitFuncDecl(&bodyBuilder, fnDecl)
 		}
+	}
+
+	for i := 0; i < len(g.anonFuncs); i++ {
+		g.emitFuncDecl(&bodyBuilder, g.anonFuncs[i])
 	}
 
 	g.output.Reset()
@@ -1443,6 +1449,31 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return negReg, sema.TypeInt
 		}
 
+	case *ast.FuncLit:
+		g.anonFuncCount++
+		fnName := fmt.Sprintf("__anon_func_%d", g.anonFuncCount)
+		fnDecl := &ast.FuncDecl{
+			Token:       e.Token,
+			Name:        &ast.Identifier{Token: e.Token, Value: fnName},
+			Params:      e.Params,
+			ReturnTypes: e.ReturnTypes,
+			Body:        e.Body,
+		}
+		fnType := &sema.FuncType{
+			Name:        fnName,
+			ParamTypes:  []sema.Type{},
+			ReturnTypes: []sema.Type{},
+		}
+		for _, p := range e.Params {
+			fnType.ParamTypes = append(fnType.ParamTypes, g.semaCtx.ResolveType(p.Type))
+		}
+		for _, rt := range e.ReturnTypes {
+			fnType.ReturnTypes = append(fnType.ReturnTypes, g.semaCtx.ResolveType(rt))
+		}
+		g.semaCtx.Functions[fnName] = fnType
+		g.anonFuncs = append(g.anonFuncs, fnDecl)
+		return "@" + fnName, fnType
+
 	case *ast.Identifier:
 		if e.Value == "true" {
 			return "true", sema.TypeBool
@@ -1461,11 +1492,14 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return loadReg, sym.Type
 		}
 
-		// グローバル変数の参照 (追加)
 		if gType, exists := g.semaCtx.Globals[e.Value]; exists {
 			loadReg := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), e.Value))
 			return loadReg, gType
+		}
+
+		if fn, exists := g.semaCtx.Functions[e.Value]; exists {
+			return "@" + e.Value, fn
 		}
 
 		return "0", sema.TypeInt
@@ -1988,7 +2022,7 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 }
 
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// 1. append(s1, s2...) スライス連結の展開
+	// 1. append(s1, s2...) スライス連結
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
 		slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
 		slice2Reg, slice2Type := g.resolveValue(b, call.Args[1])
@@ -2105,7 +2139,7 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		return t3, sl1
 	}
 
-	// 2. append(s, elem1, elem2...) 単一・複数要素の追加
+	// 2. append(s, elem1, elem2...) 要素追加
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && len(call.Args) >= 2 {
 		sliceReg, sliceType := g.resolveValue(b, call.Args[0])
 
@@ -2497,83 +2531,144 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 
 	// 7. 直接関数呼び出し (fn(a, b...))
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok {
-		targetFn := g.lookupFunction(fnIdent.Value)
-		if targetFn != nil {
-			args := []string{}
-			for i, arg := range call.Args {
-				argReg, argType := g.resolveValue(b, arg)
-				t := argType
-				if i < len(targetFn.ParamTypes) {
-					t = targetFn.ParamTypes[i]
-				}
-				if argType != nil && t != nil && argType.LLVMType() != t.LLVMType() {
-					convReg := g.nextReg()
-					if strings.HasSuffix(argType.LLVMType(), "*") && strings.HasSuffix(t.LLVMType(), "*") {
-						b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, argType.LLVMType(), argReg, t.LLVMType()))
-						argReg = convReg
-					} else if strings.HasSuffix(argType.LLVMType(), "*") && t.LLVMType() == "i64" {
-						b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", convReg, argType.LLVMType(), argReg))
-						argReg = convReg
-					} else if argType.LLVMType() == "i64" && strings.HasSuffix(t.LLVMType(), "*") {
-						b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", convReg, argReg, t.LLVMType()))
-						argReg = convReg
+		// ローカル変数/グローバル変数に同名が存在しない場合のみ直接呼び出し
+		_, isLocal := g.symbols[fnIdent.Value]
+		_, isGlobal := g.semaCtx.Globals[fnIdent.Value]
+
+		if !isLocal && !isGlobal {
+			targetFn := g.lookupFunction(fnIdent.Value)
+			if targetFn != nil {
+				args := []string{}
+				for i, arg := range call.Args {
+					argReg, argType := g.resolveValue(b, arg)
+					t := argType
+					if i < len(targetFn.ParamTypes) {
+						t = targetFn.ParamTypes[i]
 					}
+					if argType != nil && t != nil && argType.LLVMType() != t.LLVMType() {
+						convReg := g.nextReg()
+						if strings.HasSuffix(argType.LLVMType(), "*") && strings.HasSuffix(t.LLVMType(), "*") {
+							b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, argType.LLVMType(), argReg, t.LLVMType()))
+							argReg = convReg
+						} else if strings.HasSuffix(argType.LLVMType(), "*") && t.LLVMType() == "i64" {
+							b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", convReg, argType.LLVMType(), argReg))
+							argReg = convReg
+						} else if argType.LLVMType() == "i64" && strings.HasSuffix(t.LLVMType(), "*") {
+							b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", convReg, argReg, t.LLVMType()))
+							argReg = convReg
+						}
+					}
+					targetTypeStr := "i64"
+					if t != nil && t.LLVMType() != "" {
+						targetTypeStr = t.LLVMType()
+					}
+					args = append(args, fmt.Sprintf("%s %s", targetTypeStr, argReg))
 				}
-				targetTypeStr := "i64"
-				if t != nil && t.LLVMType() != "" {
-					targetTypeStr = t.LLVMType()
+
+				retType := "void"
+				var semaRet sema.Type = sema.TypeVoid
+				sigParamTypes := []string{}
+
+				if len(targetFn.ReturnTypes) == 1 {
+					retType = targetFn.ReturnTypes[0].LLVMType()
+					semaRet = targetFn.ReturnTypes[0]
+				} else if len(targetFn.ReturnTypes) > 1 {
+					tupleTypes := []string{}
+					for _, rt := range targetFn.ReturnTypes {
+						tupleTypes = append(tupleTypes, rt.LLVMType())
+					}
+					retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
+					semaRet = &sema.TupleType{Types: targetFn.ReturnTypes}
 				}
-				args = append(args, fmt.Sprintf("%s %s", targetTypeStr, argReg))
-			}
 
-			retType := "void"
-			var semaRet sema.Type = sema.TypeVoid
-			sigParamTypes := []string{}
-
-			if len(targetFn.ReturnTypes) == 1 {
-				retType = targetFn.ReturnTypes[0].LLVMType()
-				semaRet = targetFn.ReturnTypes[0]
-			} else if len(targetFn.ReturnTypes) > 1 {
-				tupleTypes := []string{}
-				for _, rt := range targetFn.ReturnTypes {
-					tupleTypes = append(tupleTypes, rt.LLVMType())
+				for _, p := range targetFn.ParamTypes {
+					sigParamTypes = append(sigParamTypes, p.LLVMType())
 				}
-				retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
-				semaRet = &sema.TupleType{Types: targetFn.ReturnTypes}
-			}
+				if targetFn.IsVariadic {
+					sigParamTypes = append(sigParamTypes, "...")
+				}
 
-			for _, p := range targetFn.ParamTypes {
-				sigParamTypes = append(sigParamTypes, p.LLVMType())
-			}
-			if targetFn.IsVariadic {
-				sigParamTypes = append(sigParamTypes, "...")
-			}
+				emitFnName := targetFn.Name
+				if targetFn.IsExtern {
+					emitFnName = fnIdent.Value
+				}
 
-			emitFnName := targetFn.Name
-			if targetFn.IsExtern {
-				emitFnName = fnIdent.Value
-			}
+				if retType == "void" {
+					if len(sigParamTypes) > 0 {
+						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+					} else {
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
+					}
+					return "", sema.TypeVoid
+				}
 
-			if retType == "void" {
+				callReg := g.nextReg()
 				if len(sigParamTypes) > 0 {
-					b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+					b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
 				} else {
-					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
 				}
-				return "", sema.TypeVoid
+				return callReg, semaRet
 			}
-
-			callReg := g.nextReg()
-			if len(sigParamTypes) > 0 {
-				b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
-			}
-			return callReg, semaRet
 		}
 	}
 
-	return "", sema.TypeVoid
+	// 8. 関数ポインタ経由の間接関数呼び出し (Indirect Call: f(a, b))
+	fnReg, fnValType := g.resolveValue(b, call.Function)
+	ft, isFuncType := fnValType.(*sema.FuncType)
+	if !isFuncType {
+		panic(fmt.Sprintf("[Codegen Error] expression is not a function pointer: %v", fnValType))
+	}
+
+	args := []string{}
+	for i, arg := range call.Args {
+		argReg, argType := g.resolveValue(b, arg)
+		t := argType
+		if i < len(ft.ParamTypes) {
+			t = ft.ParamTypes[i]
+		}
+		if argType != nil && t != nil && argType.LLVMType() != t.LLVMType() {
+			convReg := g.nextReg()
+			if strings.HasSuffix(argType.LLVMType(), "*") && strings.HasSuffix(t.LLVMType(), "*") {
+				b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, argType.LLVMType(), argReg, t.LLVMType()))
+				argReg = convReg
+			} else if strings.HasSuffix(argType.LLVMType(), "*") && t.LLVMType() == "i64" {
+				b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", convReg, argType.LLVMType(), argReg))
+				argReg = convReg
+			} else if argType.LLVMType() == "i64" && strings.HasSuffix(t.LLVMType(), "*") {
+				b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", convReg, argReg, t.LLVMType()))
+				argReg = convReg
+			}
+		}
+		targetTypeStr := "i64"
+		if t != nil && t.LLVMType() != "" {
+			targetTypeStr = t.LLVMType()
+		}
+		args = append(args, fmt.Sprintf("%s %s", targetTypeStr, argReg))
+	}
+
+	retType := "void"
+	var semaRet sema.Type = sema.TypeVoid
+	if len(ft.ReturnTypes) == 1 {
+		retType = ft.ReturnTypes[0].LLVMType()
+		semaRet = ft.ReturnTypes[0]
+	} else if len(ft.ReturnTypes) > 1 {
+		tupleTypes := []string{}
+		for _, rt := range ft.ReturnTypes {
+			tupleTypes = append(tupleTypes, rt.LLVMType())
+		}
+		retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
+		semaRet = &sema.TupleType{Types: ft.ReturnTypes}
+	}
+
+	if retType == "void" {
+		b.WriteString(fmt.Sprintf("  call void %s(%s)\n", fnReg, strings.Join(args, ", ")))
+		return "", sema.TypeVoid
+	}
+
+	callReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", callReg, retType, fnReg, strings.Join(args, ", ")))
+	return callReg, semaRet
 }
 
 func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {

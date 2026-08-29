@@ -391,7 +391,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	return fn
 }
 
-// 2. parseTypeExpr の更新
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	if p.curTokenIs(token.IDENT) {
 		ident := p.parseIdentifier()
@@ -427,6 +426,47 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			elem := p.parseTypeExpr()
 			return &ast.SliceType{Token: tok, Elem: elem}
 		}
+	} else if p.curTokenIs(token.FUNC) {
+		tok := p.curToken
+		p.nextToken()
+		paramTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.RPAREN) {
+			p.nextToken()
+			for {
+				paramTypes = append(paramTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+		}
+		p.expectPeek(token.RPAREN)
+		returnTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.EOF) {
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken()
+				p.nextToken()
+				for {
+					returnTypes = append(returnTypes, p.parseTypeExpr())
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+				p.expectPeek(token.RPAREN)
+			} else {
+				p.nextToken()
+				returnTypes = append(returnTypes, p.parseTypeExpr())
+			}
+		}
+		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, ReturnTypes: returnTypes}
 	}
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
@@ -863,9 +903,57 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseStringLiteral()
 	case token.NIL:
 		leftExp = &ast.NilLiteral{Token: p.curToken}
-	// parseExpression 内の単項/二項ビット演算子の追加
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
+
+	case token.FUNC:
+		tok := p.curToken
+		p.nextToken()
+		params := []*ast.ParamDecl{}
+		if !p.peekTokenIs(token.RPAREN) {
+			p.nextToken()
+			for {
+				pName := p.parseIdentifier()
+				p.nextToken()
+				pType := p.parseTypeExpr()
+				params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+		}
+		p.expectPeek(token.RPAREN)
+		returnTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken()
+				p.nextToken()
+				for {
+					returnTypes = append(returnTypes, p.parseTypeExpr())
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+				p.expectPeek(token.RPAREN)
+			} else {
+				p.nextToken()
+				returnTypes = append(returnTypes, p.parseTypeExpr())
+			}
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		body := p.parseBlockStmt()
+		leftExp = &ast.FuncLit{Token: tok, Params: params, ReturnTypes: returnTypes, Body: body}
 
 	case token.LBRACKET:
 		tok := p.curToken
@@ -932,12 +1020,11 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			return nil
 		}
 
-	// 二項演算子ループ内の case token.DOT (型アサーション x.(Type))
 	case token.DOT:
 		p.nextToken()
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken() // '('
-			p.nextToken() // Type
+			p.nextToken()
+			p.nextToken()
 			targetType := p.parseTypeExpr()
 			p.expectPeek(token.RPAREN)
 			leftExp = &ast.TypeAssertExpr{Token: p.curToken, Expr: leftExp, Target: targetType}
@@ -960,7 +1047,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		case token.PLUS, token.MINUS, token.SLASH, token.ASTERISK,
 			token.EQ, token.NEQ, token.LT, token.GT, token.LE, token.GE,
 			token.LAND, token.LOR,
-			token.AMPERSAND, token.OR, token.CARET, token.SHL, token.SHR: // 追加
+			token.AMPERSAND, token.OR, token.CARET, token.SHL, token.SHR:
 			p.nextToken()
 			leftExp = p.parseBinaryExpr(leftExp)
 		case token.LPAREN:

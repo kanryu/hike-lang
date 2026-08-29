@@ -99,9 +99,44 @@ type FuncType struct {
 	IsExtern    bool
 }
 
-func (f *FuncType) TypeName() string { return f.Name }
-func (f *FuncType) LLVMType() string { return "void" }
-func (f *FuncType) Size() int        { return 8 }
+func (f *FuncType) TypeName() string {
+	paramNames := []string{}
+	for _, p := range f.ParamTypes {
+		paramNames = append(paramNames, p.TypeName())
+	}
+	retNames := []string{}
+	for _, r := range f.ReturnTypes {
+		retNames = append(retNames, r.TypeName())
+	}
+	retStr := strings.Join(retNames, ", ")
+	if len(retNames) > 1 {
+		retStr = "(" + retStr + ")"
+	}
+	return fmt.Sprintf("func(%s) %s", strings.Join(paramNames, ", "), retStr)
+}
+
+func (f *FuncType) LLVMType() string {
+	retType := "void"
+	if len(f.ReturnTypes) == 1 {
+		retType = f.ReturnTypes[0].LLVMType()
+	} else if len(f.ReturnTypes) > 1 {
+		types := []string{}
+		for _, rt := range f.ReturnTypes {
+			types = append(types, rt.LLVMType())
+		}
+		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	}
+	paramTypes := []string{}
+	for _, p := range f.ParamTypes {
+		paramTypes = append(paramTypes, p.LLVMType())
+	}
+	if f.IsVariadic {
+		paramTypes = append(paramTypes, "...")
+	}
+	return fmt.Sprintf("%s (%s)*", retType, strings.Join(paramTypes, ", "))
+}
+
+func (f *FuncType) Size() int { return 8 }
 
 type TupleType struct {
 	Types []Type
@@ -211,6 +246,18 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		return &ArrayType{Len: int(t.Len), Elem: elem}
 	case *ast.InterfaceType:
 		return &InterfaceType{Name: "interface{}"}
+	case *ast.FuncType:
+		fnType := &FuncType{
+			ParamTypes:  []Type{},
+			ReturnTypes: []Type{},
+		}
+		for _, pt := range t.ParamTypes {
+			fnType.ParamTypes = append(fnType.ParamTypes, c.ResolveType(pt))
+		}
+		for _, rt := range t.ReturnTypes {
+			fnType.ReturnTypes = append(fnType.ReturnTypes, c.ResolveType(rt))
+		}
+		return fnType
 	}
 	return TypeVoid
 }

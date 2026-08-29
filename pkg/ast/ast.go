@@ -450,3 +450,25 @@ type TypeAssertExpr struct {
 
 func (tae *TypeAssertExpr) expressionNode()      {}
 func (tae *TypeAssertExpr) TokenLiteral() string { return tae.Token.Literal }
+
+// 関数型ノード: func(int, int) int
+type FuncType struct {
+	Token       token.Token
+	ParamTypes  []TypeExpr
+	ReturnTypes []TypeExpr
+}
+
+func (ft *FuncType) typeExprNode()        {}
+func (ft *FuncType) expressionNode()      {}
+func (ft *FuncType) TokenLiteral() string { return ft.Token.Literal }
+
+// 無名関数リテラルノード: func(a int) int { return a * 2 }
+type FuncLit struct {
+	Token       token.Token
+	Params      []*ParamDecl
+	ReturnTypes []TypeExpr
+	Body        *BlockStmt
+}
+
+func (fl *FuncLit) expressionNode()      {}
+func (fl *FuncLit) TokenLiteral() string { return fl.Token.Literal }
