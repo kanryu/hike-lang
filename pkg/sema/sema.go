@@ -24,11 +24,12 @@ func (b *BasicType) Size() int        { return b.ByteSize }
 func (b *BasicType) LLVMType() string { return b.LLVM }
 
 var (
-	TypeInt   = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
-	TypeByte  = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
-	TypeBool  = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
-	TypeVoid  = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
-	TypeError = &BasicType{Name: "error", ByteSize: 8, LLVM: "i8*"}
+	TypeInt    = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
+	TypeByte   = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
+	TypeString = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"} // 追加
+	TypeBool   = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
+	TypeVoid   = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
+	TypeError  = &BasicType{Name: "error", ByteSize: 8, LLVM: "i8*"}
 )
 
 type PointerType struct {
@@ -47,7 +48,6 @@ func (p *PointerType) LLVMType() string {
 	return p.Base.LLVMType() + "*"
 }
 
-// スライス型: { i8* data, i64 len, i64 cap }
 type SliceType struct {
 	Elem Type
 }
@@ -101,7 +101,6 @@ func NewContext() *Context {
 }
 
 func (ctx *Context) registerBuiltins() {
-	// 標準Cライブラリ組み込み関数
 	ctx.Functions["malloc"] = &FuncType{
 		Name:        "malloc",
 		ParamTypes:  []Type{TypeInt},
@@ -130,6 +129,12 @@ func (ctx *Context) registerBuiltins() {
 	ctx.Functions["strlen"] = &FuncType{
 		Name:        "strlen",
 		ParamTypes:  []Type{&PointerType{Base: TypeByte}},
+		ReturnTypes: []Type{TypeInt},
+		IsExtern:    true,
+	}
+	ctx.Functions["strcmp"] = &FuncType{
+		Name:        "strcmp",
+		ParamTypes:  []Type{&PointerType{Base: TypeByte}, &PointerType{Base: TypeByte}},
 		ReturnTypes: []Type{TypeInt},
 		IsExtern:    true,
 	}
@@ -175,6 +180,9 @@ func (ctx *Context) ResolveType(expr ast.TypeExpr) Type {
 		if name == "byte" {
 			return TypeByte
 		}
+		if name == "string" {
+			return TypeString
+		}
 		if name == "bool" {
 			return TypeBool
 		}
@@ -194,11 +202,9 @@ func (ctx *Context) ResolveType(expr ast.TypeExpr) Type {
 	return TypeInt
 }
 
-// Analyze はAST全体を解析し、型情報・関数シグネチャ・定数テーブルを構築します
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
-	// パス1: 構造体型宣言（TypeDecl）の収集
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
 			if st, ok := td.Type.(*ast.StructType); ok {
@@ -221,7 +227,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// パス2: 定数宣言（ConstDecl）の収集
 	for _, decl := range prog.Decls {
 		if cd, ok := decl.(*ast.ConstDecl); ok {
 			if il, ok := cd.Value.(*ast.IntegerLiteral); ok {
@@ -230,7 +235,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// パス3: 関数宣言（FuncDecl）のシグネチャ収集
 	for _, decl := range prog.Decls {
 		if fd, ok := decl.(*ast.FuncDecl); ok {
 			var recvType Type = nil

@@ -19,45 +19,50 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Slice Literal & Spread Append Tests ===")
+	fmt.PrintLn("=== Running String Type & Operation Tests ===")
 
 	testCount := 0
 
-	// ==========================================
-	// 1. スライスリテラルの初期化検証: []int{...}
-	// ==========================================
-	s1 := []int{10, 20, 30}
+	// 1. 文字列比較 (== / !=)
+	s1 := "hello"
+	s2 := "hello"
+	s3 := "world"
 
 	testCount = testCount + 1
-	assert(len(s1) == 3 && cap(s1) == 4, testCount, "Literal: []int{10, 20, 30} has len=3, cap=4")
+	assert(s1 == s2, testCount, "String Eq: identical strings match")
 
 	testCount = testCount + 1
-	assert(s1[0] == 10 && s1[1] == 20 && s1[2] == 30, testCount, "Literal: elements match literal values")
-
-	// 空スライスリテラル
-	empty := []int{}
-	testCount = testCount + 1
-	assert(len(empty) == 0 && cap(empty) == 4, testCount, "Literal: []int{} creates empty slice with default capacity")
-
-	// ==========================================
-	// 2. スライス展開結合の検証: append(s1, s2...)
-	// ==========================================
-	s2 := []int{40, 50, 60}
-
-	// s1(len=3, cap=4) に s2(len=3) を結合 -> 合計 len=6 で cap は 8 に自動拡張
-	merged := append(s1, s2...)
+	assert(s1 != s3, testCount, "String Neq: different strings do not match")
 
 	testCount = testCount + 1
-	assert(len(merged) == 6 && cap(merged) == 8, testCount, "Spread: append(s1, s2...) results in len=6, cap=8")
+	assert(s1 == "hello", testCount, "String Eq: variable matches string literal")
+
+	// 2. 文字列の長さ取得 (len)
+	testCount = testCount + 1
+	assert(len(s1) == 5 && len("hike language") == 13, testCount, "String Len: len() returns correct byte length")
+
+	// 3. 文字列のスライス (部分文字列抽出)
+	text := "hike-compiler"
+	sub1 := text[0:4]  // "hike"
+	sub2 := text[5:13] // "compiler"
+	sub3 := text[5:]   // "compiler"
+	sub4 := text[:4]   // "hike"
 
 	testCount = testCount + 1
-	assert(merged[0] == 10 && merged[2] == 30 && merged[3] == 40 && merged[5] == 60, testCount, "Spread: elements correctly merged from both slices")
+	assert(sub1 == "hike" && len(sub1) == 4, testCount, "String Slice: text[0:4] extracted 'hike'")
 
-	// 空スライスへの結合
-	merged2 := append(empty, merged...)
 	testCount = testCount + 1
-	assert(len(merged2) == 6 && merged2[4] == 50, testCount, "Spread: append to empty slice retains merged values")
+	assert(sub2 == "compiler" && sub3 == "compiler", testCount, "String Slice: text[5:13] and text[5:] match 'compiler'")
 
-	fmt.PrintLn("=== All Literal & Spread Tests Completed ===")
+	testCount = testCount + 1
+	assert(sub4 == "hike", testCount, "String Slice: text[:4] prefix slice matches 'hike'")
+
+	// 4. 文字列の結合 (+)
+	joined := sub1 + " " + sub2
+
+	testCount = testCount + 1
+	assert(joined == "hike compiler" && len(joined) == 13, testCount, "String Concat: sub1 + ' ' + sub2 equals 'hike compiler'")
+
+	fmt.PrintLn("=== All String Tests Completed ===")
 	return testCount
 }
