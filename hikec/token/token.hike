@@ -41,7 +41,7 @@ const LBRACKET = 26  // [
 const RBRACKET = 27  // ]
 
 // キーワード
-const FUNCTION = 28  // func
+const FUNC = 28      // func
 const TYPE = 29      // type
 const STRUCT = 30    // struct
 const RETURN = 31    // return
@@ -57,6 +57,9 @@ const IMPORT = 40    // import
 const NIL = 41       // nil
 const TRUE = 42      // true
 const FALSE = 43     // false
+
+// 特殊記号
+const ELLIPSIS = 44  // ...
 
 type Token struct {
 	Type    int
@@ -76,7 +79,7 @@ func New(tokType int, literal *byte, line int, col int) *Token {
 
 func LookupIdent(ident *byte) int {
 	if strings.Equal(ident, "func") {
-		return FUNCTION
+		return FUNC
 	}
 	if strings.Equal(ident, "type") {
 		return TYPE

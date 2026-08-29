@@ -1,0 +1,222 @@
+package ast
+
+import "std/container"
+
+func malloc(size int) *byte
+func free(ptr *byte)
+
+// ノード種別定数 (Kind)
+const KIND_PROGRAM = 1
+const KIND_IMPORT = 2
+const KIND_FUNC_DECL = 3
+const KIND_TYPE_DECL = 4
+const KIND_CONST_DECL = 5
+const KIND_BLOCK_STMT = 6
+const KIND_ASSIGN_STMT = 7
+const KIND_RETURN_STMT = 8
+const KIND_IF_STMT = 9
+const KIND_FOR_STMT = 10
+const KIND_EXPR_STMT = 11
+
+const KIND_IDENT = 20
+const KIND_INT = 21
+const KIND_STRING = 22
+const KIND_NIL = 23
+const KIND_BINARY_EXPR = 24
+const KIND_PREFIX_EXPR = 25
+const KIND_CALL_EXPR = 26
+const KIND_INDEX_EXPR = 27
+const KIND_MEMBER_EXPR = 28
+
+const KIND_NAMED_TYPE = 40
+const KIND_POINTER_TYPE = 41
+
+// 識別子
+type Identifier struct {
+	Kind  int
+	Value *byte
+}
+
+func NewIdentifier(val *byte) *Identifier {
+	id := (*Identifier)(malloc(16))
+	id.Kind = KIND_IDENT
+	id.Value = val
+	return id
+}
+
+// 整数リテラル
+type IntegerLiteral struct {
+	Kind  int
+	Value int
+}
+
+func NewIntegerLiteral(val int) *IntegerLiteral {
+	lit := (*IntegerLiteral)(malloc(16))
+	lit.Kind = KIND_INT
+	lit.Value = val
+	return lit
+}
+
+// 文字列リテラル
+type StringLiteral struct {
+	Kind  int
+	Value *byte
+}
+
+func NewStringLiteral(val *byte) *StringLiteral {
+	lit := (*StringLiteral)(malloc(16))
+	lit.Kind = KIND_STRING
+	lit.Value = val
+	return lit
+}
+
+// 型表現
+type NamedType struct {
+	Kind    int
+	Package *byte
+	Name    *byte
+}
+
+func NewNamedType(pkg *byte, name *byte) *NamedType {
+	t := (*NamedType)(malloc(24))
+	t.Kind = KIND_NAMED_TYPE
+	t.Package = pkg
+	t.Name = name
+	return t
+}
+
+type PointerType struct {
+	Kind int
+	Base *byte
+}
+
+func NewPointerType(base *byte) *PointerType {
+	pt := (*PointerType)(malloc(16))
+	pt.Kind = KIND_POINTER_TYPE
+	pt.Base = base
+	return pt
+}
+
+// 二項演算式
+type BinaryExpr struct {
+	Kind     int
+	Left     *byte
+	Operator *byte
+	Right    *byte
+}
+
+func NewBinaryExpr(left *byte, op *byte, right *byte) *BinaryExpr {
+	be := (*BinaryExpr)(malloc(32))
+	be.Kind = KIND_BINARY_EXPR
+	be.Left = left
+	be.Operator = op
+	be.Right = right
+	return be
+}
+
+// 関数呼び出し式
+type CallExpr struct {
+	Kind     int
+	Function *byte
+	Args     *container.Vector
+}
+
+func NewCallExpr(fn *byte) *CallExpr {
+	ce := (*CallExpr)(malloc(24))
+	ce.Kind = KIND_CALL_EXPR
+	ce.Function = fn
+	ce.Args = container.NewVector(4)
+	return ce
+}
+
+// パラメータ宣言
+type ParamDecl struct {
+	Name *byte
+	Type *byte
+}
+
+func NewParamDecl(name *byte, t *byte) *ParamDecl {
+	pd := (*ParamDecl)(malloc(16))
+	pd.Name = name
+	pd.Type = t
+	return pd
+}
+
+// 関数宣言
+type FuncDecl struct {
+	Kind        int
+	Receiver    *ParamDecl
+	Name        *byte
+	Params      *container.Vector
+	ReturnTypes *container.Vector
+	Body        *byte
+}
+
+func NewFuncDecl(name *byte) *FuncDecl {
+	fd := (*FuncDecl)(malloc(48))
+	fd.Kind = KIND_FUNC_DECL
+	fd.Receiver = nil
+	fd.Name = name
+	fd.Params = container.NewVector(4)
+	fd.ReturnTypes = container.NewVector(2)
+	fd.Body = nil
+	return fd
+}
+
+// ブロック文
+type BlockStmt struct {
+	Kind       int
+	Statements *container.Vector
+}
+
+func NewBlockStmt() *BlockStmt {
+	bs := (*BlockStmt)(malloc(16))
+	bs.Kind = KIND_BLOCK_STMT
+	bs.Statements = container.NewVector(8)
+	return bs
+}
+
+// 代入文
+type AssignStmt struct {
+	Kind  int
+	Left  *container.Vector
+	Right *container.Vector
+}
+
+func NewAssignStmt() *AssignStmt {
+	as := (*AssignStmt)(malloc(24))
+	as.Kind = KIND_ASSIGN_STMT
+	as.Left = container.NewVector(2)
+	as.Right = container.NewVector(2)
+	return as
+}
+
+// return 文
+type ReturnStmt struct {
+	Kind   int
+	Values *container.Vector
+}
+
+func NewReturnStmt() *ReturnStmt {
+	rs := (*ReturnStmt)(malloc(16))
+	rs.Kind = KIND_RETURN_STMT
+	rs.Values = container.NewVector(2)
+	return rs
+}
+
+// プログラムルートノード
+type Program struct {
+	Kind    int
+	Package *byte
+	Imports *container.Vector
+	Decls   *container.Vector
+}
+
+func NewProgram() *Program {
+	p := (*Program)(malloc(32))
+	p.Kind = KIND_PROGRAM
+	p.Package = nil
+	p.Imports = container.NewVector(8)
+	p.Decls = container.NewVector(16)
+	return p
+}

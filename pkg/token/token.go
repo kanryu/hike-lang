@@ -16,7 +16,8 @@ const (
 	MINUS    TokenType = "-"
 	ASTERISK TokenType = "*"
 	SLASH    TokenType = "/"
-	NOT      TokenType = "!"
+	BANG     TokenType = "!" // 追加
+	NOT      TokenType = "!" // 既存互換
 
 	LAND      TokenType = "&&"
 	AMPERSAND TokenType = "&"
@@ -47,7 +48,7 @@ const (
 	TYPE    TokenType = "type"
 	STRUCT  TokenType = "struct"
 	FUNC    TokenType = "func"
-	CONST   TokenType = "const" // 追加
+	CONST   TokenType = "const"
 	RETURN  TokenType = "return"
 	DEFER   TokenType = "defer"
 	IF      TokenType = "if"
@@ -65,7 +66,7 @@ var keywords = map[string]TokenType{
 	"type":    TYPE,
 	"struct":  STRUCT,
 	"func":    FUNC,
-	"const":   CONST, // 追加
+	"const":   CONST,
 	"return":  RETURN,
 	"defer":   DEFER,
 	"if":      IF,

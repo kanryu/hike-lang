@@ -12,66 +12,48 @@ import (
 )
 
 type Loader struct {
-	rootDir     string
-	searchPaths []string
-	loadedFiles map[string]*ast.Program
-	loading     map[string]bool
-	fileOrder   []string
+	loadedFiles map[string]bool
+	allDecls    []ast.Decl
+	imports     []*ast.ImportDecl
+	verbose     bool
 }
 
-func New(rootDir string, extraSearchPaths ...string) *Loader {
-	absRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		absRoot = rootDir
-	}
-
-	searchPaths := []string{absRoot}
-	for _, p := range extraSearchPaths {
-		absP, err := filepath.Abs(p)
-		if err == nil {
-			searchPaths = append(searchPaths, absP)
-		}
-	}
-
+func New(verbose bool) *Loader {
 	return &Loader{
-		rootDir:     absRoot,
-		searchPaths: searchPaths,
-		loadedFiles: make(map[string]*ast.Program),
-		loading:     make(map[string]bool),
-		fileOrder:   make([]string, 0),
+		loadedFiles: make(map[string]bool),
+		allDecls:    []ast.Decl{},
+		imports:     []*ast.ImportDecl{},
+		verbose:     verbose,
 	}
 }
 
-func (l *Loader) LoadProgram(entryFile string) ([]*ast.Program, error) {
-	absEntry, err := filepath.Abs(entryFile)
+func (l *Loader) Load(entryPath string) (*ast.Program, error) {
+	absPath, err := filepath.Abs(entryPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid entry file path: %w", err)
-	}
-
-	if err := l.loadFileRecursive(absEntry); err != nil {
 		return nil, err
 	}
 
-	var result []*ast.Program
-	for _, path := range l.fileOrder {
-		if prog, ok := l.loadedFiles[path]; ok {
-			result = append(result, prog)
-		}
+	err = l.loadFileRecursive(absPath)
+	if err != nil {
+		return nil, err
 	}
 
-	return result, nil
+	return &ast.Program{
+		Package: "main",
+		Imports: l.imports,
+		Decls:   l.allDecls,
+	}, nil
 }
 
 func (l *Loader) loadFileRecursive(absPath string) error {
-	if _, ok := l.loadedFiles[absPath]; ok {
+	if l.loadedFiles[absPath] {
 		return nil
 	}
+	l.loadedFiles[absPath] = true
 
-	if l.loading[absPath] {
-		return fmt.Errorf("circular import detected at file: %s", absPath)
+	if l.verbose {
+		fmt.Printf("[LOADER] Parsing file: %s\n", absPath)
 	}
-	l.loading[absPath] = true
-	defer func() { l.loading[absPath] = false }()
 
 	content, err := os.ReadFile(absPath)
 	if err != nil {
@@ -80,12 +62,13 @@ func (l *Loader) loadFileRecursive(absPath string) error {
 
 	lex := lexer.New(string(content))
 	p := parser.New(lex)
+	p.SetVerbose(l.verbose)
 	prog := p.ParseProgram()
 	if len(p.Errors()) > 0 {
 		return fmt.Errorf("parse error in %s: %s", absPath, strings.Join(p.Errors(), "; "))
 	}
 
-	// 非mainパッケージ関数の名前マングリング (シンボル衝突の完全防止)
+	// 非mainパッケージの関数・定数の名前マングリング
 	if prog.Package != "main" && prog.Package != "" {
 		for _, decl := range prog.Decls {
 			if fd, ok := decl.(*ast.FuncDecl); ok {
@@ -95,60 +78,59 @@ func (l *Loader) loadFileRecursive(absPath string) error {
 					}
 				}
 			}
+			if cd, ok := decl.(*ast.ConstDecl); ok {
+				if !strings.HasPrefix(cd.Name.Value, prog.Package+"_") {
+					cd.Name.Value = prog.Package + "_" + cd.Name.Value
+				}
+			}
 		}
 	}
 
+	// インポート先の再帰的読み込み
+	baseDir := filepath.Dir(absPath)
 	for _, imp := range prog.Imports {
-		importPath := strings.Trim(imp.Path, "\"")
-		resolvedFiles, err := l.resolveImport(importPath)
-		if err != nil {
-			return fmt.Errorf("in %s: %w", absPath, err)
+		var targetPath string
+		cleanPath := strings.Trim(imp.Path, "\"")
+
+		if strings.HasPrefix(cleanPath, "std/") || strings.HasPrefix(cleanPath, "hikec/") {
+			rootDir := l.findProjectRoot(baseDir)
+			targetPath = filepath.Join(rootDir, filepath.FromSlash(cleanPath))
+		} else {
+			targetPath = filepath.Join(baseDir, filepath.FromSlash(cleanPath))
 		}
 
-		for _, targetFile := range resolvedFiles {
-			if err := l.loadFileRecursive(targetFile); err != nil {
+		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
+			files, _ := filepath.Glob(filepath.Join(targetPath, "*.hike"))
+			for _, f := range files {
+				if err := l.loadFileRecursive(f); err != nil {
+					return err
+				}
+			}
+		} else {
+			if !strings.HasSuffix(targetPath, ".hike") {
+				targetPath += ".hike"
+			}
+			if err := l.loadFileRecursive(targetPath); err != nil {
 				return err
 			}
 		}
 	}
 
-	l.loadedFiles[absPath] = prog
-	l.fileOrder = append(l.fileOrder, absPath)
+	l.allDecls = append(l.allDecls, prog.Decls...)
 	return nil
 }
 
-func (l *Loader) resolveImport(importPath string) ([]string, error) {
-	for _, searchRoot := range l.searchPaths {
-		candidateDir := filepath.Join(searchRoot, importPath)
-
-		// 1. パッケージディレクトリの場合（例: std/fmt 内の全 .hike ファイルを収集）
-		info, err := os.Stat(candidateDir)
-		if err == nil && info.IsDir() {
-			entries, err := os.ReadDir(candidateDir)
-			if err != nil {
-				return nil, err
-			}
-
-			var files []string
-			for _, entry := range entries {
-				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".hike") {
-					absF, _ := filepath.Abs(filepath.Join(candidateDir, entry.Name()))
-					files = append(files, absF)
-				}
-			}
-			if len(files) > 0 {
-				return files, nil
-			}
+func (l *Loader) findProjectRoot(startDir string) string {
+	dir := startDir
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
 		}
-
-		// 2. 単一ファイルの場合（例: std/fmt.hike）
-		candidateFile := filepath.Join(searchRoot, importPath+".hike")
-		info, err = os.Stat(candidateFile)
-		if err == nil && !info.IsDir() {
-			absF, _ := filepath.Abs(candidateFile)
-			return []string{absF}, nil
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
 		}
+		dir = parent
 	}
-
-	return nil, fmt.Errorf("package or file not found: %s", importPath)
+	return startDir
 }

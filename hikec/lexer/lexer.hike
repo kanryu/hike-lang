@@ -14,7 +14,7 @@ type Lexer struct {
 	inputLen     int
 	position     int
 	readPosition int
-	ch           int // 現在の走査文字 (byte値)
+	ch           int
 	line         int
 	col          int
 }
@@ -93,7 +93,7 @@ func (l *Lexer) readNumber() *byte {
 }
 
 func (l *Lexer) readString() *byte {
-	l.readChar() // 開始の " を消費
+	l.readChar()
 	startPos := l.position
 	for l.ch != 34 && l.ch != 0 {
 		l.readChar()
@@ -103,7 +103,7 @@ func (l *Lexer) readString() *byte {
 	memcpy(buf, l.input+startPos, length)
 	buf[length] = 0
 	if l.ch == 34 {
-		l.readChar() // 終了の " を消費
+		l.readChar()
 	}
 	return buf
 }
@@ -171,8 +171,20 @@ func (l *Lexer) NextToken() *token.Token {
 		tok = token.New(token.SEMICOLON, ";", curLine, curCol)
 		l.readChar()
 	} else if l.ch == 46 { // '.'
-		tok = token.New(token.DOT, ".", curLine, curCol)
-		l.readChar()
+		if l.peekChar() == 46 {
+			l.readChar()
+			if l.peekChar() == 46 {
+				l.readChar()
+				tok = token.New(token.ELLIPSIS, "...", curLine, curCol)
+				l.readChar()
+			} else {
+				tok = token.New(token.ILLEGAL, "..", curLine, curCol)
+				l.readChar()
+			}
+		} else {
+			tok = token.New(token.DOT, ".", curLine, curCol)
+			l.readChar()
+		}
 	} else if l.ch == 34 { // '"'
 		strVal := l.readString()
 		tok = token.New(token.STRING, strVal, curLine, curCol)

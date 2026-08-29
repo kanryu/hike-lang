@@ -1,0 +1,322 @@
+package parser
+
+import (
+	"hikec/ast"
+	"hikec/lexer"
+	"hikec/token"
+	"std/container"
+)
+
+func malloc(size int) *byte
+func free(ptr *byte)
+
+const LOWEST = 1
+const LOR = 2
+const LAND = 3
+const EQUALS = 4
+const LESSGREATER = 5
+const SUM = 6
+const PRODUCT = 7
+const PREFIX = 8
+const CALL = 9
+const INDEX = 10
+const DOT = 11
+
+type Parser struct {
+	l         *lexer.Lexer
+	curToken  *token.Token
+	peekToken *token.Token
+	errors    *container.Vector
+}
+
+func New(l *lexer.Lexer) *Parser {
+	p := (*Parser)(malloc(32))
+	p.l = l
+	p.errors = container.NewVector(4)
+	p.nextToken()
+	p.nextToken()
+	return p
+}
+
+func (p *Parser) nextToken() {
+	p.curToken = p.peekToken
+	p.peekToken = p.l.NextToken()
+}
+
+func (p *Parser) curTokenIs(tokType int) bool {
+	if p.curToken == nil {
+		return false
+	}
+	return p.curToken.Type == tokType
+}
+
+func (p *Parser) peekTokenIs(tokType int) bool {
+	if p.peekToken == nil {
+		return false
+	}
+	return p.peekToken.Type == tokType
+}
+
+func (p *Parser) expectPeek(tokType int) bool {
+	if p.peekTokenIs(tokType) {
+		p.nextToken()
+		return true
+	}
+	return false
+}
+
+func (p *Parser) peekPrecedence() int {
+	if p.peekToken == nil {
+		return LOWEST
+	}
+	tt := p.peekToken.Type
+	if tt == token.LOR {
+		return LOR
+	}
+	if tt == token.LAND {
+		return LAND
+	}
+	if tt == token.EQ || tt == token.NOT_EQ {
+		return EQUALS
+	}
+	if tt == token.LT || tt == token.GT {
+		return LESSGREATER
+	}
+	if tt == token.PLUS || tt == token.MINUS {
+		return SUM
+	}
+	if tt == token.SLASH || tt == token.ASTERISK {
+		return PRODUCT
+	}
+	if tt == token.LPAREN {
+		return CALL
+	}
+	if tt == token.LBRACKET {
+		return INDEX
+	}
+	if tt == token.DOT {
+		return DOT
+	}
+	return LOWEST
+}
+
+func (p *Parser) curPrecedence() int {
+	if p.curToken == nil {
+		return LOWEST
+	}
+	tt := p.curToken.Type
+	if tt == token.LOR {
+		return LOR
+	}
+	if tt == token.LAND {
+		return LAND
+	}
+	if tt == token.EQ || tt == token.NOT_EQ {
+		return EQUALS
+	}
+	if tt == token.LT || tt == token.GT {
+		return LESSGREATER
+	}
+	if tt == token.PLUS || tt == token.MINUS {
+		return SUM
+	}
+	if tt == token.SLASH || tt == token.ASTERISK {
+		return PRODUCT
+	}
+	if tt == token.LPAREN {
+		return CALL
+	}
+	if tt == token.LBRACKET {
+		return INDEX
+	}
+	if tt == token.DOT {
+		return DOT
+	}
+	return LOWEST
+}
+
+func (p *Parser) parseExpression(precedence int) *byte {
+	var leftExp *byte = nil
+
+	if p.curTokenIs(token.IDENT) {
+		leftExp = (*byte)(ast.NewIdentifier(p.curToken.Literal))
+	} else if p.curTokenIs(token.INT) {
+		leftExp = (*byte)(ast.NewIntegerLiteral(0))
+	} else if p.curTokenIs(token.STRING) {
+		leftExp = (*byte)(ast.NewStringLiteral(p.curToken.Literal))
+	} else if p.curTokenIs(token.LPAREN) {
+		p.nextToken()
+		leftExp = p.parseExpression(LOWEST)
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+	} else {
+		return nil
+	}
+
+	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
+		if p.peekTokenIs(token.PLUS) || p.peekTokenIs(token.MINUS) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.SLASH) || p.peekTokenIs(token.EQ) || p.peekTokenIs(token.NOT_EQ) || p.peekTokenIs(token.LT) || p.peekTokenIs(token.GT) || p.peekTokenIs(token.LAND) || p.peekTokenIs(token.LOR) {
+			p.nextToken()
+			op := p.curToken.Literal
+			prec := p.curPrecedence()
+			p.nextToken()
+			rightExp := p.parseExpression(prec)
+			leftExp = (*byte)(ast.NewBinaryExpr(leftExp, op, rightExp))
+		} else if p.peekTokenIs(token.LPAREN) {
+			p.nextToken()
+			call := ast.NewCallExpr(leftExp)
+			if !p.peekTokenIs(token.RPAREN) {
+				p.nextToken()
+				call.Args.Push(p.parseExpression(LOWEST))
+				for p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					p.nextToken()
+					call.Args.Push(p.parseExpression(LOWEST))
+				}
+			}
+			if !p.expectPeek(token.RPAREN) {
+				return nil
+			}
+			leftExp = (*byte)(call)
+		} else {
+			return leftExp
+		}
+	}
+
+	return leftExp
+}
+
+func (p *Parser) parseType() *byte {
+	if p.curTokenIs(token.ASTERISK) {
+		p.nextToken()
+		base := p.parseType()
+		return (*byte)(ast.NewPointerType(base))
+	}
+	typeName := p.curToken.Literal
+	return (*byte)(ast.NewNamedType(nil, typeName))
+}
+
+func (p *Parser) parseStatement() *byte {
+	if p.curTokenIs(token.RETURN) {
+		rs := ast.NewReturnStmt()
+		p.nextToken()
+		if !p.curTokenIs(token.SEMICOLON) && !p.curTokenIs(token.RBRACE) {
+			rs.Values.Push(p.parseExpression(LOWEST))
+		}
+		return (*byte)(rs)
+	}
+
+	expr := p.parseExpression(LOWEST)
+	if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		rhs := p.parseExpression(LOWEST)
+		as := ast.NewAssignStmt()
+		as.Left.Push(expr)
+		as.Right.Push(rhs)
+		return (*byte)(as)
+	}
+
+	return expr
+}
+
+func (p *Parser) parseBlockStmt() *ast.BlockStmt {
+	block := ast.NewBlockStmt()
+	p.nextToken()
+
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+		} else {
+			stmt := p.parseStatement()
+			if stmt != nil {
+				block.Statements.Push(stmt)
+			}
+			p.nextToken()
+		}
+	}
+	return block
+}
+
+func (p *Parser) parseFuncDecl() *ast.FuncDecl {
+	p.nextToken()
+
+	var recv *ast.ParamDecl = nil
+	if p.curTokenIs(token.LPAREN) {
+		p.nextToken()
+		recvName := p.curToken.Literal
+		p.nextToken()
+		recvType := p.parseType()
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		recv = ast.NewParamDecl(recvName, recvType)
+		p.nextToken()
+	}
+
+	fnName := p.curToken.Literal
+	fn := ast.NewFuncDecl(fnName)
+	fn.Receiver = recv
+
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	p.nextToken()
+	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.COMMA) {
+			p.nextToken()
+		} else if p.curTokenIs(token.ELLIPSIS) {
+			p.nextToken()
+		} else {
+			pName := p.curToken.Literal
+			p.nextToken()
+			pType := p.parseType()
+			fn.Params.Push((*byte)(ast.NewParamDecl(pName, pType)))
+			p.nextToken()
+		}
+	}
+
+	if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) {
+		p.nextToken()
+		retType := p.parseType()
+		fn.ReturnTypes.Push(retType)
+	}
+
+	if p.peekTokenIs(token.LBRACE) {
+		p.nextToken()
+		fn.Body = (*byte)(p.parseBlockStmt())
+	}
+
+	return fn
+}
+
+func (p *Parser) ParseProgram() *ast.Program {
+	prog := ast.NewProgram()
+
+	if p.curTokenIs(token.PACKAGE) {
+		if p.expectPeek(token.IDENT) {
+			prog.Package = p.curToken.Literal
+			p.nextToken()
+		}
+	}
+
+	for p.curTokenIs(token.IMPORT) {
+		if p.expectPeek(token.STRING) {
+			prog.Imports.Push((*byte)(ast.NewStringLiteral(p.curToken.Literal)))
+			p.nextToken()
+		}
+	}
+
+	for !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.FUNC) {
+			fn := p.parseFuncDecl()
+			if fn != nil {
+				prog.Decls.Push((*byte)(fn))
+			}
+		}
+		p.nextToken()
+	}
+
+	return prog
+}
