@@ -12,12 +12,11 @@ type SliceHeader struct {
 	Cap  int
 }
 
-func makeIntSlice(capacity int) []int {
-	raw := malloc(capacity * 8)
+func makeEmptySlice() []int {
 	header := (*SliceHeader)(malloc(24))
-	header.Data = raw
-	header.Len = capacity
-	header.Cap = capacity
+	header.Data = nil
+	header.Len = 0
+	header.Cap = 0
 	return *(*[]int)((*byte)(header))
 }
 
@@ -36,60 +35,50 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Slice Runtime & Execution Tests ===")
+	fmt.PrintLn("=== Running Append Builtin Unit Tests ===")
 
 	testCount := 0
 
-	// 1. スライスの作成 (要素数 5)
-	s := makeIntSlice(5)
+	// 1. 空スライス (len=0, cap=0) への初回 append
+	s := makeEmptySlice()
+	s = append(s, 100)
 
-	// テスト1: 初期スライスの len / cap
+	// テスト1: 初回 append 後の len=1, cap=4
 	testCount = testCount + 1
-	assert(len(s) == 5 && cap(s) == 5, testCount, "Slice: initial len and cap match 5")
+	assert(len(s) == 1 && cap(s) == 4 && s[0] == 100, testCount, "Append: initial append on empty slice sets len=1, cap=4")
 
-	// 2. 要素の書き込み
-	s[0] = 10
-	s[1] = 20
-	s[2] = 30
-	s[3] = 40
-	s[4] = 50
+	// 2. キャパシティ内での連続 append (cap=4 の範囲内)
+	s = append(s, 200)
+	s = append(s, 300)
+	s = append(s, 400)
 
-	// テスト2: 書き込んだ要素のインデックス読み出し
+	// テスト2: cap=4 上限まで追加したときの検証
 	testCount = testCount + 1
-	assert(s[0] == 10 && s[2] == 30 && s[4] == 50, testCount, "Slice: read and write element values")
+	assert(len(s) == 4 && cap(s) == 4, testCount, "Append: append up to capacity preserves cap=4 and len=4")
 
-	// 3. スライス式による部分切り出し: sub := s[1:4] (要素: [20, 30, 40], len: 3, cap: 4)
-	sub := s[1:4]
-
-	// テスト3: sub スライスの len / cap
+	// テスト3: 格納された各要素値の検証
 	testCount = testCount + 1
-	assert(len(sub) == 3 && cap(sub) == 4, testCount, "Slice: sub-slice [1:4] has len=3 and cap=4")
+	assert(s[0] == 100 && s[1] == 200 && s[2] == 300 && s[3] == 400, testCount, "Append: elements within capacity match expected values")
 
-	// テスト4: sub スライスの要素オフセットアクセス
+	// 3. キャパシティ超過による自動拡張 (4 -> 8)
+	s = append(s, 500)
+
+	// テスト4: 自動拡張後の len=5, cap=8
 	testCount = testCount + 1
-	assert(sub[0] == 20 && sub[1] == 30 && sub[2] == 40, testCount, "Slice: sub-slice elements match original data")
+	assert(len(s) == 5 && cap(s) == 8, testCount, "Append: exceeding capacity triggers reallocation to cap=8")
 
-	// 4. 先頭省略スライス: head := s[:3] (要素: [10, 20, 30], len: 3, cap: 5)
-	head := s[:3]
-
-	// テスト5: head スライスの検証
+	// テスト5: 拡張後も過去データと新データが保持されているか検証
 	testCount = testCount + 1
-	assert(len(head) == 3 && head[2] == 30, testCount, "Slice: head slice [:3] len=3, head[2]=30")
+	assert(s[0] == 100 && s[3] == 400 && s[4] == 500, testCount, "Append: reallocated slice retains old data and appends new element")
 
-	// 5. 末尾省略スライス: tail := s[2:] (要素: [30, 40, 50], len: 3, cap: 3)
-	tail := s[2:]
+	// 4. スライス切り出し結果への append
+	sub := s[1:3] // [200, 300], len=2, cap=7
+	sub = append(sub, 999)
 
-	// テスト6: tail スライスの検証
+	// テスト6: sub への append (len=3, sub[2]=999)
 	testCount = testCount + 1
-	assert(len(tail) == 3 && tail[0] == 30 && tail[2] == 50, testCount, "Slice: tail slice [2:] elements match")
+	assert(len(sub) == 3 && sub[2] == 999, testCount, "Append: append to sub-slice works correctly")
 
-	// 6. スライス経由の変更が元のバッキング配列に波及することの検証
-	sub[0] = 999
-
-	// テスト7: sub[0] = 999 が s[1] および head[1] に反映されているか
-	testCount = testCount + 1
-	assert(s[1] == 999 && head[1] == 999, testCount, "Slice: mutation via slice affects shared backing array")
-
-	fmt.PrintLn("=== Slice Runtime Tests Completed ===")
+	fmt.PrintLn("=== Append Unit Tests Completed ===")
 	return testCount
 }

@@ -1295,6 +1295,138 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 }
 
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
+	// append(slice, elem) 組み込み関数
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && len(call.Args) == 2 {
+		sliceReg, sliceType := g.resolveValue(b, call.Args[0])
+		elemReg, elemType := g.resolveValue(b, call.Args[1])
+
+		sl, isSlice := sliceType.(*sema.SliceType)
+		if !isSlice {
+			panic("[Codegen Error] first argument to append must be a slice")
+		}
+
+		elemSize := sl.Elem.Size()
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+
+		// 元スライスのフィールド抽出
+		oldPtrReg := g.nextReg()
+		oldLenReg := g.nextReg()
+		oldCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", oldPtrReg, sl.LLVMType(), sliceReg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", oldLenReg, sl.LLVMType(), sliceReg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", oldCapReg, sl.LLVMType(), sliceReg))
+
+		lblGrow := g.nextLabel("append.grow")
+		lblNoGrow := g.nextLabel("append.nogrow")
+		lblStore := g.nextLabel("append.store")
+
+		resPtrAlloca := g.nextReg()
+		resCapAlloca := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
+
+		// len < cap の判定
+		condReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", condReg, oldLenReg, oldCapReg))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
+
+		// --- 1. 容量十分 (拡張不要) ---
+		b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
+		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", oldPtrReg, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", oldCapReg, resCapAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
+
+		// --- 2. 容量不足 (バッキング配列の再確保 & コピー) ---
+		b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
+		doubleCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCapReg, oldCapReg))
+		isZeroReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp eq i64 %s, 0\n", isZeroReg, doubleCapReg))
+		newCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCapReg, isZeroReg, doubleCapReg))
+
+		newBytesReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytesReg, newCapReg, elemSize))
+		newPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtrReg, newBytesReg))
+
+		lblCopy := g.nextLabel("append.copy")
+		lblAfterCopy := g.nextLabel("append.after_copy")
+		hasOldLenReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasOldLenReg, oldLenReg))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasOldLenReg, lblCopy, lblAfterCopy))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
+		copyBytesReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", copyBytesReg, oldLenReg, elemSize))
+		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtrReg, oldPtrReg, copyBytesReg))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterCopy))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblAfterCopy))
+		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtrReg, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCapReg, resCapAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
+
+		// --- 3. 新規要素の書き込み & スライス組み立て ---
+		b.WriteString(fmt.Sprintf("%s:\n", lblStore))
+		finalPtrReg := g.nextReg()
+		finalCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtrReg, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCapReg, resCapAlloca))
+
+		typedFinalPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedFinalPtrReg, finalPtrReg, sl.Elem.LLVMType()))
+		destElemPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", destElemPtrReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedFinalPtrReg, oldLenReg))
+
+		valToStore := elemReg
+		if elemType != nil && elemType.LLVMType() != sl.Elem.LLVMType() {
+			convReg := g.nextReg()
+			if sl.Elem.LLVMType() == "i8" && elemType.LLVMType() == "i64" {
+				b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, elemReg))
+				valToStore = convReg
+			} else if sl.Elem.LLVMType() == "i64" && elemType.LLVMType() == "i8" {
+				b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, elemReg))
+				valToStore = convReg
+			} else if strings.HasSuffix(sl.Elem.LLVMType(), "*") && strings.HasSuffix(elemType.LLVMType(), "*") {
+				b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, elemType.LLVMType(), elemReg, sl.Elem.LLVMType()))
+				valToStore = convReg
+			}
+		}
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", sl.Elem.LLVMType(), valToStore, sl.Elem.LLVMType(), destElemPtrReg))
+
+		newLenReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = add i64 %s, 1\n", newLenReg, oldLenReg))
+
+		retSliceType := "{ i8*, i64, i64 }"
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, retSliceType, finalPtrReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, retSliceType, t1, newLenReg))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, retSliceType, t2, finalCapReg))
+
+		return t3, sl
+	}
+
+	// len(slice) / cap(slice) 組み込み関数
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && len(call.Args) == 1 {
+		if fnIdent.Value == "len" || fnIdent.Value == "cap" {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			if sl, isSlice := argType.(*sema.SliceType); isSlice {
+				idx := 1
+				if fnIdent.Value == "cap" {
+					idx = 2
+				}
+				resReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", resReg, sl.LLVMType(), argReg, idx))
+				return resReg, sema.TypeInt
+			}
+		}
+	}
+
 	// len(slice) / cap(slice) 組み込み関数
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && len(call.Args) == 1 {
 		if fnIdent.Value == "len" || fnIdent.Value == "cap" {
