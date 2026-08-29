@@ -104,15 +104,15 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 }
 
 func (p *Parser) peekPrecedence() int {
-	if p, ok := precedences[p.peekToken.Type]; ok {
-		return p
+	if prec, ok := precedences[p.peekToken.Type]; ok {
+		return prec
 	}
 	return LOWEST
 }
 
 func (p *Parser) curPrecedence() int {
-	if p, ok := precedences[p.curToken.Type]; ok {
-		return p
+	if prec, ok := precedences[p.curToken.Type]; ok {
+		return prec
 	}
 	return LOWEST
 }
@@ -200,7 +200,6 @@ func (p *Parser) parseImportDecl() []*ast.ImportDecl {
 	return imports
 }
 
-// 1. parseTypeDecl の更新
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	stmt := &ast.TypeDecl{Token: p.curToken}
 	p.nextToken()
@@ -221,9 +220,60 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 		}
 		stmt.Type = st
 	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface") {
-		it := &ast.InterfaceType{Token: p.curToken, Methods: []*ast.FieldDecl{}}
+		it := &ast.InterfaceType{Token: p.curToken, Methods: []*ast.MethodSig{}}
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
+			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+				p.nextToken()
+				methodName := p.parseIdentifier()
+				p.expectPeek(token.LPAREN)
+				paramTypes := []ast.TypeExpr{}
+				if !p.peekTokenIs(token.RPAREN) {
+					p.nextToken()
+					for {
+						if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
+							p.nextToken()
+						}
+						paramTypes = append(paramTypes, p.parseTypeExpr())
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RPAREN) {
+								break
+							}
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.RPAREN)
+				returnTypes := []ast.TypeExpr{}
+				if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+					if p.peekTokenIs(token.LPAREN) {
+						p.nextToken()
+						p.nextToken()
+						for {
+							returnTypes = append(returnTypes, p.parseTypeExpr())
+							if p.peekTokenIs(token.COMMA) {
+								p.nextToken()
+								p.nextToken()
+							} else {
+								break
+							}
+						}
+						p.expectPeek(token.RPAREN)
+					} else {
+						p.nextToken()
+						returnTypes = append(returnTypes, p.parseTypeExpr())
+					}
+				}
+				it.Methods = append(it.Methods, &ast.MethodSig{
+					Token:       methodName.Token,
+					Name:        methodName,
+					ParamTypes:  paramTypes,
+					ReturnTypes: returnTypes,
+				})
+			}
 			p.expectPeek(token.RBRACE)
 		}
 		stmt.Type = it
@@ -359,7 +409,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	}
 	p.expectPeek(token.RPAREN)
 
-	// parseFuncDecl 内の戻り値パース部分を更新
 	fn.ReturnTypes = []ast.TypeExpr{}
 	if !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
@@ -397,8 +446,60 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		if ident.Value == "interface" && p.peekTokenIs(token.LBRACE) {
 			tok := p.curToken
 			p.nextToken()
+			it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
+			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+				p.nextToken()
+				methodName := p.parseIdentifier()
+				p.expectPeek(token.LPAREN)
+				paramTypes := []ast.TypeExpr{}
+				if !p.peekTokenIs(token.RPAREN) {
+					p.nextToken()
+					for {
+						if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
+							p.nextToken()
+						}
+						paramTypes = append(paramTypes, p.parseTypeExpr())
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RPAREN) {
+								break
+							}
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.RPAREN)
+				returnTypes := []ast.TypeExpr{}
+				if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+					if p.peekTokenIs(token.LPAREN) {
+						p.nextToken()
+						p.nextToken()
+						for {
+							returnTypes = append(returnTypes, p.parseTypeExpr())
+							if p.peekTokenIs(token.COMMA) {
+								p.nextToken()
+								p.nextToken()
+							} else {
+								break
+							}
+						}
+						p.expectPeek(token.RPAREN)
+					} else {
+						p.nextToken()
+						returnTypes = append(returnTypes, p.parseTypeExpr())
+					}
+				}
+				it.Methods = append(it.Methods, &ast.MethodSig{
+					Token:       methodName.Token,
+					Name:        methodName,
+					ParamTypes:  paramTypes,
+					ReturnTypes: returnTypes,
+				})
+			}
 			p.expectPeek(token.RBRACE)
-			return &ast.InterfaceType{Token: tok}
+			return it
 		}
 		if p.peekTokenIs(token.DOT) {
 			p.nextToken()
@@ -471,7 +572,6 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
 
-// parseStatement に token.VAR を追加
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.curToken.Type {
 	case token.VAR:
@@ -497,10 +597,9 @@ func (p *Parser) parseStatement() ast.Statement {
 	}
 }
 
-// var x Type = expr または var x = expr の解析
 func (p *Parser) parseVarStmt() ast.Statement {
 	varTok := p.curToken
-	p.nextToken() // 変数名へ
+	p.nextToken()
 	ident := p.parseIdentifier()
 	p.nextToken()
 
@@ -597,7 +696,6 @@ func (p *Parser) parseForStmt() ast.Statement {
 	oldAllow := p.allowStructLit
 	p.allowStructLit = false
 
-	// A. for range X { ... }
 	if p.curTokenIs(token.RANGE) {
 		p.nextToken()
 		x := p.parseExpression(LOWEST)
@@ -609,7 +707,6 @@ func (p *Parser) parseForStmt() ast.Statement {
 		return &ast.ForRangeStmt{Token: forTok, Key: nil, Value: nil, X: x, Body: body}
 	}
 
-	// B. for i, v := range X または for i := range X
 	var firstStmt ast.Statement = nil
 	if p.curTokenIs(token.IDENT) && (p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN)) {
 		firstIdent := p.parseIdentifier()
@@ -665,7 +762,6 @@ func (p *Parser) parseForStmt() ast.Statement {
 		firstStmt = p.parseAssignOrExprStmt()
 	}
 
-	// 3-clause for loop: init; cond; post
 	if p.peekTokenIs(token.SEMICOLON) {
 		init := firstStmt
 		p.nextToken()
@@ -688,7 +784,6 @@ func (p *Parser) parseForStmt() ast.Statement {
 		return &ast.ForStmt{Token: forTok, Init: init, Cond: cond, Post: post, Body: body}
 	}
 
-	// Single condition loop: for cond { ... }
 	var cond ast.Expression = nil
 	if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
 		cond = exprStmt.Expr
@@ -712,8 +807,8 @@ func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
 
 	if p.peekTokenIs(token.SEMICOLON) {
 		stmt.Init = firstStmt
-		p.nextToken() // ';'
-		p.nextToken() // exprへ
+		p.nextToken()
+		p.nextToken()
 		stmt.Value = p.parseExpression(LOWEST)
 	} else {
 		if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
@@ -780,7 +875,7 @@ func (p *Parser) parseReturnStmt() *ast.ReturnStmt {
 
 func (p *Parser) parseDeferStmt() ast.Statement {
 	stmt := &ast.DeferStmt{Token: p.curToken}
-	p.nextToken() // 'defer' の次へ
+	p.nextToken()
 	exp := p.parseExpression(LOWEST)
 	if call, ok := exp.(*ast.CallExpr); ok {
 		stmt.Call = call
@@ -803,7 +898,6 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 		}
 	}
 
-	// parseAssignOrExprStmt 内での複合代入演算子判定の更新
 	if p.peekTokenIs(token.PLUS_ASSIGN) || p.peekTokenIs(token.MINUS_ASSIGN) ||
 		p.peekTokenIs(token.ASTERISK_ASSIGN) || p.peekTokenIs(token.SLASH_ASSIGN) ||
 		p.peekTokenIs(token.AND_ASSIGN) || p.peekTokenIs(token.OR_ASSIGN) ||
@@ -1162,7 +1256,6 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	return &ast.IndexExpr{Token: tok, Left: left, Index: idx}
 }
 
-// parseMemberExpr: .field と .(TargetType) の両方を正確に分岐
 func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
 	tok := p.curToken // '.'
 	if p.peekTokenIs(token.LPAREN) {

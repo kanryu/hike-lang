@@ -432,9 +432,21 @@ type ArrayLiteral struct {
 func (al *ArrayLiteral) expressionNode()      {}
 func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
 
+// インターフェースのメソッドシグネチャノード
+type MethodSig struct {
+	Token       token.Token
+	Name        *Identifier
+	ParamTypes  []TypeExpr
+	ReturnTypes []TypeExpr
+}
+
+func (ms *MethodSig) expressionNode()      {}
+func (ms *MethodSig) TokenLiteral() string { return ms.Token.Literal }
+
+// インターフェース型ノード
 type InterfaceType struct {
 	Token   token.Token
-	Methods []*FieldDecl
+	Methods []*MethodSig
 }
 
 func (it *InterfaceType) typeExprNode()        {}

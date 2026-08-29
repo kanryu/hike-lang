@@ -57,19 +57,36 @@ func (a *ArrayType) TypeName() string { return fmt.Sprintf("[%d]%s", a.Len, a.El
 func (a *ArrayType) LLVMType() string { return fmt.Sprintf("[%d x %s]", a.Len, a.Elem.LLVMType()) }
 func (a *ArrayType) Size() int        { return a.Len * a.Elem.Size() }
 
-// インターフェース型 (ファットポインタ: { i8* data, i64 type_id })
-type InterfaceType struct {
-	Name string
+type Method struct {
+	Name        string
+	ParamTypes  []Type
+	ReturnTypes []Type
 }
 
-func (it *InterfaceType) TypeName() string {
-	if it.Name != "" {
-		return it.Name
+type InterfaceType struct {
+	Name    string
+	Methods []Method
+}
+
+func (i *InterfaceType) IsAny() bool {
+	return len(i.Methods) == 0
+}
+
+func (i *InterfaceType) TypeName() string {
+	if i.Name != "" {
+		return i.Name
 	}
 	return "interface{}"
 }
-func (it *InterfaceType) LLVMType() string { return "{ i8*, i64 }" }
-func (it *InterfaceType) Size() int        { return 16 }
+
+func (i *InterfaceType) LLVMType() string {
+	if i.IsAny() {
+		return "{ i8*, i64 }"
+	}
+	return "{ i8*, i8* }"
+}
+
+func (i *InterfaceType) Size() int { return 16 }
 
 type Field struct {
 	Name string
@@ -148,24 +165,26 @@ func (t *TupleType) Size() int {
 }
 
 type Context struct {
-	Functions map[string]*FuncType
-	Structs   map[string]*StructType
-	Aliases   map[string]Type
-	Constants map[string]int64
-	Globals   map[string]Type // 追加: グローバル変数テーブル
-	typeIDs   map[string]int64
-	nextID    int64
+	Functions  map[string]*FuncType
+	Structs    map[string]*StructType
+	Interfaces map[string]*InterfaceType
+	Aliases    map[string]Type
+	Constants  map[string]int64
+	Globals    map[string]Type
+	typeIDs    map[string]int64
+	nextID     int64
 }
 
 func NewContext() *Context {
 	ctx := &Context{
-		Functions: make(map[string]*FuncType),
-		Structs:   make(map[string]*StructType),
-		Aliases:   make(map[string]Type),
-		Constants: make(map[string]int64),
-		Globals:   make(map[string]Type), // 初期化
-		typeIDs:   make(map[string]int64),
-		nextID:    1,
+		Functions:  make(map[string]*FuncType),
+		Structs:    make(map[string]*StructType),
+		Interfaces: make(map[string]*InterfaceType),
+		Aliases:    make(map[string]Type),
+		Constants:  make(map[string]int64),
+		Globals:    make(map[string]Type),
+		typeIDs:    make(map[string]int64),
+		nextID:     1,
 	}
 
 	ctx.GetTypeID(TypeInt)
@@ -198,6 +217,9 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	switch t := expr.(type) {
 	case *ast.NamedType:
 		name := t.Name.Value
+		if iface, ok := c.Interfaces[name]; ok {
+			return iface
+		}
 		if alias, ok := c.Aliases[name]; ok {
 			return alias
 		}
@@ -228,7 +250,19 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		elem := c.ResolveType(t.Elem)
 		return &ArrayType{Len: int(t.Len), Elem: elem}
 	case *ast.InterfaceType:
-		return &InterfaceType{Name: "interface{}"}
+		methods := []Method{}
+		for _, m := range t.Methods {
+			pts := []Type{}
+			for _, p := range m.ParamTypes {
+				pts = append(pts, c.ResolveType(p))
+			}
+			rts := []Type{}
+			for _, r := range m.ReturnTypes {
+				rts = append(rts, c.ResolveType(r))
+			}
+			methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, ReturnTypes: rts})
+		}
+		return &InterfaceType{Name: "", Methods: methods}
 	case *ast.FuncType:
 		fnType := &FuncType{
 			ParamTypes:  []Type{},
@@ -303,7 +337,7 @@ func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
-	// 1. 型エイリアス・構造体登録
+	// 1. 型定義（構造体・インターフェース・型エイリアス）の事前収集
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
 			if stNode, ok := td.Type.(*ast.StructType); ok {
@@ -312,8 +346,22 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				for _, f := range stNode.Fields {
 					st.Fields = append(st.Fields, Field{Name: f.Name.Value, Type: ctx.ResolveType(f.Type)})
 				}
-			} else if _, ok := td.Type.(*ast.InterfaceType); ok {
-				ctx.Aliases[td.Name.Value] = &InterfaceType{Name: td.Name.Value}
+			} else if itNode, ok := td.Type.(*ast.InterfaceType); ok {
+				methods := []Method{}
+				for _, m := range itNode.Methods {
+					pts := []Type{}
+					for _, p := range m.ParamTypes {
+						pts = append(pts, ctx.ResolveType(p))
+					}
+					rts := []Type{}
+					for _, r := range m.ReturnTypes {
+						rts = append(rts, ctx.ResolveType(r))
+					}
+					methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, ReturnTypes: rts})
+				}
+				iface := &InterfaceType{Name: td.Name.Value, Methods: methods}
+				ctx.Interfaces[td.Name.Value] = iface
+				ctx.Aliases[td.Name.Value] = iface
 			} else {
 				ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
 			}
@@ -352,8 +400,26 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	// 4. 関数シグネチャ登録
 	for _, decl := range prog.Decls {
 		if fd, ok := decl.(*ast.FuncDecl); ok {
+			funcMangledName := fd.Name.Value
+			if fd.Receiver != nil {
+				recvTypeName := ""
+				if named, ok := fd.Receiver.Type.(*ast.NamedType); ok {
+					recvTypeName = named.Name.Value
+				} else if pt, ok := fd.Receiver.Type.(*ast.PointerType); ok {
+					if named, ok := pt.Base.(*ast.NamedType); ok {
+						recvTypeName = named.Name.Value
+					}
+				}
+				if strings.Contains(funcMangledName, "_") {
+					parts := strings.SplitN(funcMangledName, "_", 2)
+					funcMangledName = parts[0] + "_" + recvTypeName + "_" + parts[1]
+				} else {
+					funcMangledName = recvTypeName + "_" + funcMangledName
+				}
+			}
+
 			fnType := &FuncType{
-				Name:        fd.Name.Value,
+				Name:        funcMangledName,
 				ParamTypes:  []Type{},
 				ReturnTypes: []Type{},
 				IsVariadic:  fd.IsVariadic,
@@ -365,7 +431,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			for _, rt := range fd.ReturnTypes {
 				fnType.ReturnTypes = append(fnType.ReturnTypes, ctx.ResolveType(rt))
 			}
-			ctx.Functions[fd.Name.Value] = fnType
+			ctx.Functions[funcMangledName] = fnType
+			if fd.Receiver == nil {
+				ctx.Functions[fd.Name.Value] = fnType
+			}
 		}
 	}
 
