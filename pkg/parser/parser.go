@@ -211,10 +211,25 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 		if p.expectPeek(token.LBRACE) {
 			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 				p.nextToken()
-				fieldName := p.parseIdentifier()
-				p.nextToken()
-				fieldType := p.parseTypeExpr()
-				st.Fields = append(st.Fields, &ast.FieldDecl{Token: fieldName.Token, Name: fieldName, Type: fieldType})
+				if p.curTokenIs(token.SEMICOLON) {
+					continue
+				}
+				if p.curTokenIs(token.ASTERISK) {
+					p.nextToken()
+					embIdent := p.parseIdentifier()
+					pt := &ast.PointerType{Token: embIdent.Token, Base: &ast.NamedType{Token: embIdent.Token, Name: embIdent}}
+					st.Fields = append(st.Fields, &ast.FieldDecl{Token: embIdent.Token, Name: embIdent, Type: pt, IsEmbedded: true})
+				} else if p.curTokenIs(token.IDENT) {
+					firstIdent := p.parseIdentifier()
+					if p.peekToken.Line == p.curToken.Line && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
+						p.nextToken()
+						fType := p.parseTypeExpr()
+						st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: fType, IsEmbedded: false})
+					} else {
+						namedType := &ast.NamedType{Token: firstIdent.Token, Name: firstIdent}
+						st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: namedType, IsEmbedded: true})
+					}
+				}
 			}
 			p.expectPeek(token.RBRACE)
 		}
@@ -225,6 +240,9 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 			p.nextToken()
 			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 				p.nextToken()
+				if p.curTokenIs(token.SEMICOLON) {
+					continue
+				}
 				methodName := p.parseIdentifier()
 				p.expectPeek(token.LPAREN)
 				paramTypes := []ast.TypeExpr{}
@@ -654,8 +672,8 @@ func (p *Parser) parseIfStmt() *ast.IfStmt {
 
 	if p.peekTokenIs(token.SEMICOLON) {
 		stmt.Init = firstStmt
-		p.nextToken() // ';'
-		p.nextToken() // condへ
+		p.nextToken()
+		p.nextToken()
 		stmt.Condition = p.parseExpression(LOWEST)
 	} else {
 		if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {

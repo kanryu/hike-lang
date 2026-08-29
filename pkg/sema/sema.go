@@ -47,7 +47,6 @@ func (s *SliceType) TypeName() string { return "[]" + s.Elem.TypeName() }
 func (s *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
 func (s *SliceType) Size() int        { return 24 }
 
-// 固定長配列型 [N]T
 type ArrayType struct {
 	Len  int
 	Elem Type
@@ -56,6 +55,27 @@ type ArrayType struct {
 func (a *ArrayType) TypeName() string { return fmt.Sprintf("[%d]%s", a.Len, a.Elem.TypeName()) }
 func (a *ArrayType) LLVMType() string { return fmt.Sprintf("[%d x %s]", a.Len, a.Elem.LLVMType()) }
 func (a *ArrayType) Size() int        { return a.Len * a.Elem.Size() }
+
+type Field struct {
+	Name       string
+	Type       Type
+	IsEmbedded bool
+}
+
+type StructType struct {
+	Name   string
+	Fields []Field
+}
+
+func (s *StructType) TypeName() string { return s.Name }
+func (s *StructType) LLVMType() string { return "%struct." + s.Name }
+func (s *StructType) Size() int {
+	total := 0
+	for _, f := range s.Fields {
+		total += f.Type.Size()
+	}
+	return total
+}
 
 type Method struct {
 	Name        string
@@ -88,24 +108,32 @@ func (i *InterfaceType) LLVMType() string {
 
 func (i *InterfaceType) Size() int { return 16 }
 
-type Field struct {
-	Name string
-	Type Type
+type TupleType struct {
+	Types []Type
 }
 
-type StructType struct {
-	Name   string
-	Fields []Field
-}
-
-func (s *StructType) TypeName() string { return s.Name }
-func (s *StructType) LLVMType() string { return "%struct." + s.Name }
-func (s *StructType) Size() int {
-	sz := 0
-	for _, f := range s.Fields {
-		sz += f.Type.Size()
+func (t *TupleType) TypeName() string {
+	names := []string{}
+	for _, elem := range t.Types {
+		names = append(names, elem.TypeName())
 	}
-	return sz
+	return "(" + strings.Join(names, ", ") + ")"
+}
+
+func (t *TupleType) LLVMType() string {
+	types := []string{}
+	for _, elem := range t.Types {
+		types = append(types, elem.LLVMType())
+	}
+	return "{ " + strings.Join(types, ", ") + " }"
+}
+
+func (t *TupleType) Size() int {
+	total := 0
+	for _, elem := range t.Types {
+		total += elem.Size()
+	}
+	return total
 }
 
 type FuncType struct {
@@ -137,32 +165,6 @@ func (f *FuncType) LLVMType() string {
 }
 
 func (f *FuncType) Size() int { return 16 }
-
-type TupleType struct {
-	Types []Type
-}
-
-func (t *TupleType) TypeName() string {
-	var names []string
-	for _, sub := range t.Types {
-		names = append(names, sub.TypeName())
-	}
-	return "(" + strings.Join(names, ", ") + ")"
-}
-func (t *TupleType) LLVMType() string {
-	var types []string
-	for _, sub := range t.Types {
-		types = append(types, sub.LLVMType())
-	}
-	return "{ " + strings.Join(types, ", ") + " }"
-}
-func (t *TupleType) Size() int {
-	sz := 0
-	for _, sub := range t.Types {
-		sz += sub.Size()
-	}
-	return sz
-}
 
 type Context struct {
 	Functions  map[string]*FuncType
@@ -197,16 +199,13 @@ func NewContext() *Context {
 }
 
 func (c *Context) GetTypeID(t Type) int64 {
-	if t == nil {
-		return 0
-	}
-	name := t.TypeName()
-	if id, exists := c.typeIDs[name]; exists {
+	key := t.TypeName()
+	if id, exists := c.typeIDs[key]; exists {
 		return id
 	}
 	id := c.nextID
+	c.typeIDs[key] = id
 	c.nextID++
-	c.typeIDs[name] = id
 	return id
 }
 
@@ -280,9 +279,6 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 }
 
 func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
-	if expr == nil {
-		return 0
-	}
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value
@@ -292,19 +288,7 @@ func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
 		if val, ok := consts[e.Value]; ok {
 			return val
 		}
-	case *ast.PrefixExpr:
-		val := evalConstExpr(e.Right, consts)
-		switch e.Operator {
-		case "-":
-			return -val
-		case "^":
-			return ^val
-		case "!":
-			if val == 0 {
-				return 1
-			}
-			return 0
-		}
+		return 0
 	case *ast.BinaryExpr:
 		left := evalConstExpr(e.Left, consts)
 		right := evalConstExpr(e.Right, consts)
@@ -319,14 +303,15 @@ func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
 			if right != 0 {
 				return left / right
 			}
+			return 0
 		case "<<":
-			return left << uint(right)
+			return left << right
 		case ">>":
-			return left >> uint(right)
-		case "|":
-			return left | right
+			return left >> right
 		case "&":
 			return left & right
+		case "|":
+			return left | right
 		case "^":
 			return left ^ right
 		}
@@ -337,14 +322,13 @@ func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
-	// 1. 型定義（構造体・インターフェース・型エイリアス）の事前収集
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
 			if stNode, ok := td.Type.(*ast.StructType); ok {
 				st := &StructType{Name: td.Name.Value, Fields: []Field{}}
 				ctx.Structs[td.Name.Value] = st
 				for _, f := range stNode.Fields {
-					st.Fields = append(st.Fields, Field{Name: f.Name.Value, Type: ctx.ResolveType(f.Type)})
+					st.Fields = append(st.Fields, Field{Name: f.Name.Value, Type: ctx.ResolveType(f.Type), IsEmbedded: f.IsEmbedded})
 				}
 			} else if itNode, ok := td.Type.(*ast.InterfaceType); ok {
 				methods := []Method{}
@@ -368,7 +352,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// 2. 定数解決
 	for _, decl := range prog.Decls {
 		if cd, ok := decl.(*ast.ConstDecl); ok {
 			val := evalConstExpr(cd.Value, ctx.Constants)
@@ -376,7 +359,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// 3. グローバル変数登録
 	for _, decl := range prog.Decls {
 		if vd, ok := decl.(*ast.VarDecl); ok {
 			var gType Type = TypeInt
@@ -397,11 +379,12 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// 4. 関数シグネチャ登録
 	for _, decl := range prog.Decls {
 		if fd, ok := decl.(*ast.FuncDecl); ok {
 			funcMangledName := fd.Name.Value
+			var recvType Type = nil
 			if fd.Receiver != nil {
+				recvType = ctx.ResolveType(fd.Receiver.Type)
 				recvTypeName := ""
 				if named, ok := fd.Receiver.Type.(*ast.NamedType); ok {
 					recvTypeName = named.Name.Value
@@ -425,6 +408,12 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				IsVariadic:  fd.IsVariadic,
 				IsExtern:    fd.Body == nil,
 			}
+
+			// メソッドの場合は第0引数にレシーバ型を登録
+			if recvType != nil {
+				fnType.ParamTypes = append(fnType.ParamTypes, recvType)
+			}
+
 			for _, p := range fd.Params {
 				fnType.ParamTypes = append(fnType.ParamTypes, ctx.ResolveType(p.Type))
 			}

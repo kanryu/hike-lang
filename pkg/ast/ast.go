@@ -201,17 +201,14 @@ func (st *StructType) typeExprNode()        {}
 func (st *StructType) TokenLiteral() string { return st.Token.Literal }
 
 type FieldDecl struct {
-	Token token.Token
-	Name  *Identifier
-	Type  TypeExpr
+	Token      token.Token
+	Name       *Identifier
+	Type       TypeExpr
+	IsEmbedded bool
 }
 
-func (fd *FieldDecl) TokenLiteral() string {
-	if fd.Name != nil {
-		return fd.Name.TokenLiteral()
-	}
-	return fd.Token.Literal
-}
+func (fd *FieldDecl) statementNode()       {}
+func (fd *FieldDecl) TokenLiteral() string { return fd.Token.Literal }
 
 type ParamDecl struct {
 	Token token.Token

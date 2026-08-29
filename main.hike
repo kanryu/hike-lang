@@ -18,102 +18,95 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// 1. メソッドセット付きインターフェース
-type Shape interface {
-	Area() int
-	Scale(factor int) int
+// 1. 基礎構造体 Engine
+type Engine struct {
+	Power int
+	Fuel  int
 }
 
-// 2. 具象型 Rect
-type Rect struct {
-	Width  int
-	Height int
+func (e *Engine) Start() int {
+	return e.Power + 10
 }
 
-func (r *Rect) Area() int {
-	return r.Width * r.Height
+func (e *Engine) AddFuel(amount int) int {
+	e.Fuel += amount
+	return e.Fuel
 }
 
-func (r *Rect) Scale(factor int) int {
-	return r.Width * factor
+// 2. 埋め込み構造体 Car
+type Car struct {
+	Engine // 無名埋め込み
+	Doors  int
 }
 
-// 3. 具象型 Circle
-type Circle struct {
-	Radius int
+// Car 独自のメソッド
+func (c *Car) GetDoors() int {
+	return c.Doors
 }
 
-func (c *Circle) Area() int {
-	return 3 * c.Radius * c.Radius
+// 3. インターフェース Starter (Engine.Start を昇格して満たす)
+type Starter interface {
+	Start() int
 }
 
-func (c *Circle) Scale(factor int) int {
-	return c.Radius * factor
-}
-
-// 4. インターフェースを受け取るポリモーフィック関数
-func computeArea(s Shape) int {
-	return s.Area()
-}
-
-func computeScale(s Shape, factor int) int {
-	return s.Scale(factor)
+func testStarter(s Starter) int {
+	return s.Start()
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Interface Method Set & Dynamic Dispatch Tests ===")
+	fmt.PrintLn("=== Running Struct Embedding & Promotion Tests ===")
 	testCount := 0
 
-	rect := Rect{Width: 10, Height: 20}
-	circle := Circle{Radius: 5}
+	car := Car{
+		Engine: Engine{Power: 200, Fuel: 50},
+		Doors:  4,
+	}
 
 	// ==========================================
-	// 1. インターフェース型変数への代入と動的ディスパッチ
+	// 1. フィールドの自動昇格（読み取り）
 	// ==========================================
-	var s Shape = &rect
-	area1 := s.Area()
+	p := car.Power // car.Engine.Power から昇格
 	testCount++
-	assert(area1 == 200, testCount, "Dynamic Dispatch: rect.Area() through Shape == 200")
+	assert(p == 200, testCount, "Field Promotion Read: car.Power == 200")
 
-	scale1 := s.Scale(3)
+	// 明示的アクセスとの一致
 	testCount++
-	assert(scale1 == 30, testCount, "Dynamic Dispatch: rect.Scale(3) through Shape == 30")
-
-	// ==========================================
-	// 2. 別の具象型への差し替えと動的ディスパッチ
-	// ==========================================
-	s = &circle
-	area2 := s.Area()
-	testCount++
-	assert(area2 == 75, testCount, "Dynamic Dispatch: circle.Area() through Shape == 75")
-
-	scale2 := s.Scale(4)
-	testCount++
-	assert(scale2 == 20, testCount, "Dynamic Dispatch: circle.Scale(4) through Shape == 20")
+	assert(car.Engine.Fuel == 50 && car.Fuel == 50, testCount, "Explicit and Promoted Field Match: 50")
 
 	// ==========================================
-	// 3. 引数としてのインターフェース受け渡し
+	// 2. フィールドの自動昇格（書き換え）
 	// ==========================================
-	polyArea1 := computeArea(&rect)
+	car.Power = 350
 	testCount++
-	assert(polyArea1 == 200, testCount, "Polymorphic Arg: computeArea(&rect) == 200")
+	assert(car.Power == 350 && car.Engine.Power == 350, testCount, "Field Promotion Mutate: car.Power = 350")
 
-	polyArea2 := computeArea(&circle)
+	car.Fuel += 25
 	testCount++
-	assert(polyArea2 == 75, testCount, "Polymorphic Arg: computeArea(&circle) == 75")
+	assert(car.Fuel == 75 && car.Engine.Fuel == 75, testCount, "Field Promotion Compound: car.Fuel += 25 (75)")
 
 	// ==========================================
-	// 4. メソッド付きインターフェースからの型アサーション
+	// 3. メソッドの自動昇格（呼び出しとミューテーション）
 	// ==========================================
-	var testShape Shape = &rect
-	resRect, okRect := testShape.(*Rect)
+	startRes := car.Start() // car.Engine.Start() へ自動中継
 	testCount++
-	assert(okRect == true && resRect.Width == 10, testCount, "Type Assertion: testShape.(*Rect) successfully unpacks struct")
+	assert(startRes == 360, testCount, "Method Promotion: car.Start() == 360")
 
-	resCircle, okCircle := testShape.(*Circle)
+	fuelRes := car.AddFuel(15) // car.Engine.AddFuel(15)
 	testCount++
-	assert(okCircle == false, testCount, "Type Assertion Mismatch: testShape.(*Circle) returns ok == false")
+	assert(fuelRes == 90 && car.Fuel == 90, testCount, "Method Promotion Mutates State: car.AddFuel(15) == 90")
 
-	fmt.PrintLn("=== All Interface & Dynamic Dispatch Tests Passed ===")
+	doors := car.GetDoors()
+	testCount++
+	assert(doors == 4, testCount, "Direct Method: car.GetDoors() == 4")
+
+	// ==========================================
+	// 4. メソッド昇格によるインターフェース適合
+	// ==========================================
+	var s Starter = &car
+	polyRes := testStarter(s)
+	testCount++
+	assert(polyRes == 360, testCount, "Interface Dispatch with Promoted Method: testStarter(&car) == 360")
+
+	fmt.PrintLn("=== All Struct Embedding Tests Passed ===")
 	return testCount
 }

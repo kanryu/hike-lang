@@ -222,6 +222,136 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 	return nil, ""
 }
 
+func (g *CodeGenerator) resolveStructPtr(b *strings.Builder, expr ast.Expression) (string, sema.Type, *sema.StructType, string) {
+	if ident, ok := expr.(*ast.Identifier); ok {
+		if sym, exists := g.symbols[ident.Value]; exists {
+			if strings.HasSuffix(sym.Type.LLVMType(), "*") {
+				loadReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
+				st, sName := g.findStruct(sym.Type, "")
+				return loadReg, sym.Type, st, sName
+			} else {
+				st, sName := g.findStruct(sym.Type, "")
+				return sym.LLVMName, &sema.PointerType{Base: sym.Type}, st, sName
+			}
+		}
+	}
+
+	if mem, ok := expr.(*ast.MemberExpr); ok {
+		parentPtr, _, parentSt, parentName := g.resolveStructPtr(b, mem.Object)
+		if parentSt != nil {
+			gepReg, fieldType, _, found := g.resolveFieldPath(parentSt, parentName, parentPtr, mem.Field.Value, b)
+			if found {
+				st, sName := g.findStruct(fieldType, "")
+				if _, isPtr := fieldType.(*sema.PointerType); isPtr {
+					loadReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
+					return loadReg, fieldType, st, sName
+				}
+				return gepReg, &sema.PointerType{Base: fieldType}, st, sName
+			}
+		}
+	}
+
+	valReg, valType := g.resolveValue(b, expr)
+	if strings.HasSuffix(valType.LLVMType(), "*") {
+		st, sName := g.findStruct(valType, "")
+		return valReg, valType, st, sName
+	}
+
+	allocaReg := g.nextReg()
+	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", allocaReg, valType.LLVMType()))
+	b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", valType.LLVMType(), valReg, valType.LLVMType(), allocaReg))
+	st, sName := g.findStruct(valType, "")
+	return allocaReg, &sema.PointerType{Base: valType}, st, sName
+}
+
+func (g *CodeGenerator) resolveFieldPath(st *sema.StructType, structName string, curPtrReg string, fieldName string, b *strings.Builder) (string, sema.Type, string, bool) {
+	if st == nil {
+		return "", nil, "", false
+	}
+
+	// 1. 直接のフィールドを検索
+	for i, f := range st.Fields {
+		if f.Name == fieldName {
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+				gepReg, structName, structName, curPtrReg, i))
+			return gepReg, f.Type, structName, true
+		}
+	}
+
+	// 2. 埋め込みフィールドを再帰探索（昇格）
+	for i, f := range st.Fields {
+		if f.IsEmbedded {
+			embTypeName := strings.TrimPrefix(f.Type.TypeName(), "*")
+			embSt, embStructName := g.findStructByName(embTypeName)
+			if embSt != nil {
+				gepReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+					gepReg, structName, structName, curPtrReg, i))
+
+				nextPtrReg := gepReg
+				if _, isPtr := f.Type.(*sema.PointerType); isPtr {
+					loadReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %%struct.%s*, %%struct.%s** %s\n",
+						loadReg, embStructName, embStructName, gepReg))
+					nextPtrReg = loadReg
+				}
+
+				if finalGep, finalType, sName, found := g.resolveFieldPath(embSt, embStructName, nextPtrReg, fieldName, b); found {
+					return finalGep, finalType, sName, true
+				}
+			}
+		}
+	}
+
+	return "", nil, "", false
+}
+
+func (g *CodeGenerator) resolveMethodPath(st *sema.StructType, structName string, curPtrReg string, methodName string, b *strings.Builder) (string, *sema.FuncType, string, bool) {
+	if st == nil {
+		return "", nil, "", false
+	}
+
+	// 1. 直接のメソッドを検索
+	directName := structName + "_" + methodName
+	if fn := g.lookupFunction(directName); fn != nil {
+		return directName, fn, curPtrReg, true
+	}
+
+	// 2. 埋め込みフィールドを再帰探索（昇格）
+	for i, f := range st.Fields {
+		if f.IsEmbedded {
+			embTypeName := strings.TrimPrefix(f.Type.TypeName(), "*")
+			embSt, embStructName := g.findStructByName(embTypeName)
+			if embSt != nil {
+				gepReg := g.nextReg()
+				if b != nil {
+					b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						gepReg, structName, structName, curPtrReg, i))
+				}
+
+				nextPtrReg := gepReg
+				if _, isPtr := f.Type.(*sema.PointerType); isPtr {
+					loadReg := g.nextReg()
+					if b != nil {
+						b.WriteString(fmt.Sprintf("  %s = load %%struct.%s*, %%struct.%s** %s\n",
+							loadReg, embStructName, embStructName, gepReg))
+					}
+					nextPtrReg = loadReg
+				}
+
+				if targetName, fnMeta, finalPtr, found := g.resolveMethodPath(embSt, embStructName, nextPtrReg, methodName, b); found {
+					return targetName, fnMeta, finalPtr, true
+				}
+			}
+		}
+	}
+
+	return "", nil, "", false
+}
+
 func (g *CodeGenerator) getOrCreateThunk(fnName string) string {
 	thunkName := fmt.Sprintf("__thunk_%s", fnName)
 	if g.emittedThunks[thunkName] {
@@ -230,6 +360,58 @@ func (g *CodeGenerator) getOrCreateThunk(fnName string) string {
 	g.emittedThunks[thunkName] = true
 	g.thunkList = append(g.thunkList, fnName)
 	return thunkName
+}
+
+func (g *CodeGenerator) emitPromotionThunk(structName string, methodName string, targetFnName string, method sema.Method) {
+	thunkName := fmt.Sprintf("__promo_%s_%s", structName, methodName)
+	if g.emittedThunks[thunkName] {
+		return
+	}
+	g.emittedThunks[thunkName] = true
+
+	var b strings.Builder
+	st, _ := g.findStructByName(structName)
+
+	retTypeStr := "void"
+	if len(method.ReturnTypes) == 1 {
+		retTypeStr = method.ReturnTypes[0].LLVMType()
+	} else if len(method.ReturnTypes) > 1 {
+		types := []string{}
+		for _, rt := range method.ReturnTypes {
+			types = append(types, rt.LLVMType())
+		}
+		retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	}
+
+	params := []string{fmt.Sprintf("%%struct.%s* %%self", structName)}
+	callArgs := []string{}
+	for i, pt := range method.ParamTypes {
+		argName := fmt.Sprintf("%%a%d", i)
+		params = append(params, fmt.Sprintf("%s %s", pt.LLVMType(), argName))
+		callArgs = append(callArgs, fmt.Sprintf("%s %s", pt.LLVMType(), argName))
+	}
+
+	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retTypeStr, thunkName, strings.Join(params, ", ")))
+	_, targetFn, finalRecvPtr, _ := g.resolveMethodPath(st, structName, "%self", methodName, &b)
+
+	var expectedRecvType string = "i8*"
+	if targetFn != nil && len(targetFn.ParamTypes) > 0 {
+		expectedRecvType = targetFn.ParamTypes[0].LLVMType()
+	}
+
+	allCallArgs := append([]string{fmt.Sprintf("%s %s", expectedRecvType, finalRecvPtr)}, callArgs...)
+
+	if retTypeStr == "void" {
+		b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFnName, strings.Join(allCallArgs, ", ")))
+		b.WriteString("  ret void\n")
+	} else {
+		resReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", resReg, retTypeStr, targetFnName, strings.Join(allCallArgs, ", ")))
+		b.WriteString(fmt.Sprintf("  ret %s %s\n", retTypeStr, resReg))
+	}
+	b.WriteString("}\n\n")
+
+	g.itabDefs = append(g.itabDefs, b.String())
 }
 
 func (g *CodeGenerator) getOrCreateItab(concreteType sema.Type, iface *sema.InterfaceType) string {
@@ -251,6 +433,8 @@ func (g *CodeGenerator) getOrCreateItab(concreteType sema.Type, iface *sema.Inte
 	methodPtrTypes := []string{"i64"}
 	methodPtrValues := []string{fmt.Sprintf("i64 %d", typeID)}
 
+	st, _ := g.findStructByName(structTypeName)
+
 	for _, m := range iface.Methods {
 		retTypeStr := "void"
 		if len(m.ReturnTypes) == 1 {
@@ -271,6 +455,15 @@ func (g *CodeGenerator) getOrCreateItab(concreteType sema.Type, iface *sema.Inte
 		methodPtrTypes = append(methodPtrTypes, rawSig)
 
 		concreteFnName := fmt.Sprintf("%s_%s", structTypeName, m.Name)
+		actualFn := g.lookupFunction(concreteFnName)
+		if actualFn == nil && st != nil {
+			if promoTarget, _, _, found := g.resolveMethodPath(st, structTypeName, "%self", m.Name, nil); found {
+				thunkName := fmt.Sprintf("__promo_%s_%s", structTypeName, m.Name)
+				g.emitPromotionThunk(structTypeName, m.Name, promoTarget, m)
+				concreteFnName = thunkName
+			}
+		}
+
 		actualSigParams := []string{fmt.Sprintf("%%struct.%s*", structTypeName)}
 		for _, pt := range m.ParamTypes {
 			actualSigParams = append(actualSigParams, pt.LLVMType())
@@ -903,8 +1096,12 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 
 	for i, p := range fn.Params {
 		var pType sema.Type = sema.TypeInt
-		if exists && i < len(fnMeta.ParamTypes) {
-			pType = fnMeta.ParamTypes[i]
+		paramIdx := i
+		if fn.Receiver != nil {
+			paramIdx = i + 1
+		}
+		if exists && paramIdx < len(fnMeta.ParamTypes) {
+			pType = fnMeta.ParamTypes[paramIdx]
 		} else {
 			pType = g.semaCtx.ResolveType(p.Type)
 		}
@@ -928,8 +1125,12 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 
 	for i, p := range fn.Params {
 		var pType sema.Type = sema.TypeInt
-		if exists && i < len(fnMeta.ParamTypes) {
-			pType = fnMeta.ParamTypes[i]
+		paramIdx := i
+		if fn.Receiver != nil {
+			paramIdx = i + 1
+		}
+		if exists && paramIdx < len(fnMeta.ParamTypes) {
+			pType = fnMeta.ParamTypes[paramIdx]
 		} else {
 			pType = g.semaCtx.ResolveType(p.Type)
 		}
@@ -1322,37 +1523,17 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		}
 
 		if lhsMember, isLhsMember := s.Left[0].(*ast.MemberExpr); isLhsMember {
-			objReg, objType := g.resolveValue(b, lhsMember.Object)
-			st, structName := g.findStruct(objType, lhsMember.Field.Value)
+			objPtrReg, _, st, structName := g.resolveStructPtr(b, lhsMember.Object)
 			if st == nil {
-				panic(fmt.Sprintf("[Codegen Error] cannot assign to field %s on non-struct type %v", lhsMember.Field.Value, objType))
+				panic(fmt.Sprintf("[Codegen Error] cannot assign to field %s on non-struct", lhsMember.Field.Value))
 			}
 
-			fieldIdx := -1
-			var fieldType sema.Type
-			for i, f := range st.Fields {
-				if f.Name == lhsMember.Field.Value {
-					fieldIdx = i
-					fieldType = f.Type
-					break
-				}
-			}
-			if fieldIdx == -1 {
+			gepReg, fieldType, _, found := g.resolveFieldPath(st, structName, objPtrReg, lhsMember.Field.Value, b)
+			if !found {
 				panic(fmt.Sprintf("[Codegen Error] unknown field %s in struct %s", lhsMember.Field.Value, structName))
 			}
 
 			valReg, valType := g.resolveValue(b, s.Right[0])
-
-			objPtrReg := objReg
-			if objIdent, isIdent := lhsMember.Object.(*ast.Identifier); isIdent {
-				if sym, ok := g.symbols[objIdent.Value]; ok && !strings.HasSuffix(sym.Type.LLVMType(), "*") {
-					objPtrReg = sym.LLVMName
-				}
-			}
-
-			gepReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-				gepReg, structName, structName, objPtrReg, fieldIdx))
 
 			finalValReg := valReg
 			if isCompound {
@@ -2025,32 +2206,16 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		}
 
 	case *ast.MemberExpr:
-		objReg, objType := g.resolveValue(b, e.Object)
-		st, structName := g.findStruct(objType, e.Field.Value)
+		objPtrReg, _, st, structName := g.resolveStructPtr(b, e.Object)
 		if st == nil {
-			panic(fmt.Sprintf("[Codegen Error] struct type not found for field %s", e.Field.Value))
+			panic(fmt.Sprintf("[Codegen Error] struct type not found for member expr %s", e.Field.Value))
 		}
 
-		fieldIdx := -1
-		var fieldType sema.Type = sema.TypeInt
-		for i, f := range st.Fields {
-			if f.Name == e.Field.Value {
-				fieldIdx = i
-				fieldType = f.Type
-				break
-			}
+		gepReg, fieldType, _, found := g.resolveFieldPath(st, structName, objPtrReg, e.Field.Value, b)
+		if !found {
+			panic(fmt.Sprintf("[Codegen Error] unknown field %s in struct %s", e.Field.Value, structName))
 		}
 
-		objPtrReg := objReg
-		if objIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
-			if sym, ok := g.symbols[objIdent.Value]; ok && !strings.HasSuffix(sym.Type.LLVMType(), "*") {
-				objPtrReg = sym.LLVMName
-			}
-		}
-
-		gepReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-			gepReg, structName, structName, objPtrReg, fieldIdx))
 		loadReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
 		return loadReg, fieldType
@@ -2837,72 +3002,55 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			return callReg, semaRet
 		}
 
-		if objType != nil {
-			_, structName := g.findStruct(objType, "")
-			if structName != "" {
-				methodName := memExpr.Field.Value
-				targetFn := g.lookupFunction(structName + "_" + methodName)
-				if targetFn == nil {
-					targetFn = g.lookupFunction(methodName)
+		objPtrReg, _, st, structName := g.resolveStructPtr(b, memExpr.Object)
+		if st != nil && structName != "" {
+			targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, memExpr.Field.Value, b)
+			if found && targetFn != nil {
+				args := []string{}
+				var expectedRecvType string = fmt.Sprintf("%%struct.%s*", structName)
+				if len(targetFn.ParamTypes) > 0 {
+					expectedRecvType = targetFn.ParamTypes[0].LLVMType()
 				}
 
-				if targetFn != nil {
-					emitTargetName := structName + "_" + methodName
-					if targetFn.Name != "" && strings.Contains(targetFn.Name, "_") {
-						emitTargetName = targetFn.Name
-					}
+				actualRecvReg := finalRecvPtr
+				args = append(args, fmt.Sprintf("%s %s", expectedRecvType, actualRecvReg))
 
-					args := []string{}
-					expectedRecvType := fmt.Sprintf("%%struct.%s*", structName)
-					actualRecvReg := objReg
-					if objType.LLVMType() != expectedRecvType {
-						convReg := g.nextReg()
-						if strings.HasSuffix(objType.LLVMType(), "*") {
-							b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, objType.LLVMType(), objReg, expectedRecvType))
-						} else {
-							b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", convReg, objType.LLVMType(), objReg, expectedRecvType))
-						}
-						actualRecvReg = convReg
+				for i, arg := range call.Args {
+					valReg, valType := g.resolveValue(b, arg)
+					var t sema.Type = valType
+					if i+1 < len(targetFn.ParamTypes) {
+						t = targetFn.ParamTypes[i+1]
 					}
-					args = append(args, fmt.Sprintf("%s %s", expectedRecvType, actualRecvReg))
-
-					for i, arg := range call.Args {
-						valReg, valType := g.resolveValue(b, arg)
-						var t sema.Type = valType
-						if i < len(targetFn.ParamTypes) {
-							t = targetFn.ParamTypes[i]
-						}
-						convReg := g.emitArgConversion(b, valReg, valType, t)
-						targetTypeStr := "i64"
-						if t != nil && t.LLVMType() != "" {
-							targetTypeStr = t.LLVMType()
-						}
-						args = append(args, fmt.Sprintf("%s %s", targetTypeStr, convReg))
+					convReg := g.emitArgConversion(b, valReg, valType, t)
+					targetTypeStr := "i64"
+					if t != nil && t.LLVMType() != "" {
+						targetTypeStr = t.LLVMType()
 					}
-
-					retType := "void"
-					var semaRet sema.Type = sema.TypeVoid
-					if len(targetFn.ReturnTypes) == 1 {
-						retType = targetFn.ReturnTypes[0].LLVMType()
-						semaRet = targetFn.ReturnTypes[0]
-					} else if len(targetFn.ReturnTypes) > 1 {
-						tupleTypes := []string{}
-						for _, rt := range targetFn.ReturnTypes {
-							tupleTypes = append(tupleTypes, rt.LLVMType())
-						}
-						retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
-						semaRet = &sema.TupleType{Types: targetFn.ReturnTypes}
-					}
-
-					if retType == "void" {
-						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitTargetName, strings.Join(args, ", ")))
-						return "", sema.TypeVoid
-					}
-
-					callReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitTargetName, strings.Join(args, ", ")))
-					return callReg, semaRet
+					args = append(args, fmt.Sprintf("%s %s", targetTypeStr, convReg))
 				}
+
+				retType := "void"
+				var semaRet sema.Type = sema.TypeVoid
+				if len(targetFn.ReturnTypes) == 1 {
+					retType = targetFn.ReturnTypes[0].LLVMType()
+					semaRet = targetFn.ReturnTypes[0]
+				} else if len(targetFn.ReturnTypes) > 1 {
+					tupleTypes := []string{}
+					for _, rt := range targetFn.ReturnTypes {
+						tupleTypes = append(tupleTypes, rt.LLVMType())
+					}
+					retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
+					semaRet = &sema.TupleType{Types: targetFn.ReturnTypes}
+				}
+
+				if retType == "void" {
+					b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", targetFnName, strings.Join(args, ", ")))
+					return "", sema.TypeVoid
+				}
+
+				callReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, targetFnName, strings.Join(args, ", ")))
+				return callReg, semaRet
 			}
 		}
 	}
