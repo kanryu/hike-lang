@@ -1,9 +1,9 @@
 package main
 
 import (
+	"hikec/ast"
 	"hikec/lexer"
-	"hikec/token"
-	"std/container"
+	"hikec/parser"
 	"std/fmt"
 	"std/strings"
 )
@@ -23,59 +23,50 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Phase 1: Vector & Lexer Unit Tests ===")
+	fmt.PrintLn("=== Running Phase 2: AST & Parser Unit Tests ===")
 
 	testCount := 0
 
-	// --- 1〜5: std/container/vector の検証 ---
-	testCount = testCount + 1
-	vec := container.NewVector(4)
-	assert(vec != nil, testCount, "Vector: allocation with initial capacity")
+	sampleSource := "package main\n\nfunc add(a int, b int) int {\n  x := a + b\n  return x\n}\n"
+	lex := lexer.New(sampleSource)
+	p := parser.New(lex)
+	prog := p.ParseProgram()
 
 	testCount = testCount + 1
-	vec.Push("token_func")
-	vec.Push("token_ident")
-	vec.Push("token_lparen")
-	assert(vec.Len() == 3, testCount, "Vector.Push: push elements within capacity")
+	assert(prog != nil, testCount, "Parser.ParseProgram: construct program AST node")
 
 	testCount = testCount + 1
-	elem0 := vec.Get(0)
-	assert(strings.Equal(elem0, "token_func") == true, testCount, "Vector.Get: retrieve element by index")
+	assert(strings.Equal(prog.Package, "main") == true, testCount, "Parser: parse package identifier 'main'")
 
 	testCount = testCount + 1
-	// 容量4を超過させて動的リサイズ（拡張）を発生させる
-	vec.Push("token_rparen")
-	vec.Push("token_lbrace")
-	vec.Push("token_return")
-	assert(vec.Len() == 6, testCount, "Vector.Push: dynamic array reallocation beyond capacity")
+	assert(prog.Decls.Len() == 1, testCount, "Parser: collect top-level declaration count")
 
 	testCount = testCount + 1
-	elem5 := vec.Get(5)
-	vec.Free()
-	assert(strings.Equal(elem5, "token_return") == true, testCount, "Vector: data integrity after growth and free")
-
-	// --- 6〜10: hikec/lexer の検証 ---
-	testCount = testCount + 1
-	sampleCode := "package main\n\nfunc add(a int, b int) int {\n  x := 42\n  return a + b + x\n}\n"
-	lex := lexer.New(sampleCode)
-	assert(lex != nil, testCount, "Lexer.New: initialize lexer instance")
+	fnDecl := (*ast.FuncDecl)(prog.Decls.Get(0))
+	assert(fnDecl.Kind == ast.KIND_FUNC_DECL, testCount, "Parser: top-level node is FuncDecl")
 
 	testCount = testCount + 1
-	t1 := lex.NextToken()
-	assert(t1.Type == token.PACKAGE, testCount, "Lexer.NextToken: tokenize keyword 'package'")
+	assert(strings.Equal(fnDecl.Name, "add") == true, testCount, "Parser: func name matches 'add'")
 
 	testCount = testCount + 1
-	t2 := lex.NextToken()
-	assert(t2.Type == token.IDENT && strings.Equal(t2.Literal, "main") == true, testCount, "Lexer.NextToken: tokenize identifier 'main'")
+	assert(fnDecl.Params.Len() == 2, testCount, "Parser: parse function parameter list length")
 
 	testCount = testCount + 1
-	t3 := lex.NextToken()
-	assert(t3.Type == token.FUNCTION, testCount, "Lexer.NextToken: tokenize keyword 'func'")
+	param0 := (*ast.ParamDecl)(fnDecl.Params.Get(0))
+	assert(strings.Equal(param0.Name, "a") == true, testCount, "Parser: first parameter name is 'a'")
 
 	testCount = testCount + 1
-	t4 := lex.NextToken()
-	assert(t4.Type == token.IDENT && strings.Equal(t4.Literal, "add") == true, testCount, "Lexer.NextToken: tokenize identifier 'add'")
+	assert(fnDecl.ReturnTypes.Len() == 1, testCount, "Parser: parse function return type count")
 
-	fmt.PrintLn("=== Phase 1 Unit Tests Completed ===")
+	testCount = testCount + 1
+	body := (*ast.BlockStmt)(fnDecl.Body)
+	assert(body != nil && body.Statements.Len() == 2, testCount, "Parser: parse block body with 2 statements")
+
+	testCount = testCount + 1
+	stmt0 := (*ast.AssignStmt)(body.Statements.Get(0))
+	stmt1 := (*ast.ReturnStmt)(body.Statements.Get(1))
+	assert(stmt0.Kind == ast.KIND_ASSIGN_STMT && stmt1.Kind == ast.KIND_RETURN_STMT, testCount, "Parser: statement kinds match AssignStmt and ReturnStmt")
+
+	fmt.PrintLn("=== Phase 2 Unit Tests Completed ===")
 	return testCount
 }
