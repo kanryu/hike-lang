@@ -154,10 +154,12 @@ type MemberExpr struct {
 func (me *MemberExpr) expressionNode()      {}
 func (me *MemberExpr) TokenLiteral() string { return me.Token.Literal }
 
+// CallExpr に HasEllipsis を追加
 type CallExpr struct {
-	Token    token.Token
-	Function Expression
-	Args     []Expression
+	Token       token.Token
+	Function    Expression
+	Args        []Expression
+	HasEllipsis bool // 追加: fn(a, b...) の展開フラグ
 }
 
 func (ce *CallExpr) expressionNode()      {}
@@ -350,3 +352,15 @@ type SliceExpr struct {
 
 func (s *SliceExpr) expressionNode()      {}
 func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }
+
+// --- 式ノードに追加 ---
+
+// []T{elem1, elem2, ...}
+type SliceLiteral struct {
+	Token    token.Token // '['
+	Type     *SliceType
+	Elements []Expression
+}
+
+func (sl *SliceLiteral) expressionNode()      {}
+func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }

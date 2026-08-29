@@ -553,6 +553,7 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
 }
 
+// parseExpression 内の LBRACKET 処理を更新
 func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
 
@@ -568,12 +569,36 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND:
 		leftExp = p.parsePrefixExpr()
 	case token.LBRACKET:
-		// []T スライス型表現
 		tok := p.curToken
 		if p.expectPeek(token.RBRACKET) {
 			p.nextToken() // ']' の次（要素型）へ
 			elem := p.parseTypeExpr()
-			leftExp = &ast.SliceType{Token: tok, Elem: elem}
+			sliceT := &ast.SliceType{Token: tok, Elem: elem}
+
+			// []T{ ... } スライスリテラルの判定
+			if p.peekTokenIs(token.LBRACE) {
+				p.nextToken() // '{' に移動
+				elements := []ast.Expression{}
+				if !p.peekTokenIs(token.RBRACE) {
+					p.nextToken()
+					for {
+						elements = append(elements, p.parseExpression(LOWEST))
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RBRACE) { // 末尾カンマの許容
+								break
+							}
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.RBRACE)
+				leftExp = &ast.SliceLiteral{Token: tok, Type: sliceT, Elements: elements}
+			} else {
+				leftExp = sliceT
+			}
 		} else {
 			return nil
 		}
@@ -607,6 +632,38 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	return leftExp
 }
 
+// parseCallExpr で末尾の '...' を解析
+func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
+	tok := p.curToken
+	args := []ast.Expression{}
+	hasEllipsis := false
+
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		for {
+			arg := p.parseExpression(LOWEST)
+			if p.peekTokenIs(token.ELLIPSIS) {
+				p.nextToken() // '...' を消費
+				hasEllipsis = true
+				args = append(args, arg)
+				break
+			}
+			args = append(args, arg)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RPAREN)
+	return &ast.CallExpr{Token: tok, Function: fn, Args: args, HasEllipsis: hasEllipsis}
+}
+
 func (p *Parser) parseIdentifier() *ast.Identifier {
 	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 }
@@ -636,25 +693,6 @@ func (p *Parser) parseBinaryExpr(left ast.Expression) *ast.BinaryExpr {
 	p.nextToken()
 	right := p.parseExpression(prec)
 	return &ast.BinaryExpr{Token: tok, Left: left, Operator: op, Right: right}
-}
-
-func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
-	tok := p.curToken
-	args := []ast.Expression{}
-	if !p.peekTokenIs(token.RPAREN) {
-		p.nextToken()
-		for {
-			args = append(args, p.parseExpression(LOWEST))
-			if p.peekTokenIs(token.COMMA) {
-				p.nextToken()
-				p.nextToken()
-			} else {
-				break
-			}
-		}
-	}
-	p.expectPeek(token.RPAREN)
-	return &ast.CallExpr{Token: tok, Function: fn, Args: args}
 }
 
 // インデックス式およびスライス式の解析

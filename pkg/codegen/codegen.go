@@ -1145,6 +1145,55 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 
 		return t3, &sema.SliceType{Elem: elemType}
 
+	case *ast.SliceLiteral:
+		slType := g.semaCtx.ResolveType(e.Type).(*sema.SliceType)
+		elemSize := slType.Elem.Size()
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+		numElems := len(e.Elements)
+		allocCap := numElems
+		if allocCap < 4 {
+			allocCap = 4
+		}
+
+		rawPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", rawPtrReg, allocCap*elemSize))
+
+		typedPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, rawPtrReg, slType.Elem.LLVMType()))
+
+		for i, elemExpr := range e.Elements {
+			valReg, valType := g.resolveValue(b, elemExpr)
+			destPtrReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %d\n", destPtrReg, slType.Elem.LLVMType(), slType.Elem.LLVMType(), typedPtrReg, i))
+
+			valToStore := valReg
+			if valType != nil && valType.LLVMType() != slType.Elem.LLVMType() {
+				convReg := g.nextReg()
+				if slType.Elem.LLVMType() == "i8" && valType.LLVMType() == "i64" {
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, valReg))
+					valToStore = convReg
+				} else if slType.Elem.LLVMType() == "i64" && valType.LLVMType() == "i8" {
+					b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, valReg))
+					valToStore = convReg
+				} else if strings.HasSuffix(slType.Elem.LLVMType(), "*") && strings.HasSuffix(valType.LLVMType(), "*") {
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, slType.Elem.LLVMType()))
+					valToStore = convReg
+				}
+			}
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", slType.Elem.LLVMType(), valToStore, slType.Elem.LLVMType(), destPtrReg))
+		}
+
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } undef, i8* %s, 0\n", t1, rawPtrReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } %s, i64 %d, 1\n", t2, t1, numElems))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } %s, i64 %d, 2\n", t3, t2, allocCap))
+
+		return t3, slType
+
 	case *ast.CallExpr:
 		reg, retType := g.emitCallInternal(b, e)
 		if reg == "" {
@@ -1294,9 +1343,131 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 	return "0", sema.TypeInt
 }
 
+// 2. emitCallInternal 内の append 処理を更新 (展開結合と要素追加の両立)
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// append(slice, elem1, elem2, ...) 組み込み関数
+	// A. append(s1, s2...) スライス結合
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
+		slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
+		slice2Reg, slice2Type := g.resolveValue(b, call.Args[1])
+
+		sl1, isSlice1 := slice1Type.(*sema.SliceType)
+		sl2, _ := slice2Type.(*sema.SliceType)
+		if !isSlice1 || sl2 == nil {
+			panic("[Codegen Error] both arguments to append with ellipsis must be slices")
+		}
+
+		elemSize := sl1.Elem.Size()
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+
+		s1Ptr := g.nextReg()
+		s1Len := g.nextReg()
+		s1Cap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s1Ptr, sl1.LLVMType(), slice1Reg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s1Len, sl1.LLVMType(), slice1Reg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", s1Cap, sl1.LLVMType(), slice1Reg))
+
+		s2Ptr := g.nextReg()
+		s2Len := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s2Ptr, sl2.LLVMType(), slice2Reg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s2Len, sl2.LLVMType(), slice2Reg))
+
+		totalLen := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = add i64 %s, %s\n", totalLen, s1Len, s2Len))
+
+		condReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, s1Cap, totalLen))
+
+		lblGrow := g.nextLabel("appendslice.grow")
+		lblNoGrow := g.nextLabel("appendslice.nogrow")
+		lblCopy := g.nextLabel("appendslice.copy")
+
+		resPtrAlloca := g.nextReg()
+		resCapAlloca := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
+
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
+
+		// 拡張不要
+		b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
+		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", s1Ptr, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", s1Cap, resCapAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
+
+		// 拡張処理
+		b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
+		doubleCap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCap, s1Cap))
+		cmpCap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCap, doubleCap, totalLen))
+		growCap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCap, cmpCap, doubleCap, totalLen))
+		isSmall := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmall, growCap))
+		newCap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCap, isSmall, growCap))
+
+		newBytes := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytes, newCap, elemSize))
+		newPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtr, newBytes))
+
+		lblS1Copy := g.nextLabel("appendslice.s1copy")
+		lblAfterS1Copy := g.nextLabel("appendslice.after_s1copy")
+		hasS1Len := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS1Len, s1Len))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS1Len, lblS1Copy, lblAfterS1Copy))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblS1Copy))
+		s1Bytes := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1Bytes, s1Len, elemSize))
+		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtr, s1Ptr, s1Bytes))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterS1Copy))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblAfterS1Copy))
+		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtr, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCap, resCapAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
+
+		// s2 データの末尾コピー
+		b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
+		finalPtr := g.nextReg()
+		finalCap := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtr, resPtrAlloca))
+		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCap, resCapAlloca))
+
+		lblS2Copy := g.nextLabel("appendslice.s2copy")
+		lblDone := g.nextLabel("appendslice.done")
+		hasS2Len := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS2Len, s2Len))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS2Len, lblS2Copy, lblDone))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblS2Copy))
+		s1OffsetBytes := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1OffsetBytes, s1Len, elemSize))
+		destS2Ptr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", destS2Ptr, finalPtr, s1OffsetBytes))
+		s2Bytes := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s2Bytes, s2Len, elemSize))
+		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", destS2Ptr, s2Ptr, s2Bytes))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblDone))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblDone))
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, sl1.LLVMType(), finalPtr))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, sl1.LLVMType(), t1, totalLen))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, sl1.LLVMType(), t2, finalCap))
+
+		return t3, sl1
+	}
+
+	// B. append(slice, elem1, elem2, ...) 個別要素追加
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && len(call.Args) >= 2 {
+		// (前回の複数要素追加ロジック)
 		sliceReg, sliceType := g.resolveValue(b, call.Args[0])
 
 		sl, isSlice := sliceType.(*sema.SliceType)
@@ -1311,7 +1482,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 
 		numElems := len(call.Args) - 1
 
-		// 元スライスのフィールド抽出
 		oldPtrReg := g.nextReg()
 		oldLenReg := g.nextReg()
 		oldCapReg := g.nextReg()
@@ -1328,33 +1498,29 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
 		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
 
-		// 必要な容量: reqCap = oldLen + numElems
 		reqCapReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", reqCapReg, oldLenReg, numElems))
 
-		// 容量判定: oldCap >= reqCap
 		condReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, oldCapReg, reqCapReg))
 		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
 
-		// --- 1. 容量十分 (拡張不要) ---
+		// 容量十分
 		b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
 		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", oldPtrReg, resPtrAlloca))
 		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", oldCapReg, resCapAlloca))
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
 
-		// --- 2. 容量不足 (バッキング配列の再確保 & コピー) ---
+		// 容量不足
 		b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
 		doubleCapReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCapReg, oldCapReg))
 
-		// growCap = max(doubleCap, reqCap)
 		cmpCapReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCapReg, doubleCapReg, reqCapReg))
 		growCapReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCapReg, cmpCapReg, doubleCapReg, reqCapReg))
 
-		// 最小初期容量 4 を保証
 		isSmallReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmallReg, growCapReg))
 		newCapReg := g.nextReg()
@@ -1382,7 +1548,7 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCapReg, resCapAlloca))
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
 
-		// --- 3. 新規要素の書き込み (全追加引数を順次ストア) ---
+		// 要素の書き込み
 		b.WriteString(fmt.Sprintf("%s:\n", lblStore))
 		finalPtrReg := g.nextReg()
 		finalCapReg := g.nextReg()
