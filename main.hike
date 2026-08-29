@@ -18,72 +18,77 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-func main() int {
-	fmt.PrintLn("=== Running Break, Continue & Init-Statement Branch Tests ===")
+func getPair() (int, string) {
+	return 42, "hello"
+}
 
+func getThree() (int, int, bool) {
+	return 100, 200, true
+}
+
+func main() int {
+	fmt.PrintLn("=== Running Bitwise Operators & Multi-Value Return Tests ===")
 	testCount := 0
 
-	// 1. 3節 for ループ内での break
-	sumBreak := 0
-	for i := 0; i < 10; i++ {
-		if i == 5 {
-			break
-		}
-		sumBreak += i
-	}
-	testCount++
-	assert(sumBreak == 10, testCount, "For Break: loop stopped at i == 5, sum is 10")
+	// 1. 二項ビット演算 (AND, OR, XOR, SHL, SHR)
+	a := 12 // 0000 1100
+	b := 10 // 0000 1010
 
-	// 2. 3節 for ループ内での continue
-	sumContinue := 0
-	for i := 0; i < 6; i++ {
-		if i == 3 {
-			continue
-		}
-		sumContinue += i
-	}
 	testCount++
-	assert(sumContinue == 12, testCount, "For Continue: skipped i == 3, sum is 12")
+	assert((a&b) == 8, testCount, "Bitwise AND: 12 & 10 == 8")
 
-	// 3. for ... range ループ内での break
-	nums := []int{10, 20, 30, 40, 50}
-	rangeBreakSum := 0
-	for _, v := range nums {
-		if v == 40 {
-			break
-		}
-		rangeBreakSum += v
-	}
 	testCount++
-	assert(rangeBreakSum == 60, testCount, "For-Range Break: stopped at v == 40, sum is 60")
+	assert((a|b) == 14, testCount, "Bitwise OR: 12 | 10 == 14")
 
-	// 4. for ... range ループ内での continue
-	rangeContinueSum := 0
-	for _, v := range nums {
-		if v == 20 || v == 40 {
-			continue
-		}
-		rangeContinueSum += v
-	}
 	testCount++
-	assert(rangeContinueSum == 90, testCount, "For-Range Continue: skipped 20 and 40, sum is 90")
+	assert((a^b) == 6, testCount, "Bitwise XOR: 12 ^ 10 == 6")
 
-	// 5. 初期化付き if 文: if init; cond { ... }
 	testCount++
-	if val := 50; val > 30 {
-		assert(val == 50, testCount, "If Init: val := 50 scoped in if condition")
-	} else {
-		assert(false, testCount, "If Init: unreachable else")
-	}
+	assert((a<<2) == 48, testCount, "Bitwise Shift Left: 12 << 2 == 48")
 
-	// 6. 初期化付き switch 文: switch init; expr { ... }
 	testCount++
-	switch code := 200; code {
-	case 200:
-		assert(code == 200, testCount, "Switch Init: code := 200 matched case 200")
-	default:
-		assert(false, testCount, "Switch Init: unreachable default")
-	}
+	assert((a>>1) == 6, testCount, "Bitwise Shift Right: 12 >> 1 == 6")
+
+	// 2. 単項ビット反転 (NOT: ^x)
+	c := 0
+	testCount++
+	assert(^c == -1, testCount, "Bitwise NOT: ^0 == -1")
+
+	// 3. 複合ビット代入 (&=, |=, ^=, <<=, >>=)
+	x := 12
+	x &= 10
+	testCount++
+	assert(x == 8, testCount, "Compound &=: 12 &= 10 becomes 8")
+
+	x |= 2
+	testCount++
+	assert(x == 10, testCount, "Compound |=: 8 |= 2 becomes 10")
+
+	x ^= 3
+	testCount++
+	assert(x == 9, testCount, "Compound ^=: 10 ^= 3 becomes 9")
+
+	x <<= 3
+	testCount++
+	assert(x == 72, testCount, "Compound <<=: 9 <<= 3 becomes 72")
+
+	x >>= 2
+	testCount++
+	assert(x == 18, testCount, "Compound >>=: 72 >>= 2 becomes 18")
+
+	// 4. 多値返り値の展開代入 (アンパック代入)
+	num, str := getPair()
+	testCount++
+	assert(num == 42 && str == "hello", testCount, "Multi-Return: num, str := getPair()")
+
+	// 5. 多値返り値とブランク識別子 (_) の組み合わせ
+	_, strOnly := getPair()
+	testCount++
+	assert(strOnly == "hello", testCount, "Multi-Return Blank: _, strOnly := getPair()")
+
+	first, _, flag := getThree()
+	testCount++
+	assert(first == 100 && flag == true, testCount, "Multi-Return Blank Triple: first, _, flag := getThree()")
 
 	fmt.PrintLn("=== All Tests Completed Successfully ===")
 	return testCount

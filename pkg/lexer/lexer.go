@@ -7,11 +7,11 @@ import (
 
 type Lexer struct {
 	input        string
-	position     int  // 現在の文字位置
-	readPosition int  // 次に読み込む文字位置
-	ch           byte // 現在検査中の文字
-	line         int  // 現在行
-	col          int  // 現在列
+	position     int
+	readPosition int
+	ch           byte
+	line         int
+	col          int
 	verbose      bool
 }
 
@@ -84,7 +84,7 @@ func (l *Lexer) skipSingleLineComment() {
 }
 
 func (l *Lexer) skipMultiLineComment() {
-	l.readChar() // '*' を消費
+	l.readChar()
 	for {
 		if l.ch == 0 {
 			break
@@ -94,8 +94,8 @@ func (l *Lexer) skipMultiLineComment() {
 			l.col = 0
 		}
 		if l.ch == '*' && l.peekChar() == '/' {
-			l.readChar() // '*' を消費
-			l.readChar() // '/' を消費
+			l.readChar()
+			l.readChar()
 			break
 		}
 		l.readChar()
@@ -179,7 +179,15 @@ func (l *Lexer) NextToken() token.Token {
 			tok = newToken(token.BANG, l.ch, startLine, startCol)
 		}
 	case '<':
-		if l.peekChar() == '=' {
+		if l.peekChar() == '<' {
+			l.readChar()
+			if l.peekChar() == '=' {
+				l.readChar()
+				tok = token.Token{Type: token.SHL_ASSIGN, Literal: "<<=", Line: startLine, Col: startCol}
+			} else {
+				tok = token.Token{Type: token.SHL, Literal: "<<", Line: startLine, Col: startCol}
+			}
+		} else if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
 			tok = token.Token{Type: token.LE, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
@@ -187,7 +195,15 @@ func (l *Lexer) NextToken() token.Token {
 			tok = newToken(token.LT, l.ch, startLine, startCol)
 		}
 	case '>':
-		if l.peekChar() == '=' {
+		if l.peekChar() == '>' {
+			l.readChar()
+			if l.peekChar() == '=' {
+				l.readChar()
+				tok = token.Token{Type: token.SHR_ASSIGN, Literal: ">>=", Line: startLine, Col: startCol}
+			} else {
+				tok = token.Token{Type: token.SHR, Literal: ">>", Line: startLine, Col: startCol}
+			}
+		} else if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
 			tok = token.Token{Type: token.GE, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
@@ -199,6 +215,10 @@ func (l *Lexer) NextToken() token.Token {
 			ch := l.ch
 			l.readChar()
 			tok = token.Token{Type: token.LAND, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
+		} else if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			tok = token.Token{Type: token.AND_ASSIGN, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
 		} else {
 			tok = newToken(token.AMPERSAND, l.ch, startLine, startCol)
 		}
@@ -207,8 +227,20 @@ func (l *Lexer) NextToken() token.Token {
 			ch := l.ch
 			l.readChar()
 			tok = token.Token{Type: token.LOR, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
+		} else if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			tok = token.Token{Type: token.OR_ASSIGN, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
 		} else {
-			tok = newToken(token.ILLEGAL, l.ch, startLine, startCol)
+			tok = newToken(token.OR, l.ch, startLine, startCol)
+		}
+	case '^':
+		if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			tok = token.Token{Type: token.XOR_ASSIGN, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
+		} else {
+			tok = newToken(token.CARET, l.ch, startLine, startCol)
 		}
 	case ':':
 		if l.peekChar() == '=' {
@@ -220,8 +252,8 @@ func (l *Lexer) NextToken() token.Token {
 		}
 	case '.':
 		if l.peekChar() == '.' && l.peekAhead(2) == '.' {
-			l.readChar() // 2個目の '.'
-			l.readChar() // 3個目の '.'
+			l.readChar()
+			l.readChar()
 			tok = token.Token{Type: token.ELLIPSIS, Literal: "...", Line: startLine, Col: startCol}
 		} else {
 			tok = newToken(token.DOT, l.ch, startLine, startCol)
@@ -303,11 +335,11 @@ func (l *Lexer) readString() string {
 			break
 		}
 		if l.ch == '\\' && l.peekChar() != 0 {
-			l.readChar() // エスケープ文字をスキップ
+			l.readChar()
 		}
 	}
 	str := l.input[position:l.position]
-	l.readChar() // 閉じクォート '"' を消費
+	l.readChar()
 	return str
 }
 

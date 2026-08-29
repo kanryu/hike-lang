@@ -24,21 +24,26 @@ const (
 )
 
 var precedences = map[token.TokenType]int{
-	token.LOR:      LOR,
-	token.LAND:     LAND,
-	token.EQ:       EQUALS,
-	token.NEQ:      EQUALS,
-	token.LT:       LESSGREATER,
-	token.GT:       LESSGREATER,
-	token.LE:       LESSGREATER,
-	token.GE:       LESSGREATER,
-	token.PLUS:     SUM,
-	token.MINUS:    SUM,
-	token.SLASH:    PRODUCT,
-	token.ASTERISK: PRODUCT,
-	token.LPAREN:   CALL,
-	token.LBRACKET: INDEX,
-	token.DOT:      INDEX,
+	token.LOR:       LOR,
+	token.LAND:      LAND,
+	token.OR:        SUM,
+	token.CARET:     SUM,
+	token.EQ:        EQUALS,
+	token.NEQ:       EQUALS,
+	token.LT:        LESSGREATER,
+	token.GT:        LESSGREATER,
+	token.LE:        LESSGREATER,
+	token.GE:        LESSGREATER,
+	token.PLUS:      SUM,
+	token.MINUS:     SUM,
+	token.SLASH:     PRODUCT,
+	token.ASTERISK:  PRODUCT,
+	token.AMPERSAND: PRODUCT,
+	token.SHL:       PRODUCT,
+	token.SHR:       PRODUCT,
+	token.LPAREN:    CALL,
+	token.LBRACKET:  INDEX,
+	token.DOT:       INDEX,
 }
 
 type Parser struct {
@@ -323,10 +328,11 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	}
 	p.expectPeek(token.RPAREN)
 
+	// parseFuncDecl 内の戻り値パース部分を更新
 	fn.ReturnTypes = []ast.TypeExpr{}
 	if !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
+			p.nextToken() // '('
 			p.nextToken()
 			for {
 				fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
@@ -674,8 +680,11 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 		}
 	}
 
+	// parseAssignOrExprStmt 内での複合代入演算子判定の更新
 	if p.peekTokenIs(token.PLUS_ASSIGN) || p.peekTokenIs(token.MINUS_ASSIGN) ||
-		p.peekTokenIs(token.ASTERISK_ASSIGN) || p.peekTokenIs(token.SLASH_ASSIGN) {
+		p.peekTokenIs(token.ASTERISK_ASSIGN) || p.peekTokenIs(token.SLASH_ASSIGN) ||
+		p.peekTokenIs(token.AND_ASSIGN) || p.peekTokenIs(token.OR_ASSIGN) ||
+		p.peekTokenIs(token.XOR_ASSIGN) || p.peekTokenIs(token.SHL_ASSIGN) || p.peekTokenIs(token.SHR_ASSIGN) {
 		p.nextToken()
 		assignTok := p.curToken
 		p.nextToken()
@@ -771,7 +780,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseStringLiteral()
 	case token.NIL:
 		leftExp = &ast.NilLiteral{Token: p.curToken}
-	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND:
+	// parseExpression 内の単項/二項ビット演算子の追加
+	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
 	case token.LBRACKET:
 		tok := p.curToken
@@ -819,7 +829,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
 		switch p.peekToken.Type {
-		case token.PLUS, token.MINUS, token.SLASH, token.ASTERISK, token.EQ, token.NEQ, token.LT, token.GT, token.LE, token.GE, token.LAND, token.LOR:
+		case token.PLUS, token.MINUS, token.SLASH, token.ASTERISK,
+			token.EQ, token.NEQ, token.LT, token.GT, token.LE, token.GE,
+			token.LAND, token.LOR,
+			token.AMPERSAND, token.OR, token.CARET, token.SHL, token.SHR: // 追加
 			p.nextToken()
 			leftExp = p.parseBinaryExpr(leftExp)
 		case token.LPAREN:

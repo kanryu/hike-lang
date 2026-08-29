@@ -84,6 +84,34 @@ func (f *FuncType) TypeName() string { return f.Name }
 func (f *FuncType) Size() int        { return 8 }
 func (f *FuncType) LLVMType() string { return "i8*" }
 
+type TupleType struct {
+	Types []Type
+}
+
+func (t *TupleType) TypeName() string {
+	var names []string
+	for _, sub := range t.Types {
+		names = append(names, sub.TypeName())
+	}
+	return "(" + strings.Join(names, ", ") + ")"
+}
+
+func (t *TupleType) LLVMType() string {
+	var types []string
+	for _, sub := range t.Types {
+		types = append(types, sub.LLVMType())
+	}
+	return "{ " + strings.Join(types, ", ") + " }"
+}
+
+func (t *TupleType) Size() int {
+	sz := 0
+	for _, sub := range t.Types {
+		sz += sub.Size()
+	}
+	return sz
+}
+
 type Context struct {
 	Structs   map[string]*StructType
 	Functions map[string]*FuncType

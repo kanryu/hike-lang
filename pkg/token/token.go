@@ -18,28 +18,41 @@ const (
 	INT    = "INT"
 	STRING = "STRING"
 
-	// 演算子
-	ASSIGN          = "="
-	PLUS            = "+"
-	MINUS           = "-"
-	BANG            = "!"
-	ASTERISK        = "*"
-	SLASH           = "/"
-	LT              = "<"
-	GT              = ">"
-	EQ              = "=="
-	NEQ             = "!="
-	LE              = "<="
-	GE              = ">="
-	LAND            = "&&"
-	LOR             = "||"
-	AMPERSAND       = "&"
+	// 算術・論理・比較演算子
+	ASSIGN    = "="
+	PLUS      = "+"
+	MINUS     = "-"
+	BANG      = "!"
+	ASTERISK  = "*"
+	SLASH     = "/"
+	LT        = "<"
+	GT        = ">"
+	EQ        = "=="
+	NEQ       = "!="
+	LE        = "<="
+	GE        = ">="
+	LAND      = "&&"
+	LOR       = "||"
+	AMPERSAND = "&"
+
+	// ビット演算子
+	OR    = "|"
+	CARET = "^"
+	SHL   = "<<"
+	SHR   = ">>"
+
+	// 複合代入 / インクリメント / デクリメント
 	INC             = "++"
 	DEC             = "--"
 	PLUS_ASSIGN     = "+="
 	MINUS_ASSIGN    = "-="
 	ASTERISK_ASSIGN = "*="
 	SLASH_ASSIGN    = "/="
+	AND_ASSIGN      = "&="
+	OR_ASSIGN       = "|="
+	XOR_ASSIGN      = "^="
+	SHL_ASSIGN      = "<<="
+	SHR_ASSIGN      = ">>="
 
 	// 区切り文字
 	COMMA     = ","
@@ -66,8 +79,8 @@ const (
 	CONST    = "CONST"
 	IOTA     = "IOTA"
 	RANGE    = "RANGE"
-	BREAK    = "BREAK"    // 追加
-	CONTINUE = "CONTINUE" // 追加
+	BREAK    = "BREAK"
+	CONTINUE = "CONTINUE"
 	IF       = "IF"
 	ELSE     = "ELSE"
 	FOR      = "FOR"
@@ -88,8 +101,8 @@ var keywords = map[string]TokenType{
 	"const":    CONST,
 	"iota":     IOTA,
 	"range":    RANGE,
-	"break":    BREAK,    // 追加
-	"continue": CONTINUE, // 追加
+	"break":    BREAK,
+	"continue": CONTINUE,
 	"if":       IF,
 	"else":     ELSE,
 	"for":      FOR,
