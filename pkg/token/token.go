@@ -2,79 +2,93 @@ package token
 
 type TokenType string
 
+type Token struct {
+	Type    TokenType
+	Literal string
+	Line    int
+	Col     int
+}
+
 const (
-	ILLEGAL TokenType = "ILLEGAL"
-	EOF     TokenType = "EOF"
+	ILLEGAL = "ILLEGAL"
+	EOF     = "EOF"
 
-	IDENT  TokenType = "IDENT"
-	INT    TokenType = "INT"
-	STRING TokenType = "STRING"
+	// 識別子・リテラル
+	IDENT  = "IDENT"
+	INT    = "INT"
+	STRING = "STRING"
 
-	ASSIGN   TokenType = "="
-	DEFINE   TokenType = ":="
-	PLUS     TokenType = "+"
-	MINUS    TokenType = "-"
-	ASTERISK TokenType = "*"
-	SLASH    TokenType = "/"
-	BANG     TokenType = "!" // 追加
-	NOT      TokenType = "!" // 既存互換
+	// 演算子
+	ASSIGN          = "="
+	PLUS            = "+"
+	MINUS           = "-"
+	BANG            = "!"
+	ASTERISK        = "*"
+	SLASH           = "/"
+	LT              = "<"
+	GT              = ">"
+	EQ              = "=="
+	NEQ             = "!="
+	LE              = "<="
+	GE              = ">="
+	LAND            = "&&"
+	LOR             = "||"
+	AMPERSAND       = "&"
+	INC             = "++"
+	DEC             = "--"
+	PLUS_ASSIGN     = "+="
+	MINUS_ASSIGN    = "-="
+	ASTERISK_ASSIGN = "*="
+	SLASH_ASSIGN    = "/="
 
-	LAND      TokenType = "&&"
-	AMPERSAND TokenType = "&"
-	LOR       TokenType = "||"
+	// 区切り文字
+	COMMA     = ","
+	SEMICOLON = ";"
+	COLON     = ":"
+	DOT       = "."
+	ELLIPSIS  = "..."
+	DEFINE    = ":="
 
-	EQ  TokenType = "=="
-	NEQ TokenType = "!="
-	LT  TokenType = "<"
-	GT  TokenType = ">"
-	LE  TokenType = "<="
-	GE  TokenType = ">="
+	LPAREN   = "("
+	RPAREN   = ")"
+	LBRACE   = "{"
+	RBRACE   = "}"
+	LBRACKET = "["
+	RBRACKET = "]"
 
-	COMMA     TokenType = ","
-	SEMICOLON TokenType = ";"
-	COLON     TokenType = ":"
-	DOT       TokenType = "."
-	ELLIPSIS  TokenType = "..."
-
-	LPAREN   TokenType = "("
-	RPAREN   TokenType = ")"
-	LBRACE   TokenType = "{"
-	RBRACE   TokenType = "}"
-	LBRACKET TokenType = "["
-	RBRACKET TokenType = "]"
-
-	PACKAGE TokenType = "package"
-	IMPORT  TokenType = "import"
-	TYPE    TokenType = "type"
-	STRUCT  TokenType = "struct"
-	FUNC    TokenType = "func"
-	CONST   TokenType = "const"
-	RETURN  TokenType = "return"
-	DEFER   TokenType = "defer"
-	IF      TokenType = "if"
-	ELSE    TokenType = "else"
-	FOR     TokenType = "for"
-	SWITCH  TokenType = "switch"
-	CASE    TokenType = "case"
-	DEFAULT TokenType = "default"
-	NIL     TokenType = "nil"
+	// キーワード
+	PACKAGE = "PACKAGE"
+	IMPORT  = "IMPORT"
+	FUNC    = "FUNC"
+	RETURN  = "RETURN"
+	TYPE    = "TYPE"
+	STRUCT  = "STRUCT"
+	CONST   = "CONST"
+	IF      = "IF"
+	ELSE    = "ELSE"
+	FOR     = "FOR"
+	SWITCH  = "SWITCH"
+	CASE    = "CASE"
+	DEFAULT = "DEFAULT"
+	DEFER   = "DEFER"
+	NIL     = "NIL"
 )
 
 var keywords = map[string]TokenType{
 	"package": PACKAGE,
 	"import":  IMPORT,
+	"func":    FUNC,
+	"return":  RETURN,
 	"type":    TYPE,
 	"struct":  STRUCT,
-	"func":    FUNC,
 	"const":   CONST,
-	"return":  RETURN,
-	"defer":   DEFER,
 	"if":      IF,
 	"else":    ELSE,
 	"for":     FOR,
 	"switch":  SWITCH,
 	"case":    CASE,
 	"default": DEFAULT,
+	"defer":   DEFER,
 	"nil":     NIL,
 }
 
@@ -83,11 +97,4 @@ func LookupIdent(ident string) TokenType {
 		return tok
 	}
 	return IDENT
-}
-
-type Token struct {
-	Type    TokenType
-	Literal string
-	Line    int
-	Col     int
 }

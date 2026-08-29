@@ -364,3 +364,19 @@ type SliceLiteral struct {
 
 func (sl *SliceLiteral) expressionNode()      {}
 func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+// 構造体のフィールド初期化: Field: Expr または Expr
+type StructFieldValue struct {
+	Name  *Identifier // フィールド名 (省略時は nil)
+	Value Expression
+}
+
+// TypeName{ Field: Val, ... }
+type StructLiteral struct {
+	Token  token.Token // IDENT
+	Type   *NamedType
+	Fields []*StructFieldValue
+}
+
+func (sl *StructLiteral) expressionNode()      {}
+func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }

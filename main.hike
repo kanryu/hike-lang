@@ -4,6 +4,10 @@ import (
 	"std/fmt"
 )
 
+type Counter struct {
+	Value int
+}
+
 func assert(cond bool, testNum int, testName *byte) {
 	if cond {
 		fmt.PrintStr("[PASS #")
@@ -19,50 +23,60 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running String Type & Operation Tests ===")
+	fmt.PrintLn("=== Running Compound Assignment & Inc/Dec Tests ===")
 
 	testCount := 0
 
-	// 1. 文字列比較 (== / !=)
-	s1 := "hello"
-	s2 := "hello"
-	s3 := "world"
+	// 1. 変数のインクリメント・デクリメント
+	x := 10
+	x++
+	x++
+	testCount++
+	assert(x == 12, testCount, "Inc: x++ from 10 twice becomes 12")
 
-	testCount = testCount + 1
-	assert(s1 == s2, testCount, "String Eq: identical strings match")
+	x--
+	testCount++
+	assert(x == 11, testCount, "Dec: x-- from 12 becomes 11")
 
-	testCount = testCount + 1
-	assert(s1 != s3, testCount, "String Neq: different strings do not match")
+	// 2. 変数の複合代入 (+=, -=, *=, /=)
+	x += 9 // 20
+	testCount++
+	assert(x == 20, testCount, "Compound +=: 11 += 9 becomes 20")
 
-	testCount = testCount + 1
-	assert(s1 == "hello", testCount, "String Eq: variable matches string literal")
+	x -= 5 // 15
+	testCount++
+	assert(x == 15, testCount, "Compound -=: 20 -= 5 becomes 15")
 
-	// 2. 文字列の長さ取得 (len)
-	testCount = testCount + 1
-	assert(len(s1) == 5 && len("hike language") == 13, testCount, "String Len: len() returns correct byte length")
+	x *= 3 // 45
+	testCount++
+	assert(x == 45, testCount, "Compound *=: 15 *= 3 becomes 45")
 
-	// 3. 文字列のスライス (部分文字列抽出)
-	text := "hike-compiler"
-	sub1 := text[0:4]  // "hike"
-	sub2 := text[5:13] // "compiler"
-	sub3 := text[5:]   // "compiler"
-	sub4 := text[:4]   // "hike"
+	x /= 9 // 5
+	testCount++
+	assert(x == 5, testCount, "Compound /=: 45 /= 9 becomes 5")
 
-	testCount = testCount + 1
-	assert(sub1 == "hike" && len(sub1) == 4, testCount, "String Slice: text[0:4] extracted 'hike'")
+	// 3. 構造体フィールドへの ++, +=
+	c := Counter{Value: 100}
+	c.Value++
+	c.Value += 49
+	testCount++
+	assert(c.Value == 150, testCount, "Struct Field: c.Value++ and += 49 becomes 150")
 
-	testCount = testCount + 1
-	assert(sub2 == "compiler" && sub3 == "compiler", testCount, "String Slice: text[5:13] and text[5:] match 'compiler'")
+	// 4. スライス要素への ++, +=
+	s := []int{10, 20, 30}
+	s[0]++
+	s[1] += 80
+	testCount++
+	assert(s[0] == 11 && s[1] == 100, testCount, "Slice Elem: s[0]++ and s[1] += 80 work correctly")
 
-	testCount = testCount + 1
-	assert(sub4 == "hike", testCount, "String Slice: text[:4] prefix slice matches 'hike'")
+	// 5. for ループ後処理節での i++
+	sum := 0
+	for i := 0; i < 5; i++ {
+		sum += i
+	}
+	testCount++
+	assert(sum == 10, testCount, "For Loop Post: for i := 0; i < 5; i++ correctly sums to 10")
 
-	// 4. 文字列の結合 (+)
-	joined := sub1 + " " + sub2
-
-	testCount = testCount + 1
-	assert(joined == "hike compiler" && len(joined) == 13, testCount, "String Concat: sub1 + ' ' + sub2 equals 'hike compiler'")
-
-	fmt.PrintLn("=== All String Tests Completed ===")
+	fmt.PrintLn("=== All Compound Assignment Tests Completed ===")
 	return testCount
 }

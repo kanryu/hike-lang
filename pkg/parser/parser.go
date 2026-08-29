@@ -2,6 +2,8 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
+
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/lexer"
 	"hikec-go/pkg/token"
@@ -13,13 +15,12 @@ const (
 	LOR         // ||
 	LAND        // &&
 	EQUALS      // ==, !=
-	LESSGREATER // <, >, <=, >=
+	LESSGREATER // >, <, <=, >=
 	SUM         // +, -
 	PRODUCT     // *, /
-	PREFIX      // -X, !X, *X
+	PREFIX      // -X or !X
 	CALL        // myFunction(X)
-	INDEX       // array[index], slice[low:high]
-	DOT         // obj.field
+	INDEX       // array[index], .field
 )
 
 var precedences = map[token.TokenType]int{
@@ -37,22 +38,24 @@ var precedences = map[token.TokenType]int{
 	token.ASTERISK: PRODUCT,
 	token.LPAREN:   CALL,
 	token.LBRACKET: INDEX,
-	token.DOT:      DOT,
+	token.DOT:      INDEX,
 }
 
 type Parser struct {
-	l         *lexer.Lexer
-	errors    []string
-	curToken  token.Token
-	peekToken token.Token
-	verbose   bool
+	l              *lexer.Lexer
+	curToken       token.Token
+	peekToken      token.Token
+	errors         []string
+	verbose        bool
+	allowStructLit bool
 }
 
 func New(l *lexer.Lexer) *Parser {
 	p := &Parser{
-		l:       l,
-		errors:  []string{},
-		verbose: false,
+		l:              l,
+		errors:         []string{},
+		verbose:        false,
+		allowStructLit: true,
 	}
 	p.nextToken()
 	p.nextToken()
@@ -61,14 +64,11 @@ func New(l *lexer.Lexer) *Parser {
 
 func (p *Parser) SetVerbose(v bool) {
 	p.verbose = v
-	if p.l != nil {
-		p.l.SetVerbose(v)
-	}
 }
 
 func (p *Parser) log(msg string) {
 	if p.verbose {
-		fmt.Printf("[PARSER] [Line %d:%d] %s\n", p.curToken.Line, p.curToken.Col, msg)
+		fmt.Printf("[PARSER] %s\n", msg)
 	}
 }
 
@@ -94,13 +94,8 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 		p.nextToken()
 		return true
 	}
-	p.peekError(t)
+	p.errors = append(p.errors, fmt.Sprintf("expected next token to be %s, got %s instead", t, p.peekToken.Type))
 	return false
-}
-
-func (p *Parser) peekError(t token.TokenType) {
-	msg := fmt.Sprintf("expected next token to be %s, got %s instead", t, p.peekToken.Type)
-	p.errors = append(p.errors, msg)
 }
 
 func (p *Parser) peekPrecedence() int {
@@ -117,177 +112,165 @@ func (p *Parser) curPrecedence() int {
 	return LOWEST
 }
 
-func isTypeStart(tok token.Token) bool {
-	switch tok.Type {
-	case token.IDENT, token.ASTERISK, token.LPAREN, token.STRUCT, token.LBRACKET:
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *Parser) ParseProgram() *ast.Program {
 	prog := &ast.Program{
-		Imports: []*ast.ImportDecl{},
 		Decls:   []ast.Decl{},
+		Imports: []*ast.ImportDecl{},
 	}
-
-	if p.curTokenIs(token.PACKAGE) {
-		if p.expectPeek(token.IDENT) {
-			prog.Package = p.curToken.Literal
-			p.log(fmt.Sprintf("Declared package '%s'", prog.Package))
-			p.nextToken()
-		}
-	}
-
-	for p.curTokenIs(token.IMPORT) {
-		if p.peekTokenIs(token.STRING) {
-			p.nextToken()
-			p.log(fmt.Sprintf("Imported '%s'", p.curToken.Literal))
-			prog.Imports = append(prog.Imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
-			p.nextToken()
-		} else if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
-			p.nextToken()
-			for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
-				if p.curTokenIs(token.STRING) {
-					p.log(fmt.Sprintf("Imported '%s'", p.curToken.Literal))
-					prog.Imports = append(prog.Imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
-				}
-				p.nextToken()
-			}
-			if p.curTokenIs(token.RPAREN) {
-				p.nextToken()
-			}
-		} else {
-			p.nextToken()
-		}
-	}
-
 	for !p.curTokenIs(token.EOF) {
-		decl := p.parseDecl()
-		if decl != nil {
-			prog.Decls = append(prog.Decls, decl)
+		switch p.curToken.Type {
+		case token.PACKAGE:
+			p.nextToken()
+			if p.curTokenIs(token.IDENT) {
+				prog.Package = p.curToken.Literal
+				p.log(fmt.Sprintf("[%d:%d] Declared package '%s'", p.curToken.Line, p.curToken.Col, prog.Package))
+			}
+		case token.IMPORT:
+			imports := p.parseImportDecl()
+			prog.Imports = append(prog.Imports, imports...)
+		default:
+			decl := p.parseTopLevelDecl()
+			if decl != nil {
+				prog.Decls = append(prog.Decls, decl)
+			}
 		}
 		p.nextToken()
 	}
-
 	return prog
 }
 
-func (p *Parser) parseDecl() ast.Decl {
+func (p *Parser) parseTopLevelDecl() ast.Decl {
 	switch p.curToken.Type {
 	case token.TYPE:
 		return p.parseTypeDecl()
-	case token.FUNC:
-		return p.parseFuncDecl()
 	case token.CONST:
 		return p.parseConstDecl()
+	case token.FUNC:
+		return p.parseFuncDecl()
 	default:
 		return nil
 	}
 }
 
-func (p *Parser) parseConstDecl() *ast.ConstDecl {
-	tok := p.curToken
-	if !p.expectPeek(token.IDENT) {
-		return nil
+func (p *Parser) parseImportDecl() []*ast.ImportDecl {
+	imports := []*ast.ImportDecl{}
+	p.nextToken() // 'import' を消費
+	if p.curTokenIs(token.LPAREN) {
+		for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
+			p.nextToken()
+			if p.curTokenIs(token.STRING) {
+				imports = append(imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
+				p.log(fmt.Sprintf("[%d:%d] Imported '%s'", p.curToken.Line, p.curToken.Col, p.curToken.Literal))
+			}
+		}
+		p.expectPeek(token.RPAREN)
+	} else if p.curTokenIs(token.STRING) {
+		imports = append(imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
+		p.log(fmt.Sprintf("[%d:%d] Imported '%s'", p.curToken.Line, p.curToken.Col, p.curToken.Literal))
 	}
-	ident := p.parseIdentifier()
-	if !p.expectPeek(token.ASSIGN) {
-		return nil
-	}
-	p.nextToken()
-	val := p.parseExpression(LOWEST)
-	p.log(fmt.Sprintf("Parsed const declaration: %s", ident.Value))
-	return &ast.ConstDecl{Token: tok, Name: ident, Value: val}
+	return imports
 }
 
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {
-	tok := p.curToken
-	if !p.expectPeek(token.IDENT) {
-		return nil
-	}
-	name := p.parseIdentifier()
+	stmt := &ast.TypeDecl{Token: p.curToken}
 	p.nextToken()
-	t := p.parseTypeExpr()
-	p.log(fmt.Sprintf("Parsed type declaration: %s", name.Value))
-	return &ast.TypeDecl{Token: tok, Name: name, Type: t}
+	stmt.Name = p.parseIdentifier()
+	p.nextToken()
+
+	if p.curTokenIs(token.STRUCT) {
+		st := &ast.StructType{Token: p.curToken, Fields: []*ast.FieldDecl{}}
+		if p.expectPeek(token.LBRACE) {
+			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+				p.nextToken()
+				fieldName := p.parseIdentifier()
+				p.nextToken()
+				fieldType := p.parseTypeExpr()
+				st.Fields = append(st.Fields, &ast.FieldDecl{Token: fieldName.Token, Name: fieldName, Type: fieldType})
+			}
+			p.expectPeek(token.RBRACE)
+		}
+		stmt.Type = st
+	} else {
+		stmt.Type = p.parseTypeExpr()
+	}
+	p.log(fmt.Sprintf("[%d:%d] Parsed type declaration: %s", stmt.Token.Line, stmt.Token.Col, stmt.Name.Value))
+	return stmt
+}
+
+func (p *Parser) parseConstDecl() *ast.ConstDecl {
+	stmt := &ast.ConstDecl{Token: p.curToken}
+	p.nextToken()
+	stmt.Name = p.parseIdentifier()
+	if p.peekTokenIs(token.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		stmt.Value = p.parseExpression(LOWEST)
+	}
+	return stmt
 }
 
 func (p *Parser) parseFuncDecl() *ast.FuncDecl {
-	tok := p.curToken
-	var recv *ast.ParamDecl = nil
+	fn := &ast.FuncDecl{Token: p.curToken}
+	p.nextToken()
 
-	if p.peekTokenIs(token.LPAREN) {
+	// レシーバー: func (c *Counter) Method(...)
+	if p.curTokenIs(token.LPAREN) {
 		p.nextToken()
+		recvName := p.parseIdentifier()
 		p.nextToken()
-		rName := p.parseIdentifier()
+		recvType := p.parseTypeExpr()
+		p.expectPeek(token.RPAREN)
+		fn.Receiver = &ast.ParamDecl{Token: recvName.Token, Name: recvName, Type: recvType}
 		p.nextToken()
-		rType := p.parseTypeExpr()
-		if !p.expectPeek(token.RPAREN) {
-			return nil
-		}
-		recv = &ast.ParamDecl{Token: rName.Token, Name: rName, Type: rType}
 	}
 
-	if !p.expectPeek(token.IDENT) {
-		return nil
-	}
-	fnName := p.parseIdentifier()
-	p.log(fmt.Sprintf("Parsing function: %s", fnName.Value))
+	fn.Name = p.parseIdentifier()
+	p.log(fmt.Sprintf("[%d:%d] Parsing function: %s", fn.Token.Line, fn.Token.Col, fn.Name.Value))
+	p.nextToken()
 
-	if !p.expectPeek(token.LPAREN) {
-		return nil
-	}
-
-	params := []*ast.ParamDecl{}
-	isVariadic := false
-
+	fn.Params = []*ast.ParamDecl{}
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
 		for {
+			// 1. Cスタイル可変長: func printf(fmt *byte, ...)
 			if p.curTokenIs(token.ELLIPSIS) {
-				isVariadic = true
-				p.log("Parsed variadic parameter ellipsis '...'")
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					p.nextToken()
-					continue
+				fn.IsVariadic = true
+				if p.peekTokenIs(token.RPAREN) {
+					break
 				}
-				break
-			}
-
-			pName := p.parseIdentifier()
-			p.nextToken()
-
-			if p.curTokenIs(token.ELLIPSIS) {
-				isVariadic = true
 				p.nextToken()
+			} else {
+				pName := p.parseIdentifier()
+				p.nextToken()
+				// 2. Goスタイル可変長: func fn(args ...int)
+				if p.curTokenIs(token.ELLIPSIS) {
+					fn.IsVariadic = true
+					p.nextToken()
+				}
+				pType := p.parseTypeExpr()
+				fn.Params = append(fn.Params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
 			}
-
-			pType := p.parseTypeExpr()
-			params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
 
 			if p.peekTokenIs(token.COMMA) {
 				p.nextToken()
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
 				p.nextToken()
 			} else {
 				break
 			}
 		}
 	}
-	if !p.expectPeek(token.RPAREN) {
-		return nil
-	}
+	p.expectPeek(token.RPAREN)
 
-	retTypes := []ast.TypeExpr{}
-	if isTypeStart(p.peekToken) {
-		p.nextToken()
-		if p.curTokenIs(token.LPAREN) {
+	fn.ReturnTypes = []ast.TypeExpr{}
+	if !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
+		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken()
-			for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
-				retTypes = append(retTypes, p.parseTypeExpr())
+			p.nextToken()
+			for {
+				fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()
 					p.nextToken()
@@ -296,25 +279,62 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 				}
 			}
 			p.expectPeek(token.RPAREN)
-		} else {
-			retTypes = append(retTypes, p.parseTypeExpr())
+		} else if !p.peekTokenIs(token.SEMICOLON) {
+			p.nextToken()
+			fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
 		}
 	}
 
-	var body *ast.BlockStmt = nil
 	if p.peekTokenIs(token.LBRACE) {
 		p.nextToken()
-		body = p.parseBlockStmt()
+		fn.Body = p.parseBlockStmt()
+	} else if p.curTokenIs(token.LBRACE) {
+		fn.Body = p.parseBlockStmt()
 	}
 
-	return &ast.FuncDecl{
-		Token:       tok,
-		Receiver:    recv,
-		Name:        fnName,
-		Params:      params,
-		ReturnTypes: retTypes,
-		Body:        body,
-		IsVariadic:  isVariadic,
+	return fn
+}
+
+func (p *Parser) parseTypeExpr() ast.TypeExpr {
+	if p.curTokenIs(token.IDENT) {
+		ident := p.parseIdentifier()
+		if p.peekTokenIs(token.DOT) {
+			p.nextToken()
+			p.nextToken()
+			field := p.parseIdentifier()
+			return &ast.NamedType{Token: ident.Token, Package: ident, Name: field}
+		}
+		return &ast.NamedType{Token: ident.Token, Package: nil, Name: ident}
+	} else if p.curTokenIs(token.ASTERISK) {
+		tok := p.curToken
+		p.nextToken()
+		base := p.parseTypeExpr()
+		return &ast.PointerType{Token: tok, Base: base}
+	} else if p.curTokenIs(token.LBRACKET) {
+		tok := p.curToken
+		if p.expectPeek(token.RBRACKET) {
+			p.nextToken()
+			elem := p.parseTypeExpr()
+			return &ast.SliceType{Token: tok, Elem: elem}
+		}
+	}
+	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
+}
+
+func (p *Parser) parseStatement() ast.Statement {
+	switch p.curToken.Type {
+	case token.IF:
+		return p.parseIfStmt()
+	case token.FOR:
+		return p.parseForStmt()
+	case token.SWITCH:
+		return p.parseSwitchStmt()
+	case token.RETURN:
+		return p.parseReturnStmt()
+	case token.DEFER:
+		return p.parseDeferStmt()
+	default:
+		return p.parseAssignOrExprStmt()
 	}
 }
 
@@ -322,10 +342,6 @@ func (p *Parser) parseBlockStmt() *ast.BlockStmt {
 	block := &ast.BlockStmt{Token: p.curToken, Statements: []ast.Statement{}}
 	p.nextToken()
 	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
-		if p.curTokenIs(token.SEMICOLON) {
-			p.nextToken()
-			continue
-		}
 		stmt := p.parseStatement()
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
@@ -335,48 +351,19 @@ func (p *Parser) parseBlockStmt() *ast.BlockStmt {
 	return block
 }
 
-func (p *Parser) parseStatement() ast.Statement {
-	switch p.curToken.Type {
-	case token.RETURN:
-		return p.parseReturnStmt()
-	case token.IF:
-		return p.parseIfStmt()
-	case token.FOR:
-		return p.parseForStmt()
-	case token.SWITCH:
-		return p.parseSwitchStmt()
-	case token.DEFER:
-		return p.parseDeferStmt()
-	default:
-		return p.parseAssignOrExprStmt()
-	}
-}
-
-func (p *Parser) parseReturnStmt() *ast.ReturnStmt {
-	stmt := &ast.ReturnStmt{Token: p.curToken, Values: []ast.Expression{}}
-	if p.peekTokenIs(token.SEMICOLON) || p.peekTokenIs(token.RBRACE) {
-		return stmt
-	}
-	p.nextToken()
-	for {
-		stmt.Values = append(stmt.Values, p.parseExpression(LOWEST))
-		if p.peekTokenIs(token.COMMA) {
-			p.nextToken()
-			p.nextToken()
-		} else {
-			break
-		}
-	}
-	return stmt
-}
-
 func (p *Parser) parseIfStmt() *ast.IfStmt {
 	stmt := &ast.IfStmt{Token: p.curToken}
 	p.nextToken()
+
+	oldAllow := p.allowStructLit
+	p.allowStructLit = false
 	stmt.Condition = p.parseExpression(LOWEST)
+	p.allowStructLit = oldAllow
+
 	if !p.expectPeek(token.LBRACE) {
 		return nil
 	}
+
 	stmt.Consequence = p.parseBlockStmt()
 
 	if p.peekTokenIs(token.ELSE) {
@@ -384,28 +371,31 @@ func (p *Parser) parseIfStmt() *ast.IfStmt {
 		if p.peekTokenIs(token.IF) {
 			p.nextToken()
 			stmt.Alternative = p.parseIfStmt()
-		} else if p.expectPeek(token.LBRACE) {
+		} else if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
 			stmt.Alternative = p.parseBlockStmt()
 		}
 	}
+
 	return stmt
 }
 
 func (p *Parser) parseForStmt() *ast.ForStmt {
 	stmt := &ast.ForStmt{Token: p.curToken}
-	p.nextToken() // 'for' を消費
+	p.nextToken()
 
-	// 1. 無限ループ: for { ... }
 	if p.curTokenIs(token.LBRACE) {
 		stmt.Body = p.parseBlockStmt()
 		return stmt
 	}
 
-	// 2. 空の初期化節で始まる 3節 for: for ; cond; post { ... }
 	if p.curTokenIs(token.SEMICOLON) {
 		p.nextToken()
 		if !p.curTokenIs(token.SEMICOLON) {
+			oldAllow := p.allowStructLit
+			p.allowStructLit = false
 			stmt.Cond = p.parseExpression(LOWEST)
+			p.allowStructLit = oldAllow
 		}
 		p.expectPeek(token.SEMICOLON)
 		p.nextToken()
@@ -419,24 +409,23 @@ func (p *Parser) parseForStmt() *ast.ForStmt {
 		return stmt
 	}
 
-	// 最初の要素を文として解析 (代入文 'i := 0' または 式文 'i < 100')
 	firstStmt := p.parseAssignOrExprStmt()
 
-	// 3. 3節 for: for init; cond; post { ... }
 	if p.peekTokenIs(token.SEMICOLON) {
 		stmt.Init = firstStmt
-		p.nextToken() // ';' に移動
-		p.nextToken() // ';' の次へ
+		p.nextToken()
+		p.nextToken()
 
-		// 条件節 (cond)
 		if !p.curTokenIs(token.SEMICOLON) {
+			oldAllow := p.allowStructLit
+			p.allowStructLit = false
 			stmt.Cond = p.parseExpression(LOWEST)
+			p.allowStructLit = oldAllow
 		}
 
-		// 後処理節 (post)
 		if p.peekTokenIs(token.SEMICOLON) {
-			p.nextToken() // ';' に移動
-			p.nextToken() // ';' の次へ
+			p.nextToken()
+			p.nextToken()
 			if !p.curTokenIs(token.LBRACE) {
 				stmt.Post = p.parseAssignOrExprStmt()
 			}
@@ -449,7 +438,6 @@ func (p *Parser) parseForStmt() *ast.ForStmt {
 		return stmt
 	}
 
-	// 4. 単一条件 for: for cond { ... }
 	if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
 		stmt.Cond = exprStmt.Expr
 	}
@@ -464,19 +452,24 @@ func (p *Parser) parseForStmt() *ast.ForStmt {
 func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
 	stmt := &ast.SwitchStmt{Token: p.curToken, Cases: []*ast.CaseClause{}}
 	p.nextToken()
+
+	oldAllow := p.allowStructLit
+	p.allowStructLit = false
 	stmt.Value = p.parseExpression(LOWEST)
+	p.allowStructLit = oldAllow
+
 	if !p.expectPeek(token.LBRACE) {
 		return nil
 	}
-	p.nextToken()
 
+	p.nextToken()
 	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
 		if p.curTokenIs(token.CASE) || p.curTokenIs(token.DEFAULT) {
-			clause := &ast.CaseClause{Token: p.curToken, Values: []ast.Expression{}, Body: []ast.Statement{}}
+			c := &ast.CaseClause{Token: p.curToken, Values: []ast.Expression{}, Body: []ast.Statement{}}
 			if p.curTokenIs(token.CASE) {
 				p.nextToken()
 				for {
-					clause.Values = append(clause.Values, p.parseExpression(LOWEST))
+					c.Values = append(c.Values, p.parseExpression(LOWEST))
 					if p.peekTokenIs(token.COMMA) {
 						p.nextToken()
 						p.nextToken()
@@ -488,12 +481,34 @@ func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
 			p.expectPeek(token.COLON)
 			p.nextToken()
 			for !p.curTokenIs(token.CASE) && !p.curTokenIs(token.DEFAULT) && !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
-				clause.Body = append(clause.Body, p.parseStatement())
+				s := p.parseStatement()
+				if s != nil {
+					c.Body = append(c.Body, s)
+				}
 				p.nextToken()
 			}
-			stmt.Cases = append(stmt.Cases, clause)
+			stmt.Cases = append(stmt.Cases, c)
 		} else {
 			p.nextToken()
+		}
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseReturnStmt() *ast.ReturnStmt {
+	stmt := &ast.ReturnStmt{Token: p.curToken, Values: []ast.Expression{}}
+	if p.peekTokenIs(token.SEMICOLON) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.EOF) {
+		return stmt
+	}
+	p.nextToken()
+	for {
+		stmt.Values = append(stmt.Values, p.parseExpression(LOWEST))
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			p.nextToken()
+		} else {
+			break
 		}
 	}
 	return stmt
@@ -512,6 +527,29 @@ func (p *Parser) parseDeferStmt() *ast.DeferStmt {
 func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	startTok := p.curToken
 	leftExpr := p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.INC) || p.peekTokenIs(token.DEC) {
+		p.nextToken()
+		opTok := p.curToken
+		return &ast.AssignStmt{
+			Token: opTok,
+			Left:  []ast.Expression{leftExpr},
+			Right: []ast.Expression{&ast.IntegerLiteral{Token: opTok, Value: 1}},
+		}
+	}
+
+	if p.peekTokenIs(token.PLUS_ASSIGN) || p.peekTokenIs(token.MINUS_ASSIGN) ||
+		p.peekTokenIs(token.ASTERISK_ASSIGN) || p.peekTokenIs(token.SLASH_ASSIGN) {
+		p.nextToken()
+		assignTok := p.curToken
+		p.nextToken()
+		rhs := p.parseExpression(LOWEST)
+		return &ast.AssignStmt{
+			Token: assignTok,
+			Left:  []ast.Expression{leftExpr},
+			Right: []ast.Expression{rhs},
+		}
+	}
 
 	if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
@@ -553,13 +591,44 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
 }
 
-// parseExpression 内の LBRACKET 処理を更新
 func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
 
 	switch p.curToken.Type {
 	case token.IDENT:
-		leftExp = p.parseIdentifier()
+		ident := p.parseIdentifier()
+		if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+			namedType := &ast.NamedType{Token: ident.Token, Package: nil, Name: ident}
+			fields := []*ast.StructFieldValue{}
+			if !p.peekTokenIs(token.RBRACE) {
+				p.nextToken()
+				for {
+					var fName *ast.Identifier = nil
+					if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+						fName = p.parseIdentifier()
+						p.nextToken()
+						p.nextToken()
+					}
+					val := p.parseExpression(LOWEST)
+					fields = append(fields, &ast.StructFieldValue{Name: fName, Value: val})
+
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						if p.peekTokenIs(token.RBRACE) {
+							break
+						}
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+			}
+			p.expectPeek(token.RBRACE)
+			leftExp = &ast.StructLiteral{Token: ident.Token, Type: namedType, Fields: fields}
+		} else {
+			leftExp = ident
+		}
 	case token.INT:
 		leftExp = p.parseIntegerLiteral()
 	case token.STRING:
@@ -571,13 +640,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.LBRACKET:
 		tok := p.curToken
 		if p.expectPeek(token.RBRACKET) {
-			p.nextToken() // ']' の次（要素型）へ
+			p.nextToken()
 			elem := p.parseTypeExpr()
 			sliceT := &ast.SliceType{Token: tok, Elem: elem}
 
-			// []T{ ... } スライスリテラルの判定
-			if p.peekTokenIs(token.LBRACE) {
-				p.nextToken() // '{' に移動
+			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+				p.nextToken()
 				elements := []ast.Expression{}
 				if !p.peekTokenIs(token.RBRACE) {
 					p.nextToken()
@@ -585,7 +653,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 						elements = append(elements, p.parseExpression(LOWEST))
 						if p.peekTokenIs(token.COMMA) {
 							p.nextToken()
-							if p.peekTokenIs(token.RBRACE) { // 末尾カンマの許容
+							if p.peekTokenIs(token.RBRACE) {
 								break
 							}
 							p.nextToken()
@@ -604,7 +672,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		}
 	case token.LPAREN:
 		p.nextToken()
+		oldAllow := p.allowStructLit
+		p.allowStructLit = true
 		leftExp = p.parseExpression(LOWEST)
+		p.allowStructLit = oldAllow
 		p.expectPeek(token.RPAREN)
 	default:
 		return nil
@@ -632,7 +703,38 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	return leftExp
 }
 
-// parseCallExpr で末尾の '...' を解析
+func (p *Parser) parseIdentifier() *ast.Identifier {
+	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+}
+
+func (p *Parser) parseIntegerLiteral() *ast.IntegerLiteral {
+	val, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
+	if err != nil {
+		p.errors = append(p.errors, fmt.Sprintf("could not parse %q as integer", p.curToken.Literal))
+		return nil
+	}
+	return &ast.IntegerLiteral{Token: p.curToken, Value: val}
+}
+
+func (p *Parser) parseStringLiteral() *ast.StringLiteral {
+	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
+}
+
+func (p *Parser) parsePrefixExpr() ast.Expression {
+	tok := p.curToken
+	p.nextToken()
+	right := p.parseExpression(PREFIX)
+	return &ast.PrefixExpr{Token: tok, Operator: tok.Literal, Right: right}
+}
+
+func (p *Parser) parseBinaryExpr(left ast.Expression) ast.Expression {
+	tok := p.curToken
+	precedence := p.curPrecedence()
+	p.nextToken()
+	right := p.parseExpression(precedence)
+	return &ast.BinaryExpr{Token: tok, Operator: tok.Literal, Left: left, Right: right}
+}
+
 func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	tok := p.curToken
 	args := []ast.Expression{}
@@ -643,7 +745,7 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 		for {
 			arg := p.parseExpression(LOWEST)
 			if p.peekTokenIs(token.ELLIPSIS) {
-				p.nextToken() // '...' を消費
+				p.nextToken()
 				hasEllipsis = true
 				args = append(args, arg)
 				break
@@ -664,44 +766,11 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	return &ast.CallExpr{Token: tok, Function: fn, Args: args, HasEllipsis: hasEllipsis}
 }
 
-func (p *Parser) parseIdentifier() *ast.Identifier {
-	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
-}
-
-func (p *Parser) parseIntegerLiteral() *ast.IntegerLiteral {
-	var val int64
-	fmt.Sscanf(p.curToken.Literal, "%d", &val)
-	return &ast.IntegerLiteral{Token: p.curToken, Value: val}
-}
-
-func (p *Parser) parseStringLiteral() *ast.StringLiteral {
-	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
-}
-
-func (p *Parser) parsePrefixExpr() *ast.PrefixExpr {
-	tok := p.curToken
-	op := p.curToken.Literal
-	p.nextToken()
-	right := p.parseExpression(PREFIX)
-	return &ast.PrefixExpr{Token: tok, Operator: op, Right: right}
-}
-
-func (p *Parser) parseBinaryExpr(left ast.Expression) *ast.BinaryExpr {
-	tok := p.curToken
-	op := p.curToken.Literal
-	prec := p.curPrecedence()
-	p.nextToken()
-	right := p.parseExpression(prec)
-	return &ast.BinaryExpr{Token: tok, Left: left, Operator: op, Right: right}
-}
-
-// インデックス式およびスライス式の解析
 func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
-	tok := p.curToken // '['
+	tok := p.curToken
 
-	// s[:high] または s[:] (low省略)
 	if p.peekTokenIs(token.COLON) {
-		p.nextToken() // ':'
+		p.nextToken()
 		var high ast.Expression = nil
 		if !p.peekTokenIs(token.RBRACKET) {
 			p.nextToken()
@@ -712,77 +781,26 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	}
 
 	p.nextToken()
-	low := p.parseExpression(LOWEST)
+	idx := p.parseExpression(LOWEST)
 
-	// s[low:high] または s[low:]
 	if p.peekTokenIs(token.COLON) {
-		p.nextToken() // ':'
+		p.nextToken()
 		var high ast.Expression = nil
 		if !p.peekTokenIs(token.RBRACKET) {
 			p.nextToken()
 			high = p.parseExpression(LOWEST)
 		}
 		p.expectPeek(token.RBRACKET)
-		return &ast.SliceExpr{Token: tok, Left: left, Low: low, High: high}
+		return &ast.SliceExpr{Token: tok, Left: left, Low: idx, High: high}
 	}
 
-	// s[i] (通常インデックス)
 	p.expectPeek(token.RBRACKET)
-	return &ast.IndexExpr{Token: tok, Left: left, Index: low}
+	return &ast.IndexExpr{Token: tok, Left: left, Index: idx}
 }
 
-func (p *Parser) parseMemberExpr(obj ast.Expression) *ast.MemberExpr {
+func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
 	tok := p.curToken
 	p.nextToken()
 	field := p.parseIdentifier()
 	return &ast.MemberExpr{Token: tok, Object: obj, Field: field}
-}
-
-func (p *Parser) parseTypeExpr() ast.TypeExpr {
-	// []T の判定
-	if p.curTokenIs(token.LBRACKET) {
-		tok := p.curToken
-		if p.expectPeek(token.RBRACKET) {
-			p.nextToken() // ']' の次 (要素型) へ
-			elem := p.parseTypeExpr()
-			return &ast.SliceType{Token: tok, Elem: elem}
-		}
-		return nil
-	}
-
-	if p.curTokenIs(token.ASTERISK) {
-		tok := p.curToken
-		p.nextToken()
-		base := p.parseTypeExpr()
-		return &ast.PointerType{Token: tok, Base: base}
-	}
-
-	if p.curTokenIs(token.STRUCT) {
-		tok := p.curToken
-		p.expectPeek(token.LBRACE)
-		p.nextToken()
-		fields := []*ast.FieldDecl{}
-		for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
-			if p.curTokenIs(token.SEMICOLON) {
-				p.nextToken()
-				continue
-			}
-			fName := p.parseIdentifier()
-			p.nextToken()
-			fType := p.parseTypeExpr()
-			fields = append(fields, &ast.FieldDecl{Token: fName.Token, Name: fName, Type: fType})
-			p.nextToken()
-		}
-		return &ast.StructType{Token: tok, Fields: fields}
-	}
-
-	name := p.parseIdentifier()
-	if p.peekTokenIs(token.DOT) {
-		p.nextToken()
-		p.nextToken()
-		field := p.parseIdentifier()
-		return &ast.NamedType{Token: name.Token, Package: name, Name: field}
-	}
-
-	return &ast.NamedType{Token: name.Token, Package: nil, Name: name}
 }
