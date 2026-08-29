@@ -92,6 +92,14 @@ func (t *NamedType) LLVMType() string {
 	return "%struct." + t.Name
 }
 
+type SliceType struct {
+	Elem Type
+}
+
+func (s *SliceType) TypeName() string { return "[]" + s.Elem.TypeName() }
+func (s *SliceType) Size() int        { return 24 } // ptr(8) + len(8) + cap(8)
+func (s *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
+
 type Context struct {
 	Structs   map[string]*StructType
 	Functions map[string]*FuncType
@@ -242,10 +250,11 @@ func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
 		return TypeVoid
 	}
 	switch t := expr.(type) {
+	case *ast.SliceType:
+		elem := ctx.resolveTypeExpr(t.Elem)
+		return &SliceType{Elem: elem}
 	case *ast.NamedType:
 		name := t.Name.Value
-
-		// 1. パッケージ修飾付きの探索 (例: ast.Program -> ast_Program)
 		if t.Package != nil {
 			cand := t.Package.Value + "_" + name
 			if st, ok := ctx.Structs[cand]; ok {
@@ -255,8 +264,6 @@ func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
 				return st
 			}
 		}
-
-		// 2. プリミティブ型
 		if name == "int" {
 			return TypeInt
 		}
@@ -269,21 +276,13 @@ func (ctx *Context) resolveTypeExpr(expr ast.TypeExpr) Type {
 		if name == "error" {
 			return TypeError
 		}
-
-		// 3. 構造体完全一致
 		if st, ok := ctx.Structs[name]; ok {
 			return st
 		}
-
-		// 4. サフィックス一致による探索 (例: Program -> ast_Program)
 		for sName, st := range ctx.Structs {
 			if strings.HasSuffix(sName, "_"+name) || strings.HasSuffix(sName, name) {
 				return st
 			}
-		}
-
-		if t.Package != nil && t.Package.Value == "mem" && t.Name.Value == "Allocator" {
-			return &BasicType{Name: "mem.Allocator", ByteSize: 16, LLVM: "%struct.Allocator"}
 		}
 		return &BasicType{Name: name, ByteSize: 8, LLVM: "%struct." + name}
 

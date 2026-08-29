@@ -1067,6 +1067,67 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", extReg, loadReg))
 		return extReg, sema.TypeInt
 
+	case *ast.SliceExpr:
+		baseReg, baseType := g.resolveValue(b, e.Left)
+
+		// low の解決（省略時は 0）
+		lowReg := "0"
+		if e.Low != nil {
+			lowReg, _ = g.resolveValue(b, e.Low)
+		}
+
+		// ポインタ基底アドレス、元のlen, capを取得
+		var rawPtrReg string
+		var oldLenReg string
+		var oldCapReg string
+
+		if sliceType, isSlice := baseType.(*sema.SliceType); isSlice {
+			rawPtrReg = g.nextReg()
+			oldLenReg = g.nextReg()
+			oldCapReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtrReg, sliceType.LLVMType(), baseReg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", oldLenReg, sliceType.LLVMType(), baseReg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", oldCapReg, sliceType.LLVMType(), baseReg))
+		} else {
+			// ポインタ直接の場合
+			rawPtrReg = baseReg
+			oldLenReg = "0"
+			oldCapReg = "0"
+		}
+
+		// high の解決（省略時は oldLen）
+		highReg := oldLenReg
+		if e.High != nil {
+			highReg, _ = g.resolveValue(b, e.High)
+		}
+
+		// 新しいポインタ: data + low
+		newPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", newPtrReg, rawPtrReg, lowReg))
+
+		// 新しい len: high - low
+		newLenReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newLenReg, highReg, lowReg))
+
+		// 新しい cap: oldCap - low
+		newCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newCapReg, oldCapReg, lowReg))
+
+		// スライス値 { i8*, i64, i64 } の組み立て
+		retSliceType := "{ i8*, i64, i64 }"
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, retSliceType, newPtrReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, retSliceType, t1, newLenReg))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, retSliceType, t2, newCapReg))
+
+		var elemType sema.Type = sema.TypeByte
+		if st, ok := baseType.(*sema.SliceType); ok {
+			elemType = st.Elem
+		}
+		return t3, &sema.SliceType{Elem: elemType}
+
 	case *ast.CallExpr:
 		reg, retType := g.emitCallInternal(b, e)
 		if reg == "" {

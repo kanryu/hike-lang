@@ -178,6 +178,43 @@ func (p *Parser) parseExpression(precedence int) *byte {
 				return nil
 			}
 			leftExp = (*byte)(call)
+		} else if p.peekTokenIs(token.LBRACKET) {
+			p.nextToken() // '['
+			p.nextToken()
+
+			if p.curTokenIs(token.COLON) {
+				// arr[:high] または arr[:]
+				p.nextToken()
+				var high *byte = nil
+				if !p.curTokenIs(token.RBRACKET) {
+					high = p.parseExpression(LOWEST)
+					p.nextToken()
+				}
+				if !p.curTokenIs(token.RBRACKET) {
+					return nil
+				}
+				leftExp = (*byte)(ast.NewSliceExpr(leftExp, nil, high))
+			} else {
+				low := p.parseExpression(LOWEST)
+				if p.peekTokenIs(token.COLON) {
+					p.nextToken() // ':'
+					p.nextToken()
+					var high *byte = nil
+					if !p.curTokenIs(token.RBRACKET) {
+						high = p.parseExpression(LOWEST)
+						p.nextToken()
+					}
+					if !p.curTokenIs(token.RBRACKET) {
+						return nil
+					}
+					leftExp = (*byte)(ast.NewSliceExpr(leftExp, low, high))
+				} else {
+					if !p.expectPeek(token.RBRACKET) {
+						return nil
+					}
+					leftExp = (*byte)(ast.NewIndexExpr(leftExp, low))
+				}
+			}
 		} else {
 			return leftExp
 		}
@@ -187,6 +224,15 @@ func (p *Parser) parseExpression(precedence int) *byte {
 }
 
 func (p *Parser) parseType() *byte {
+	// []T スライス型のパース
+	if p.curTokenIs(token.LBRACKET) {
+		if !p.expectPeek(token.RBRACKET) {
+			return nil
+		}
+		p.nextToken()
+		elem := p.parseType()
+		return (*byte)(ast.NewSliceType(elem))
+	}
 	if p.curTokenIs(token.ASTERISK) {
 		p.nextToken()
 		base := p.parseType()
@@ -277,7 +323,8 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		}
 	}
 
-	if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) {
+	// 戻り値の型判定に token.LBRACKET を追加
+	if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.LBRACKET) {
 		p.nextToken()
 		retType := p.parseType()
 		fn.ReturnTypes.Push(retType)

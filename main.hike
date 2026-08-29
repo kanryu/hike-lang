@@ -23,50 +23,62 @@ func assert(cond bool, testNum int, testName *byte) {
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Phase 2: AST & Parser Unit Tests ===")
+	fmt.PrintLn("=== Running Slice Syntax & Parser Unit Tests ===")
 
 	testCount := 0
 
-	sampleSource := "package main\n\nfunc add(a int, b int) int {\n  x := a + b\n  return x\n}\n"
+	// スライス型引数・戻り値およびスライス式を含む検証用HIKEソース
+	sampleSource := "package main\n\nfunc sliceDemo(arr []int) []int {\n  sub := arr[1:3]\n  head := arr[:2]\n  tail := arr[2:]\n  return sub\n}\n"
+
 	lex := lexer.New(sampleSource)
 	p := parser.New(lex)
 	prog := p.ParseProgram()
 
+	// テスト1: ASTルート（Program）の構築検証
 	testCount = testCount + 1
-	assert(prog != nil, testCount, "Parser.ParseProgram: construct program AST node")
+	assert(prog != nil, testCount, "Parser: construct program AST node with slice syntax")
 
+	// テスト2: パッケージ名の検証
 	testCount = testCount + 1
 	assert(strings.Equal(prog.Package, "main") == true, testCount, "Parser: parse package identifier 'main'")
 
+	// テスト3: トップレベル宣言数の検証
 	testCount = testCount + 1
-	assert(prog.Decls.Len() == 1, testCount, "Parser: collect top-level declaration count")
+	assert(prog.Decls.Len() == 1, testCount, "Parser: top-level declaration count is 1")
 
-	testCount = testCount + 1
+	// テスト4: 関数宣言ノードの検証
 	fnDecl := (*ast.FuncDecl)(prog.Decls.Get(0))
-	assert(fnDecl.Kind == ast.KIND_FUNC_DECL, testCount, "Parser: top-level node is FuncDecl")
-
 	testCount = testCount + 1
-	assert(strings.Equal(fnDecl.Name, "add") == true, testCount, "Parser: func name matches 'add'")
+	assert(fnDecl.Kind == ast.KIND_FUNC_DECL, testCount, "Parser: declaration node is FuncDecl")
 
+	// テスト5: 関数名の検証
 	testCount = testCount + 1
-	assert(fnDecl.Params.Len() == 2, testCount, "Parser: parse function parameter list length")
+	assert(strings.Equal(fnDecl.Name, "sliceDemo") == true, testCount, "Parser: func name matches 'sliceDemo'")
 
+	// テスト6: スライス型引数リスト長の検証
 	testCount = testCount + 1
+	assert(fnDecl.Params.Len() == 1, testCount, "Parser: function has 1 parameter")
+
+	// テスト7: 第1引数名の検証
 	param0 := (*ast.ParamDecl)(fnDecl.Params.Get(0))
-	assert(strings.Equal(param0.Name, "a") == true, testCount, "Parser: first parameter name is 'a'")
-
 	testCount = testCount + 1
-	assert(fnDecl.ReturnTypes.Len() == 1, testCount, "Parser: parse function return type count")
+	assert(strings.Equal(param0.Name, "arr") == true, testCount, "Parser: parameter name is 'arr'")
 
+	// テスト8: スライス戻り値型数の検証
 	testCount = testCount + 1
+	assert(fnDecl.ReturnTypes.Len() == 1, testCount, "Parser: function has 1 return type")
+
+	// テスト9: 関数ブロック本体（4つの文）の検証
 	body := (*ast.BlockStmt)(fnDecl.Body)
-	assert(body != nil && body.Statements.Len() == 2, testCount, "Parser: parse block body with 2 statements")
-
 	testCount = testCount + 1
-	stmt0 := (*ast.AssignStmt)(body.Statements.Get(0))
-	stmt1 := (*ast.ReturnStmt)(body.Statements.Get(1))
-	assert(stmt0.Kind == ast.KIND_ASSIGN_STMT && stmt1.Kind == ast.KIND_RETURN_STMT, testCount, "Parser: statement kinds match AssignStmt and ReturnStmt")
+	assert(body != nil && body.Statements.Len() == 4, testCount, "Parser: function body contains 4 statements")
 
-	fmt.PrintLn("=== Phase 2 Unit Tests Completed ===")
+	// テスト10: スライス代入文およびリターン文のノード種別検証
+	stmt0 := (*ast.AssignStmt)(body.Statements.Get(0))
+	stmt3 := (*ast.ReturnStmt)(body.Statements.Get(3))
+	testCount = testCount + 1
+	assert(stmt0.Kind == ast.KIND_ASSIGN_STMT && stmt3.Kind == ast.KIND_RETURN_STMT, testCount, "Parser: statement kinds match AssignStmt and ReturnStmt")
+
+	fmt.PrintLn("=== Slice Syntax Unit Tests Completed ===")
 	return testCount
 }

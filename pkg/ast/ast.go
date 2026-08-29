@@ -26,11 +26,14 @@ type TypeExpr interface {
 	Node
 	typeExprNode()
 }
+
 type ImportDecl struct {
-	Path string
+	Token token.Token
+	Path  string
 }
 
-func (i *ImportDecl) declNode() {}
+func (i *ImportDecl) declNode()            {}
+func (i *ImportDecl) TokenLiteral() string { return i.Token.Literal }
 
 type ConstDecl struct {
 	Token token.Token
@@ -38,11 +41,8 @@ type ConstDecl struct {
 	Value Expression
 }
 
-func (cd *ConstDecl) declNode() {}
-
-func (cd *ConstDecl) TokenLiteral() string {
-	return cd.Token.Literal
-}
+func (cd *ConstDecl) declNode()            {}
+func (cd *ConstDecl) TokenLiteral() string { return cd.Token.Literal }
 
 // Program 構造体に Imports を追加
 type Program struct {
@@ -63,6 +63,16 @@ type File struct {
 	Package  *Identifier
 	Imports  []*ImportDecl
 	Decls    []Decl
+}
+
+func (f *File) TokenLiteral() string {
+	if f.Package != nil {
+		return f.Package.TokenLiteral()
+	}
+	if len(f.Decls) > 0 {
+		return f.Decls[0].TokenLiteral()
+	}
+	return ""
 }
 
 // 識別子・リテラル
@@ -180,13 +190,29 @@ func (st *StructType) typeExprNode()        {}
 func (st *StructType) TokenLiteral() string { return st.Token.Literal }
 
 type FieldDecl struct {
-	Name *Identifier
-	Type TypeExpr
+	Token token.Token
+	Name  *Identifier
+	Type  TypeExpr
+}
+
+func (fd *FieldDecl) TokenLiteral() string {
+	if fd.Name != nil {
+		return fd.Name.TokenLiteral()
+	}
+	return fd.Token.Literal
 }
 
 type ParamDecl struct {
-	Name *Identifier
-	Type TypeExpr
+	Token token.Token
+	Name  *Identifier
+	Type  TypeExpr
+}
+
+func (pd *ParamDecl) TokenLiteral() string {
+	if pd.Name != nil {
+		return pd.Name.TokenLiteral()
+	}
+	return pd.Token.Literal
 }
 
 // 宣言 (Declarations)
@@ -230,12 +256,18 @@ func (es *ExprStmt) statementNode()       {}
 func (es *ExprStmt) TokenLiteral() string { return es.Token.Literal }
 
 type AssignStmt struct {
+	Token token.Token
 	Left  []Expression
 	Right []Expression
 }
 
-func (as *AssignStmt) statementNode()       {}
-func (as *AssignStmt) TokenLiteral() string { return "=" }
+func (as *AssignStmt) statementNode() {}
+func (as *AssignStmt) TokenLiteral() string {
+	if as.Token.Literal != "" {
+		return as.Token.Literal
+	}
+	return "="
+}
 
 type ReturnStmt struct {
 	Token  token.Token
@@ -291,3 +323,27 @@ type SwitchStmt struct {
 
 func (ss *SwitchStmt) statementNode()       {}
 func (ss *SwitchStmt) TokenLiteral() string { return ss.Token.Literal }
+
+// --- 型表現ノード ---
+
+// []T
+type SliceType struct {
+	Token token.Token // '['
+	Elem  TypeExpr
+}
+
+func (s *SliceType) typeExprNode()        {}
+func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
+
+// --- 式ノード ---
+
+// arr[low:high]
+type SliceExpr struct {
+	Token token.Token // '['
+	Left  Expression
+	Low   Expression // nil 許容 (例: arr[:high])
+	High  Expression // nil 許容 (例: arr[low:])
+}
+
+func (s *SliceExpr) expressionNode()      {}
+func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }

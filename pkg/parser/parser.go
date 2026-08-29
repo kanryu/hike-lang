@@ -610,14 +610,6 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	return &ast.CallExpr{Token: tok, Function: fn, Args: args}
 }
 
-func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
-	tok := p.curToken
-	p.nextToken()
-	idx := p.parseExpression(LOWEST)
-	p.expectPeek(token.RBRACKET)
-	return &ast.IndexExpr{Token: tok, Left: left, Index: idx}
-}
-
 func (p *Parser) parseMemberExpr(obj ast.Expression) *ast.MemberExpr {
 	tok := p.curToken
 	p.nextToken()
@@ -625,7 +617,17 @@ func (p *Parser) parseMemberExpr(obj ast.Expression) *ast.MemberExpr {
 	return &ast.MemberExpr{Token: tok, Object: obj, Field: field}
 }
 
+// parseTypeExpr 内の先頭に追加
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
+	// []T の判定
+	if p.curTokenIs(token.LBRACKET) {
+		tok := p.curToken
+		if p.expectPeek(token.RBRACKET) {
+			p.nextToken() // ']' を消費して要素型へ
+			elem := p.parseTypeExpr()
+			return &ast.SliceType{Token: tok, Elem: elem}
+		}
+	}
 	if p.curTokenIs(token.ASTERISK) {
 		tok := p.curToken
 		p.nextToken()
@@ -660,4 +662,40 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	}
 
 	return &ast.NamedType{Token: name.Token, Package: nil, Name: name}
+}
+
+// インデックス式またはスライス式のパース
+func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
+	tok := p.curToken // '['
+	p.nextToken()
+
+	// arr[:high] or arr[:]
+	if p.curTokenIs(token.COLON) {
+		p.nextToken()
+		var high ast.Expression = nil
+		if !p.curTokenIs(token.RBRACKET) {
+			high = p.parseExpression(LOWEST)
+			p.nextToken()
+		}
+		p.expectPeek(token.RBRACKET)
+		return &ast.SliceExpr{Token: tok, Left: left, Low: nil, High: high}
+	}
+
+	low := p.parseExpression(LOWEST)
+
+	// arr[low:high] or arr[low:]
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':'
+		p.nextToken()
+		var high ast.Expression = nil
+		if !p.curTokenIs(token.RBRACKET) {
+			high = p.parseExpression(LOWEST)
+			p.nextToken()
+		}
+		p.expectPeek(token.RBRACKET)
+		return &ast.SliceExpr{Token: tok, Left: left, Low: low, High: high}
+	}
+
+	p.expectPeek(token.RBRACKET)
+	return &ast.IndexExpr{Token: tok, Left: left, Index: low}
 }

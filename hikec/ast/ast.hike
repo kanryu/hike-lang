@@ -5,7 +5,6 @@ import "std/container"
 func malloc(size int) *byte
 func free(ptr *byte)
 
-// ノード種別定数 (Kind)
 const KIND_PROGRAM = 1
 const KIND_IMPORT = 2
 const KIND_FUNC_DECL = 3
@@ -27,11 +26,12 @@ const KIND_PREFIX_EXPR = 25
 const KIND_CALL_EXPR = 26
 const KIND_INDEX_EXPR = 27
 const KIND_MEMBER_EXPR = 28
+const KIND_SLICE_EXPR = 29
 
 const KIND_NAMED_TYPE = 40
 const KIND_POINTER_TYPE = 41
+const KIND_SLICE_TYPE = 42
 
-// 識別子
 type Identifier struct {
 	Kind  int
 	Value *byte
@@ -44,7 +44,6 @@ func NewIdentifier(val *byte) *Identifier {
 	return id
 }
 
-// 整数リテラル
 type IntegerLiteral struct {
 	Kind  int
 	Value int
@@ -57,7 +56,6 @@ func NewIntegerLiteral(val int) *IntegerLiteral {
 	return lit
 }
 
-// 文字列リテラル
 type StringLiteral struct {
 	Kind  int
 	Value *byte
@@ -70,7 +68,6 @@ func NewStringLiteral(val *byte) *StringLiteral {
 	return lit
 }
 
-// 型表現
 type NamedType struct {
 	Kind    int
 	Package *byte
@@ -97,7 +94,18 @@ func NewPointerType(base *byte) *PointerType {
 	return pt
 }
 
-// 二項演算式
+type SliceType struct {
+	Kind int
+	Elem *byte
+}
+
+func NewSliceType(elem *byte) *SliceType {
+	st := (*SliceType)(malloc(16))
+	st.Kind = KIND_SLICE_TYPE
+	st.Elem = elem
+	return st
+}
+
 type BinaryExpr struct {
 	Kind     int
 	Left     *byte
@@ -114,7 +122,36 @@ func NewBinaryExpr(left *byte, op *byte, right *byte) *BinaryExpr {
 	return be
 }
 
-// 関数呼び出し式
+type IndexExpr struct {
+	Kind  int
+	Left  *byte
+	Index *byte
+}
+
+func NewIndexExpr(left *byte, idx *byte) *IndexExpr {
+	ie := (*IndexExpr)(malloc(24))
+	ie.Kind = KIND_INDEX_EXPR
+	ie.Left = left
+	ie.Index = idx
+	return ie
+}
+
+type SliceExpr struct {
+	Kind int
+	Left *byte
+	Low  *byte
+	High *byte
+}
+
+func NewSliceExpr(left *byte, low *byte, high *byte) *SliceExpr {
+	se := (*SliceExpr)(malloc(32))
+	se.Kind = KIND_SLICE_EXPR
+	se.Left = left
+	se.Low = low
+	se.High = high
+	return se
+}
+
 type CallExpr struct {
 	Kind     int
 	Function *byte
@@ -129,7 +166,6 @@ func NewCallExpr(fn *byte) *CallExpr {
 	return ce
 }
 
-// パラメータ宣言
 type ParamDecl struct {
 	Name *byte
 	Type *byte
@@ -142,7 +178,6 @@ func NewParamDecl(name *byte, t *byte) *ParamDecl {
 	return pd
 }
 
-// 関数宣言
 type FuncDecl struct {
 	Kind        int
 	Receiver    *ParamDecl
@@ -163,7 +198,6 @@ func NewFuncDecl(name *byte) *FuncDecl {
 	return fd
 }
 
-// ブロック文
 type BlockStmt struct {
 	Kind       int
 	Statements *container.Vector
@@ -176,7 +210,6 @@ func NewBlockStmt() *BlockStmt {
 	return bs
 }
 
-// 代入文
 type AssignStmt struct {
 	Kind  int
 	Left  *container.Vector
@@ -191,7 +224,6 @@ func NewAssignStmt() *AssignStmt {
 	return as
 }
 
-// return 文
 type ReturnStmt struct {
 	Kind   int
 	Values *container.Vector
@@ -204,7 +236,6 @@ func NewReturnStmt() *ReturnStmt {
 	return rs
 }
 
-// プログラムルートノード
 type Program struct {
 	Kind    int
 	Package *byte
