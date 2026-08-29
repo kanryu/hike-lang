@@ -13,12 +13,10 @@ const (
 	ILLEGAL = "ILLEGAL"
 	EOF     = "EOF"
 
-	// 識別子・リテラル
 	IDENT  = "IDENT"
 	INT    = "INT"
 	STRING = "STRING"
 
-	// 算術・論理・比較演算子
 	ASSIGN    = "="
 	PLUS      = "+"
 	MINUS     = "-"
@@ -35,13 +33,11 @@ const (
 	LOR       = "||"
 	AMPERSAND = "&"
 
-	// ビット演算子
 	OR    = "|"
 	CARET = "^"
 	SHL   = "<<"
 	SHR   = ">>"
 
-	// 複合代入 / インクリメント / デクリメント
 	INC             = "++"
 	DEC             = "--"
 	PLUS_ASSIGN     = "+="
@@ -54,7 +50,6 @@ const (
 	SHL_ASSIGN      = "<<="
 	SHR_ASSIGN      = ">>="
 
-	// 区切り文字
 	COMMA     = ","
 	SEMICOLON = ";"
 	COLON     = ":"
@@ -69,48 +64,51 @@ const (
 	LBRACKET = "["
 	RBRACKET = "]"
 
-	// キーワード
-	PACKAGE  = "PACKAGE"
-	IMPORT   = "IMPORT"
-	FUNC     = "FUNC"
-	RETURN   = "RETURN"
-	TYPE     = "TYPE"
-	STRUCT   = "STRUCT"
-	CONST    = "CONST"
-	IOTA     = "IOTA"
-	RANGE    = "RANGE"
-	BREAK    = "BREAK"
-	CONTINUE = "CONTINUE"
-	IF       = "IF"
-	ELSE     = "ELSE"
-	FOR      = "FOR"
-	SWITCH   = "SWITCH"
-	CASE     = "CASE"
-	DEFAULT  = "DEFAULT"
-	DEFER    = "DEFER"
-	NIL      = "NIL"
+	PACKAGE   = "PACKAGE"
+	IMPORT    = "IMPORT"
+	FUNC      = "FUNC"
+	RETURN    = "RETURN"
+	TYPE      = "TYPE"
+	STRUCT    = "STRUCT"
+	INTERFACE = "INTERFACE"
+	CONST     = "CONST"
+	IOTA      = "IOTA"
+	RANGE     = "RANGE"
+	BREAK     = "BREAK"
+	CONTINUE  = "CONTINUE"
+	IF        = "IF"
+	ELSE      = "ELSE"
+	FOR       = "FOR"
+	SWITCH    = "SWITCH"
+	CASE      = "CASE"
+	DEFAULT   = "DEFAULT"
+	DEFER     = "DEFER"
+	NIL       = "NIL"
+	VAR       = "VAR" // 追加
 )
 
 var keywords = map[string]TokenType{
-	"package":  PACKAGE,
-	"import":   IMPORT,
-	"func":     FUNC,
-	"return":   RETURN,
-	"type":     TYPE,
-	"struct":   STRUCT,
-	"const":    CONST,
-	"iota":     IOTA,
-	"range":    RANGE,
-	"break":    BREAK,
-	"continue": CONTINUE,
-	"if":       IF,
-	"else":     ELSE,
-	"for":      FOR,
-	"switch":   SWITCH,
-	"case":     CASE,
-	"default":  DEFAULT,
-	"defer":    DEFER,
-	"nil":      NIL,
+	"package":   PACKAGE,
+	"import":    IMPORT,
+	"func":      FUNC,
+	"return":    RETURN,
+	"type":      TYPE,
+	"struct":    STRUCT,
+	"interface": INTERFACE,
+	"const":     CONST,
+	"iota":      IOTA,
+	"range":     RANGE,
+	"break":     BREAK,
+	"continue":  CONTINUE,
+	"if":        IF,
+	"else":      ELSE,
+	"for":       FOR,
+	"switch":    SWITCH,
+	"case":      CASE,
+	"default":   DEFAULT,
+	"defer":     DEFER,
+	"nil":       NIL,
+	"var":       VAR, // 追加
 }
 
 func LookupIdent(ident string) TokenType {

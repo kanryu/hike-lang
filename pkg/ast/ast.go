@@ -253,6 +253,7 @@ type AssignStmt struct {
 	Token token.Token
 	Left  []Expression
 	Right []Expression
+	Type  TypeExpr // var x any = 42 などの型指定
 }
 
 func (as *AssignStmt) statementNode() {}
@@ -396,3 +397,41 @@ type StructLiteral struct {
 
 func (sl *StructLiteral) expressionNode()      {}
 func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+type ArrayType struct {
+	Token token.Token
+	Len   int64
+	Elem  TypeExpr
+}
+
+func (at *ArrayType) typeExprNode()        {}
+func (at *ArrayType) expressionNode()      {}
+func (at *ArrayType) TokenLiteral() string { return at.Token.Literal }
+
+type ArrayLiteral struct {
+	Token    token.Token
+	Type     *ArrayType
+	Elements []Expression
+}
+
+func (al *ArrayLiteral) expressionNode()      {}
+func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
+
+type InterfaceType struct {
+	Token   token.Token
+	Methods []*FieldDecl
+}
+
+func (it *InterfaceType) typeExprNode()        {}
+func (it *InterfaceType) expressionNode()      {}
+func (it *InterfaceType) TokenLiteral() string { return it.Token.Literal }
+
+// 型アサーション: x.(TargetType)
+type TypeAssertExpr struct {
+	Token  token.Token
+	Expr   Expression
+	Target TypeExpr
+}
+
+func (tae *TypeAssertExpr) expressionNode()      {}
+func (tae *TypeAssertExpr) TokenLiteral() string { return tae.Token.Literal }

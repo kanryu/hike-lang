@@ -177,6 +177,7 @@ func (p *Parser) parseImportDecl() []*ast.ImportDecl {
 	return imports
 }
 
+// 1. parseTypeDecl の更新
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	stmt := &ast.TypeDecl{Token: p.curToken}
 	p.nextToken()
@@ -196,6 +197,13 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 			p.expectPeek(token.RBRACE)
 		}
 		stmt.Type = st
+	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface") {
+		it := &ast.InterfaceType{Token: p.curToken, Methods: []*ast.FieldDecl{}}
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+			p.expectPeek(token.RBRACE)
+		}
+		stmt.Type = it
 	} else {
 		stmt.Type = p.parseTypeExpr()
 	}
@@ -360,9 +368,16 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	return fn
 }
 
+// 2. parseTypeExpr の更新
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	if p.curTokenIs(token.IDENT) {
 		ident := p.parseIdentifier()
+		if ident.Value == "interface" && p.peekTokenIs(token.LBRACE) {
+			tok := p.curToken
+			p.nextToken()
+			p.expectPeek(token.RBRACE)
+			return &ast.InterfaceType{Token: tok}
+		}
 		if p.peekTokenIs(token.DOT) {
 			p.nextToken()
 			p.nextToken()
@@ -377,7 +392,14 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		return &ast.PointerType{Token: tok, Base: base}
 	} else if p.curTokenIs(token.LBRACKET) {
 		tok := p.curToken
-		if p.expectPeek(token.RBRACKET) {
+		if p.peekTokenIs(token.INT) {
+			p.nextToken()
+			arrLen, _ := strconv.ParseInt(p.curToken.Literal, 0, 64)
+			p.expectPeek(token.RBRACKET)
+			p.nextToken()
+			elem := p.parseTypeExpr()
+			return &ast.ArrayType{Token: tok, Len: arrLen, Elem: elem}
+		} else if p.expectPeek(token.RBRACKET) {
 			p.nextToken()
 			elem := p.parseTypeExpr()
 			return &ast.SliceType{Token: tok, Elem: elem}
@@ -386,8 +408,11 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
 
+// parseStatement に token.VAR を追加
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.curToken.Type {
+	case token.VAR:
+		return p.parseVarStmt()
 	case token.IF:
 		return p.parseIfStmt()
 	case token.FOR:
@@ -406,6 +431,40 @@ func (p *Parser) parseStatement() ast.Statement {
 		return stmt
 	default:
 		return p.parseAssignOrExprStmt()
+	}
+}
+
+// var x Type = expr または var x = expr の解析
+func (p *Parser) parseVarStmt() ast.Statement {
+	varTok := p.curToken
+	p.nextToken() // 変数名へ
+	ident := p.parseIdentifier()
+	p.nextToken()
+
+	var typeExpr ast.TypeExpr = nil
+	if !p.curTokenIs(token.ASSIGN) && !p.curTokenIs(token.SEMICOLON) && !p.curTokenIs(token.EOF) {
+		typeExpr = p.parseTypeExpr()
+		if p.peekTokenIs(token.ASSIGN) {
+			p.nextToken()
+		}
+	}
+
+	if p.curTokenIs(token.ASSIGN) {
+		p.nextToken()
+		rhs := p.parseExpression(LOWEST)
+		return &ast.AssignStmt{
+			Token: varTok,
+			Left:  []ast.Expression{ident},
+			Right: []ast.Expression{rhs},
+			Type:  typeExpr,
+		}
+	}
+
+	return &ast.AssignStmt{
+		Token: varTok,
+		Left:  []ast.Expression{ident},
+		Right: []ast.Expression{&ast.IntegerLiteral{Token: varTok, Value: 0}},
+		Type:  typeExpr,
 	}
 }
 
@@ -783,9 +842,41 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	// parseExpression 内の単項/二項ビット演算子の追加
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
+
 	case token.LBRACKET:
 		tok := p.curToken
-		if p.expectPeek(token.RBRACKET) {
+		if p.peekTokenIs(token.INT) {
+			p.nextToken()
+			arrLen, _ := strconv.ParseInt(p.curToken.Literal, 0, 64)
+			p.expectPeek(token.RBRACKET)
+			p.nextToken()
+			elem := p.parseTypeExpr()
+			arrT := &ast.ArrayType{Token: tok, Len: arrLen, Elem: elem}
+
+			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+				p.nextToken()
+				elements := []ast.Expression{}
+				if !p.peekTokenIs(token.RBRACE) {
+					p.nextToken()
+					for {
+						elements = append(elements, p.parseExpression(LOWEST))
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RBRACE) {
+								break
+							}
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.RBRACE)
+				leftExp = &ast.ArrayLiteral{Token: tok, Type: arrT, Elements: elements}
+			} else {
+				leftExp = arrT
+			}
+		} else if p.expectPeek(token.RBRACKET) {
 			p.nextToken()
 			elem := p.parseTypeExpr()
 			sliceT := &ast.SliceType{Token: tok, Elem: elem}
@@ -815,6 +906,19 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			}
 		} else {
 			return nil
+		}
+
+	// 二項演算子ループ内の case token.DOT (型アサーション x.(Type))
+	case token.DOT:
+		p.nextToken()
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken() // '('
+			p.nextToken() // Type
+			targetType := p.parseTypeExpr()
+			p.expectPeek(token.RPAREN)
+			leftExp = &ast.TypeAssertExpr{Token: p.curToken, Expr: leftExp, Target: targetType}
+		} else {
+			leftExp = p.parseMemberExpr(leftExp)
 		}
 	case token.LPAREN:
 		p.nextToken()
@@ -947,8 +1051,16 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	return &ast.IndexExpr{Token: tok, Left: left, Index: idx}
 }
 
+// parseMemberExpr: .field と .(TargetType) の両方を正確に分岐
 func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
-	tok := p.curToken
+	tok := p.curToken // '.'
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // '('
+		p.nextToken() // 型名
+		targetType := p.parseTypeExpr()
+		p.expectPeek(token.RPAREN)
+		return &ast.TypeAssertExpr{Token: tok, Expr: obj, Target: targetType}
+	}
 	p.nextToken()
 	field := p.parseIdentifier()
 	return &ast.MemberExpr{Token: tok, Object: obj, Field: field}
