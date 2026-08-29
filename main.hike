@@ -18,95 +18,60 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// 1. 基礎構造体 Engine
-type Engine struct {
-	Power int
-	Fuel  int
+type Rect struct {
+	Width  int
+	Height int
 }
 
-func (e *Engine) Start() int {
-	return e.Power + 10
-}
-
-func (e *Engine) AddFuel(amount int) int {
-	e.Fuel += amount
-	return e.Fuel
-}
-
-// 2. 埋め込み構造体 Car
-type Car struct {
-	Engine // 無名埋め込み
-	Doors  int
-}
-
-// Car 独自のメソッド
-func (c *Car) GetDoors() int {
-	return c.Doors
-}
-
-// 3. インターフェース Starter (Engine.Start を昇格して満たす)
-type Starter interface {
-	Start() int
-}
-
-func testStarter(s Starter) int {
-	return s.Start()
+func inspectType(val any) int {
+	switch v := val.(type) {
+	case int:
+		return v * 2
+	case string:
+		return 100
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	case *Rect:
+		return v.Width * v.Height
+	default:
+		return -1
+	}
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Struct Embedding & Promotion Tests ===")
+	fmt.PrintLn("=== Running Type Switch Tests ===")
 	testCount := 0
 
-	car := Car{
-		Engine: Engine{Power: 200, Fuel: 50},
-		Doors:  4,
-	}
-
-	// ==========================================
-	// 1. フィールドの自動昇格（読み取り）
-	// ==========================================
-	p := car.Power // car.Engine.Power から昇格
+	// 1. int 型のマッチングと演算 (v * 2)
+	res1 := inspectType(21)
 	testCount++
-	assert(p == 200, testCount, "Field Promotion Read: car.Power == 200")
+	assert(res1 == 42, testCount, "Type Switch: case int evaluates (21 * 2 == 42)")
 
-	// 明示的アクセスとの一致
+	// 2. string 型のマッチング
+	res2 := inspectType("hello")
 	testCount++
-	assert(car.Engine.Fuel == 50 && car.Fuel == 50, testCount, "Explicit and Promoted Field Match: 50")
+	assert(res2 == 100, testCount, "Type Switch: case string evaluates == 100")
 
-	// ==========================================
-	// 2. フィールドの自動昇格（書き換え）
-	// ==========================================
-	car.Power = 350
+	// 3. bool 型のマッチング
+	res3 := inspectType(true)
 	testCount++
-	assert(car.Power == 350 && car.Engine.Power == 350, testCount, "Field Promotion Mutate: car.Power = 350")
+	assert(res3 == 1, testCount, "Type Switch: case bool evaluates == 1")
 
-	car.Fuel += 25
+	// 4. *Rect 構造体ポインタのマッチングとフィールドアクセス
+	r := Rect{Width: 10, Height: 5}
+	res4 := inspectType(&r)
 	testCount++
-	assert(car.Fuel == 75 && car.Engine.Fuel == 75, testCount, "Field Promotion Compound: car.Fuel += 25 (75)")
+	assert(res4 == 50, testCount, "Type Switch: case *Rect evaluates (10 * 5 == 50)")
 
-	// ==========================================
-	// 3. メソッドの自動昇格（呼び出しとミューテーション）
-	// ==========================================
-	startRes := car.Start() // car.Engine.Start() へ自動中継
+	// 5. default 節へのフォールバック
+	dummyArr := [2]int{1, 2}
+	res5 := inspectType(dummyArr)
 	testCount++
-	assert(startRes == 360, testCount, "Method Promotion: car.Start() == 360")
+	assert(res5 == -1, testCount, "Type Switch: default fallback evaluates == -1")
 
-	fuelRes := car.AddFuel(15) // car.Engine.AddFuel(15)
-	testCount++
-	assert(fuelRes == 90 && car.Fuel == 90, testCount, "Method Promotion Mutates State: car.AddFuel(15) == 90")
-
-	doors := car.GetDoors()
-	testCount++
-	assert(doors == 4, testCount, "Direct Method: car.GetDoors() == 4")
-
-	// ==========================================
-	// 4. メソッド昇格によるインターフェース適合
-	// ==========================================
-	var s Starter = &car
-	polyRes := testStarter(s)
-	testCount++
-	assert(polyRes == 360, testCount, "Interface Dispatch with Promoted Method: testStarter(&car) == 360")
-
-	fmt.PrintLn("=== All Struct Embedding Tests Passed ===")
+	fmt.PrintLn("=== All Type Switch Tests Passed ===")
 	return testCount
 }

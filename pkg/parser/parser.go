@@ -430,7 +430,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	fn.ReturnTypes = []ast.TypeExpr{}
 	if !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken() // '('
+			p.nextToken()
 			p.nextToken()
 			for {
 				fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
@@ -467,6 +467,9 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
 			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 				p.nextToken()
+				if p.curTokenIs(token.SEMICOLON) {
+					continue
+				}
 				methodName := p.parseIdentifier()
 				p.expectPeek(token.LPAREN)
 				paramTypes := []ast.TypeExpr{}
@@ -814,8 +817,8 @@ func (p *Parser) parseForStmt() ast.Statement {
 	return &ast.ForStmt{Token: forTok, Cond: cond, Body: body}
 }
 
-func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
-	stmt := &ast.SwitchStmt{Token: p.curToken, Cases: []*ast.CaseClause{}}
+func (p *Parser) parseSwitchStmt() ast.Statement {
+	switchTok := p.curToken
 	p.nextToken()
 
 	oldAllow := p.allowStructLit
@@ -823,17 +826,88 @@ func (p *Parser) parseSwitchStmt() *ast.SwitchStmt {
 
 	firstStmt := p.parseAssignOrExprStmt()
 
+	var initStmt ast.Statement = nil
+	var switchGuard ast.Statement = firstStmt
+
 	if p.peekTokenIs(token.SEMICOLON) {
-		stmt.Init = firstStmt
+		initStmt = firstStmt
+		p.nextToken() // ';'
 		p.nextToken()
-		p.nextToken()
-		stmt.Value = p.parseExpression(LOWEST)
-	} else {
-		if exprStmt, ok := firstStmt.(*ast.ExprStmt); ok {
-			stmt.Value = exprStmt.Expr
-		}
+		switchGuard = p.parseAssignOrExprStmt()
 	}
 	p.allowStructLit = oldAllow
+
+	var typeSwitchVar *ast.Identifier = nil
+	var typeSwitchExpr ast.Expression = nil
+	isTypeSwitch := false
+
+	if assignStmt, ok := switchGuard.(*ast.AssignStmt); ok {
+		if len(assignStmt.Left) == 1 && len(assignStmt.Right) == 1 {
+			if typeAssert, ok := assignStmt.Right[0].(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
+				if ident, ok := assignStmt.Left[0].(*ast.Identifier); ok {
+					isTypeSwitch = true
+					typeSwitchVar = ident
+					typeSwitchExpr = typeAssert.Expr
+				}
+			}
+		}
+	} else if exprStmt, ok := switchGuard.(*ast.ExprStmt); ok {
+		if typeAssert, ok := exprStmt.Expr.(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
+			isTypeSwitch = true
+			typeSwitchExpr = typeAssert.Expr
+		}
+	}
+
+	if isTypeSwitch {
+		stmt := &ast.TypeSwitchStmt{
+			Token:    switchTok,
+			Init:     initStmt,
+			Variable: typeSwitchVar,
+			Expr:     typeSwitchExpr,
+			Cases:    []*ast.TypeCaseClause{},
+		}
+
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+
+		p.nextToken()
+		for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+			if p.curTokenIs(token.CASE) || p.curTokenIs(token.DEFAULT) {
+				c := &ast.TypeCaseClause{Token: p.curToken, Types: []ast.TypeExpr{}, Body: []ast.Statement{}}
+				if p.curTokenIs(token.CASE) {
+					p.nextToken()
+					for {
+						c.Types = append(c.Types, p.parseTypeExpr())
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.COLON)
+				p.nextToken()
+				for !p.curTokenIs(token.CASE) && !p.curTokenIs(token.DEFAULT) && !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+					s := p.parseStatement()
+					if s != nil {
+						c.Body = append(c.Body, s)
+					}
+					p.nextToken()
+				}
+				stmt.Cases = append(stmt.Cases, c)
+			} else {
+				p.nextToken()
+			}
+		}
+		return stmt
+	}
+
+	stmt := &ast.SwitchStmt{Token: switchTok, Init: initStmt, Cases: []*ast.CaseClause{}}
+	if exprStmt, ok := switchGuard.(*ast.ExprStmt); ok {
+		stmt.Value = exprStmt.Expr
+	}
 
 	if !p.expectPeek(token.LBRACE) {
 		return nil
@@ -1136,7 +1210,6 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		p.nextToken()
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken()
-			p.nextToken()
 			targetType := p.parseTypeExpr()
 			p.expectPeek(token.RPAREN)
 			leftExp = &ast.TypeAssertExpr{Token: p.curToken, Expr: leftExp, Target: targetType}
@@ -1278,6 +1351,11 @@ func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
 	tok := p.curToken // '.'
 	if p.peekTokenIs(token.LPAREN) {
 		p.nextToken() // '('
+		if p.peekTokenIs(token.TYPE) {
+			p.nextToken() // 'type'
+			p.expectPeek(token.RPAREN)
+			return &ast.TypeAssertExpr{Token: tok, Expr: obj, Target: nil}
+		}
 		p.nextToken() // 型名
 		targetType := p.parseTypeExpr()
 		p.expectPeek(token.RPAREN)

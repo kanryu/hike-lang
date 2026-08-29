@@ -481,3 +481,23 @@ type FuncLit struct {
 
 func (fl *FuncLit) expressionNode()      {}
 func (fl *FuncLit) TokenLiteral() string { return fl.Token.Literal }
+
+type TypeCaseClause struct {
+	Token token.Token
+	Types []TypeExpr
+	Body  []Statement
+}
+
+func (tcc *TypeCaseClause) statementNode()       {}
+func (tcc *TypeCaseClause) TokenLiteral() string { return tcc.Token.Literal }
+
+type TypeSwitchStmt struct {
+	Token    token.Token
+	Init     Statement
+	Variable *Identifier
+	Expr     Expression
+	Cases    []*TypeCaseClause
+}
+
+func (tss *TypeSwitchStmt) statementNode()       {}
+func (tss *TypeSwitchStmt) TokenLiteral() string { return tss.Token.Literal }

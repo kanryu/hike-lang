@@ -271,7 +271,6 @@ func (g *CodeGenerator) resolveFieldPath(st *sema.StructType, structName string,
 		return "", nil, "", false
 	}
 
-	// 1. 直接のフィールドを検索
 	for i, f := range st.Fields {
 		if f.Name == fieldName {
 			gepReg := g.nextReg()
@@ -281,7 +280,6 @@ func (g *CodeGenerator) resolveFieldPath(st *sema.StructType, structName string,
 		}
 	}
 
-	// 2. 埋め込みフィールドを再帰探索（昇格）
 	for i, f := range st.Fields {
 		if f.IsEmbedded {
 			embTypeName := strings.TrimPrefix(f.Type.TypeName(), "*")
@@ -314,13 +312,11 @@ func (g *CodeGenerator) resolveMethodPath(st *sema.StructType, structName string
 		return "", nil, "", false
 	}
 
-	// 1. 直接のメソッドを検索
 	directName := structName + "_" + methodName
 	if fn := g.lookupFunction(directName); fn != nil {
 		return directName, fn, curPtrReg, true
 	}
 
-	// 2. 埋め込みフィールドを再帰探索（昇格）
 	for i, f := range st.Fields {
 		if f.IsEmbedded {
 			embTypeName := strings.TrimPrefix(f.Type.TypeName(), "*")
@@ -888,6 +884,19 @@ func (g *CodeGenerator) scanCaptures(fl *ast.FuncLit) []string {
 					walkStmt(bs)
 				}
 			}
+		case *ast.TypeSwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Expr)
+			if st.Variable != nil {
+				locals[st.Variable.Value] = true
+			}
+			for _, cc := range st.Cases {
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
 		}
 	}
 
@@ -1196,6 +1205,8 @@ func (g *CodeGenerator) emitStatement(b *strings.Builder, s ast.Statement, curre
 		g.emitForRangeStmt(b, s, currentFn)
 	case *ast.SwitchStmt:
 		g.emitSwitchStmt(b, s, currentFn)
+	case *ast.TypeSwitchStmt:
+		g.emitTypeSwitchStmt(b, s, currentFn)
 	case *ast.ReturnStmt:
 		g.emitReturnStmt(b, s, currentFn)
 	case *ast.DeferStmt:
@@ -1825,6 +1836,155 @@ func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, cu
 		for _, stmt := range defaultCase.Body {
 			g.emitStatement(b, stmt, currentFn)
 		}
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+	} else {
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+	}
+
+	b.WriteString(fmt.Sprintf("%s:\n", endLabel))
+}
+
+func (g *CodeGenerator) emitTypeSwitchStmt(b *strings.Builder, s *ast.TypeSwitchStmt, currentFn string) {
+	if s.Init != nil {
+		g.emitStatement(b, s.Init, currentFn)
+	}
+
+	exprReg, exprType := g.resolveValue(b, s.Expr)
+	endLabel := g.nextLabel("typeswitch.end")
+
+	g.loopStack = append(g.loopStack, loopContext{breakLabel: endLabel, continueLabel: endLabel})
+	defer func() {
+		g.loopStack = g.loopStack[:len(g.loopStack)-1]
+	}()
+
+	dataPtrReg := g.nextReg()
+	actualTypeIDReg := g.nextReg()
+
+	if it, ok := exprType.(*sema.InterfaceType); ok && !it.IsAny() {
+		itabRawReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 0\n", dataPtrReg, exprReg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 1\n", itabRawReg, exprReg))
+		typeIDPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i64*\n", typeIDPtr, itabRawReg))
+		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", actualTypeIDReg, typeIDPtr))
+	} else {
+		b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i64 } %s, 0\n", dataPtrReg, exprReg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i64 } %s, 1\n", actualTypeIDReg, exprReg))
+	}
+
+	var defaultCase *ast.TypeCaseClause = nil
+
+	for i, c := range s.Cases {
+		if len(c.Types) == 0 {
+			defaultCase = c
+			continue
+		}
+
+		caseBodyLabel := g.nextLabel(fmt.Sprintf("typeswitch.case%d.body", i))
+		nextCaseLabel := g.nextLabel(fmt.Sprintf("typeswitch.case%d.next", i))
+
+		var matchedCondReg string = ""
+		for _, tExpr := range c.Types {
+			targetType := g.semaCtx.ResolveType(tExpr)
+			targetTypeID := g.semaCtx.GetTypeID(targetType)
+
+			cmpReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp eq i64 %s, %d\n", cmpReg, actualTypeIDReg, targetTypeID))
+
+			if matchedCondReg == "" {
+				matchedCondReg = cmpReg
+			} else {
+				orReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = or i1 %s, %s\n", orReg, matchedCondReg, cmpReg))
+				matchedCondReg = orReg
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", matchedCondReg, caseBodyLabel, nextCaseLabel))
+
+		b.WriteString(fmt.Sprintf("%s:\n", caseBodyLabel))
+
+		var oldSym Symbol
+		var hadOld bool = false
+		if s.Variable != nil {
+			oldSym, hadOld = g.symbols[s.Variable.Value]
+			if len(c.Types) == 1 {
+				targetType := g.semaCtx.ResolveType(c.Types[0])
+				var valToStore string
+				if strings.HasSuffix(targetType.LLVMType(), "*") {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", castReg, dataPtrReg, targetType.LLVMType()))
+					valToStore = castReg
+				} else if targetType.LLVMType() == "i64" {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", castReg, dataPtrReg))
+					valToStore = castReg
+				} else if targetType.LLVMType() == "i1" {
+					pInt := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", pInt, dataPtrReg))
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", castReg, pInt))
+					valToStore = castReg
+				} else {
+					castPtr := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", castPtr, dataPtrReg, targetType.LLVMType()))
+					loadReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, targetType.LLVMType(), targetType.LLVMType(), castPtr))
+					valToStore = loadReg
+				}
+
+				vAlloca := g.nextReg()
+				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", vAlloca, targetType.LLVMType()))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", targetType.LLVMType(), valToStore, targetType.LLVMType(), vAlloca))
+				g.symbols[s.Variable.Value] = Symbol{Name: s.Variable.Value, LLVMName: vAlloca, Type: targetType}
+			} else {
+				vAlloca := g.nextReg()
+				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", vAlloca, exprType.LLVMType()))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", exprType.LLVMType(), exprReg, exprType.LLVMType(), vAlloca))
+				g.symbols[s.Variable.Value] = Symbol{Name: s.Variable.Value, LLVMName: vAlloca, Type: exprType}
+			}
+		}
+
+		for _, stmt := range c.Body {
+			g.emitStatement(b, stmt, currentFn)
+		}
+
+		if s.Variable != nil {
+			if hadOld {
+				g.symbols[s.Variable.Value] = oldSym
+			} else {
+				delete(g.symbols, s.Variable.Value)
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+
+		b.WriteString(fmt.Sprintf("%s:\n", nextCaseLabel))
+	}
+
+	if defaultCase != nil {
+		var oldSym Symbol
+		var hadOld bool = false
+		if s.Variable != nil {
+			oldSym, hadOld = g.symbols[s.Variable.Value]
+			vAlloca := g.nextReg()
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", vAlloca, exprType.LLVMType()))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", exprType.LLVMType(), exprReg, exprType.LLVMType(), vAlloca))
+			g.symbols[s.Variable.Value] = Symbol{Name: s.Variable.Value, LLVMName: vAlloca, Type: exprType}
+		}
+
+		for _, stmt := range defaultCase.Body {
+			g.emitStatement(b, stmt, currentFn)
+		}
+
+		if s.Variable != nil {
+			if hadOld {
+				g.symbols[s.Variable.Value] = oldSym
+			} else {
+				delete(g.symbols, s.Variable.Value)
+			}
+		}
+
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
 	} else {
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
@@ -2481,13 +2641,13 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 		opInst = "sdiv"
 	case "&":
 		opInst = "and"
-	case "|":
+	case "|=":
 		opInst = "or"
-	case "^":
+	case "^=":
 		opInst = "xor"
-	case "<<":
+	case "<<=":
 		opInst = "shl"
-	case ">>":
+	case ">>=":
 		opInst = "ashr"
 	case "==":
 		opInst = "icmp eq"
