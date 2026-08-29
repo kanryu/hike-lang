@@ -25,6 +25,7 @@ type loopContext struct {
 	continueLabel string
 }
 
+// 1. 構造体定義
 type CodeGenerator struct {
 	prog           *ast.Program
 	semaCtx        *sema.Context
@@ -33,8 +34,8 @@ type CodeGenerator struct {
 	labelCount     int
 	stringLiterals []StringConst
 	symbols        map[string]Symbol
-	deferStack     []string
-	loopStack      []loopContext // 追加: ループ制御スタック
+	deferStack     []*ast.CallExpr // 修正: *ast.CallExpr のスライス
+	loopStack      []loopContext
 	entryAllocas   *strings.Builder
 	emittedFuncs   map[string]bool
 	verbose        bool
@@ -47,6 +48,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
 		symbols:        make(map[string]Symbol),
 		stringLiterals: []StringConst{},
 		loopStack:      []loopContext{},
+		deferStack:     []*ast.CallExpr{}, // 初期化
 		emittedFuncs:   make(map[string]bool),
 		verbose:        false,
 	}
@@ -164,6 +166,12 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("declare i32 @memcmp(i8*, i8*, i64)\n")
 	g.output.WriteString("declare i64 @printf(i8*, ...)\n") // 追加
 
+	// 1. emitPrologue にグローバル変数定義を追加
+	for name, gType := range g.semaCtx.Globals {
+		g.output.WriteString(fmt.Sprintf("@%s = global %s 0, align 8\n", name, gType.LLVMType()))
+	}
+	g.output.WriteString("\n")
+
 	for _, fn := range g.semaCtx.Functions {
 		if fn.IsExtern {
 			if fn.Name == "malloc" || fn.Name == "free" || fn.Name == "calloc" || fn.Name == "strcmp" || fn.Name == "strlen" || fn.Name == "memcpy" || fn.Name == "memcmp" || fn.Name == "printf" {
@@ -262,6 +270,11 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	}
 
 	g.symbols = make(map[string]Symbol)
+	oldDeferStack := g.deferStack
+	g.deferStack = []*ast.CallExpr{}
+	defer func() {
+		g.deferStack = oldDeferStack
+	}()
 
 	funcMangledName := fn.Name.Value
 	var recvType sema.Type = nil
@@ -367,6 +380,11 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		g.emitStatement(&bodyBuilder, s, funcMangledName)
 	}
 
+	// 末尾到達時のフォールバック (明示的な return がない場合)
+	for i := len(g.deferStack) - 1; i >= 0; i-- {
+		g.emitCallExpr(&bodyBuilder, g.deferStack[i])
+	}
+
 	if retType == "void" {
 		bodyBuilder.WriteString("  ret void\n")
 	} else if retType == "i32" {
@@ -398,12 +416,7 @@ func (g *CodeGenerator) emitStatement(b *strings.Builder, stmt ast.Statement, cu
 		}
 	case *ast.DeferStmt:
 		if s.Call != nil {
-			if memExpr, ok := s.Call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "FreeAll" {
-				if objIdent, ok := memExpr.Object.(*ast.Identifier); ok {
-					cleanCode := fmt.Sprintf("call void @hike_arena_free(%%struct.Arena* %%%s)", objIdent.Value)
-					g.deferStack = append([]string{cleanCode}, g.deferStack...)
-				}
-			}
+			g.deferStack = append(g.deferStack, s.Call)
 		}
 	case *ast.AssignStmt:
 		g.emitAssignStmt(b, s)
@@ -903,8 +916,53 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
+		// 2. emitAssignStmt の単一変数代入の先頭でグローバル変数を判定
 		// 2. 変数への代入 (x = val / var x any = val)
 		if lhsIdent, isLhsIdent := s.Left[0].(*ast.Identifier); isLhsIdent {
+			// グローバル変数への代入 (追加)
+			if gType, isGlobal := g.semaCtx.Globals[lhsIdent.Value]; isGlobal {
+				valReg, valType := g.resolveValue(b, s.Right[0])
+				finalValReg := valReg
+				if isCompound {
+					oldValReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", oldValReg, gType.LLVMType(), gType.LLVMType(), lhsIdent.Value))
+					calcReg := g.nextReg()
+					opInst := "add"
+					switch op {
+					case "+=":
+						opInst = "add"
+					case "-=":
+						opInst = "sub"
+					case "*=":
+						opInst = "mul"
+					case "/=":
+						opInst = "sdiv"
+					case "&=":
+						opInst = "and"
+					case "|=":
+						opInst = "or"
+					case "^=":
+						opInst = "xor"
+					case "<<=":
+						opInst = "shl"
+					case ">>=":
+						opInst = "ashr"
+					}
+					b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", calcReg, opInst, gType.LLVMType(), oldValReg, valReg))
+					finalValReg = calcReg
+				} else {
+					if valType != nil && valType.LLVMType() != gType.LLVMType() {
+						convReg := g.nextReg()
+						if strings.HasSuffix(gType.LLVMType(), "*") && strings.HasSuffix(valType.LLVMType(), "*") {
+							b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, gType.LLVMType()))
+							finalValReg = convReg
+						}
+					}
+				}
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* @%s\n", gType.LLVMType(), finalValReg, gType.LLVMType(), lhsIdent.Value))
+				return
+			}
+
 			if call, ok := s.Right[0].(*ast.CallExpr); ok {
 				if memExpr, ok := call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "NewArena" {
 					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.Arena\n", lhsIdent.Value))
@@ -1168,30 +1226,39 @@ func (g *CodeGenerator) emitIfStmtWithEnd(b *strings.Builder, s *ast.IfStmt, cur
 	}
 }
 
+// 4. emitReturnStmt: 戻り値の確定 -> defer の逆順インライン展開 -> ret
 func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, currentFn string) {
-	for _, deferCall := range g.deferStack {
-		b.WriteString(fmt.Sprintf("  %s\n", deferCall))
-	}
-
+	// 1. main関数の場合
 	if currentFn == "main" {
+		var retReg string = "0"
 		if len(s.Values) == 1 {
 			valReg, valType := g.resolveValue(b, s.Values[0])
-			retReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i32\n", retReg, valType.LLVMType(), valReg))
-			b.WriteString(fmt.Sprintf("  ret i32 %s\n", retReg))
-			return
+			truncReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i32\n", truncReg, valType.LLVMType(), valReg))
+			retReg = truncReg
 		}
-		b.WriteString("  ret i32 0\n")
+
+		// defer 実行
+		for i := len(g.deferStack) - 1; i >= 0; i-- {
+			g.emitCallExpr(b, g.deferStack[i])
+		}
+
+		b.WriteString(fmt.Sprintf("  ret i32 %s\n", retReg))
 		return
 	}
 
 	fnType := g.lookupFunction(currentFn)
 
+	// 2. 戻り値なし (void)
 	if len(s.Values) == 0 {
+		for i := len(g.deferStack) - 1; i >= 0; i-- {
+			g.emitCallExpr(b, g.deferStack[i])
+		}
 		b.WriteString("  ret void\n")
 		return
 	}
 
+	// 3. 単一戻り値
 	if len(s.Values) == 1 {
 		valReg, valType := g.resolveValue(b, s.Values[0])
 
@@ -1201,6 +1268,9 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		}
 
 		if _, isNil := s.Values[0].(*ast.NilLiteral); isNil {
+			for i := len(g.deferStack) - 1; i >= 0; i-- {
+				g.emitCallExpr(b, g.deferStack[i])
+			}
 			b.WriteString(fmt.Sprintf("  ret %s null\n", targetTypeStr))
 			return
 		}
@@ -1211,27 +1281,33 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			}
 		}
 
+		finalReg := valReg
 		if valType != nil && valType.LLVMType() != targetTypeStr {
 			if targetTypeStr == "i64" && valType.LLVMType() == "i1" {
 				zextReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", zextReg, valReg))
-				valReg = zextReg
+				finalReg = zextReg
 			} else if targetTypeStr == "i1" && valType.LLVMType() == "i64" {
 				cmpReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = icmp ne i64 %s, 0\n", cmpReg, valReg))
-				valReg = cmpReg
+				finalReg = cmpReg
 			} else if strings.HasSuffix(targetTypeStr, "*") && strings.HasSuffix(valType.LLVMType(), "*") {
 				convReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, targetTypeStr))
-				valReg = convReg
+				finalReg = convReg
 			}
 		}
 
-		b.WriteString(fmt.Sprintf("  ret %s %s\n", targetTypeStr, valReg))
+		// defer 実行
+		for i := len(g.deferStack) - 1; i >= 0; i-- {
+			g.emitCallExpr(b, g.deferStack[i])
+		}
+
+		b.WriteString(fmt.Sprintf("  ret %s %s\n", targetTypeStr, finalReg))
 		return
 	}
 
-	// 1. emitReturnStmt の複数戻り値処理
+	// 4. 複数戻り値
 	if len(s.Values) > 1 {
 		types := []string{}
 		valRegs := []string{}
@@ -1247,6 +1323,12 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %s, %d\n", nextAgg, aggType, curAgg, types[i], vReg, i))
 			curAgg = nextAgg
 		}
+
+		// defer 実行
+		for i := len(g.deferStack) - 1; i >= 0; i-- {
+			g.emitCallExpr(b, g.deferStack[i])
+		}
+
 		b.WriteString(fmt.Sprintf("  ret %s %s\n", aggType, curAgg))
 		return
 	}
@@ -1285,6 +1367,9 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			if ident, ok := e.Right.(*ast.Identifier); ok {
 				if sym, exists := g.symbols[ident.Value]; exists {
 					return sym.LLVMName, &sema.PointerType{Base: sym.Type}
+				}
+				if gType, exists := g.semaCtx.Globals[ident.Value]; exists {
+					return "@" + ident.Value, &sema.PointerType{Base: gType}
 				}
 			} else if stLit, ok := e.Right.(*ast.StructLiteral); ok {
 				st, structName := g.findStructByName(stLit.Type.Name.Value)
@@ -1370,13 +1455,20 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return fmt.Sprintf("%d", val), sema.TypeInt
 		}
 
-		sym, exists := g.symbols[e.Value]
-		if !exists {
-			return "0", sema.TypeInt
+		if sym, exists := g.symbols[e.Value]; exists {
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
+			return loadReg, sym.Type
 		}
-		loadReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
-		return loadReg, sym.Type
+
+		// グローバル変数の参照 (追加)
+		if gType, exists := g.semaCtx.Globals[e.Value]; exists {
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), e.Value))
+			return loadReg, gType
+		}
+
+		return "0", sema.TypeInt
 
 	case *ast.StructLiteral:
 		st, structName := g.findStructByName(e.Type.Name.Value)

@@ -134,6 +134,7 @@ type Context struct {
 	Structs   map[string]*StructType
 	Aliases   map[string]Type
 	Constants map[string]int64
+	Globals   map[string]Type // 追加: グローバル変数テーブル
 	typeIDs   map[string]int64
 	nextID    int64
 }
@@ -144,6 +145,7 @@ func NewContext() *Context {
 		Structs:   make(map[string]*StructType),
 		Aliases:   make(map[string]Type),
 		Constants: make(map[string]int64),
+		Globals:   make(map[string]Type), // 初期化
 		typeIDs:   make(map[string]int64),
 		nextID:    1,
 	}
@@ -296,7 +298,28 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// 3. 関数シグネチャ登録
+	// 3. グローバル変数登録
+	for _, decl := range prog.Decls {
+		if vd, ok := decl.(*ast.VarDecl); ok {
+			var gType Type = TypeInt
+			if vd.Type != nil {
+				gType = ctx.ResolveType(vd.Type)
+			}
+			ctx.Globals[vd.Name.Value] = gType
+		} else if as, ok := decl.(*ast.AssignStmt); ok {
+			for _, lhs := range as.Left {
+				if ident, ok := lhs.(*ast.Identifier); ok {
+					var gType Type = TypeInt
+					if as.Type != nil {
+						gType = ctx.ResolveType(as.Type)
+					}
+					ctx.Globals[ident.Value] = gType
+				}
+			}
+		}
+	}
+
+	// 4. 関数シグネチャ登録
 	for _, decl := range prog.Decls {
 		if fd, ok := decl.(*ast.FuncDecl); ok {
 			fnType := &FuncType{
@@ -304,7 +327,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				ParamTypes:  []Type{},
 				ReturnTypes: []Type{},
 				IsVariadic:  fd.IsVariadic,
-				IsExtern:    fd.Body == nil, // 追加: 本体なし関数を外部宣言と判定
+				IsExtern:    fd.Body == nil,
 			}
 			for _, p := range fd.Params {
 				fnType.ParamTypes = append(fnType.ParamTypes, ctx.ResolveType(p.Type))

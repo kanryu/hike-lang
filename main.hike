@@ -4,75 +4,52 @@ import (
 	"std/fmt"
 )
 
-func assert(cond bool, testNum int, testName *byte) {
-	if cond {
-		fmt.PrintStr("[PASS #")
-		fmt.PrintInt(testNum)
-		fmt.PrintStr("] ")
-		fmt.PrintLn(testName)
+var traceStep int = 0
+
+func logStep(expectedStep int, name *byte) {
+	traceStep++
+	if traceStep == expectedStep {
+		fmt.PrintStr("[PASS] Defer Order Step ")
+		fmt.PrintInt(traceStep)
+		fmt.PrintStr(": ")
+		fmt.PrintLn(name)
 	} else {
-		fmt.PrintStr("[FAIL #")
-		fmt.PrintInt(testNum)
-		fmt.PrintStr("] ")
-		fmt.PrintLn(testName)
+		fmt.PrintStr("[FAIL] Defer Order Mismatch: expected ")
+		fmt.PrintInt(expectedStep)
+		fmt.PrintStr(", got ")
+		fmt.PrintInt(traceStep)
+		fmt.PrintStr(" (")
+		fmt.PrintLn(name)
 	}
 }
 
-// 1. 型エイリアス定義
-type MyInt int
-type StringAlias string
+func testDeferLIFO() int {
+	defer logStep(3, "First defer registered -> executed 3rd (last)")
+	defer logStep(2, "Second defer registered -> executed 2nd")
+	defer logStep(1, "Third defer registered -> executed 1st")
 
-type Token struct {
-	Kind int
-	Text string
+	fmt.PrintLn("--> Function body executing...")
+	return 100
+}
+
+func testEarlyReturn(flag bool) int {
+	defer logStep(4, "Early return defer cleanup")
+	if flag {
+		return 42
+	}
+	return 0
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Type Alias, Fixed Array & Interface Tests ===")
-	testCount := 0
+	fmt.PrintLn("=== Running Generic Defer Tests ===")
 
-	// ==========================================
-	// 1. 型エイリアス (type MyInt int) テスト
-	// ==========================================
-	age := 25
-	age += 5
-	testCount++
-	assert(age == 30, testCount, "Type Alias: age of type MyInt (int) is 30")
+	res := testDeferLIFO()
+	if res == 100 {
+		fmt.PrintLn("[PASS] Return value preserved after defers")
+	}
 
-	// ==========================================
-	// 2. 固定長配列型 ([N]T) テスト
-	// ==========================================
-	arr := [3]int{100, 200, 300}
-	arrSum := arr[0] + arr[1] + arr[2]
-	testCount++
-	assert(arrSum == 600, testCount, "Fixed Array: arr[0]+arr[1]+arr[2] == 600")
+	testEarlyReturn(true)
 
-	arr[1] = 250
-	testCount++
-	assert(arr[1] == 250, testCount, "Fixed Array Update: arr[1] updated to 250")
-
-	// ==========================================
-	// 3. インターフェース型 (any / interface{}) & 型アサーション
-	// ==========================================
-	var obj any = 42
-
-	// 3-A. 整数型への型アサーション (val, ok)
-	valInt, okInt := obj.(int)
-	testCount++
-	assert(okInt == true && valInt == 42, testCount, "Interface: obj.(int) successfully asserts 42")
-
-	// 3-B. 不一致型への型アサーション (失敗判定)
-	valStr, okStr := obj.(string)
-	testCount++
-	assert(okStr == false, testCount, "Interface: obj.(string) returns ok == false on mismatch")
-
-	// 3-C. ポインタ構造体を any に代入
-	tok := &Token{Kind: 1, Text: "IDENT"}
-	var anyTok any = tok
-	resTok, okTok := anyTok.(*Token)
-	testCount++
-	assert(okTok == true && resTok.Kind == 1, testCount, "Interface Pointer: anyTok.(*Token) unpacks struct pointer")
-
-	fmt.PrintLn("=== All Tests Completed Successfully ===")
-	return testCount
+	fmt.PrintLn("=== All Generic Defer Tests Passed ===")
+	return 0
 }

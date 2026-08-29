@@ -153,9 +153,32 @@ func (p *Parser) parseTopLevelDecl() ast.Decl {
 		return p.parseTypeDecl()
 	case token.FUNC:
 		return p.parseFuncDecl()
+	case token.VAR:
+		return p.parseVarDecl()
 	default:
 		return nil
 	}
+}
+
+func (p *Parser) parseVarDecl() *ast.VarDecl {
+	decl := &ast.VarDecl{Token: p.curToken}
+	p.nextToken()
+	decl.Name = p.parseIdentifier()
+	p.nextToken()
+
+	if !p.curTokenIs(token.ASSIGN) && !p.curTokenIs(token.SEMICOLON) && !p.curTokenIs(token.EOF) {
+		decl.Type = p.parseTypeExpr()
+		if p.peekTokenIs(token.ASSIGN) {
+			p.nextToken()
+		}
+	}
+
+	if p.curTokenIs(token.ASSIGN) {
+		p.nextToken()
+		decl.Value = p.parseExpression(LOWEST)
+	}
+	p.log(fmt.Sprintf("[%d:%d] Parsed var declaration: %s", decl.Token.Line, decl.Token.Col, decl.Name.Value))
+	return decl
 }
 
 func (p *Parser) parseImportDecl() []*ast.ImportDecl {
@@ -715,13 +738,14 @@ func (p *Parser) parseReturnStmt() *ast.ReturnStmt {
 	return stmt
 }
 
-func (p *Parser) parseDeferStmt() *ast.DeferStmt {
+func (p *Parser) parseDeferStmt() ast.Statement {
 	stmt := &ast.DeferStmt{Token: p.curToken}
-	p.nextToken()
-	expr := p.parseExpression(LOWEST)
-	if call, ok := expr.(*ast.CallExpr); ok {
+	p.nextToken() // 'defer' の次へ
+	exp := p.parseExpression(LOWEST)
+	if call, ok := exp.(*ast.CallExpr); ok {
 		stmt.Call = call
 	}
+	p.log(fmt.Sprintf("[%d:%d] Parsed defer statement", stmt.Token.Line, stmt.Token.Col))
 	return stmt
 }
 

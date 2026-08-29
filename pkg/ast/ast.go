@@ -43,6 +43,21 @@ type ConstDecl struct {
 func (cd *ConstDecl) declNode()            {}
 func (cd *ConstDecl) TokenLiteral() string { return cd.Token.Literal }
 
+// トップレベルおよびローカルの変数宣言ノード
+type VarDecl struct {
+	Token token.Token
+	Name  *Identifier
+	Type  TypeExpr
+	Value Expression
+}
+
+func (vd *VarDecl) declNode()            {}
+func (vd *VarDecl) statementNode()       {}
+func (vd *VarDecl) TokenLiteral() string { return vd.Token.Literal }
+
+// AssignStmt にも declNode を実装
+func (as *AssignStmt) declNode() {}
+
 type Program struct {
 	Package string
 	Imports []*ImportDecl
