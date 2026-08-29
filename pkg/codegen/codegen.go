@@ -8,21 +8,31 @@ import (
 	"hikec-go/pkg/sema"
 )
 
+type StringConst struct {
+	Label  string
+	Raw    string
+	Value  string
+	Length int
+}
+
 type Symbol struct {
 	Name     string
 	LLVMName string
 	Type     sema.Type
 }
 
-type StringConst struct {
-	Label  string
-	Value  string
-	Length int
-}
-
 type loopContext struct {
 	breakLabel    string
 	continueLabel string
+}
+
+type anonFuncMeta struct {
+	Name       string
+	Decl       *ast.FuncDecl
+	EnvStruct  string
+	Captures   []string
+	OuterTypes map[string]sema.Type
+	FuncType   *sema.FuncType
 }
 
 type CodeGenerator struct {
@@ -32,7 +42,10 @@ type CodeGenerator struct {
 	regCount       int
 	labelCount     int
 	anonFuncCount  int
-	anonFuncs      []*ast.FuncDecl
+	anonFuncs      []anonFuncMeta
+	envStructDefs  []string
+	thunkList      []string
+	emittedThunks  map[string]bool
 	stringLiterals []StringConst
 	symbols        map[string]Symbol
 	deferStack     []*ast.CallExpr
@@ -50,7 +63,10 @@ func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
 		stringLiterals: []StringConst{},
 		loopStack:      []loopContext{},
 		deferStack:     []*ast.CallExpr{},
-		anonFuncs:      []*ast.FuncDecl{},
+		anonFuncs:      []anonFuncMeta{},
+		envStructDefs:  []string{},
+		thunkList:      []string{},
+		emittedThunks:  make(map[string]bool),
 		emittedFuncs:   make(map[string]bool),
 		verbose:        false,
 	}
@@ -76,61 +92,140 @@ func (g *CodeGenerator) nextLabel(prefix string) string {
 	return fmt.Sprintf("%s%d", prefix, g.labelCount)
 }
 
-func escapeLLVMString(str string) (string, int) {
-	var raw []byte
-	for i := 0; i < len(str); i++ {
-		if str[i] == '\\' && i+1 < len(str) {
-			switch str[i+1] {
+func (g *CodeGenerator) getStringLiteral(str string) (string, int) {
+	for _, sc := range g.stringLiterals {
+		if sc.Raw == str {
+			return sc.Label, sc.Length
+		}
+	}
+
+	var encoded strings.Builder
+	byteCount := 0
+	runes := []rune(str)
+	n := len(runes)
+
+	for i := 0; i < n; i++ {
+		r := runes[i]
+		if r == '\\' && i+1 < n {
+			nextR := runes[i+1]
+			switch nextR {
 			case 'n':
-				raw = append(raw, '\n')
+				encoded.WriteString("\\0A")
+				byteCount++
 				i++
+				continue
 			case 't':
-				raw = append(raw, '\t')
+				encoded.WriteString("\\09")
+				byteCount++
 				i++
+				continue
 			case 'r':
-				raw = append(raw, '\r')
+				encoded.WriteString("\\0D")
+				byteCount++
 				i++
+				continue
 			case '"':
-				raw = append(raw, '"')
+				encoded.WriteString("\\22")
+				byteCount++
 				i++
+				continue
 			case '\\':
-				raw = append(raw, '\\')
+				encoded.WriteString("\\5C")
+				byteCount++
 				i++
+				continue
 			case '0':
-				raw = append(raw, 0)
+				encoded.WriteString("\\00")
+				byteCount++
 				i++
-			default:
-				raw = append(raw, str[i])
+				continue
 			}
+		}
+
+		if r == '\n' {
+			encoded.WriteString("\\0A")
+			byteCount++
+		} else if r == '\t' {
+			encoded.WriteString("\\09")
+			byteCount++
+		} else if r == '\r' {
+			encoded.WriteString("\\0D")
+			byteCount++
+		} else if r == '"' {
+			encoded.WriteString("\\22")
+			byteCount++
 		} else {
-			raw = append(raw, str[i])
+			encoded.WriteRune(r)
+			byteCount += len(string(r))
 		}
 	}
 
-	length := len(raw) + 1
+	encoded.WriteString("\\00")
+	totalLen := byteCount + 1
 
-	var sb strings.Builder
-	for _, b := range raw {
-		if b >= 32 && b <= 126 && b != '"' && b != '\\' {
-			sb.WriteByte(b)
-		} else {
-			sb.WriteString(fmt.Sprintf("\\%02X", b))
-		}
-	}
-	sb.WriteString("\\00")
-
-	return sb.String(), length
-}
-
-func (g *CodeGenerator) addStringLiteral(str string) (string, int) {
-	escapedVal, length := escapeLLVMString(str)
 	label := fmt.Sprintf("@.str.%d", len(g.stringLiterals)+1)
 	g.stringLiterals = append(g.stringLiterals, StringConst{
 		Label:  label,
-		Value:  escapedVal,
-		Length: length,
+		Raw:    str,
+		Value:  encoded.String(),
+		Length: totalLen,
 	})
-	return label, length
+	return label, totalLen
+}
+
+func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
+	if fn, ok := g.semaCtx.Functions[name]; ok {
+		return fn
+	}
+	for fnName, fn := range g.semaCtx.Functions {
+		if strings.HasSuffix(fnName, "_"+name) {
+			return fn
+		}
+	}
+	return nil
+}
+
+func (g *CodeGenerator) findStructByName(name string) (*sema.StructType, string) {
+	if st, ok := g.semaCtx.Structs[name]; ok {
+		return st, name
+	}
+	for stName, st := range g.semaCtx.Structs {
+		if strings.HasSuffix(stName, "_"+name) {
+			return st, stName
+		}
+	}
+	return nil, ""
+}
+
+func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructType, string) {
+	if t == nil {
+		return nil, ""
+	}
+	typeName := t.TypeName()
+	typeName = strings.TrimPrefix(typeName, "*")
+
+	if st, name := g.findStructByName(typeName); st != nil {
+		return st, name
+	}
+
+	for stName, st := range g.semaCtx.Structs {
+		for _, f := range st.Fields {
+			if f.Name == fieldName {
+				return st, stName
+			}
+		}
+	}
+	return nil, ""
+}
+
+func (g *CodeGenerator) getOrCreateThunk(fnName string) string {
+	thunkName := fmt.Sprintf("__thunk_%s", fnName)
+	if g.emittedThunks[thunkName] {
+		return thunkName
+	}
+	g.emittedThunks[thunkName] = true
+	g.thunkList = append(g.thunkList, fnName)
+	return thunkName
 }
 
 func (g *CodeGenerator) Generate() string {
@@ -143,7 +238,11 @@ func (g *CodeGenerator) Generate() string {
 	}
 
 	for i := 0; i < len(g.anonFuncs); i++ {
-		g.emitFuncDecl(&bodyBuilder, g.anonFuncs[i])
+		g.emitAnonFunc(&bodyBuilder, g.anonFuncs[i])
+	}
+
+	for _, fnName := range g.thunkList {
+		g.emitThunk(&bodyBuilder, fnName)
 	}
 
 	g.output.Reset()
@@ -170,13 +269,7 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("declare i64 @strlen(i8*)\n")
 	g.output.WriteString("declare i8* @memcpy(i8*, i8*, i64)\n")
 	g.output.WriteString("declare i32 @memcmp(i8*, i8*, i64)\n")
-	g.output.WriteString("declare i64 @printf(i8*, ...)\n") // 追加
-
-	// 1. emitPrologue にグローバル変数定義を追加
-	for name, gType := range g.semaCtx.Globals {
-		g.output.WriteString(fmt.Sprintf("@%s = global %s 0, align 8\n", name, gType.LLVMType()))
-	}
-	g.output.WriteString("\n")
+	g.output.WriteString("declare i64 @printf(i8*, ...)\n")
 
 	for _, fn := range g.semaCtx.Functions {
 		if fn.IsExtern {
@@ -213,9 +306,17 @@ func (g *CodeGenerator) emitPrologue() {
 	if _, ok := g.semaCtx.Structs["Allocator"]; !ok {
 		g.output.WriteString("%struct.Allocator = type { i8*, i8* }\n")
 	}
+
+	for _, envDef := range g.envStructDefs {
+		g.output.WriteString(envDef)
+	}
 	g.output.WriteString("\n")
 
-	// hike_streq
+	for name, gType := range g.semaCtx.Globals {
+		g.output.WriteString(fmt.Sprintf("@%s = global %s 0, align 8\n", name, gType.LLVMType()))
+	}
+	g.output.WriteString("\n")
+
 	g.output.WriteString("define i1 @hike_streq(i8* %a, i8* %b) {\n")
 	g.output.WriteString("entry:\n")
 	g.output.WriteString("  %eq_ptr = icmp eq i8* %a, %b\n")
@@ -235,7 +336,6 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("  ret i1 false\n")
 	g.output.WriteString("}\n\n")
 
-	// hike_substr
 	g.output.WriteString("define i8* @hike_substr(i8* %s, i64 %low, i64 %high) {\n")
 	g.output.WriteString("entry:\n")
 	g.output.WriteString("  %s_null = icmp eq i8* %s, null\n")
@@ -253,7 +353,6 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("  ret i8* null\n")
 	g.output.WriteString("}\n\n")
 
-	// hike_strcat
 	g.output.WriteString("define i8* @hike_strcat(i8* %a, i8* %b) {\n")
 	g.output.WriteString("entry:\n")
 	g.output.WriteString("  %len_a = call i64 @strlen(i8* %a)\n")
@@ -268,6 +367,292 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("  store i8 0, i8* %null_ptr\n")
 	g.output.WriteString("  ret i8* %buf\n")
 	g.output.WriteString("}\n\n")
+}
+
+func (g *CodeGenerator) scanCaptures(fl *ast.FuncLit) []string {
+	params := make(map[string]bool)
+	for _, p := range fl.Params {
+		params[p.Name.Value] = true
+	}
+
+	locals := make(map[string]bool)
+	captured := []string{}
+	seen := make(map[string]bool)
+
+	var walkStmt func(s ast.Statement)
+	var walkExpr func(e ast.Expression)
+
+	walkExpr = func(e ast.Expression) {
+		if e == nil {
+			return
+		}
+		switch node := e.(type) {
+		case *ast.Identifier:
+			name := node.Value
+			if !params[name] && !locals[name] && !seen[name] {
+				if _, isConst := g.semaCtx.Constants[name]; !isConst {
+					if _, isGlobal := g.semaCtx.Globals[name]; !isGlobal {
+						if _, isFn := g.semaCtx.Functions[name]; !isFn {
+							if name != "true" && name != "false" && name != "nil" &&
+								name != "len" && name != "cap" && name != "append" &&
+								name != "int" && name != "byte" && name != "string" && name != "bool" {
+								if _, isOuter := g.symbols[name]; isOuter {
+									seen[name] = true
+									captured = append(captured, name)
+								}
+							}
+						}
+					}
+				}
+			}
+		case *ast.BinaryExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Right)
+		case *ast.PrefixExpr:
+			walkExpr(node.Right)
+		case *ast.CallExpr:
+			walkExpr(node.Function)
+			for _, arg := range node.Args {
+				walkExpr(arg)
+			}
+		case *ast.MemberExpr:
+			walkExpr(node.Object)
+		case *ast.IndexExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Index)
+		case *ast.SliceExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Low)
+			walkExpr(node.High)
+		case *ast.TypeAssertExpr:
+			walkExpr(node.Expr)
+		case *ast.ArrayLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.SliceLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.StructLiteral:
+			for _, sf := range node.Fields {
+				walkExpr(sf.Value)
+			}
+		}
+	}
+
+	walkStmt = func(s ast.Statement) {
+		if s == nil {
+			return
+		}
+		switch st := s.(type) {
+		case *ast.BlockStmt:
+			for _, inner := range st.Statements {
+				walkStmt(inner)
+			}
+		case *ast.ExprStmt:
+			walkExpr(st.Expr)
+		case *ast.ReturnStmt:
+			for _, v := range st.Values {
+				walkExpr(v)
+			}
+		case *ast.DeferStmt:
+			if st.Call != nil {
+				walkExpr(st.Call)
+			}
+		case *ast.AssignStmt:
+			for _, r := range st.Right {
+				walkExpr(r)
+			}
+			for _, l := range st.Left {
+				if st.Token.Literal == ":=" {
+					if ident, ok := l.(*ast.Identifier); ok {
+						locals[ident.Value] = true
+					}
+				} else {
+					walkExpr(l)
+				}
+			}
+		case *ast.VarDecl:
+			locals[st.Name.Value] = true
+			if st.Value != nil {
+				walkExpr(st.Value)
+			}
+		case *ast.IfStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Condition)
+			walkStmt(st.Consequence)
+			if st.Alternative != nil {
+				walkStmt(st.Alternative)
+			}
+		case *ast.ForStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Cond)
+			if st.Post != nil {
+				walkStmt(st.Post)
+			}
+			walkStmt(st.Body)
+		case *ast.ForRangeStmt:
+			if kIdent, ok := st.Key.(*ast.Identifier); ok && kIdent != nil {
+				locals[kIdent.Value] = true
+			}
+			if vIdent, ok := st.Value.(*ast.Identifier); ok && vIdent != nil {
+				locals[vIdent.Value] = true
+			}
+			walkExpr(st.X)
+			walkStmt(st.Body)
+		case *ast.SwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Value)
+			for _, cc := range st.Cases {
+				for _, v := range cc.Values {
+					walkExpr(v)
+				}
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		}
+	}
+
+	if fl.Body != nil {
+		for _, s := range fl.Body.Statements {
+			walkStmt(s)
+		}
+	}
+
+	return captured
+}
+
+func (g *CodeGenerator) emitThunk(b *strings.Builder, fnName string) {
+	fnMeta := g.lookupFunction(fnName)
+	if fnMeta == nil {
+		return
+	}
+
+	thunkName := fmt.Sprintf("__thunk_%s", fnName)
+	retType := "void"
+	if len(fnMeta.ReturnTypes) == 1 {
+		retType = fnMeta.ReturnTypes[0].LLVMType()
+	} else if len(fnMeta.ReturnTypes) > 1 {
+		types := []string{}
+		for _, rt := range fnMeta.ReturnTypes {
+			types = append(types, rt.LLVMType())
+		}
+		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	}
+
+	params := []string{"i8* %__env"}
+	callArgs := []string{}
+	for i, pt := range fnMeta.ParamTypes {
+		argName := fmt.Sprintf("%%a%d", i)
+		params = append(params, fmt.Sprintf("%s %s", pt.LLVMType(), argName))
+		callArgs = append(callArgs, fmt.Sprintf("%s %s", pt.LLVMType(), argName))
+	}
+
+	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, thunkName, strings.Join(params, ", ")))
+	if retType == "void" {
+		b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", fnName, strings.Join(callArgs, ", ")))
+		b.WriteString("  ret void\n")
+	} else {
+		resReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", resReg, retType, fnName, strings.Join(callArgs, ", ")))
+		b.WriteString(fmt.Sprintf("  ret %s %s\n", retType, resReg))
+	}
+	b.WriteString("}\n\n")
+}
+
+func (g *CodeGenerator) emitAnonFunc(b *strings.Builder, meta anonFuncMeta) {
+	g.symbols = make(map[string]Symbol)
+	oldDeferStack := g.deferStack
+	g.deferStack = []*ast.CallExpr{}
+	defer func() {
+		g.deferStack = oldDeferStack
+	}()
+
+	retType := "void"
+	if len(meta.FuncType.ReturnTypes) == 1 {
+		retType = meta.FuncType.ReturnTypes[0].LLVMType()
+	} else if len(meta.FuncType.ReturnTypes) > 1 {
+		types := []string{}
+		for _, rt := range meta.FuncType.ReturnTypes {
+			types = append(types, rt.LLVMType())
+		}
+		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	}
+
+	params := []string{"i8* %__env_arg"}
+	for _, p := range meta.Decl.Params {
+		pType := g.semaCtx.ResolveType(p.Type)
+		params = append(params, fmt.Sprintf("%s %%%s_arg", pType.LLVMType(), p.Name.Value))
+	}
+
+	var entryAllocas strings.Builder
+	var bodyBuilder strings.Builder
+	g.entryAllocas = &entryAllocas
+
+	// キャプチャ変数の復元
+	if len(meta.Captures) > 0 {
+		envPtr := g.nextReg()
+		bodyBuilder.WriteString(fmt.Sprintf("  %s = bitcast i8* %%__env_arg to %%struct.%s*\n", envPtr, meta.EnvStruct))
+		for idx, capName := range meta.Captures {
+			cType := meta.OuterTypes[capName]
+			gepReg := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+				gepReg, meta.EnvStruct, meta.EnvStruct, envPtr, idx))
+			loadPtrReg := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = load %s*, %s** %s\n", loadPtrReg, cType.LLVMType(), cType.LLVMType(), gepReg))
+			g.symbols[capName] = Symbol{
+				Name:     capName,
+				LLVMName: loadPtrReg,
+				Type:     cType,
+			}
+		}
+	}
+
+	for _, p := range meta.Decl.Params {
+		pType := g.semaCtx.ResolveType(p.Type)
+		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
+		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
+		g.symbols[p.Name.Value] = Symbol{
+			Name:     p.Name.Value,
+			LLVMName: "%" + p.Name.Value,
+			Type:     pType,
+		}
+	}
+
+	for _, s := range meta.Decl.Body.Statements {
+		g.emitStatement(&bodyBuilder, s, meta.Name)
+	}
+
+	for i := len(g.deferStack) - 1; i >= 0; i-- {
+		g.emitCallExpr(&bodyBuilder, g.deferStack[i])
+	}
+
+	if retType == "void" {
+		bodyBuilder.WriteString("  ret void\n")
+	} else if retType == "i32" {
+		bodyBuilder.WriteString("  ret i32 0\n")
+	} else if retType == "i64" {
+		bodyBuilder.WriteString("  ret i64 0\n")
+	} else if retType == "i1" {
+		bodyBuilder.WriteString("  ret i1 false\n")
+	} else if strings.HasSuffix(retType, "*") {
+		bodyBuilder.WriteString(fmt.Sprintf("  ret %s null\n", retType))
+	} else {
+		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
+	}
+
+	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, meta.Name, strings.Join(params, ", ")))
+	b.WriteString(entryAllocas.String())
+	b.WriteString(bodyBuilder.String())
+	b.WriteString("}\n\n")
 }
 
 func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
@@ -386,7 +771,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		g.emitStatement(&bodyBuilder, s, funcMangledName)
 	}
 
-	// 末尾到達時のフォールバック (明示的な return がない場合)
 	for i := len(g.deferStack) - 1; i >= 0; i-- {
 		g.emitCallExpr(&bodyBuilder, g.deferStack[i])
 	}
@@ -411,21 +795,22 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	b.WriteString("}\n\n")
 }
 
-func (g *CodeGenerator) emitStatement(b *strings.Builder, stmt ast.Statement, currentFn string) {
-	if stmt == nil {
+func (g *CodeGenerator) emitStatement(b *strings.Builder, s ast.Statement, currentFn string) {
+	if s == nil {
 		return
 	}
-	switch s := stmt.(type) {
+
+	switch s := s.(type) {
+	case *ast.VarDecl:
+		g.emitVarDecl(b, s)
 	case *ast.ExprStmt:
-		if call, ok := s.Expr.(*ast.CallExpr); ok {
-			g.emitCallExpr(b, call)
-		}
-	case *ast.DeferStmt:
-		if s.Call != nil {
-			g.deferStack = append(g.deferStack, s.Call)
-		}
+		g.resolveValue(b, s.Expr)
 	case *ast.AssignStmt:
 		g.emitAssignStmt(b, s)
+	case *ast.BlockStmt:
+		for _, stmt := range s.Statements {
+			g.emitStatement(b, stmt, currentFn)
+		}
 	case *ast.IfStmt:
 		g.emitIfStmt(b, s, currentFn)
 	case *ast.ForStmt:
@@ -436,313 +821,82 @@ func (g *CodeGenerator) emitStatement(b *strings.Builder, stmt ast.Statement, cu
 		g.emitSwitchStmt(b, s, currentFn)
 	case *ast.ReturnStmt:
 		g.emitReturnStmt(b, s, currentFn)
+	case *ast.DeferStmt:
+		if s.Call != nil {
+			g.deferStack = append(g.deferStack, s.Call)
+		}
 	case *ast.BreakStmt:
 		if len(g.loopStack) > 0 {
-			top := g.loopStack[len(g.loopStack)-1]
-			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", top.breakLabel))
+			ctx := g.loopStack[len(g.loopStack)-1]
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", ctx.breakLabel))
 		}
 	case *ast.ContinueStmt:
 		if len(g.loopStack) > 0 {
-			top := g.loopStack[len(g.loopStack)-1]
-			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", top.continueLabel))
+			ctx := g.loopStack[len(g.loopStack)-1]
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", ctx.continueLabel))
 		}
 	}
 }
 
-func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentFn string) {
-	lblCond := g.nextLabel("for.cond")
-	lblBody := g.nextLabel("for.body")
-	lblPost := g.nextLabel("for.post")
-	lblEnd := g.nextLabel("for.end")
+func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
+	name := s.Name.Value
+	var valReg string
+	var valType sema.Type
 
-	if s.Init != nil {
-		g.emitStatement(b, s.Init, currentFn)
-	}
-
-	contLbl := lblPost
-	if s.Post == nil {
-		contLbl = lblCond
-	}
-	g.loopStack = append(g.loopStack, loopContext{breakLabel: lblEnd, continueLabel: contLbl})
-	defer func() {
-		g.loopStack = g.loopStack[:len(g.loopStack)-1]
-	}()
-
-	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblCond))
-	if s.Cond != nil {
-		condReg, condType := g.resolveValue(b, s.Cond)
-		condBool := condReg
-		if condType != nil && condType.LLVMType() != "i1" {
-			tStr := condType.LLVMType()
-			cmpVal := "0"
-			if strings.HasSuffix(tStr, "*") {
-				cmpVal = "null"
-			}
-			boolReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, %s\n", boolReg, tStr, condReg, cmpVal))
-			condBool = boolReg
-		}
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condBool, lblBody, lblEnd))
-	} else {
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblBody))
-	}
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblBody))
-	if s.Body != nil {
-		for _, stmt := range s.Body.Statements {
-			g.emitStatement(b, stmt, currentFn)
-		}
-	}
-
-	if s.Post != nil {
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblPost))
-		b.WriteString(fmt.Sprintf("%s:\n", lblPost))
-		g.emitStatement(b, s.Post, currentFn)
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
-	} else {
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
-	}
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
-}
-
-func (g *CodeGenerator) emitForRangeStmt(b *strings.Builder, s *ast.ForRangeStmt, currentFn string) {
-	sliceReg, sliceType := g.resolveValue(b, s.X)
-	sl, isSlice := sliceType.(*sema.SliceType)
-	if !isSlice {
-		panic("[Codegen Error] range expression must be a slice")
-	}
-
-	elemType := sl.Elem
-
-	sPtr := g.nextReg()
-	sLen := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", sPtr, sl.LLVMType(), sliceReg))
-	b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", sLen, sl.LLVMType(), sliceReg))
-
-	idxAlloca := g.nextReg()
-	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", idxAlloca))
-	b.WriteString(fmt.Sprintf("  store i64 0, i64* %s\n", idxAlloca))
-
-	var keySymName string
-	if s.Key != nil {
-		if kIdent, ok := s.Key.(*ast.Identifier); ok && kIdent.Value != "_" {
-			if _, exists := g.symbols[kIdent.Value]; !exists {
-				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i64\n", kIdent.Value))
-				g.symbols[kIdent.Value] = Symbol{Name: kIdent.Value, LLVMName: "%" + kIdent.Value, Type: sema.TypeInt}
-			}
-			keySymName = "%" + kIdent.Value
-		}
-	}
-
-	var valSymName string
 	if s.Value != nil {
-		if vIdent, ok := s.Value.(*ast.Identifier); ok && vIdent.Value != "_" {
-			if _, exists := g.symbols[vIdent.Value]; !exists {
-				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, elemType.LLVMType()))
-				g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: elemType}
-			}
-			valSymName = "%" + vIdent.Value
+		valReg, valType = g.resolveValue(b, s.Value)
+	}
+
+	targetType := valType
+	if s.Type != nil {
+		resolvedTarget := g.semaCtx.ResolveType(s.Type)
+		if resolvedTarget != nil && resolvedTarget != sema.TypeVoid {
+			targetType = resolvedTarget
 		}
 	}
 
-	lblCond := g.nextLabel("range.cond")
-	lblBody := g.nextLabel("range.body")
-	lblPost := g.nextLabel("range.post")
-	lblEnd := g.nextLabel("range.end")
-
-	g.loopStack = append(g.loopStack, loopContext{breakLabel: lblEnd, continueLabel: lblPost})
-	defer func() {
-		g.loopStack = g.loopStack[:len(g.loopStack)-1]
-	}()
-
-	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblCond))
-	curIdxReg := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", curIdxReg, idxAlloca))
-	cmpReg := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", cmpReg, curIdxReg, sLen))
-	b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cmpReg, lblBody, lblEnd))
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblBody))
-
-	if keySymName != "" {
-		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", curIdxReg, keySymName))
+	if targetType == nil {
+		targetType = sema.TypeInt
 	}
 
-	if valSymName != "" {
-		typedPtr := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, sPtr, elemType.LLVMType()))
-		elemPtr := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", elemPtr, elemType.LLVMType(), elemType.LLVMType(), typedPtr, curIdxReg))
-		elemVal := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", elemVal, elemType.LLVMType(), elemType.LLVMType(), elemPtr))
-		b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", elemType.LLVMType(), elemVal, elemType.LLVMType(), valSymName))
-	}
+	g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", name, targetType.LLVMType()))
+	g.symbols[name] = Symbol{Name: name, LLVMName: "%" + name, Type: targetType}
 
-	if s.Body != nil {
-		for _, stmt := range s.Body.Statements {
-			g.emitStatement(b, stmt, currentFn)
-		}
-	}
-
-	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblPost))
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblPost))
-	postIdx := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", postIdx, idxAlloca))
-	nextIdx := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = add i64 %s, 1\n", nextIdx, postIdx))
-	b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", nextIdx, idxAlloca))
-	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
-}
-
-func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, currentFn string) {
-	if s.Init != nil {
-		g.emitStatement(b, s.Init, currentFn)
-	}
-
-	valReg, _ := g.resolveValue(b, s.Value)
-
-	lblEnd := g.nextLabel("switch.end")
-	lblDefault := lblEnd
-
-	type caseTarget struct {
-		valReg string
-		label  string
-		body   []ast.Statement
-	}
-
-	var targets []caseTarget
-	var defaultBody []ast.Statement
-
-	for _, c := range s.Cases {
-		lblCase := g.nextLabel("switch.case")
-		if len(c.Values) == 0 {
-			lblDefault = lblCase
-			defaultBody = c.Body
-		} else {
-			for _, v := range c.Values {
-				cValReg, _ := g.resolveValue(b, v)
-				targets = append(targets, caseTarget{
-					valReg: cValReg,
-					label:  lblCase,
-					body:   c.Body,
-				})
-			}
-		}
-	}
-
-	b.WriteString(fmt.Sprintf("  switch i64 %s, label %%%s [\n", valReg, lblDefault))
-	for _, t := range targets {
-		b.WriteString(fmt.Sprintf("    i64 %s, label %%%s\n", t.valReg, t.label))
-	}
-	b.WriteString("  ]\n\n")
-
-	emittedLabels := make(map[string]bool)
-
-	for _, t := range targets {
-		if emittedLabels[t.label] {
-			continue
-		}
-		emittedLabels[t.label] = true
-
-		b.WriteString(fmt.Sprintf("%s:\n", t.label))
-		hasTerminator := false
-		for _, stmt := range t.body {
-			if _, ok := stmt.(*ast.ReturnStmt); ok {
-				hasTerminator = true
-			}
-			if _, ok := stmt.(*ast.BreakStmt); ok {
-				hasTerminator = true
-			}
-			if _, ok := stmt.(*ast.ContinueStmt); ok {
-				hasTerminator = true
-			}
-			g.emitStatement(b, stmt, currentFn)
-		}
-		if !hasTerminator {
-			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
-		}
-	}
-
-	if len(defaultBody) > 0 && !emittedLabels[lblDefault] {
-		b.WriteString(fmt.Sprintf("%s:\n", lblDefault))
-		hasTerminator := false
-		for _, stmt := range defaultBody {
-			if _, ok := stmt.(*ast.ReturnStmt); ok {
-				hasTerminator = true
-			}
-			if _, ok := stmt.(*ast.BreakStmt); ok {
-				hasTerminator = true
-			}
-			if _, ok := stmt.(*ast.ContinueStmt); ok {
-				hasTerminator = true
-			}
-			g.emitStatement(b, stmt, currentFn)
-		}
-		if !hasTerminator {
-			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
-		}
-	}
-
-	b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
-}
-
-func (g *CodeGenerator) findStructByName(name string) (*sema.StructType, string) {
-	if st, ok := g.semaCtx.Structs[name]; ok {
-		return st, st.Name
-	}
-	for sName, st := range g.semaCtx.Structs {
-		if strings.HasSuffix(sName, "_"+name) || strings.HasSuffix(sName, name) {
-			return st, st.Name
-		}
-	}
-	return nil, ""
-}
-
-func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructType, string) {
-	if t != nil {
-		if st, ok := t.(*sema.StructType); ok {
-			return st, st.Name
-		}
-		if ptr, ok := t.(*sema.PointerType); ok {
-			if st, ok := ptr.Base.(*sema.StructType); ok {
-				return st, st.Name
-			}
-			if basic, ok := ptr.Base.(*sema.BasicType); ok {
-				if st, name := g.findStructByName(basic.Name); st != nil {
-					return st, name
+	if s.Value != nil {
+		finalValReg := valReg
+		if _, isIface := targetType.(*sema.InterfaceType); isIface {
+			if _, srcIsIface := valType.(*sema.InterfaceType); !srcIsIface {
+				typeID := g.semaCtx.GetTypeID(valType)
+				dataPtr := g.nextReg()
+				if strings.HasSuffix(valType.LLVMType(), "*") {
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", dataPtr, valType.LLVMType(), valReg))
+				} else if valType.LLVMType() == "i64" {
+					b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to i8*\n", dataPtr, valReg))
+				} else if valType.LLVMType() == "i1" {
+					zextReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", zextReg, valReg))
+					b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to i8*\n", dataPtr, zextReg))
+				} else {
+					tempAlloca := g.nextReg()
+					g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", tempAlloca, valType.LLVMType()))
+					b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", valType.LLVMType(), valReg, valType.LLVMType(), tempAlloca))
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", dataPtr, valType.LLVMType(), tempAlloca))
 				}
+
+				t1 := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64 } undef, i8* %s, 0\n", t1, dataPtr))
+				t2 := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64 } %s, i64 %d, 1\n", t2, t1, typeID))
+				finalValReg = t2
 			}
 		}
-		llvmStr := t.LLVMType()
-		cleanName := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(llvmStr, "*", ""), "%struct.", ""))
-		if st, name := g.findStructByName(cleanName); st != nil {
-			return st, name
-		}
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", targetType.LLVMType(), finalValReg, targetType.LLVMType(), name))
+	} else {
+		b.WriteString(fmt.Sprintf("  store %s zeroinitializer, %s* %%%s\n", targetType.LLVMType(), targetType.LLVMType(), name))
 	}
-
-	if fieldName != "" {
-		for _, st := range g.semaCtx.Structs {
-			for _, f := range st.Fields {
-				if f.Name == fieldName {
-					return st, st.Name
-				}
-			}
-		}
-	}
-
-	return nil, ""
 }
 
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
-	// A. 多値返り値 / 型アサーションのアンパック代入: a, b := fn() または val, ok := obj.(int)
 	if len(s.Left) > 1 && len(s.Right) == 1 {
 		rhsReg, rhsType := g.resolveValue(b, s.Right[0])
 
@@ -754,7 +908,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		for i, leftExpr := range s.Left {
 			if lhsIdent, ok := leftExpr.(*ast.Identifier); ok {
 				if lhsIdent.Value == "_" {
-					continue // ブランク識別子は代入をスキップ
+					continue
 				}
 
 				var elemType sema.Type = sema.TypeInt
@@ -776,7 +930,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		return
 	}
 
-	// B. 単一変数の代入 / 複合代入
 	if len(s.Left) == 1 && len(s.Right) == 1 {
 		if lhsIdent, ok := s.Left[0].(*ast.Identifier); ok && lhsIdent.Value == "_" {
 			g.resolveValue(b, s.Right[0])
@@ -793,13 +946,11 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		isCompound := (op == "+=" || op == "-=" || op == "*=" || op == "/=" ||
 			op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=")
 
-		// 1. スライスまたは固定長配列の要素への代入 (s[i] = val / arr[i] = val)
 		if lhsIndex, isLhsIndex := s.Left[0].(*ast.IndexExpr); isLhsIndex {
 			baseReg, baseType := g.resolveValue(b, lhsIndex.Left)
 			idxReg, _ := g.resolveValue(b, lhsIndex.Index)
 			valReg, valType := g.resolveValue(b, s.Right[0])
 
-			// 固定長配列 [N]T への要素代入 (arr[i] = val)
 			if arr, isArr := baseType.(*sema.ArrayType); isArr {
 				arrPtrReg := baseReg
 				if objIdent, isIdent := lhsIndex.Left.(*ast.Identifier); isIdent {
@@ -856,7 +1007,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				return
 			}
 
-			// スライス []T への要素代入
 			var dataPtrReg string
 			var elemType sema.Type = sema.TypeByte
 
@@ -922,10 +1072,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
-		// 2. emitAssignStmt の単一変数代入の先頭でグローバル変数を判定
-		// 2. 変数への代入 (x = val / var x any = val)
 		if lhsIdent, isLhsIdent := s.Left[0].(*ast.Identifier); isLhsIdent {
-			// グローバル変数への代入 (追加)
 			if gType, isGlobal := g.semaCtx.Globals[lhsIdent.Value]; isGlobal {
 				valReg, valType := g.resolveValue(b, s.Right[0])
 				finalValReg := valReg
@@ -980,7 +1127,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			valReg, valType := g.resolveValue(b, s.Right[0])
 
-			// 宣言型（var x any = ... 等）がある場合はその型を採用
 			targetType := valType
 			if s.Type != nil {
 				resolvedTarget := g.semaCtx.ResolveType(s.Type)
@@ -998,7 +1144,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			finalValReg := valReg
 
-			// インターフェース型（any / interface{}）への自動ボクシング
 			if _, isIface := targetType.(*sema.InterfaceType); isIface {
 				if _, srcIsIface := valType.(*sema.InterfaceType); !srcIsIface {
 					typeID := g.semaCtx.GetTypeID(valType)
@@ -1028,7 +1173,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			if isCompound {
 				oldValReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %%%s\n", oldValReg, sym.Type.LLVMType(), sym.Type.LLVMType(), lhsIdent.Value))
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", oldValReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
 				calcReg := g.nextReg()
 				opInst := "add"
 				switch op {
@@ -1055,11 +1200,10 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				finalValReg = calcReg
 			}
 
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", sym.Type.LLVMType(), finalValReg, sym.Type.LLVMType(), lhsIdent.Value))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", sym.Type.LLVMType(), finalValReg, sym.Type.LLVMType(), sym.LLVMName))
 			return
 		}
 
-		// 3. 構造体フィールドへの代入 (s.Field = val / s.Field += val)
 		if lhsMember, isLhsMember := s.Left[0].(*ast.MemberExpr); isLhsMember {
 			objReg, objType := g.resolveValue(b, lhsMember.Object)
 			st, structName := g.findStruct(objType, lhsMember.Field.Value)
@@ -1148,93 +1292,262 @@ func (g *CodeGenerator) emitIfStmt(b *strings.Builder, s *ast.IfStmt, currentFn 
 	if s.Init != nil {
 		g.emitStatement(b, s.Init, currentFn)
 	}
-	g.emitIfStmtWithEnd(b, s, currentFn, "")
-}
 
-func (g *CodeGenerator) emitIfStmtWithEnd(b *strings.Builder, s *ast.IfStmt, currentFn string, outerEndLabel string) {
 	condReg, condType := g.resolveValue(b, s.Condition)
-	condBool := condReg
+
+	finalCondReg := condReg
 	if condType != nil && condType.LLVMType() != "i1" {
-		tStr := condType.LLVMType()
-		cmpVal := "0"
-		if strings.HasSuffix(tStr, "*") {
-			cmpVal = "null"
-		}
-		boolReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, %s\n", boolReg, tStr, condReg, cmpVal))
-		condBool = boolReg
+		cmpReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, 0\n", cmpReg, condType.LLVMType(), condReg))
+		finalCondReg = cmpReg
 	}
 
-	lblThen := g.nextLabel("if.then")
-	lblElse := ""
-	if s.Alternative != nil {
-		lblElse = g.nextLabel("if.else")
-	}
-
-	lblEnd := outerEndLabel
-	isOuter := false
-	if lblEnd == "" {
-		lblEnd = g.nextLabel("if.end")
-		isOuter = true
-	}
+	thenLabel := g.nextLabel("if.then")
+	elseLabel := g.nextLabel("if.else")
+	endLabel := g.nextLabel("if.end")
 
 	if s.Alternative != nil {
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condBool, lblThen, lblElse))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", finalCondReg, thenLabel, elseLabel))
 	} else {
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condBool, lblThen, lblEnd))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", finalCondReg, thenLabel, endLabel))
 	}
 
-	b.WriteString(fmt.Sprintf("%s:\n", lblThen))
-	hasTerminatorThen := false
-	for _, stmt := range s.Consequence.Statements {
-		if _, ok := stmt.(*ast.ReturnStmt); ok {
-			hasTerminatorThen = true
-		}
-		if _, ok := stmt.(*ast.BreakStmt); ok {
-			hasTerminatorThen = true
-		}
-		if _, ok := stmt.(*ast.ContinueStmt); ok {
-			hasTerminatorThen = true
-		}
-		g.emitStatement(b, stmt, currentFn)
-	}
-	if !hasTerminatorThen {
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
+	b.WriteString(fmt.Sprintf("%s:\n", thenLabel))
+	g.emitStatement(b, s.Consequence, currentFn)
+	if !strings.HasSuffix(strings.TrimSpace(b.String()), "ret void") &&
+		!strings.HasSuffix(strings.TrimSpace(b.String()), "ret i32") &&
+		!strings.HasSuffix(strings.TrimSpace(b.String()), "ret i64") &&
+		!strings.HasSuffix(strings.TrimSpace(b.String()), "ret i1") &&
+		!strings.Contains(strings.TrimSpace(b.String()), "br label") {
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+	} else {
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
 	}
 
 	if s.Alternative != nil {
-		b.WriteString(fmt.Sprintf("%s:\n", lblElse))
-		switch alt := s.Alternative.(type) {
-		case *ast.BlockStmt:
-			hasTerminatorElse := false
-			for _, stmt := range alt.Statements {
-				if _, ok := stmt.(*ast.ReturnStmt); ok {
-					hasTerminatorElse = true
-				}
-				if _, ok := stmt.(*ast.BreakStmt); ok {
-					hasTerminatorElse = true
-				}
-				if _, ok := stmt.(*ast.ContinueStmt); ok {
-					hasTerminatorElse = true
-				}
-				g.emitStatement(b, stmt, currentFn)
-			}
-			if !hasTerminatorElse {
-				b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEnd))
-			}
-		case *ast.IfStmt:
-			g.emitIfStmtWithEnd(b, alt, currentFn, lblEnd)
-		}
+		b.WriteString(fmt.Sprintf("%s:\n", elseLabel))
+		g.emitStatement(b, s.Alternative, currentFn)
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
 	}
 
-	if isOuter {
-		b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
-	}
+	b.WriteString(fmt.Sprintf("%s:\n", endLabel))
 }
 
-// 4. emitReturnStmt: 戻り値の確定 -> defer の逆順インライン展開 -> ret
+func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentFn string) {
+	if s.Init != nil {
+		g.emitStatement(b, s.Init, currentFn)
+	}
+
+	condLabel := g.nextLabel("for.cond")
+	bodyLabel := g.nextLabel("for.body")
+	postLabel := g.nextLabel("for.post")
+	endLabel := g.nextLabel("for.end")
+
+	g.loopStack = append(g.loopStack, loopContext{breakLabel: endLabel, continueLabel: postLabel})
+	defer func() {
+		g.loopStack = g.loopStack[:len(g.loopStack)-1]
+	}()
+
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", condLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", condLabel))
+	if s.Cond != nil {
+		condReg, condType := g.resolveValue(b, s.Cond)
+		finalCondReg := condReg
+		if condType != nil && condType.LLVMType() != "i1" {
+			cmpReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, 0\n", cmpReg, condType.LLVMType(), condReg))
+			finalCondReg = cmpReg
+		}
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", finalCondReg, bodyLabel, endLabel))
+	} else {
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", bodyLabel))
+	}
+
+	b.WriteString(fmt.Sprintf("%s:\n", bodyLabel))
+	g.emitStatement(b, s.Body, currentFn)
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", postLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", postLabel))
+	if s.Post != nil {
+		g.emitStatement(b, s.Post, currentFn)
+	}
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", condLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", endLabel))
+}
+
+func (g *CodeGenerator) emitForRangeStmt(b *strings.Builder, s *ast.ForRangeStmt, currentFn string) {
+	xReg, xType := g.resolveValue(b, s.X)
+	var lenReg string
+	var dataPtrReg string
+	var elemType sema.Type = sema.TypeByte
+
+	if sl, isSlice := xType.(*sema.SliceType); isSlice {
+		elemType = sl.Elem
+		dataPtrReg = g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtrReg, sl.LLVMType(), xReg))
+		lenReg = g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", lenReg, sl.LLVMType(), xReg))
+	} else if arr, isArr := xType.(*sema.ArrayType); isArr {
+		elemType = arr.Elem
+		lenReg = fmt.Sprintf("%d", arr.Len)
+		tempAlloca := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", tempAlloca, arr.LLVMType()))
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arr.LLVMType(), xReg, arr.LLVMType(), tempAlloca))
+		dataPtrReg = g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", dataPtrReg, arr.LLVMType(), tempAlloca))
+	} else {
+		lenReg = g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenReg, xReg))
+		dataPtrReg = xReg
+		elemType = sema.TypeByte
+	}
+
+	typedDataPtrReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedDataPtrReg, dataPtrReg, elemType.LLVMType()))
+
+	idxAlloca := g.nextReg()
+	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", idxAlloca))
+	b.WriteString(fmt.Sprintf("  store i64 0, i64* %s\n", idxAlloca))
+
+	var keyIdent *ast.Identifier = nil
+	if s.Key != nil {
+		if kId, ok := s.Key.(*ast.Identifier); ok {
+			keyIdent = kId
+		}
+	}
+
+	var valIdent *ast.Identifier = nil
+	if s.Value != nil {
+		if vId, ok := s.Value.(*ast.Identifier); ok {
+			valIdent = vId
+		}
+	}
+
+	if keyIdent != nil {
+		if _, exists := g.symbols[keyIdent.Value]; !exists {
+			g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i64\n", keyIdent.Value))
+			g.symbols[keyIdent.Value] = Symbol{Name: keyIdent.Value, LLVMName: "%" + keyIdent.Value, Type: sema.TypeInt}
+		}
+	}
+	if valIdent != nil {
+		if _, exists := g.symbols[valIdent.Value]; !exists {
+			g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", valIdent.Value, elemType.LLVMType()))
+			g.symbols[valIdent.Value] = Symbol{Name: valIdent.Value, LLVMName: "%" + valIdent.Value, Type: elemType}
+		}
+	}
+
+	condLabel := g.nextLabel("forrange.cond")
+	bodyLabel := g.nextLabel("forrange.body")
+	postLabel := g.nextLabel("forrange.post")
+	endLabel := g.nextLabel("forrange.end")
+
+	g.loopStack = append(g.loopStack, loopContext{breakLabel: endLabel, continueLabel: postLabel})
+	defer func() {
+		g.loopStack = g.loopStack[:len(g.loopStack)-1]
+	}()
+
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", condLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", condLabel))
+	curIdx := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", curIdx, idxAlloca))
+	cmpReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", cmpReg, curIdx, lenReg))
+	b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cmpReg, bodyLabel, endLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", bodyLabel))
+	if keyIdent != nil {
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %%%s\n", curIdx, keyIdent.Value))
+	}
+	if valIdent != nil {
+		elemPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", elemPtr, elemType.LLVMType(), elemType.LLVMType(), typedDataPtrReg, curIdx))
+		elemVal := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", elemVal, elemType.LLVMType(), elemType.LLVMType(), elemPtr))
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", elemType.LLVMType(), elemVal, elemType.LLVMType(), valIdent.Value))
+	}
+
+	g.emitStatement(b, s.Body, currentFn)
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", postLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", postLabel))
+	nextIdx := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = add i64 %s, 1\n", nextIdx, curIdx))
+	b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", nextIdx, idxAlloca))
+	b.WriteString(fmt.Sprintf("  br label %%%s\n\n", condLabel))
+
+	b.WriteString(fmt.Sprintf("%s:\n", endLabel))
+}
+
+func (g *CodeGenerator) emitSwitchStmt(b *strings.Builder, s *ast.SwitchStmt, currentFn string) {
+	if s.Init != nil {
+		g.emitStatement(b, s.Init, currentFn)
+	}
+
+	switchValReg, switchValType := g.resolveValue(b, s.Value)
+	endLabel := g.nextLabel("switch.end")
+
+	g.loopStack = append(g.loopStack, loopContext{breakLabel: endLabel, continueLabel: endLabel})
+	defer func() {
+		g.loopStack = g.loopStack[:len(g.loopStack)-1]
+	}()
+
+	var defaultCase *ast.CaseClause = nil
+
+	for i, c := range s.Cases {
+		if len(c.Values) == 0 {
+			defaultCase = c
+			continue
+		}
+
+		caseBodyLabel := g.nextLabel(fmt.Sprintf("switch.case%d.body", i))
+		nextCaseLabel := g.nextLabel(fmt.Sprintf("switch.case%d.next", i))
+
+		var matchedCondReg string = ""
+		for _, valExpr := range c.Values {
+			vReg, vType := g.resolveValue(b, valExpr)
+			cmpReg := g.nextReg()
+			if vType == sema.TypeString || (vType != nil && vType.TypeName() == "string") {
+				b.WriteString(fmt.Sprintf("  %s = call i1 @hike_streq(i8* %s, i8* %s)\n", cmpReg, switchValReg, vReg))
+			} else {
+				b.WriteString(fmt.Sprintf("  %s = icmp eq %s %s, %s\n", cmpReg, switchValType.LLVMType(), switchValReg, vReg))
+			}
+
+			if matchedCondReg == "" {
+				matchedCondReg = cmpReg
+			} else {
+				orReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = or i1 %s, %s\n", orReg, matchedCondReg, cmpReg))
+				matchedCondReg = orReg
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", matchedCondReg, caseBodyLabel, nextCaseLabel))
+
+		b.WriteString(fmt.Sprintf("%s:\n", caseBodyLabel))
+		for _, stmt := range c.Body {
+			g.emitStatement(b, stmt, currentFn)
+		}
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+
+		b.WriteString(fmt.Sprintf("%s:\n", nextCaseLabel))
+	}
+
+	if defaultCase != nil {
+		for _, stmt := range defaultCase.Body {
+			g.emitStatement(b, stmt, currentFn)
+		}
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+	} else {
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", endLabel))
+	}
+
+	b.WriteString(fmt.Sprintf("%s:\n", endLabel))
+}
+
 func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, currentFn string) {
-	// 1. main関数の場合
 	if currentFn == "main" {
 		var retReg string = "0"
 		if len(s.Values) == 1 {
@@ -1244,7 +1557,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			retReg = truncReg
 		}
 
-		// defer 実行
 		for i := len(g.deferStack) - 1; i >= 0; i-- {
 			g.emitCallExpr(b, g.deferStack[i])
 		}
@@ -1255,7 +1567,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 
 	fnType := g.lookupFunction(currentFn)
 
-	// 2. 戻り値なし (void)
 	if len(s.Values) == 0 {
 		for i := len(g.deferStack) - 1; i >= 0; i-- {
 			g.emitCallExpr(b, g.deferStack[i])
@@ -1264,7 +1575,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		return
 	}
 
-	// 3. 単一戻り値
 	if len(s.Values) == 1 {
 		valReg, valType := g.resolveValue(b, s.Values[0])
 
@@ -1304,7 +1614,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			}
 		}
 
-		// defer 実行
 		for i := len(g.deferStack) - 1; i >= 0; i-- {
 			g.emitCallExpr(b, g.deferStack[i])
 		}
@@ -1313,7 +1622,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		return
 	}
 
-	// 4. 複数戻り値
 	if len(s.Values) > 1 {
 		types := []string{}
 		valRegs := []string{}
@@ -1330,7 +1638,6 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			curAgg = nextAgg
 		}
 
-		// defer 実行
 		for i := len(g.deferStack) - 1; i >= 0; i-- {
 			g.emitCallExpr(b, g.deferStack[i])
 		}
@@ -1345,23 +1652,169 @@ func (g *CodeGenerator) emitCallExpr(b *strings.Builder, call *ast.CallExpr) (st
 }
 
 func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (string, sema.Type) {
+	if expr == nil {
+		return "0", sema.TypeInt
+	}
+
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", e.Value), sema.TypeInt
 
-	case *ast.IotaExpr:
-		return fmt.Sprintf("%d", e.Value), sema.TypeInt
+	case *ast.StringLiteral:
+		label, length := g.getStringLiteral(e.Value)
+		gepReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* %s, i64 0, i64 0\n",
+			gepReg, length, length, label))
+		return gepReg, sema.TypeString
 
 	case *ast.NilLiteral:
 		return "null", &sema.PointerType{Base: sema.TypeByte}
 
-	case *ast.StringLiteral:
-		label, length := g.addStringLiteral(e.Value)
-		ptrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* %s, i64 0, i64 0\n", ptrReg, length, length, label))
-		return ptrReg, sema.TypeString
+	case *ast.FuncLit:
+		g.anonFuncCount++
+		fnName := fmt.Sprintf("__anon_func_%d", g.anonFuncCount)
+		captures := g.scanCaptures(e)
 
-	// resolveValue 内の PrefixExpr (&StructLiteral{...}) の追加
+		fnDecl := &ast.FuncDecl{
+			Token:       e.Token,
+			Name:        &ast.Identifier{Token: e.Token, Value: fnName},
+			Params:      e.Params,
+			ReturnTypes: e.ReturnTypes,
+			Body:        e.Body,
+		}
+
+		fnType := &sema.FuncType{
+			Name:        fnName,
+			ParamTypes:  []sema.Type{},
+			ReturnTypes: []sema.Type{},
+		}
+		for _, p := range e.Params {
+			fnType.ParamTypes = append(fnType.ParamTypes, g.semaCtx.ResolveType(p.Type))
+		}
+		for _, rt := range e.ReturnTypes {
+			fnType.ReturnTypes = append(fnType.ReturnTypes, g.semaCtx.ResolveType(rt))
+		}
+
+		var envStructName string = ""
+		outerTypes := make(map[string]sema.Type)
+
+		retTypeStr := "void"
+		if len(fnType.ReturnTypes) == 1 {
+			retTypeStr = fnType.ReturnTypes[0].LLVMType()
+		} else if len(fnType.ReturnTypes) > 1 {
+			types := []string{}
+			for _, rt := range fnType.ReturnTypes {
+				types = append(types, rt.LLVMType())
+			}
+			retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+		}
+
+		sigParams := []string{"i8*"}
+		for _, pt := range fnType.ParamTypes {
+			sigParams = append(sigParams, pt.LLVMType())
+		}
+		rawFnSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(sigParams, ", "))
+
+		var envMemReg string = "null"
+
+		if len(captures) > 0 {
+			envStructName = fmt.Sprintf("__env_%d", g.anonFuncCount)
+			fieldTypes := []string{}
+			for _, capName := range captures {
+				sym := g.symbols[capName]
+				outerTypes[capName] = sym.Type
+				fieldTypes = append(fieldTypes, sym.Type.LLVMType()+"*")
+			}
+			g.envStructDefs = append(g.envStructDefs, fmt.Sprintf("%%struct.%s = type { %s }\n", envStructName, strings.Join(fieldTypes, ", ")))
+
+			mallocReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, len(captures)*8))
+			envTyped := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %%struct.%s*\n", envTyped, mallocReg, envStructName))
+
+			for idx, capName := range captures {
+				sym := g.symbols[capName]
+				gepReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+					gepReg, envStructName, envStructName, envTyped, idx))
+				b.WriteString(fmt.Sprintf("  store %s* %s, %s** %s\n", sym.Type.LLVMType(), sym.LLVMName, sym.Type.LLVMType(), gepReg))
+			}
+			envMemReg = mallocReg
+		}
+
+		g.anonFuncs = append(g.anonFuncs, anonFuncMeta{
+			Name:       fnName,
+			Decl:       fnDecl,
+			EnvStruct:  envStructName,
+			Captures:   captures,
+			OuterTypes: outerTypes,
+			FuncType:   fnType,
+		})
+
+		fnPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast %s @%s to i8*\n", fnPtrReg, rawFnSig, fnName))
+		c0 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", c0, fnPtrReg))
+		c1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", c1, c0, envMemReg))
+		return c1, fnType
+
+	case *ast.Identifier:
+		if e.Value == "true" {
+			return "true", sema.TypeBool
+		}
+		if e.Value == "false" {
+			return "false", sema.TypeBool
+		}
+
+		if val, ok := g.semaCtx.Constants[e.Value]; ok {
+			return fmt.Sprintf("%d", val), sema.TypeInt
+		}
+
+		if sym, exists := g.symbols[e.Value]; exists {
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
+			return loadReg, sym.Type
+		}
+
+		if gType, exists := g.semaCtx.Globals[e.Value]; exists {
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), e.Value))
+			return loadReg, gType
+		}
+
+		if fn, exists := g.semaCtx.Functions[e.Value]; exists {
+			thunkName := g.getOrCreateThunk(e.Value)
+			retTypeStr := "void"
+			if len(fn.ReturnTypes) == 1 {
+				retTypeStr = fn.ReturnTypes[0].LLVMType()
+			} else if len(fn.ReturnTypes) > 1 {
+				types := []string{}
+				for _, rt := range fn.ReturnTypes {
+					types = append(types, rt.LLVMType())
+				}
+				retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+			}
+			sigParams := []string{"i8*"}
+			for _, pt := range fn.ParamTypes {
+				sigParams = append(sigParams, pt.LLVMType())
+			}
+			rawFnSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(sigParams, ", "))
+
+			thunkPtrReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast %s @%s to i8*\n", thunkPtrReg, rawFnSig, thunkName))
+			c0 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", c0, thunkPtrReg))
+			c1 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* null, 1\n", c1, c0))
+			return c1, fn
+		}
+
+		return "0", sema.TypeInt
+
+	case *ast.BinaryExpr:
+		return g.emitBinaryExpr(b, e)
+
 	case *ast.PrefixExpr:
 		if e.Operator == "^" {
 			valReg, _ := g.resolveValue(b, e.Right)
@@ -1449,198 +1902,15 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return negReg, sema.TypeInt
 		}
 
-	case *ast.FuncLit:
-		g.anonFuncCount++
-		fnName := fmt.Sprintf("__anon_func_%d", g.anonFuncCount)
-		fnDecl := &ast.FuncDecl{
-			Token:       e.Token,
-			Name:        &ast.Identifier{Token: e.Token, Value: fnName},
-			Params:      e.Params,
-			ReturnTypes: e.ReturnTypes,
-			Body:        e.Body,
-		}
-		fnType := &sema.FuncType{
-			Name:        fnName,
-			ParamTypes:  []sema.Type{},
-			ReturnTypes: []sema.Type{},
-		}
-		for _, p := range e.Params {
-			fnType.ParamTypes = append(fnType.ParamTypes, g.semaCtx.ResolveType(p.Type))
-		}
-		for _, rt := range e.ReturnTypes {
-			fnType.ReturnTypes = append(fnType.ReturnTypes, g.semaCtx.ResolveType(rt))
-		}
-		g.semaCtx.Functions[fnName] = fnType
-		g.anonFuncs = append(g.anonFuncs, fnDecl)
-		return "@" + fnName, fnType
-
-	case *ast.Identifier:
-		if e.Value == "true" {
-			return "true", sema.TypeBool
-		}
-		if e.Value == "false" {
-			return "false", sema.TypeBool
-		}
-
-		if val, ok := g.semaCtx.Constants[e.Value]; ok {
-			return fmt.Sprintf("%d", val), sema.TypeInt
-		}
-
-		if sym, exists := g.symbols[e.Value]; exists {
-			loadReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
-			return loadReg, sym.Type
-		}
-
-		if gType, exists := g.semaCtx.Globals[e.Value]; exists {
-			loadReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), e.Value))
-			return loadReg, gType
-		}
-
-		if fn, exists := g.semaCtx.Functions[e.Value]; exists {
-			return "@" + e.Value, fn
-		}
-
-		return "0", sema.TypeInt
-
-	case *ast.StructLiteral:
-		st, structName := g.findStructByName(e.Type.Name.Value)
-		if st == nil {
-			panic(fmt.Sprintf("[Codegen Error] unknown struct type %s", e.Type.Name.Value))
-		}
-
-		allocaReg := g.nextReg()
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %%struct.%s\n", allocaReg, structName))
-
-		for i, fVal := range e.Fields {
-			valReg, valType := g.resolveValue(b, fVal.Value)
-
-			fieldIdx := i
-			var fieldType sema.Type
-			if fVal.Name != nil {
-				for idx, sf := range st.Fields {
-					if sf.Name == fVal.Name.Value {
-						fieldIdx = idx
-						fieldType = sf.Type
-						break
-					}
-				}
-			} else if i < len(st.Fields) {
-				fieldType = st.Fields[i].Type
-			}
-
-			gepReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-				gepReg, structName, structName, allocaReg, fieldIdx))
-
-			valToStore := valReg
-			if fieldType != nil && valType != nil && valType.LLVMType() != fieldType.LLVMType() {
-				convReg := g.nextReg()
-				if strings.HasSuffix(fieldType.LLVMType(), "*") && strings.HasSuffix(valType.LLVMType(), "*") {
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, fieldType.LLVMType()))
-					valToStore = convReg
-				}
-			}
-
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", fieldType.LLVMType(), valToStore, fieldType.LLVMType(), gepReg))
-		}
-
-		loadValReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load %%struct.%s, %%struct.%s* %s\n", loadValReg, structName, structName, allocaReg))
-		return loadValReg, st
-
-	// 1. resolveValue 内に ArrayLiteral, TypeAssertExpr を追加
-	case *ast.ArrayLiteral:
-		arrType := g.semaCtx.ResolveType(e.Type).(*sema.ArrayType)
-		allocaReg := g.nextReg()
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", allocaReg, arrType.LLVMType()))
-
-		for i, elem := range e.Elements {
-			valReg, valType := g.resolveValue(b, elem)
-			gepReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %d\n",
-				gepReg, arrType.LLVMType(), arrType.LLVMType(), allocaReg, i))
-
-			valToStore := valReg
-			if valType != nil && valType.LLVMType() != arrType.Elem.LLVMType() {
-				convReg := g.nextReg()
-				if arrType.Elem.LLVMType() == "i8" && valType.LLVMType() == "i64" {
-					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, valReg))
-					valToStore = convReg
-				} else if arrType.Elem.LLVMType() == "i64" && valType.LLVMType() == "i8" {
-					b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, valReg))
-					valToStore = convReg
-				}
-			}
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arrType.Elem.LLVMType(), valToStore, arrType.Elem.LLVMType(), gepReg))
-		}
-		loadReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, arrType.LLVMType(), arrType.LLVMType(), allocaReg))
-		return loadReg, arrType
-
-	case *ast.TypeAssertExpr:
-		ifaceReg, ifaceType := g.resolveValue(b, e.Expr)
-		targetType := g.semaCtx.ResolveType(e.Target)
-		targetID := g.semaCtx.GetTypeID(targetType)
-
-		dataPtr := g.nextReg()
-		typeIDReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, ifaceType.LLVMType(), ifaceReg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", typeIDReg, ifaceType.LLVMType(), ifaceReg))
-
-		matchReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp eq i64 %s, %d\n", matchReg, typeIDReg, targetID))
-
-		castReg := g.nextReg()
-		if strings.HasSuffix(targetType.LLVMType(), "*") {
-			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", castReg, dataPtr, targetType.LLVMType()))
-		} else if targetType.LLVMType() == "i64" {
-			b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", castReg, dataPtr))
-		} else if targetType.LLVMType() == "i1" {
-			pInt := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", pInt, dataPtr))
-			b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", castReg, pInt))
-		} else {
-			typedPtr := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, dataPtr, targetType.LLVMType()))
-			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", castReg, targetType.LLVMType(), targetType.LLVMType(), typedPtr))
-		}
-
-		// (targetValue, ok) のタプル型として返却
-		tupT := &sema.TupleType{Types: []sema.Type{targetType, sema.TypeBool}}
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %s, 0\n", t1, tupT.LLVMType(), targetType.LLVMType(), castReg))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i1 %s, 1\n", t2, tupT.LLVMType(), t1, matchReg))
-
-		return t2, tupT
-
 	case *ast.MemberExpr:
-		if pkgIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
-			if _, isVar := g.symbols[pkgIdent.Value]; !isVar {
-				candNames := []string{
-					pkgIdent.Value + "_" + e.Field.Value,
-					e.Field.Value,
-				}
-				for _, cand := range candNames {
-					if val, ok := g.semaCtx.Constants[cand]; ok {
-						g.log(fmt.Sprintf("Resolved constant: %s.%s = %d", pkgIdent.Value, e.Field.Value, val))
-						return fmt.Sprintf("%d", val), sema.TypeInt
-					}
-				}
-				panic(fmt.Sprintf("[Codegen Error] undefined package constant or member: %s.%s", pkgIdent.Value, e.Field.Value))
-			}
-		}
-
 		objReg, objType := g.resolveValue(b, e.Object)
 		st, structName := g.findStruct(objType, e.Field.Value)
 		if st == nil {
-			panic(fmt.Sprintf("[Codegen Error] cannot access field '%s' on non-struct type '%v'", e.Field.Value, objType))
+			panic(fmt.Sprintf("[Codegen Error] struct type not found for field %s", e.Field.Value))
 		}
 
 		fieldIdx := -1
-		var fieldType sema.Type
+		var fieldType sema.Type = sema.TypeInt
 		for i, f := range st.Fields {
 			if f.Name == e.Field.Value {
 				fieldIdx = i
@@ -1648,31 +1918,21 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				break
 			}
 		}
-		if fieldIdx == -1 {
-			panic(fmt.Sprintf("[Codegen Error] unknown field '%s' in struct '%s'", e.Field.Value, structName))
-		}
 
 		objPtrReg := objReg
 		if objIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
 			if sym, ok := g.symbols[objIdent.Value]; ok && !strings.HasSuffix(sym.Type.LLVMType(), "*") {
 				objPtrReg = sym.LLVMName
 			}
-		} else if !strings.HasSuffix(objType.LLVMType(), "*") {
-			tempAlloca := g.nextReg()
-			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %%struct.%s\n", tempAlloca, structName))
-			b.WriteString(fmt.Sprintf("  store %%struct.%s %s, %%struct.%s* %s\n", structName, objReg, structName, tempAlloca))
-			objPtrReg = tempAlloca
 		}
 
 		gepReg := g.nextReg()
-		loadReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
 			gepReg, structName, structName, objPtrReg, fieldIdx))
-		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n",
-			loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
+		loadReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
 		return loadReg, fieldType
 
-	// 2. resolveValue の IndexExpr で固定長配列に対応
 	case *ast.IndexExpr:
 		baseReg, baseType := g.resolveValue(b, e.Left)
 		idxReg, _ := g.resolveValue(b, e.Index)
@@ -1683,19 +1943,12 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 				if sym, ok := g.symbols[objIdent.Value]; ok {
 					arrPtrReg = sym.LLVMName
 				}
-			} else {
-				tempAlloca := g.nextReg()
-				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", tempAlloca, arr.LLVMType()))
-				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arr.LLVMType(), baseReg, arr.LLVMType(), tempAlloca))
-				arrPtrReg = tempAlloca
 			}
-
 			gepReg := g.nextReg()
-			loadReg := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
 				gepReg, arr.LLVMType(), arr.LLVMType(), arrPtrReg, idxReg))
-			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n",
-				loadReg, arr.Elem.LLVMType(), arr.Elem.LLVMType(), gepReg))
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, arr.Elem.LLVMType(), arr.Elem.LLVMType(), gepReg))
 			return loadReg, arr.Elem
 		}
 
@@ -1714,315 +1967,290 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, dataPtrReg, elemType.LLVMType()))
 
 		gepReg := g.nextReg()
-		loadReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", gepReg, elemType.LLVMType(), elemType.LLVMType(), typedPtrReg, idxReg))
-		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, elemType.LLVMType(), elemType.LLVMType(), gepReg))
 
-		if elemType.LLVMType() == "i8" {
-			extReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", extReg, loadReg))
-			return extReg, sema.TypeInt
-		}
+		loadReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, elemType.LLVMType(), elemType.LLVMType(), gepReg))
 		return loadReg, elemType
 
-	case *ast.SliceLiteral:
-		slType := g.semaCtx.ResolveType(e.Type).(*sema.SliceType)
-		elemSize := slType.Elem.Size()
-		if elemSize <= 0 {
-			elemSize = 1
-		}
-		numElems := len(e.Elements)
-		allocCap := numElems
-		if allocCap < 4 {
-			allocCap = 4
+	case *ast.ArrayLiteral:
+		arrType := g.semaCtx.ResolveType(e.Type)
+		arr, ok := arrType.(*sema.ArrayType)
+		if !ok {
+			panic("[Codegen Error] invalid array type in literal")
 		}
 
-		rawPtrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", rawPtrReg, allocCap*elemSize))
+		allocaReg := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", allocaReg, arr.LLVMType()))
 
-		typedPtrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, rawPtrReg, slType.Elem.LLVMType()))
+		for i, el := range e.Elements {
+			elReg, elType := g.resolveValue(b, el)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %d\n",
+				gepReg, arr.LLVMType(), arr.LLVMType(), allocaReg, i))
 
-		for i, elemExpr := range e.Elements {
-			valReg, valType := g.resolveValue(b, elemExpr)
-			destPtrReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %d\n", destPtrReg, slType.Elem.LLVMType(), slType.Elem.LLVMType(), typedPtrReg, i))
-
-			valToStore := valReg
-			if valType != nil && valType.LLVMType() != slType.Elem.LLVMType() {
+			valToStore := elReg
+			if elType != nil && elType.LLVMType() != arr.Elem.LLVMType() {
 				convReg := g.nextReg()
-				if slType.Elem.LLVMType() == "i8" && valType.LLVMType() == "i64" {
-					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, valReg))
+				if arr.Elem.LLVMType() == "i8" && elType.LLVMType() == "i64" {
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, elReg))
 					valToStore = convReg
-				} else if slType.Elem.LLVMType() == "i64" && valType.LLVMType() == "i8" {
-					b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, valReg))
-					valToStore = convReg
-				} else if strings.HasSuffix(slType.Elem.LLVMType(), "*") && strings.HasSuffix(valType.LLVMType(), "*") {
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, slType.Elem.LLVMType()))
+				} else if arr.Elem.LLVMType() == "i64" && elType.LLVMType() == "i8" {
+					b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, elReg))
 					valToStore = convReg
 				}
 			}
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", slType.Elem.LLVMType(), valToStore, slType.Elem.LLVMType(), destPtrReg))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arr.Elem.LLVMType(), valToStore, arr.Elem.LLVMType(), gepReg))
+		}
+
+		loadReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, arr.LLVMType(), arr.LLVMType(), allocaReg))
+		return loadReg, arr
+
+	case *ast.SliceLiteral:
+		sliceType := g.semaCtx.ResolveType(e.Type)
+		sl, ok := sliceType.(*sema.SliceType)
+		if !ok {
+			panic("[Codegen Error] invalid slice type in literal")
+		}
+
+		count := len(e.Elements)
+		elemSize := sl.Elem.Size()
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+		totalBytes := count * elemSize
+
+		mallocReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, totalBytes))
+
+		typedPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, mallocReg, sl.Elem.LLVMType()))
+
+		for i, el := range e.Elements {
+			elReg, elType := g.resolveValue(b, el)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %d\n",
+				gepReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedPtrReg, i))
+
+			valToStore := elReg
+			if elType != nil && elType.LLVMType() != sl.Elem.LLVMType() {
+				convReg := g.nextReg()
+				if sl.Elem.LLVMType() == "i8" && elType.LLVMType() == "i64" {
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, elReg))
+					valToStore = convReg
+				} else if sl.Elem.LLVMType() == "i64" && elType.LLVMType() == "i8" {
+					b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, elReg))
+					valToStore = convReg
+				}
+			}
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", sl.Elem.LLVMType(), valToStore, sl.Elem.LLVMType(), gepReg))
 		}
 
 		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } undef, i8* %s, 0\n", t1, rawPtrReg))
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, sl.LLVMType(), mallocReg))
 		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } %s, i64 %d, 1\n", t2, t1, numElems))
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %d, 1\n", t2, sl.LLVMType(), t1, count))
 		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64, i64 } %s, i64 %d, 2\n", t3, t2, allocCap))
-
-		return t3, slType
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %d, 2\n", t3, sl.LLVMType(), t2, count))
+		return t3, sl
 
 	case *ast.SliceExpr:
 		baseReg, baseType := g.resolveValue(b, e.Left)
 
-		if sliceType, isSlice := baseType.(*sema.SliceType); isSlice {
-			lowReg := "0"
-			if e.Low != nil {
-				lowReg, _ = g.resolveValue(b, e.Low)
-			}
+		var dataPtrReg string
+		var capReg string
+		var elemType sema.Type = sema.TypeByte
 
-			rawPtrReg := g.nextReg()
-			oldLenReg := g.nextReg()
-			oldCapReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtrReg, sliceType.LLVMType(), baseReg))
-			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", oldLenReg, sliceType.LLVMType(), baseReg))
-			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", oldCapReg, sliceType.LLVMType(), baseReg))
-
-			highReg := oldLenReg
-			if e.High != nil {
-				highReg, _ = g.resolveValue(b, e.High)
-			}
-
-			elemSize := sliceType.Elem.Size()
-			if elemSize <= 0 {
-				elemSize = 1
-			}
-			byteOffsetReg := lowReg
-			if elemSize > 1 {
-				byteOffsetReg = g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", byteOffsetReg, lowReg, elemSize))
-			}
-
-			newPtrReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", newPtrReg, rawPtrReg, byteOffsetReg))
-
-			newLenReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newLenReg, highReg, lowReg))
-
-			newCapReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newCapReg, oldCapReg, lowReg))
-
-			retSliceType := "{ i8*, i64, i64 }"
-			t1 := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, retSliceType, newPtrReg))
-			t2 := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, retSliceType, t1, newLenReg))
-			t3 := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, retSliceType, t2, newCapReg))
-
-			return t3, sliceType
+		if sl, isSlice := baseType.(*sema.SliceType); isSlice {
+			elemType = sl.Elem
+			dataPtrReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtrReg, sl.LLVMType(), baseReg))
+			capReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", capReg, sl.LLVMType(), baseReg))
+		} else if arr, isArr := baseType.(*sema.ArrayType); isArr {
+			elemType = arr.Elem
+			capReg = fmt.Sprintf("%d", arr.Len)
+			tempAlloca := g.nextReg()
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", tempAlloca, arr.LLVMType()))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arr.LLVMType(), baseReg, arr.LLVMType(), tempAlloca))
+			dataPtrReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", dataPtrReg, arr.LLVMType(), tempAlloca))
+		} else {
+			dataPtrReg = baseReg
+			capReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", capReg, baseReg))
 		}
 
 		lowReg := "0"
 		if e.Low != nil {
 			lowReg, _ = g.resolveValue(b, e.Low)
 		}
-		highReg := g.nextReg()
+
+		highReg := capReg
 		if e.High != nil {
 			highReg, _ = g.resolveValue(b, e.High)
-		} else {
-			b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", highReg, baseReg))
 		}
-		subReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i8* @hike_substr(i8* %s, i64 %s, i64 %s)\n", subReg, baseReg, lowReg, highReg))
-		return subReg, sema.TypeString
+
+		if baseType == sema.TypeString || (baseType != nil && baseType.TypeName() == "string") {
+			subReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @hike_substr(i8* %s, i64 %s, i64 %s)\n", subReg, baseReg, lowReg, highReg))
+			return subReg, sema.TypeString
+		}
+
+		elemSize := elemType.Size()
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+
+		offsetBytesReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", offsetBytesReg, lowReg, elemSize))
+
+		subPtrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", subPtrReg, dataPtrReg, offsetBytesReg))
+
+		newLenReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newLenReg, highReg, lowReg))
+
+		newCapReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", newCapReg, capReg, lowReg))
+
+		resSliceType := &sema.SliceType{Elem: elemType}
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), subPtrReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, newLenReg))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, newCapReg))
+
+		return t3, resSliceType
+
+	case *ast.TypeAssertExpr:
+		ifaceReg, ifaceType := g.resolveValue(b, e.Expr)
+		targetType := g.semaCtx.ResolveType(e.Target)
+		targetTypeID := g.semaCtx.GetTypeID(targetType)
+
+		dataPtrReg := g.nextReg()
+		typeIDReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtrReg, ifaceType.LLVMType(), ifaceReg))
+		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", typeIDReg, ifaceType.LLVMType(), ifaceReg))
+
+		matchReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp eq i64 %s, %d\n", matchReg, typeIDReg, targetTypeID))
+
+		unpackedValReg := g.nextReg()
+		if strings.HasSuffix(targetType.LLVMType(), "*") {
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", unpackedValReg, dataPtrReg, targetType.LLVMType()))
+		} else if targetType.LLVMType() == "i64" {
+			b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", unpackedValReg, dataPtrReg))
+		} else if targetType.LLVMType() == "i1" {
+			pInt := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = ptrtoint i8* %s to i64\n", pInt, dataPtrReg))
+			b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", unpackedValReg, pInt))
+		} else {
+			castPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", castPtr, dataPtrReg, targetType.LLVMType()))
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", unpackedValReg, targetType.LLVMType(), targetType.LLVMType(), castPtr))
+		}
+
+		tupleType := fmt.Sprintf("{ %s, i1 }", targetType.LLVMType())
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %s, 0\n", t1, tupleType, targetType.LLVMType(), unpackedValReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i1 %s, 1\n", t2, tupleType, t1, matchReg))
+
+		return t2, &sema.TupleType{Types: []sema.Type{targetType, sema.TypeBool}}
 
 	case *ast.CallExpr:
-		reg, retType := g.emitCallInternal(b, e)
-		if reg == "" {
-			return "0", sema.TypeVoid
-		}
-		return reg, retType
-
-	case *ast.BinaryExpr:
-		lhs, lhsType := g.resolveValue(b, e.Left)
-		rhs, rhsType := g.resolveValue(b, e.Right)
-		resReg := g.nextReg()
-
-		isLhsStr := lhsType == sema.TypeString || (lhsType != nil && lhsType.TypeName() == "string")
-		isRhsStr := rhsType == sema.TypeString || (rhsType != nil && rhsType.TypeName() == "string")
-
-		if e.Operator == "+" && (isLhsStr || isRhsStr) {
-			b.WriteString(fmt.Sprintf("  %s = call i8* @hike_strcat(i8* %s, i8* %s)\n", resReg, lhs, rhs))
-			return resReg, sema.TypeString
-		}
-
-		if (e.Operator == "==" || e.Operator == "!=") && (isLhsStr || isRhsStr) && lhs != "null" && rhs != "null" {
-			streqReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = call i1 @hike_streq(i8* %s, i8* %s)\n", streqReg, lhs, rhs))
-			if e.Operator == "!=" {
-				b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", resReg, streqReg))
-				return resReg, sema.TypeBool
-			}
-			return streqReg, sema.TypeBool
-		}
-
-		if e.Operator == "&&" || e.Operator == "||" {
-			lBool := lhs
-			if lhsType == nil || lhsType.LLVMType() != "i1" {
-				tStr := "i64"
-				if lhsType != nil && lhsType.LLVMType() != "" {
-					tStr = lhsType.LLVMType()
-				}
-				cmpVal := "0"
-				if strings.HasSuffix(tStr, "*") {
-					cmpVal = "null"
-				}
-				boolReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, %s\n", boolReg, tStr, lhs, cmpVal))
-				lBool = boolReg
-			}
-			rBool := rhs
-			if rhsType == nil || rhsType.LLVMType() != "i1" {
-				tStr := "i64"
-				if rhsType != nil && rhsType.LLVMType() != "" {
-					tStr = rhsType.LLVMType()
-				}
-				cmpVal := "0"
-				if strings.HasSuffix(tStr, "*") {
-					cmpVal = "null"
-				}
-				boolReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, %s\n", boolReg, tStr, rhs, cmpVal))
-				rBool = boolReg
-			}
-
-			if e.Operator == "&&" {
-				b.WriteString(fmt.Sprintf("  %s = and i1 %s, %s\n", resReg, lBool, rBool))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s = or i1 %s, %s\n", resReg, lBool, rBool))
-			}
-			return resReg, sema.TypeBool
-		}
-
-		switch e.Operator {
-		case "&":
-			b.WriteString(fmt.Sprintf("  %s = and i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "|":
-			b.WriteString(fmt.Sprintf("  %s = or i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "^":
-			b.WriteString(fmt.Sprintf("  %s = xor i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "<<":
-			b.WriteString(fmt.Sprintf("  %s = shl i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case ">>":
-			b.WriteString(fmt.Sprintf("  %s = ashr i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "+":
-			if lhsType != nil && strings.HasSuffix(lhsType.LLVMType(), "*") && rhsType != nil && rhsType.LLVMType() == "i64" {
-				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", resReg, lhs, rhs))
-				return resReg, lhsType
-			}
-			b.WriteString(fmt.Sprintf("  %s = add i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "-":
-			b.WriteString(fmt.Sprintf("  %s = sub i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "*":
-			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "/":
-			b.WriteString(fmt.Sprintf("  %s = sdiv i64 %s, %s\n", resReg, lhs, rhs))
-			return resReg, sema.TypeInt
-		case "<", ">", "<=", ">=":
-			opCode := "slt"
-			switch e.Operator {
-			case "<":
-				opCode = "slt"
-			case ">":
-				opCode = "sgt"
-			case "<=":
-				opCode = "sle"
-			case ">=":
-				opCode = "sge"
-			}
-			b.WriteString(fmt.Sprintf("  %s = icmp %s i64 %s, %s\n", resReg, opCode, lhs, rhs))
-			return resReg, sema.TypeBool
-		case "==", "!=":
-			opCode := "eq"
-			if e.Operator == "!=" {
-				opCode = "ne"
-			}
-
-			isLhsPtr := (lhsType != nil && strings.HasSuffix(lhsType.LLVMType(), "*")) || lhs == "null"
-			isRhsPtr := (rhsType != nil && strings.HasSuffix(rhsType.LLVMType(), "*")) || rhs == "null"
-
-			if isLhsPtr || isRhsPtr {
-				ptrType := "i8*"
-				if lhsType != nil && strings.HasSuffix(lhsType.LLVMType(), "*") {
-					ptrType = lhsType.LLVMType()
-				} else if rhsType != nil && strings.HasSuffix(rhsType.LLVMType(), "*") {
-					ptrType = rhsType.LLVMType()
-				}
-
-				actualLhs := lhs
-				actualRhs := rhs
-
-				if actualLhs == "null" || actualLhs == "0" {
-					actualLhs = "null"
-				} else if lhsType != nil && lhsType.LLVMType() != ptrType {
-					convReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, lhsType.LLVMType(), actualLhs, ptrType))
-					actualLhs = convReg
-				}
-
-				if actualRhs == "null" || actualRhs == "0" {
-					actualRhs = "null"
-				} else if rhsType != nil && rhsType.LLVMType() != ptrType {
-					convReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, rhsType.LLVMType(), actualRhs, ptrType))
-					actualRhs = convReg
-				}
-
-				b.WriteString(fmt.Sprintf("  %s = icmp %s %s %s, %s\n", resReg, opCode, ptrType, actualLhs, actualRhs))
-				return resReg, sema.TypeBool
-			}
-
-			if (lhsType != nil && lhsType.LLVMType() == "i1") || (rhsType != nil && rhsType.LLVMType() == "i1") {
-				actualLhs := lhs
-				actualRhs := rhs
-				if lhsType != nil && lhsType.LLVMType() != "i1" {
-					convReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i1\n", convReg, lhsType.LLVMType(), actualLhs))
-					actualLhs = convReg
-				}
-				if rhsType != nil && rhsType.LLVMType() != "i1" {
-					convReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i1\n", convReg, rhsType.LLVMType(), actualRhs))
-					actualRhs = convReg
-				}
-				b.WriteString(fmt.Sprintf("  %s = icmp %s i1 %s, %s\n", resReg, opCode, actualLhs, actualRhs))
-				return resReg, sema.TypeBool
-			}
-
-			cmpType := "i64"
-			if lhsType != nil && lhsType.LLVMType() != "" {
-				cmpType = lhsType.LLVMType()
-			}
-			b.WriteString(fmt.Sprintf("  %s = icmp %s %s %s, %s\n", resReg, opCode, cmpType, lhs, rhs))
-			return resReg, sema.TypeBool
-		}
+		return g.emitCallInternal(b, e)
 	}
+
 	return "0", sema.TypeInt
 }
 
+func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (string, sema.Type) {
+	leftReg, leftType := g.resolveValue(b, e.Left)
+	rightReg, rightType := g.resolveValue(b, e.Right)
+
+	if leftType == sema.TypeString || rightType == sema.TypeString {
+		if e.Operator == "+" {
+			concatReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @hike_strcat(i8* %s, i8* %s)\n", concatReg, leftReg, rightReg))
+			return concatReg, sema.TypeString
+		}
+		if e.Operator == "==" || e.Operator == "!=" {
+			eqReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i1 @hike_streq(i8* %s, i8* %s)\n", eqReg, leftReg, rightReg))
+			if e.Operator == "!=" {
+				neqReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", neqReg, eqReg))
+				return neqReg, sema.TypeBool
+			}
+			return eqReg, sema.TypeBool
+		}
+	}
+
+	opInst := "add"
+	isCompare := false
+
+	switch e.Operator {
+	case "+":
+		opInst = "add"
+	case "-":
+		opInst = "sub"
+	case "*":
+		opInst = "mul"
+	case "/":
+		opInst = "sdiv"
+	case "&":
+		opInst = "and"
+	case "|":
+		opInst = "or"
+	case "^":
+		opInst = "xor"
+	case "<<":
+		opInst = "shl"
+	case ">>":
+		opInst = "ashr"
+	case "==":
+		opInst = "icmp eq"
+		isCompare = true
+	case "!=":
+		opInst = "icmp ne"
+		isCompare = true
+	case "<":
+		opInst = "icmp slt"
+		isCompare = true
+	case ">":
+		opInst = "icmp sgt"
+		isCompare = true
+	case "<=":
+		opInst = "icmp sle"
+		isCompare = true
+	case ">=":
+		opInst = "icmp sge"
+		isCompare = true
+	case "&&":
+		opInst = "and"
+	case "||":
+		opInst = "or"
+	}
+
+	resReg := g.nextReg()
+	opTypeStr := "i64"
+	if leftType != nil && leftType.LLVMType() != "" {
+		opTypeStr = leftType.LLVMType()
+	}
+
+	b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", resReg, opInst, opTypeStr, leftReg, rightReg))
+
+	if isCompare || e.Operator == "&&" || e.Operator == "||" {
+		return resReg, sema.TypeBool
+	}
+	return resReg, leftType
+}
+
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
-	// 1. append(s1, s2...) スライス連結
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
 		slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
 		slice2Reg, slice2Type := g.resolveValue(b, call.Args[1])
@@ -2139,7 +2367,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		return t3, sl1
 	}
 
-	// 2. append(s, elem1, elem2...) 要素追加
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && len(call.Args) >= 2 {
 		sliceReg, sliceType := g.resolveValue(b, call.Args[0])
 
@@ -2271,7 +2498,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		return t3, sl
 	}
 
-	// 3. 組み込み関数 len() / cap()
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && len(call.Args) == 1 {
 		if fnIdent.Value == "len" || fnIdent.Value == "cap" {
 			argReg, argType := g.resolveValue(b, call.Args[0])
@@ -2292,7 +2518,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 4. 型キャスト (*TypeName)(ptr)
 	if pref, ok := call.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		var typeName string
 		var isSlice bool
@@ -2352,7 +2577,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 5. 基本型キャスト int(val)
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "int" && len(call.Args) == 1 {
 		argReg, argType := g.resolveValue(b, call.Args[0])
 		srcTypeStr := "i64"
@@ -2373,7 +2597,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		return castReg, sema.TypeInt
 	}
 
-	// 6. パッケージ関数呼び出し or 構造体メソッド呼び出し (obj.Method)
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {
 		isVariable := false
 		if objIdent, ok := memExpr.Object.(*ast.Identifier); ok {
@@ -2529,9 +2752,7 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 7. 直接関数呼び出し (fn(a, b...))
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok {
-		// ローカル変数/グローバル変数に同名が存在しない場合のみ直接呼び出し
 		_, isLocal := g.symbols[fnIdent.Value]
 		_, isGlobal := g.semaCtx.Globals[fnIdent.Value]
 
@@ -2613,14 +2834,41 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// 8. 関数ポインタ経由の間接関数呼び出し (Indirect Call: f(a, b))
 	fnReg, fnValType := g.resolveValue(b, call.Function)
 	ft, isFuncType := fnValType.(*sema.FuncType)
 	if !isFuncType {
-		panic(fmt.Sprintf("[Codegen Error] expression is not a function pointer: %v", fnValType))
+		panic(fmt.Sprintf("[Codegen Error] expression is not a function: %v", fnValType))
 	}
 
-	args := []string{}
+	fnRawPtr := g.nextReg()
+	envRawPtr := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 0\n", fnRawPtr, fnReg))
+	b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 1\n", envRawPtr, fnReg))
+
+	retTypeStr := "void"
+	var semaRet sema.Type = sema.TypeVoid
+	if len(ft.ReturnTypes) == 1 {
+		retTypeStr = ft.ReturnTypes[0].LLVMType()
+		semaRet = ft.ReturnTypes[0]
+	} else if len(ft.ReturnTypes) > 1 {
+		tupleTypes := []string{}
+		for _, rt := range ft.ReturnTypes {
+			tupleTypes = append(tupleTypes, rt.LLVMType())
+		}
+		retTypeStr = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
+		semaRet = &sema.TupleType{Types: ft.ReturnTypes}
+	}
+
+	sigParams := []string{"i8*"}
+	for _, pt := range ft.ParamTypes {
+		sigParams = append(sigParams, pt.LLVMType())
+	}
+	rawFnSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(sigParams, ", "))
+
+	typedFnPtr := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFnPtr, fnRawPtr, rawFnSig))
+
+	args := []string{fmt.Sprintf("i8* %s", envRawPtr)}
 	for i, arg := range call.Args {
 		argReg, argType := g.resolveValue(b, arg)
 		t := argType
@@ -2647,57 +2895,12 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		args = append(args, fmt.Sprintf("%s %s", targetTypeStr, argReg))
 	}
 
-	retType := "void"
-	var semaRet sema.Type = sema.TypeVoid
-	if len(ft.ReturnTypes) == 1 {
-		retType = ft.ReturnTypes[0].LLVMType()
-		semaRet = ft.ReturnTypes[0]
-	} else if len(ft.ReturnTypes) > 1 {
-		tupleTypes := []string{}
-		for _, rt := range ft.ReturnTypes {
-			tupleTypes = append(tupleTypes, rt.LLVMType())
-		}
-		retType = fmt.Sprintf("{ %s }", strings.Join(tupleTypes, ", "))
-		semaRet = &sema.TupleType{Types: ft.ReturnTypes}
-	}
-
-	if retType == "void" {
-		b.WriteString(fmt.Sprintf("  call void %s(%s)\n", fnReg, strings.Join(args, ", ")))
+	if retTypeStr == "void" {
+		b.WriteString(fmt.Sprintf("  call void %s(%s)\n", typedFnPtr, strings.Join(args, ", ")))
 		return "", sema.TypeVoid
 	}
 
 	callReg := g.nextReg()
-	b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", callReg, retType, fnReg, strings.Join(args, ", ")))
+	b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", callReg, retTypeStr, typedFnPtr, strings.Join(args, ", ")))
 	return callReg, semaRet
-}
-
-func (g *CodeGenerator) lookupFunction(name string) *sema.FuncType {
-	if fn, ok := g.semaCtx.Functions[name]; ok {
-		return fn
-	}
-
-	if idx := strings.Index(name, "_"); idx != -1 {
-		baseName := name[idx+1:]
-		if fn, ok := g.semaCtx.Functions[baseName]; ok {
-			return fn
-		}
-		if lastIdx := strings.LastIndex(name, "_"); lastIdx != idx {
-			lastBase := name[lastIdx+1:]
-			if fn, ok := g.semaCtx.Functions[lastBase]; ok {
-				return fn
-			}
-			structMethod := name[idx+1:]
-			if fn, ok := g.semaCtx.Functions[structMethod]; ok {
-				return fn
-			}
-		}
-	}
-
-	for fnName, fn := range g.semaCtx.Functions {
-		if strings.HasSuffix(fnName, "_"+name) || strings.HasSuffix(fnName, name) {
-			return fn
-		}
-	}
-
-	return nil
 }

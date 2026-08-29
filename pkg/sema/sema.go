@@ -116,27 +116,10 @@ func (f *FuncType) TypeName() string {
 }
 
 func (f *FuncType) LLVMType() string {
-	retType := "void"
-	if len(f.ReturnTypes) == 1 {
-		retType = f.ReturnTypes[0].LLVMType()
-	} else if len(f.ReturnTypes) > 1 {
-		types := []string{}
-		for _, rt := range f.ReturnTypes {
-			types = append(types, rt.LLVMType())
-		}
-		retType = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
-	}
-	paramTypes := []string{}
-	for _, p := range f.ParamTypes {
-		paramTypes = append(paramTypes, p.LLVMType())
-	}
-	if f.IsVariadic {
-		paramTypes = append(paramTypes, "...")
-	}
-	return fmt.Sprintf("%s (%s)*", retType, strings.Join(paramTypes, ", "))
+	return "{ i8*, i8* }"
 }
 
-func (f *FuncType) Size() int { return 8 }
+func (f *FuncType) Size() int { return 16 }
 
 type TupleType struct {
 	Types []Type

@@ -18,66 +18,69 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// 1. テスト対象の通常関数
 func add(a int, b int) int {
 	return a + b
 }
 
-func multiply(a int, b int) int {
-	return a * b
-}
-
-// 2. コールバックを受け取る高階関数
 func applyOp(op func(int, int) int, x int, y int) int {
 	return op(x, y)
 }
 
 func main() int {
-	fmt.PrintLn("=== Running First-Class Function & Callback Tests ===")
+	fmt.PrintLn("=== Running Closure Environment Capture Tests ===")
 	testCount := 0
 
 	// ==========================================
-	// 1. 関数ポインタの変数代入と直接呼び出し
+	// 1. 単一変数のキャプチャと書き換え
 	// ==========================================
-	var myOp func(int, int) int = add
-	res1 := myOp(10, 20)
-	testCount++
-	assert(res1 == 30, testCount, "Function Variable: myOp(10, 20) == 30")
-
-	// 別の関数を再代入
-	myOp = multiply
-	res2 := myOp(10, 20)
-	testCount++
-	assert(res2 == 200, testCount, "Function Reassignment: myOp(10, 20) == 200")
-
-	// ==========================================
-	// 2. 高階関数への関数渡し（コールバック）
-	// ==========================================
-	res3 := applyOp(add, 50, 25)
-	testCount++
-	assert(res3 == 75, testCount, "Callback: applyOp(add, 50, 25) == 75")
-
-	res4 := applyOp(multiply, 5, 6)
-	testCount++
-	assert(res4 == 30, testCount, "Callback: applyOp(multiply, 5, 6) == 30")
-
-	// ==========================================
-	// 3. 無名関数（関数リテラル）の定義・代入・実行
-	// ==========================================
-	sub := func(a int, b int) int {
-		return a - b
+	counter := 100
+	increment := func(amount int) int {
+		counter += amount
+		return counter
 	}
-	res5 := sub(100, 30)
-	testCount++
-	assert(res5 == 70, testCount, "Anonymous Function: sub(100, 30) == 70")
 
-	// 無名関数をコールバックとして直接引数渡し
-	res6 := applyOp(func(a int, b int) int {
-		return a + b + 1
-	}, 10, 20)
+	res1 := increment(25)
 	testCount++
-	assert(res6 == 31, testCount, "Anonymous Callback: applyOp(func..., 10, 20) == 31")
+	assert(res1 == 125 && counter == 125, testCount, "Closure: capture counter and mutate (100 -> 125)")
 
-	fmt.PrintLn("=== All Tests Completed Successfully ===")
+	res2 := increment(10)
+	testCount++
+	assert(res2 == 135 && counter == 135, testCount, "Closure: subsequent call accumulates counter (125 -> 135)")
+
+	// ==========================================
+	// 2. 複数変数のキャプチャ
+	// ==========================================
+	factor := 3
+	base := 50
+	calc := func(x int) int {
+		return base + (x * factor)
+	}
+
+	res3 := calc(10)
+	testCount++
+	assert(res3 == 80, testCount, "Closure: capture multiple variables (base + x * factor == 80)")
+
+	// ==========================================
+	// 3. キャプチャを持つクロージャを高階関数に渡す
+	// ==========================================
+	total := 0
+	accumulateOp := func(a int, b int) int {
+		sum := a + b
+		total += sum
+		return sum
+	}
+
+	res4 := applyOp(accumulateOp, 20, 30)
+	testCount++
+	assert(res4 == 50 && total == 50, testCount, "Closure Callback: applyOp mutates outer total variable")
+
+	// ==========================================
+	// 4. トップレベル関数ポインタの Thunk 互換性
+	// ==========================================
+	res5 := applyOp(add, 40, 60)
+	testCount++
+	assert(res5 == 100, testCount, "Top-level Function Thunk: applyOp(add, 40, 60) == 100")
+
+	fmt.PrintLn("=== All Closure Tests Completed Successfully ===")
 	return testCount
 }
