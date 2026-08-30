@@ -1,8 +1,9 @@
 package main
 
 import (
-	"std/errors"
 	"std/fmt"
+	"std/io"
+	"std/os"
 )
 
 func assert(cond bool, testNum int, testName *byte) {
@@ -19,68 +20,86 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// 1. 標準的な多値返却と errors.New
-func divide(a int, b int) (int, error) {
-	if b == 0 {
-		return 0, errors.New("division by zero")
-	}
-	return a / b, nil
+// io.Writer インターフェース経由での書き込みテスト
+func writeMessage(w io.Writer, msg *byte) (int, error) {
+	b := []byte(msg)
+	return w.Write(b)
 }
 
-// 2. カスタムエラー構造体
-type CustomError struct {
-	Code int
-	Msg  *byte
-}
-
-func (c *CustomError) Error() *byte {
-	return c.Msg
-}
-
-func parseCode(code int) (int, error) {
-	if code < 0 {
-		return 0, &CustomError{Code: 400, Msg: "negative code not allowed"}
-	}
-	return code * 10, nil
+// io.Reader インターフェース経由での読み込みテスト
+func readMessage(r io.Reader, size int) ([]byte, int, error) {
+	buf := make([]byte, size)
+	n, err := r.Read(buf)
+	return buf, n, err
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Error Handling & Multi-Value Return Tests ===")
+	fmt.PrintLn("=== Running std/os & std/io Comprehensive Tests ===")
 	testCount := 0
 
-	// Test 1: 正常系 (divide 10 / 2 -> 5, err == nil)
-	val1, err1 := divide(10, 2)
+	// ==========================================
+	// 1. os.Args CLI引数テスト
+	// ==========================================
 	testCount++
-	assert(val1 == 5 && err1 == nil, testCount, "Success Case: divide(10, 2) == (5, nil)")
+	assert(len(os.Args) >= 1, testCount, "os.Args: length is at least 1 (program name)")
+	fmt.PrintStr("Program Executable: ")
+	fmt.PrintLn(os.Args[0])
 
-	// Test 2: 異常系 (divide 10 / 0 -> err != nil)
-	val2, err2 := divide(10, 0)
+	// ==========================================
+	// 2. os.Create と File.WriteString
+	// ==========================================
+	fileName := "test_output.txt"
+	f, err := os.Create(fileName)
 	testCount++
-	assert(val2 == 0 && err2 != nil, testCount, "Error Case: divide(10, 0) returns non-nil error")
+	assert(err == nil && f != nil, testCount, "os.Create: created test_output.txt")
 
-	// Test 3: error インターフェースの Error() メソッド呼び出し
-	errMsg := err2.Error()
-	fmt.PrintStr("Captured Error: ")
-	fmt.PrintLn(errMsg)
+	written, wErr := f.WriteString("Hello Hike Standard Library!")
 	testCount++
-	assert(errMsg != nil, testCount, "Error Method Dispatch: err.Error() returns message")
+	assert(wErr == nil && written == 28, testCount, "File.WriteString: wrote 28 bytes")
+	f.Close()
 
-	// Test 4: カスタムエラー構造体と多値返却
-	val3, err3 := parseCode(-1)
+	// ==========================================
+	// 3. os.Open と File.Read (バッファ読み込み)
+	// ==========================================
+	fOpen, oErr := os.Open(fileName)
 	testCount++
-	assert(val3 == 0 && err3 != nil, testCount, "Custom Error: parseCode(-1) returns CustomError")
+	assert(oErr == nil && fOpen != nil, testCount, "os.Open: opened test_output.txt")
 
-	// Test 5: 型スイッチによる具象エラーのアンパック
-	var customCode int = 0
-	switch e := err3.(type) {
-	case *CustomError:
-		customCode = e.Code
-	default:
-		customCode = -1
-	}
+	readBuf := make([]byte, 64)
+	nRead, rErr := fOpen.Read(readBuf)
 	testCount++
-	assert(customCode == 400, testCount, "Type Switch on error: extracted CustomError.Code == 400")
+	assert(rErr == nil && nRead == 28, testCount, "File.Read: read exactly 28 bytes")
+	fOpen.Close()
 
-	fmt.PrintLn("=== All Error Handling Tests Passed ===")
+	// ==========================================
+	// 4. io.Writer / io.Reader インターフェース適合
+	// ==========================================
+	fOut, _ := os.Create("test_io.txt")
+	wn, iwErr := writeMessage(fOut, "Interface I/O Works!")
+	fOut.Close()
+	testCount++
+	assert(iwErr == nil && wn == 20, testCount, "io.Writer Interface Dispatch to *os.File")
+
+	fIn, _ := os.Open("test_io.txt")
+	inBuf, inN, irErr := readMessage(fIn, 32)
+	fIn.Close()
+	testCount++
+	assert(irErr == nil && inN == 20, testCount, "io.Reader Interface Dispatch to *os.File")
+	fmt.PrintStr("Read Content: ")
+	fmt.PrintLn(string(inBuf[0:inN]))
+
+	// ==========================================
+	// 5. os.WriteFile / os.ReadFile 便利関数
+	// ==========================================
+	testData := []byte("Convenient File I/O")
+	wfErr := os.WriteFile("test_helper.txt", testData)
+	testCount++
+	assert(wfErr == nil, testCount, "os.WriteFile: wrote file successfully")
+
+	readData, rfErr := os.ReadFile("test_helper.txt")
+	testCount++
+	assert(rfErr == nil && len(readData) == 19, testCount, "os.ReadFile: read file content correctly")
+
+	fmt.PrintLn("=== All std/os & std/io Tests Passed ===")
 	return testCount
 }

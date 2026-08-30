@@ -1,81 +1,110 @@
 package os
 
+import (
+	"std/errors"
+)
+
+// Cランタイムの外部I/O関数宣言
 func fopen(filename *byte, mode *byte) *byte
 func fclose(stream *byte) int
-func fread(ptr *byte, size int, count int, stream *byte) int
-func fwrite(ptr *byte, size int, count int, stream *byte) int
-func fseek(stream *byte, offset int, whence int) int
-func ftell(stream *byte) int
-func malloc(size int) *byte
-func free(ptr *byte)
+func fread(ptr *byte, size int, nmemb int, stream *byte) int
+func fwrite(ptr *byte, size int, nmemb int, stream *byte) int
 func exit(status int)
+
+// CLI引数スライス
+var Args []string
 
 type File struct {
 	handle *byte
 }
 
-func Open(filename *byte, mode *byte) *File {
-	fp := fopen(filename, mode)
-	if fp == nil {
+func (f *File) Read(b []byte) (int, error) {
+	if f.handle == nil {
+		return 0, errors.New("file not open")
+	}
+	if len(b) == 0 {
+		return 0, nil
+	}
+	n := fread(&b[0], 1, len(b), f.handle)
+	if n == 0 {
+		return 0, errors.New("EOF")
+	}
+	return n, nil
+}
+
+func (f *File) Write(b []byte) (int, error) {
+	if f.handle == nil {
+		return 0, errors.New("file not open")
+	}
+	if len(b) == 0 {
+		return 0, nil
+	}
+	n := fwrite(&b[0], 1, len(b), f.handle)
+	if n < len(b) {
+		return n, errors.New("short write")
+	}
+	return n, nil
+}
+
+func (f *File) WriteString(s *byte) (int, error) {
+	if f.handle == nil {
+		return 0, errors.New("file not open")
+	}
+	n := fwrite(s, 1, len(s), f.handle)
+	return n, nil
+}
+
+func (f *File) Close() error {
+	if f.handle == nil {
 		return nil
-	}
-	f := (*File)(malloc(8))
-	f.handle = fp
-	return f
-}
-
-func (f *File) Read(buf *byte, size int) int {
-	if f == nil || f.handle == nil {
-		return 0
-	}
-	return fread(buf, 1, size, f.handle)
-}
-
-func (f *File) Write(buf *byte, size int) int {
-	if f == nil || f.handle == nil {
-		return 0
-	}
-	return fwrite(buf, 1, size, f.handle)
-}
-
-func (f *File) Close() int {
-	if f == nil || f.handle == nil {
-		return 0
 	}
 	res := fclose(f.handle)
 	f.handle = nil
-	free((*byte)(f))
-	return res
+	if res != 0 {
+		return errors.New("failed to close file")
+	}
+	return nil
 }
 
-func ReadFile(filename *byte) *byte {
-	fp := fopen(filename, "rb")
-	if fp == nil {
-		return nil
+func Open(name *byte) (*File, error) {
+	h := fopen(name, "rb")
+	if h == nil {
+		return nil, errors.New("failed to open file")
 	}
-	fseek(fp, 0, 2)
-	size := ftell(fp)
-	fseek(fp, 0, 0)
-	if size < 0 {
-		fclose(fp)
-		return nil
-	}
-
-	buf := malloc(size + 1)
-	readBytes := fread(buf, 1, size, fp)
-	buf[readBytes] = 0
-	fclose(fp)
-	return buf
+	return &File{handle: h}, nil
 }
 
-func WriteFile(filename *byte, content *byte, length int) int {
-	fp := fopen(filename, "wb")
-	if fp == nil {
-		return 0
+func Create(name *byte) (*File, error) {
+	h := fopen(name, "wb+")
+	if h == nil {
+		return nil, errors.New("failed to create file")
 	}
-	written := fwrite(content, 1, length, fp)
-	fclose(fp)
-	return written
+	return &File{handle: h}, nil
+}
+
+func WriteFile(filename *byte, data []byte) error {
+	f, err := Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, wErr := f.Write(data)
+	return wErr
+}
+
+func ReadFile(filename *byte) ([]byte, error) {
+	f, err := Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 1024)
+	n, rErr := f.Read(buf)
+	if rErr != nil && n == 0 {
+		return nil, rErr
+	}
+	return buf[0:n], nil
 }
 
 func Exit(code int) {

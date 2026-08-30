@@ -428,7 +428,8 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	p.expectPeek(token.RPAREN)
 
 	fn.ReturnTypes = []ast.TypeExpr{}
-	if !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
+	// 引数末尾の ')' と同じ行にある場合のみ戻り値の型定義をパースする
+	if p.peekToken.Line == p.curToken.Line && !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken()
 			p.nextToken()

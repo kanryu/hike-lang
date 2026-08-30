@@ -19,9 +19,9 @@ type BasicType struct {
 	LLVM     string
 }
 
-func (b *BasicType) TypeName() string { return b.Name }
-func (b *BasicType) LLVMType() string { return b.LLVM }
-func (b *BasicType) Size() int        { return b.ByteSize }
+func (t *BasicType) TypeName() string { return t.Name }
+func (t *BasicType) LLVMType() string { return t.LLVM }
+func (t *BasicType) Size() int        { return t.ByteSize }
 
 var (
 	TypeInt    = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
@@ -35,26 +35,26 @@ type PointerType struct {
 	Base Type
 }
 
-func (p *PointerType) TypeName() string { return "*" + p.Base.TypeName() }
-func (p *PointerType) LLVMType() string { return p.Base.LLVMType() + "*" }
-func (p *PointerType) Size() int        { return 8 }
+func (t *PointerType) TypeName() string { return "*" + t.Base.TypeName() }
+func (t *PointerType) LLVMType() string { return t.Base.LLVMType() + "*" }
+func (t *PointerType) Size() int        { return 8 }
 
 type SliceType struct {
 	Elem Type
 }
 
-func (s *SliceType) TypeName() string { return "[]" + s.Elem.TypeName() }
-func (s *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
-func (s *SliceType) Size() int        { return 24 }
+func (t *SliceType) TypeName() string { return "[]" + t.Elem.TypeName() }
+func (t *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
+func (t *SliceType) Size() int        { return 24 }
 
 type ArrayType struct {
 	Len  int
 	Elem Type
 }
 
-func (a *ArrayType) TypeName() string { return fmt.Sprintf("[%d]%s", a.Len, a.Elem.TypeName()) }
-func (a *ArrayType) LLVMType() string { return fmt.Sprintf("[%d x %s]", a.Len, a.Elem.LLVMType()) }
-func (a *ArrayType) Size() int        { return a.Len * a.Elem.Size() }
+func (t *ArrayType) TypeName() string { return fmt.Sprintf("[%d]%s", t.Len, t.Elem.TypeName()) }
+func (t *ArrayType) LLVMType() string { return fmt.Sprintf("[%d x %s]", t.Len, t.Elem.LLVMType()) }
+func (t *ArrayType) Size() int        { return t.Len * t.Elem.Size() }
 
 type Field struct {
 	Name       string
@@ -67,14 +67,21 @@ type StructType struct {
 	Fields []Field
 }
 
-func (s *StructType) TypeName() string { return s.Name }
-func (s *StructType) LLVMType() string { return "%struct." + s.Name }
-func (s *StructType) Size() int {
-	total := 0
-	for _, f := range s.Fields {
-		total += f.Type.Size()
+func (t *StructType) TypeName() string { return t.Name }
+func (t *StructType) LLVMType() string { return "%struct." + t.Name }
+func (t *StructType) Size() int {
+	sz := 0
+	for _, f := range t.Fields {
+		fsz := f.Type.Size()
+		if fsz <= 0 {
+			fsz = 8
+		}
+		sz += fsz
 	}
-	return total
+	if sz == 0 {
+		return 8
+	}
+	return sz
 }
 
 type Method struct {
@@ -88,111 +95,84 @@ type InterfaceType struct {
 	Methods []Method
 }
 
-func (i *InterfaceType) IsAny() bool {
-	return len(i.Methods) == 0
-}
-
-func (i *InterfaceType) TypeName() string {
-	if i.Name != "" {
-		return i.Name
+func (t *InterfaceType) TypeName() string {
+	if t.Name != "" {
+		return t.Name
 	}
-	return "interface{}"
+	return "interface"
 }
 
-func (i *InterfaceType) LLVMType() string {
-	if i.IsAny() {
+func (t *InterfaceType) LLVMType() string {
+	if t.IsAny() {
 		return "{ i8*, i64 }"
 	}
 	return "{ i8*, i8* }"
 }
 
-func (i *InterfaceType) Size() int { return 16 }
-
-type TupleType struct {
-	Types []Type
-}
-
-func (t *TupleType) TypeName() string {
-	names := []string{}
-	for _, elem := range t.Types {
-		names = append(names, elem.TypeName())
-	}
-	return "(" + strings.Join(names, ", ") + ")"
-}
-
-func (t *TupleType) LLVMType() string {
-	types := []string{}
-	for _, elem := range t.Types {
-		types = append(types, elem.LLVMType())
-	}
-	return "{ " + strings.Join(types, ", ") + " }"
-}
-
-func (t *TupleType) Size() int {
-	total := 0
-	for _, elem := range t.Types {
-		total += elem.Size()
-	}
-	return total
-}
+func (t *InterfaceType) Size() int   { return 16 }
+func (t *InterfaceType) IsAny() bool { return len(t.Methods) == 0 }
 
 type FuncType struct {
 	Name        string
+	Receiver    Type
 	ParamTypes  []Type
 	ReturnTypes []Type
 	IsVariadic  bool
 	IsExtern    bool
 }
 
-func (f *FuncType) TypeName() string {
-	paramNames := []string{}
-	for _, p := range f.ParamTypes {
-		paramNames = append(paramNames, p.TypeName())
-	}
-	retNames := []string{}
-	for _, r := range f.ReturnTypes {
-		retNames = append(retNames, r.TypeName())
-	}
-	retStr := strings.Join(retNames, ", ")
-	if len(retNames) > 1 {
-		retStr = "(" + retStr + ")"
-	}
-	return fmt.Sprintf("func(%s) %s", strings.Join(paramNames, ", "), retStr)
+func (t *FuncType) TypeName() string { return "func" }
+func (t *FuncType) LLVMType() string { return "{ i8*, i8* }" }
+func (t *FuncType) Size() int        { return 16 }
+
+type TupleType struct {
+	Types []Type
 }
 
-func (f *FuncType) LLVMType() string {
-	return "{ i8*, i8* }"
+func (t *TupleType) TypeName() string { return "tuple" }
+func (t *TupleType) LLVMType() string {
+	types := []string{}
+	for _, el := range t.Types {
+		types = append(types, el.LLVMType())
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 }
-
-func (f *FuncType) Size() int { return 16 }
+func (t *TupleType) Size() int {
+	sz := 0
+	for _, el := range t.Types {
+		sz += el.Size()
+	}
+	return sz
+}
 
 type Context struct {
-	Functions  map[string]*FuncType
 	Structs    map[string]*StructType
 	Interfaces map[string]*InterfaceType
-	Aliases    map[string]Type
-	Constants  map[string]int64
+	Functions  map[string]*FuncType
 	Globals    map[string]Type
+	Constants  map[string]int64
+	Aliases    map[string]Type
 	typeIDs    map[string]int64
-	nextID     int64
+	nextTypeID int64
 }
 
 func NewContext() *Context {
 	ctx := &Context{
-		Functions:  make(map[string]*FuncType),
 		Structs:    make(map[string]*StructType),
 		Interfaces: make(map[string]*InterfaceType),
-		Aliases:    make(map[string]Type),
-		Constants:  make(map[string]int64),
+		Functions:  make(map[string]*FuncType),
 		Globals:    make(map[string]Type),
+		Constants:  make(map[string]int64),
+		Aliases:    make(map[string]Type),
 		typeIDs:    make(map[string]int64),
-		nextID:     1,
+		nextTypeID: 1,
 	}
 
-	ctx.GetTypeID(TypeInt)
-	ctx.GetTypeID(TypeByte)
-	ctx.GetTypeID(TypeBool)
-	ctx.GetTypeID(TypeString)
+	ctx.typeIDs["int"] = 1
+	ctx.typeIDs["byte"] = 2
+	ctx.typeIDs["bool"] = 3
+	ctx.typeIDs["string"] = 4
+	ctx.nextTypeID = 5
 
 	errorIface := &InterfaceType{
 		Name: "error",
@@ -202,18 +182,21 @@ func NewContext() *Context {
 	}
 	ctx.Interfaces["error"] = errorIface
 	ctx.Aliases["error"] = errorIface
-	ctx.Aliases["any"] = &InterfaceType{Name: "any"}
+
 	return ctx
 }
 
 func (c *Context) GetTypeID(t Type) int64 {
-	key := t.TypeName()
-	if id, exists := c.typeIDs[key]; exists {
+	if t == nil {
+		return 0
+	}
+	name := t.TypeName()
+	if id, exists := c.typeIDs[name]; exists {
 		return id
 	}
-	id := c.nextID
-	c.typeIDs[key] = id
-	c.nextID++
+	id := c.nextTypeID
+	c.nextTypeID++
+	c.typeIDs[name] = id
 	return id
 }
 
@@ -224,6 +207,20 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	switch t := expr.(type) {
 	case *ast.NamedType:
 		name := t.Name.Value
+		if t.Package != nil {
+			qualified := t.Package.Value + "_" + name
+			if iface, ok := c.Interfaces[qualified]; ok {
+				return iface
+			}
+			if alias, ok := c.Aliases[qualified]; ok {
+				return alias
+			}
+			if st, ok := c.Structs[qualified]; ok {
+				return st
+			}
+			name = qualified
+		}
+
 		if iface, ok := c.Interfaces[name]; ok {
 			return iface
 		}
@@ -233,6 +230,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		if st, ok := c.Structs[name]; ok {
 			return st
 		}
+
 		switch name {
 		case "int":
 			return TypeInt
@@ -288,61 +286,28 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	return TypeVoid
 }
 
-func evalConstExpr(expr ast.Expression, consts map[string]int64) int64 {
-	switch e := expr.(type) {
-	case *ast.IntegerLiteral:
-		return e.Value
-	case *ast.IotaExpr:
-		return e.Value
-	case *ast.Identifier:
-		if val, ok := consts[e.Value]; ok {
-			return val
-		}
-		return 0
-	case *ast.BinaryExpr:
-		left := evalConstExpr(e.Left, consts)
-		right := evalConstExpr(e.Right, consts)
-		switch e.Operator {
-		case "+":
-			return left + right
-		case "-":
-			return left - right
-		case "*":
-			return left * right
-		case "/":
-			if right != 0 {
-				return left / right
-			}
-			return 0
-		case "<<":
-			return left << right
-		case ">>":
-			return left >> right
-		case "&":
-			return left & right
-		case "|":
-			return left | right
-		case "^":
-			return left ^ right
-		}
-	}
-	return 0
-}
-
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
+	// Pass 1: 全ての名前付き型（Struct, Interface, Alias）の枠組みを先行登録
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
-			if stNode, ok := td.Type.(*ast.StructType); ok {
-				st := &StructType{Name: td.Name.Value, Fields: []Field{}}
-				ctx.Structs[td.Name.Value] = st
-				for _, f := range stNode.Fields {
-					st.Fields = append(st.Fields, Field{Name: f.Name.Value, Type: ctx.ResolveType(f.Type), IsEmbedded: f.IsEmbedded})
-				}
-			} else if itNode, ok := td.Type.(*ast.InterfaceType); ok {
+			if _, ok := td.Type.(*ast.InterfaceType); ok {
+				ctx.Interfaces[td.Name.Value] = &InterfaceType{Name: td.Name.Value, Methods: []Method{}}
+				ctx.Aliases[td.Name.Value] = ctx.Interfaces[td.Name.Value]
+			} else if _, ok := td.Type.(*ast.StructType); ok {
+				ctx.Structs[td.Name.Value] = &StructType{Name: td.Name.Value, Fields: []Field{}}
+				ctx.Aliases[td.Name.Value] = ctx.Structs[td.Name.Value]
+			}
+		}
+	}
+
+	// Pass 1.5: 各 Struct のフィールド型および Interface のメソッドシグネチャを完全解決
+	for _, decl := range prog.Decls {
+		if td, ok := decl.(*ast.TypeDecl); ok {
+			if it, ok := td.Type.(*ast.InterfaceType); ok {
 				methods := []Method{}
-				for _, m := range itNode.Methods {
+				for _, m := range it.Methods {
 					pts := []Type{}
 					for _, p := range m.ParamTypes {
 						pts = append(pts, ctx.ResolveType(p))
@@ -353,86 +318,77 @@ func Analyze(prog *ast.Program) (*Context, error) {
 					}
 					methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, ReturnTypes: rts})
 				}
-				iface := &InterfaceType{Name: td.Name.Value, Methods: methods}
-				ctx.Interfaces[td.Name.Value] = iface
-				ctx.Aliases[td.Name.Value] = iface
+				ctx.Interfaces[td.Name.Value].Methods = methods
+			} else if st, ok := td.Type.(*ast.StructType); ok {
+				fields := []Field{}
+				for _, f := range st.Fields {
+					fields = append(fields, Field{
+						Name:       f.Name.Value,
+						Type:       ctx.ResolveType(f.Type),
+						IsEmbedded: f.IsEmbedded,
+					})
+				}
+				ctx.Structs[td.Name.Value].Fields = fields
 			} else {
 				ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
 			}
 		}
 	}
 
+	// Pass 2: 定数、グローバル変数、関数のシグネチャを確定
 	for _, decl := range prog.Decls {
-		if cd, ok := decl.(*ast.ConstDecl); ok {
-			val := evalConstExpr(cd.Value, ctx.Constants)
-			ctx.Constants[cd.Name.Value] = val
-		}
-	}
+		switch d := decl.(type) {
+		case *ast.ConstDecl:
+			var val int64 = 0
+			if il, ok := d.Value.(*ast.IntegerLiteral); ok {
+				val = il.Value
+			}
+			ctx.Constants[d.Name.Value] = val
 
-	for _, decl := range prog.Decls {
-		if vd, ok := decl.(*ast.VarDecl); ok {
+		case *ast.VarDecl:
 			var gType Type = TypeInt
-			if vd.Type != nil {
-				gType = ctx.ResolveType(vd.Type)
+			if d.Type != nil {
+				gType = ctx.ResolveType(d.Type)
 			}
-			ctx.Globals[vd.Name.Value] = gType
-		} else if as, ok := decl.(*ast.AssignStmt); ok {
-			for _, lhs := range as.Left {
-				if ident, ok := lhs.(*ast.Identifier); ok {
-					var gType Type = TypeInt
-					if as.Type != nil {
-						gType = ctx.ResolveType(as.Type)
-					}
-					ctx.Globals[ident.Value] = gType
-				}
-			}
-		}
-	}
+			ctx.Globals[d.Name.Value] = gType
 
-	for _, decl := range prog.Decls {
-		if fd, ok := decl.(*ast.FuncDecl); ok {
-			funcMangledName := fd.Name.Value
+		case *ast.FuncDecl:
+			fnName := d.Name.Value
 			var recvType Type = nil
-			if fd.Receiver != nil {
-				recvType = ctx.ResolveType(fd.Receiver.Type)
-				recvTypeName := ""
-				if named, ok := fd.Receiver.Type.(*ast.NamedType); ok {
+			var recvTypeName string = ""
+			paramTypes := []Type{}
+
+			if d.Receiver != nil {
+				recvType = ctx.ResolveType(d.Receiver.Type)
+				if named, ok := d.Receiver.Type.(*ast.NamedType); ok {
 					recvTypeName = named.Name.Value
-				} else if pt, ok := fd.Receiver.Type.(*ast.PointerType); ok {
+				} else if pt, ok := d.Receiver.Type.(*ast.PointerType); ok {
 					if named, ok := pt.Base.(*ast.NamedType); ok {
 						recvTypeName = named.Name.Value
 					}
 				}
-				if strings.Contains(funcMangledName, "_") {
-					parts := strings.SplitN(funcMangledName, "_", 2)
-					funcMangledName = parts[0] + "_" + recvTypeName + "_" + parts[1]
-				} else {
-					funcMangledName = recvTypeName + "_" + funcMangledName
+				if recvTypeName != "" {
+					fnName = recvTypeName + "_" + fnName
 				}
+				paramTypes = append(paramTypes, recvType)
 			}
 
-			fnType := &FuncType{
-				Name:        funcMangledName,
-				ParamTypes:  []Type{},
-				ReturnTypes: []Type{},
-				IsVariadic:  fd.IsVariadic,
-				IsExtern:    fd.Body == nil,
+			for _, p := range d.Params {
+				paramTypes = append(paramTypes, ctx.ResolveType(p.Type))
 			}
 
-			// メソッドの場合は第0引数にレシーバ型を登録
-			if recvType != nil {
-				fnType.ParamTypes = append(fnType.ParamTypes, recvType)
+			returnTypes := []Type{}
+			for _, rt := range d.ReturnTypes {
+				returnTypes = append(returnTypes, ctx.ResolveType(rt))
 			}
 
-			for _, p := range fd.Params {
-				fnType.ParamTypes = append(fnType.ParamTypes, ctx.ResolveType(p.Type))
-			}
-			for _, rt := range fd.ReturnTypes {
-				fnType.ReturnTypes = append(fnType.ReturnTypes, ctx.ResolveType(rt))
-			}
-			ctx.Functions[funcMangledName] = fnType
-			if fd.Receiver == nil {
-				ctx.Functions[fd.Name.Value] = fnType
+			ctx.Functions[fnName] = &FuncType{
+				Name:        fnName,
+				Receiver:    recvType,
+				ParamTypes:  paramTypes,
+				ReturnTypes: returnTypes,
+				IsVariadic:  d.IsVariadic,
+				IsExtern:    (d.Body == nil),
 			}
 		}
 	}
