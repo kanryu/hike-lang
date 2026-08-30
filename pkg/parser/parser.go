@@ -209,11 +209,42 @@ func (p *Parser) parseImportDecl() []*ast.ImportDecl {
 	return imports
 }
 
+func (p *Parser) parseTypeParams() []*ast.TypeParam {
+	if !p.curTokenIs(token.LBRACKET) {
+		return nil
+	}
+	p.nextToken() // '[' を消費して最初の識別子へ
+	params := []*ast.TypeParam{}
+	for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.IDENT) {
+			ident := p.parseIdentifier()
+			params = append(params, &ast.TypeParam{
+				Token: ident.Token,
+				Name:  ident,
+			})
+		}
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken() // ',' へ
+			p.nextToken() // 次の識別子へ
+		} else {
+			break
+		}
+	}
+	p.expectPeek(token.RBRACKET)
+	return params
+}
+
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	stmt := &ast.TypeDecl{Token: p.curToken}
 	p.nextToken()
 	stmt.Name = p.parseIdentifier()
 	p.nextToken()
+
+	// 型パラメータ [T, U] の判定
+	if p.curTokenIs(token.LBRACKET) {
+		stmt.TypeParams = p.parseTypeParams()
+		p.nextToken()
+	}
 
 	if p.curTokenIs(token.STRUCT) {
 		st := &ast.StructType{Token: p.curToken, Fields: []*ast.FieldDecl{}}
@@ -402,6 +433,12 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	p.log(fmt.Sprintf("[%d:%d] Parsing function: %s", fn.Token.Line, fn.Token.Col, fn.Name.Value))
 	p.nextToken()
 
+	// 型パラメータ [T, U] の判定
+	if p.curTokenIs(token.LBRACKET) {
+		fn.TypeParams = p.parseTypeParams()
+		p.nextToken()
+	}
+
 	fn.Params = []*ast.ParamDecl{}
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
@@ -471,6 +508,8 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	if p.curTokenIs(token.IDENT) {
 		ident := p.parseIdentifier()
+
+		// 1. インライン interface { ... } 定義
 		if ident.Value == "interface" && p.peekTokenIs(token.LBRACE) {
 			tok := p.curToken
 			p.nextToken()
@@ -532,13 +571,42 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.expectPeek(token.RBRACE)
 			return it
 		}
+
+		// 2. パッケージ修飾（例: calc.Vector）
+		var pkgIdent *ast.Identifier = nil
+		targetIdent := ident
+
 		if p.peekTokenIs(token.DOT) {
 			p.nextToken()
 			p.nextToken()
 			field := p.parseIdentifier()
-			return &ast.NamedType{Token: ident.Token, Package: ident, Name: field}
+			pkgIdent = ident
+			targetIdent = field
 		}
-		return &ast.NamedType{Token: ident.Token, Package: nil, Name: ident}
+
+		// 3. ジェネリクス型引数（例: Box[int] や pkg.Pair[int, string]）
+		typeArgs := []ast.TypeExpr{}
+		if p.peekTokenIs(token.LBRACKET) {
+			p.nextToken() // '[' へ
+			p.nextToken() // 最初の型引数へ
+			for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
+				typeArgs = append(typeArgs, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken() // ',' へ
+					p.nextToken() // 次の型引数へ
+				} else {
+					break
+				}
+			}
+			p.expectPeek(token.RBRACKET)
+		}
+
+		return &ast.NamedType{
+			Token:    targetIdent.Token,
+			Package:  pkgIdent,
+			Name:     targetIdent,
+			TypeArgs: typeArgs,
+		}
 	} else if p.curTokenIs(token.ASTERISK) {
 		tok := p.curToken
 		p.nextToken()
@@ -599,8 +667,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			}
 		}
 		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, ReturnTypes: returnTypes}
-	}
-	if p.curTokenIs(token.MAP) {
+	} else if p.curTokenIs(token.MAP) {
 		tok := p.curToken
 		p.nextToken() // 'map' の次へ
 		p.expectCurrent(token.LBRACKET)
@@ -1352,11 +1419,52 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	return &ast.CallExpr{Token: tok, Function: fn, Args: args, HasEllipsis: hasEllipsis}
 }
 
+func (p *Parser) parseGenericStructLiteral(genExpr *ast.GenericInstExpr) ast.Expression {
+	ident, ok := genExpr.Left.(*ast.Identifier)
+	if !ok {
+		return genExpr
+	}
+
+	namedType := &ast.NamedType{
+		Token:    ident.Token,
+		Name:     ident,
+		TypeArgs: genExpr.TypeArgs,
+	}
+
+	p.nextToken() // '{' へ進む
+	fields := []*ast.StructFieldValue{}
+	if !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()
+		for {
+			var fName *ast.Identifier = nil
+			if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+				fName = p.parseIdentifier()
+				p.nextToken()
+				p.nextToken()
+			}
+			val := p.parseExpression(LOWEST)
+			fields = append(fields, &ast.StructFieldValue{Name: fName, Value: val})
+
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RBRACE) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RBRACE)
+	return &ast.StructLiteral{Token: ident.Token, Type: namedType, Fields: fields}
+}
+
 func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	tok := p.curToken // '['
 	p.nextToken()
 
-	// 先頭が ':' の場合（例: arr[:high]）
+	// 1. スライス式: arr[:high]
 	if p.curTokenIs(token.COLON) {
 		p.nextToken()
 		var high ast.Expression = nil
@@ -1370,9 +1478,31 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 
 	indexOrLow := p.parseExpression(LOWEST)
 
-	// ':' が続く場合はスライス式（例: arr[low:high]）
+	// 2. 複数型引数: fn[int, string] や Pair[int, string]{...}
+	if p.peekTokenIs(token.COMMA) {
+		args := []ast.TypeExpr{}
+		if tExpr, ok := indexOrLow.(ast.TypeExpr); ok {
+			args = append(args, tExpr)
+		} else if id, ok := indexOrLow.(*ast.Identifier); ok {
+			args = append(args, &ast.NamedType{Token: id.Token, Name: id})
+		}
+		for p.peekTokenIs(token.COMMA) {
+			p.nextToken() // ','
+			p.nextToken()
+			args = append(args, p.parseTypeExpr())
+		}
+		p.expectPeek(token.RBRACKET)
+		genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: args}
+
+		if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+			return p.parseGenericStructLiteral(genExpr)
+		}
+		return genExpr
+	}
+
+	// 3. スライス式: arr[low:high]
 	if p.peekTokenIs(token.COLON) {
-		p.nextToken() // ':' へ進む
+		p.nextToken() // ':'
 		p.nextToken()
 		var high ast.Expression = nil
 		if !p.curTokenIs(token.RBRACKET) {
@@ -1384,6 +1514,22 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	}
 
 	p.expectPeek(token.RBRACKET)
+
+	// 4. 単一型引数のジェネリック構造体リテラル: Box[int]{Val: 10}
+	if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+		var typeArg ast.TypeExpr
+		if tExpr, ok := indexOrLow.(ast.TypeExpr); ok {
+			typeArg = tExpr
+		} else if id, ok := indexOrLow.(*ast.Identifier); ok {
+			typeArg = &ast.NamedType{Token: id.Token, Name: id}
+		}
+		if typeArg != nil {
+			genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
+			return p.parseGenericStructLiteral(genExpr)
+		}
+	}
+
+	// 5. 通常のインデックス式: arr[i] または 単一型引数の関数呼び出し前段 Min[int]
 	return &ast.IndexExpr{Token: tok, Left: left, Index: indexOrLow}
 }
 

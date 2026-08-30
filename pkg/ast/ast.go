@@ -158,14 +158,15 @@ type IndexExpr struct {
 func (ie *IndexExpr) expressionNode()      {}
 func (ie *IndexExpr) TokenLiteral() string { return ie.Token.Literal }
 
-type GenericIndexExpr struct {
-	Token token.Token
-	Left  Expression
-	Index TypeExpr
+// fn[int, string](...) や Box[int]{...} の型適用式
+type GenericInstExpr struct {
+	Token    token.Token
+	Left     Expression
+	TypeArgs []TypeExpr
 }
 
-func (ge *GenericIndexExpr) expressionNode()      {}
-func (ge *GenericIndexExpr) TokenLiteral() string { return ge.Token.Literal }
+func (ge *GenericInstExpr) expressionNode()      {}
+func (ge *GenericInstExpr) TokenLiteral() string { return ge.Token.Literal }
 
 type MemberExpr struct {
 	Token  token.Token
@@ -187,9 +188,10 @@ func (ce *CallExpr) expressionNode()      {}
 func (ce *CallExpr) TokenLiteral() string { return ce.Token.Literal }
 
 type NamedType struct {
-	Token   token.Token
-	Package *Identifier
-	Name    *Identifier
+	Token    token.Token
+	Package  *Identifier
+	Name     *Identifier
+	TypeArgs []TypeExpr // 追加: Box[int] の [int]
 }
 
 func (nt *NamedType) typeExprNode()        {}
@@ -235,9 +237,10 @@ func (pd *ParamDecl) TokenLiteral() string {
 }
 
 type TypeDecl struct {
-	Token token.Token
-	Name  *Identifier
-	Type  TypeExpr
+	Token      token.Token
+	Name       *Identifier
+	TypeParams []*TypeParam // 追加: [T]
+	Type       TypeExpr
 }
 
 func (td *TypeDecl) declNode()            {}
@@ -247,6 +250,7 @@ type FuncDecl struct {
 	Token       token.Token
 	Receiver    *ParamDecl
 	Name        *Identifier
+	TypeParams  []*TypeParam // 追加: [T, U]
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
@@ -416,6 +420,15 @@ type MapType struct {
 func (mt *MapType) typeExprNode()        {}
 func (mt *MapType) expressionNode()      {}
 func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
+
+// 型パラメータ宣言（例: T, U）
+type TypeParam struct {
+	Token token.Token
+	Name  *Identifier
+}
+
+func (tp *TypeParam) typeExprNode()        {}
+func (tp *TypeParam) TokenLiteral() string { return tp.Token.Literal }
 
 type StructFieldValue struct {
 	Name  *Identifier

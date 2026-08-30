@@ -168,8 +168,10 @@ type Context struct {
 	Functions      map[string]*FuncType
 	Globals        map[string]Type
 	Constants      map[string]int64
-	FloatConstants map[string]float64 // 追加
+	FloatConstants map[string]float64
 	Aliases        map[string]Type
+	GenericTypes   map[string]*ast.TypeDecl // 追加: 構造体テンプレート
+	GenericFuncs   map[string]*ast.FuncDecl // 追加: 関数テンプレート
 	typeIDs        map[string]int64
 	nextTypeID     int64
 }
@@ -181,11 +183,14 @@ func NewContext() *Context {
 		Functions:      make(map[string]*FuncType),
 		Globals:        make(map[string]Type),
 		Constants:      make(map[string]int64),
-		FloatConstants: make(map[string]float64), // 追加
+		FloatConstants: make(map[string]float64),
 		Aliases:        make(map[string]Type),
+		GenericTypes:   make(map[string]*ast.TypeDecl), // 追加
+		GenericFuncs:   make(map[string]*ast.FuncDecl), // 追加
 		typeIDs:        make(map[string]int64),
 		nextTypeID:     1,
 	}
+	// ... (以降の初期化は既存のまま)
 
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2
@@ -228,6 +233,51 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	switch t := expr.(type) {
 	case *ast.NamedType:
 		name := t.Name.Value
+		if t.Package != nil {
+			name = t.Package.Value + "_" + t.Name.Value
+		}
+
+		// ジェネリック型引数の適用 (例: Box[int], Pair[string, int])
+		if len(t.TypeArgs) > 0 {
+			baseName := t.Name.Value
+			genDecl, exists := c.GenericTypes[baseName]
+			if exists {
+				argNames := []string{}
+				typeMap := make(map[string]Type)
+				for i, arg := range t.TypeArgs {
+					resolvedArg := c.ResolveType(arg)
+					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
+					if i < len(genDecl.TypeParams) {
+						typeMap[genDecl.TypeParams[i].Name.Value] = resolvedArg
+					}
+				}
+
+				specializedName := fmt.Sprintf("%s__%s", baseName, strings.Join(argNames, "_"))
+				if st, ok := c.Structs[specializedName]; ok {
+					return st
+				}
+
+				// 特殊化構造体の生成
+				if stType, ok := genDecl.Type.(*ast.StructType); ok {
+					newSt := &StructType{Name: specializedName, Fields: []Field{}}
+					c.Structs[specializedName] = newSt
+
+					for _, f := range stType.Fields {
+						fType := c.resolveTypeWithSubst(f.Type, typeMap)
+						newSt.Fields = append(newSt.Fields, Field{
+							Name:       f.Name.Value,
+							Type:       fType,
+							IsEmbedded: f.IsEmbedded,
+						})
+					}
+					return newSt
+				}
+			}
+		}
+
+		if st, ok := c.Structs[name]; ok {
+			return st
+		}
 		if t.Package != nil {
 			qualified := t.Package.Value + "_" + name
 			if iface, ok := c.Interfaces[qualified]; ok {
@@ -318,9 +368,13 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
-	// Pass 1: 全ての名前付き型（Struct, Interface, Alias）の枠組みを先行登録
+	// Pass 1: 全ての名前付き型およびジェネリックテンプレートの先行登録
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
+			if len(td.TypeParams) > 0 {
+				ctx.GenericTypes[td.Name.Value] = td
+				continue
+			}
 			if _, ok := td.Type.(*ast.InterfaceType); ok {
 				ctx.Interfaces[td.Name.Value] = &InterfaceType{Name: td.Name.Value, Methods: []Method{}}
 				ctx.Aliases[td.Name.Value] = ctx.Interfaces[td.Name.Value]
@@ -328,12 +382,19 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				ctx.Structs[td.Name.Value] = &StructType{Name: td.Name.Value, Fields: []Field{}}
 				ctx.Aliases[td.Name.Value] = ctx.Structs[td.Name.Value]
 			}
+		} else if fd, ok := decl.(*ast.FuncDecl); ok {
+			if len(fd.TypeParams) > 0 {
+				ctx.GenericFuncs[fd.Name.Value] = fd
+			}
 		}
 	}
 
 	// Pass 1.5: 各 Struct のフィールド型および Interface のメソッドシグネチャを完全解決
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
+			if len(td.TypeParams) > 0 {
+				continue
+			}
 			if it, ok := td.Type.(*ast.InterfaceType); ok {
 				methods := []Method{}
 				for _, m := range it.Methods {
@@ -388,6 +449,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			ctx.Globals[d.Name.Value] = gType
 
 		case *ast.FuncDecl:
+			if len(d.TypeParams) > 0 {
+				ctx.GenericFuncs[d.Name.Value] = d
+				continue
+			}
 			fnName := d.Name.Value
 			var recvType Type = nil
 			var recvTypeName string = ""
@@ -429,4 +494,31 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	}
 
 	return ctx, nil
+}
+
+func (c *Context) resolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Type {
+	if t == nil {
+		return TypeVoid
+	}
+	switch node := t.(type) {
+	case *ast.NamedType:
+		if node.Package == nil && len(node.TypeArgs) == 0 {
+			if replacement, ok := subst[node.Name.Value]; ok {
+				return replacement
+			}
+		}
+		return c.ResolveType(node)
+	case *ast.PointerType:
+		return &PointerType{Base: c.resolveTypeWithSubst(node.Base, subst)}
+	case *ast.SliceType:
+		return &SliceType{Elem: c.resolveTypeWithSubst(node.Elem, subst)}
+	case *ast.ArrayType:
+		return &ArrayType{Len: int(node.Len), Elem: c.resolveTypeWithSubst(node.Elem, subst)}
+	case *ast.MapType:
+		return &MapType{
+			Key:   c.resolveTypeWithSubst(node.Key, subst),
+			Value: c.resolveTypeWithSubst(node.Value, subst),
+		}
+	}
+	return c.ResolveType(t)
 }

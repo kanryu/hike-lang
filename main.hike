@@ -18,91 +18,76 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
+// ==========================================
+// 1. ジェネリック関数 (関数テンプレート)
+// ==========================================
+func Min[T](a T, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func Identity[T](val T) T {
+	return val
+}
+
+// ==========================================
+// 2. 単一型パラメータを持つジェネリック構造体
+// ==========================================
+type Box[T] struct {
+	Value T
+}
+
+// ==========================================
+// 3. 複数型パラメータを持つジェネリック構造体
+// ==========================================
+type Pair[K, V] struct {
+	Key   K
+	Val   V
+}
+
 func main() int {
-	fmt.PrintLn("=== Running map[K]V Comprehensive Tests ===")
+	fmt.PrintLn("=== Running Generics (Monomorphization) Comprehensive Tests ===")
 	testCount := 0
 
-	// ==========================================
-	// 1. 基本的な代入と参照: make(map[string]int)
-	// ==========================================
-	scores := make(map[string]int)
-	scores["Alice"] = 95
-	scores["Bob"] = 80
-	scores["Charlie"] = 70
-
+	// 1. ジェネリック関数 (明示的な型指定)
+	minInt := Min[int](10, 20)
 	testCount++
-	assert(scores["Alice"] == 95, testCount, "map[string]int: scores['Alice'] == 95")
+	assert(minInt == 10, testCount, "Generic func Min[int](10, 20) == 10")
 
+	minFloat := Min[float64](3.14, 1.59)
 	testCount++
-	assert(scores["Bob"] == 80, testCount, "map[string]int: scores['Bob'] == 80")
+	assert(minFloat == 1.59, testCount, "Generic func Min[float64](3.14, 1.59) == 1.59")
 
+	// 2. ジェネリック関数 (引数からの型推論)
+	inferredStr := Identity("Hike Generics")
 	testCount++
-	assert(scores["Charlie"] == 70, testCount, "map[string]int: scores['Charlie'] == 70")
+	assert(inferredStr != nil, testCount, "Generic func Identity with type inference (string)")
 
-	// ==========================================
-	// 2. 組み込み関数 len() と値の更新
-	// ==========================================
+	inferredInt := Identity(999)
 	testCount++
-	assert(len(scores) == 3, testCount, "len(scores) == 3")
+	assert(inferredInt == 999, testCount, "Generic func Identity with type inference (int)")
 
-	scores["Bob"] = 88 // 上書き更新
+	// 3. 単一型パラメータのジェネリック構造体
+	intBox := Box[int]{Value: 42}
 	testCount++
-	assert(scores["Bob"] == 88 && len(scores) == 3, testCount, "Update map key: scores['Bob'] == 88")
+	assert(intBox.Value == 42, testCount, "Generic struct Box[int].Value == 42")
 
-	// ==========================================
-	// 3. 存在確認（カンマokイディオム）
-	// ==========================================
-	val1, ok1 := scores["Alice"]
+	strBox := Box[string]{Value: "Packed"}
 	testCount++
-	assert(ok1 && val1 == 95, testCount, "Comma-ok: existing key 'Alice' -> ok == true")
+	assert(strBox.Value != nil, testCount, "Generic struct Box[string].Value == 'Packed'")
 
-	val2, ok2 := scores["David"]
+	// 4. 複数型パラメータのジェネリック構造体 (Pair[string, int])
+	pair := Pair[string, int]{Key: "UserID", Val: 1001}
 	testCount++
-	assert(!ok2 && val2 == 0, testCount, "Comma-ok: non-existing key 'David' -> ok == false, val == 0")
+	assert(pair.Val == 1001, testCount, "Generic struct Pair[string, int]: Val == 1001")
 
-	// ==========================================
-	// 4. 組み込み関数 delete()
-	// ==========================================
-	delete(scores, "Charlie")
+	// 5. 複数型パラメータのジェネリック構造体 (Pair[int, float64])
+	numPair := Pair[int, float64]{Key: 1, Val: 99.5}
 	testCount++
-	assert(len(scores) == 2, testCount, "delete(scores, 'Charlie') -> len == 2")
+	assert(numPair.Key == 1 && numPair.Val == 99.5, testCount, "Generic struct Pair[int, float64]: (1, 99.5)")
 
-	_, ok3 := scores["Charlie"]
-	testCount++
-	assert(!ok3, testCount, "Deleted key 'Charlie' -> ok == false")
-
-	// ==========================================
-	// 5. 整数キーのマップ: make(map[int]string)
-	// ==========================================
-	httpStatus := make(map[int]string)
-	httpStatus[200] = "OK"
-	httpStatus[404] = "Not Found"
-	httpStatus[500] = "Internal Server Error"
-
-	testCount++
-	assert(httpStatus[200] == "OK" && httpStatus[404] == "Not Found", testCount, "map[int]string: Status code mapping")
-
-	testCount++
-	assert(len(httpStatus) == 3, testCount, "len(httpStatus) == 3")
-
-	// ==========================================
-	// 6. for k, v := range m 反復走査
-	// ==========================================
-	counts := make(map[string]int)
-	counts["a"] = 10
-	counts["b"] = 20
-	counts["c"] = 30
-
-	sum := 0
-	numItems := 0
-	for k, v := range counts {
-		sum += v
-		numItems++
-	}
-
-	testCount++
-	assert(sum == 60 && numItems == 3, testCount, "for k, v := range map: sum of values == 60")
-
-	fmt.PrintLn("=== All map[K]V Tests Passed ===")
+	fmt.PrintLn("=== All Generics Tests Passed ===")
 	return testCount
 }
