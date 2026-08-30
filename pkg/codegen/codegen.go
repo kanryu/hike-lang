@@ -38,6 +38,8 @@ type anonFuncMeta struct {
 type CodeGenerator struct {
 	prog           *ast.Program
 	semaCtx        *sema.Context
+	debugMgr       *DebugManager // 追加
+	currentFunc    string        // 追加
 	output         strings.Builder
 	regCount       int
 	labelCount     int
@@ -57,10 +59,11 @@ type CodeGenerator struct {
 	verbose        bool
 }
 
-func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
+func New(prog *ast.Program, semaCtx *sema.Context, sourcePath string, debugEnabled bool) *CodeGenerator {
 	return &CodeGenerator{
 		prog:           prog,
 		semaCtx:        semaCtx,
+		debugMgr:       NewDebugManager(sourcePath, debugEnabled),
 		symbols:        make(map[string]Symbol),
 		stringLiterals: []StringConst{},
 		loopStack:      []loopContext{},
@@ -76,8 +79,18 @@ func New(prog *ast.Program, semaCtx *sema.Context) *CodeGenerator {
 	}
 }
 
+func (g *CodeGenerator) dbg(line, col int) string {
+	if g.debugMgr == nil {
+		return ""
+	}
+	return g.debugMgr.GetLocationTag(line, col)
+}
 func (g *CodeGenerator) SetVerbose(v bool) {
 	g.verbose = v
+}
+
+func (g *CodeGenerator) SetDebug(sourcePath string, enabled bool) {
+	g.debugMgr = NewDebugManager(sourcePath, enabled)
 }
 
 func (g *CodeGenerator) log(msg string) {
@@ -645,12 +658,9 @@ func (g *CodeGenerator) emitArgConversion(b *strings.Builder, argReg string, arg
 func (g *CodeGenerator) Generate() string {
 	var bodyBuilder strings.Builder
 
-	// インデックスベースのループにすることで、main 等の処理中に
-	// getOrCreateSpecializedFunc で g.prog.Decls に追加された特殊化関数も漏れなく出力する
 	for i := 0; i < len(g.prog.Decls); i++ {
 		decl := g.prog.Decls[i]
 		if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Body != nil {
-			// 型パラメータを持つ未特殊化テンプレートはスキップ
 			if len(fnDecl.TypeParams) > 0 {
 				continue
 			}
@@ -675,6 +685,12 @@ func (g *CodeGenerator) Generate() string {
 	g.output.WriteString("\n")
 
 	g.output.WriteString(bodyBuilder.String())
+
+	// デバッグメタデータの出力
+	if g.debugMgr != nil && g.debugMgr.enabled {
+		g.output.WriteString(g.debugMgr.EmitMetadata())
+	}
+
 	return g.output.String()
 }
 
@@ -1466,6 +1482,13 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	g.emittedFuncs[funcMangledName] = true
 	g.log(fmt.Sprintf("Emitting function: %s", funcMangledName))
 
+	// ★★★ 最重要: 関数本体のコンパイル前にスコープIDを切り替える ★★★
+	dbgFuncTag := ""
+	if g.debugMgr != nil && g.debugMgr.enabled {
+		spID := g.debugMgr.StartFunction(funcMangledName, fn.Token.Line)
+		dbgFuncTag = fmt.Sprintf(" !dbg !%d", spID)
+	}
+
 	fnMeta, exists := g.semaCtx.Functions[fn.Name.Value]
 	if !exists && fn.Receiver != nil {
 		fnMeta, exists = g.semaCtx.Functions[funcMangledName]
@@ -1597,7 +1620,7 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
 	}
 
-	b.WriteString(fmt.Sprintf("define %s @%s(%s) {\nentry:\n", retType, funcMangledName, strings.Join(params, ", ")))
+	b.WriteString(fmt.Sprintf("define %s @%s(%s)%s {\nentry:\n", retType, funcMangledName, strings.Join(params, ", "), dbgFuncTag))
 	b.WriteString(entryAllocas.String())
 	b.WriteString(bodyBuilder.String())
 	b.WriteString("}\n\n")
@@ -1757,6 +1780,8 @@ func (g *CodeGenerator) emitStatement(b *strings.Builder, s ast.Statement, curre
 
 func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 	name := s.Name.Value
+	dTag := g.dbg(s.Token.Line, s.Token.Col)
+
 	var valReg string
 	var valType sema.Type
 
@@ -1781,13 +1806,15 @@ func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 
 	if s.Value != nil {
 		finalValReg := g.emitArgConversion(b, valReg, valType, targetType)
-		b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", targetType.LLVMType(), finalValReg, targetType.LLVMType(), name))
+		b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", targetType.LLVMType(), finalValReg, targetType.LLVMType(), name, dTag))
 	} else {
-		b.WriteString(fmt.Sprintf("  store %s zeroinitializer, %s* %%%s\n", targetType.LLVMType(), targetType.LLVMType(), name))
+		b.WriteString(fmt.Sprintf("  store %s zeroinitializer, %s* %%%s%s\n", targetType.LLVMType(), targetType.LLVMType(), name, dTag))
 	}
 }
 
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
+	dTag := g.dbg(s.Token.Line, s.Token.Col)
+
 	// =========================================================================
 	// 1. マップの存在確認（カンマokイディオム: val, ok := m[key]）
 	// =========================================================================
@@ -1810,7 +1837,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				outAlloca := g.nextReg()
 				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", outAlloca))
 				okReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = call i1 @__hike_map_get(%%struct.__hike_map* %s, i64 %s, i64* %s)\n", okReg, baseReg, keyArg, outAlloca))
+				b.WriteString(fmt.Sprintf("  %s = call i1 @__hike_map_get(%%struct.__hike_map* %s, i64 %s, i64* %s)%s\n", okReg, baseReg, keyArg, outAlloca, dTag))
 
 				rawValReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", rawValReg, outAlloca))
@@ -1840,7 +1867,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, mp.Value.LLVMType()))
 						g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: mp.Value}
 					}
-					b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), vIdent.Value))
+					b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), vIdent.Value, dTag))
 				}
 				// 左辺 2 個目 (ok)
 				if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
@@ -1848,7 +1875,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i1\n", okIdent.Value))
 						g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: "%" + okIdent.Value, Type: sema.TypeBool}
 					}
-					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %%%s\n", okReg, okIdent.Value))
+					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %%%s%s\n", okReg, okIdent.Value, dTag))
 				}
 				return
 			}
@@ -1885,7 +1912,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 				elemReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", elemReg, rhsType.LLVMType(), rhsReg, i))
-				b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", sym.Type.LLVMType(), elemReg, sym.Type.LLVMType(), lhsIdent.Value))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", sym.Type.LLVMType(), elemReg, sym.Type.LLVMType(), lhsIdent.Value, dTag))
 			}
 		}
 		return
@@ -1946,7 +1973,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					valArg = zextReg
 				}
 
-				b.WriteString(fmt.Sprintf("  call void @__hike_map_set(%%struct.__hike_map* %s, i64 %s, i64 %s)\n", baseReg, keyArg, valArg))
+				b.WriteString(fmt.Sprintf("  call void @__hike_map_set(%%struct.__hike_map* %s, i64 %s, i64 %s)%s\n", baseReg, keyArg, valArg, dTag))
 				return
 			}
 
@@ -2006,7 +2033,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 						}
 					}
 				}
-				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", arr.Elem.LLVMType(), finalValReg, arr.Elem.LLVMType(), gepReg))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", arr.Elem.LLVMType(), finalValReg, arr.Elem.LLVMType(), gepReg, dTag))
 				return
 			}
 
@@ -2072,7 +2099,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				}
 			}
 
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", elemType.LLVMType(), finalValReg, elemType.LLVMType(), gepReg))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", elemType.LLVMType(), finalValReg, elemType.LLVMType(), gepReg, dTag))
 			return
 		}
 
@@ -2111,14 +2138,14 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				} else {
 					finalValReg = g.emitArgConversion(b, valReg, valType, gType)
 				}
-				b.WriteString(fmt.Sprintf("  store %s %s, %s* @%s\n", gType.LLVMType(), finalValReg, gType.LLVMType(), lhsIdent.Value))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* @%s%s\n", gType.LLVMType(), finalValReg, gType.LLVMType(), lhsIdent.Value, dTag))
 				return
 			}
 
 			if call, ok := s.Right[0].(*ast.CallExpr); ok {
 				if memExpr, ok := call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "NewArena" {
 					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.Arena\n", lhsIdent.Value))
-					b.WriteString(fmt.Sprintf("  call void @hike_arena_init(%%struct.Arena* %%%s, i64 65536)\n", lhsIdent.Value))
+					b.WriteString(fmt.Sprintf("  call void @hike_arena_init(%%struct.Arena* %%%s, i64 65536)%s\n", lhsIdent.Value, dTag))
 					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: &sema.BasicType{Name: "Arena", LLVM: "%struct.Arena"}}
 					return
 				}
@@ -2172,7 +2199,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				finalValReg = calcReg
 			}
 
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", sym.Type.LLVMType(), finalValReg, sym.Type.LLVMType(), lhsIdent.Value))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", sym.Type.LLVMType(), finalValReg, sym.Type.LLVMType(), lhsIdent.Value, dTag))
 			return
 		}
 
@@ -2222,8 +2249,8 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				finalValReg = g.emitArgConversion(b, valReg, valType, fieldType)
 			}
 
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n",
-				fieldType.LLVMType(), finalValReg, fieldType.LLVMType(), gepReg))
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n",
+				fieldType.LLVMType(), finalValReg, fieldType.LLVMType(), gepReg, dTag))
 			return
 		}
 	}
@@ -2275,6 +2302,8 @@ func (g *CodeGenerator) emitIfStmt(b *strings.Builder, s *ast.IfStmt, currentFn 
 }
 
 func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentFn string) {
+	dTag := g.dbg(s.Token.Line, s.Token.Col)
+
 	if s.Init != nil {
 		g.emitStatement(b, s.Init, currentFn)
 	}
@@ -2297,10 +2326,10 @@ func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentF
 		finalCondReg := condReg
 		if condType != nil && condType.LLVMType() != "i1" {
 			cmpReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, 0\n", cmpReg, condType.LLVMType(), condReg))
+			b.WriteString(fmt.Sprintf("  %s = icmp ne %s %s, 0%s\n", cmpReg, condType.LLVMType(), condReg, dTag))
 			finalCondReg = cmpReg
 		}
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", finalCondReg, bodyLabel, endLabel))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s%s\n\n", finalCondReg, bodyLabel, endLabel, dTag))
 	} else {
 		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", bodyLabel))
 	}
@@ -2793,6 +2822,8 @@ func (g *CodeGenerator) emitTypeSwitchStmt(b *strings.Builder, s *ast.TypeSwitch
 }
 
 func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, currentFn string) {
+	dTag := g.dbg(s.Token.Line, s.Token.Col)
+
 	if currentFn == "main" {
 		var retReg string = "0"
 		if len(s.Values) == 1 {
@@ -2806,7 +2837,7 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			g.emitCallExpr(b, g.deferStack[i])
 		}
 
-		b.WriteString(fmt.Sprintf("  ret i32 %s\n", retReg))
+		b.WriteString(fmt.Sprintf("  ret i32 %s%s\n", retReg, dTag))
 		return
 	}
 
@@ -2816,7 +2847,7 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 		for i := len(g.deferStack) - 1; i >= 0; i-- {
 			g.emitCallExpr(b, g.deferStack[i])
 		}
-		b.WriteString("  ret void\n")
+		b.WriteString(fmt.Sprintf("  ret void%s\n", dTag))
 		return
 	}
 
@@ -2835,9 +2866,9 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 				g.emitCallExpr(b, g.deferStack[i])
 			}
 			if strings.HasSuffix(targetTypeStr, "*") {
-				b.WriteString(fmt.Sprintf("  ret %s null\n", targetTypeStr))
+				b.WriteString(fmt.Sprintf("  ret %s null%s\n", targetTypeStr, dTag))
 			} else {
-				b.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", targetTypeStr))
+				b.WriteString(fmt.Sprintf("  ret %s zeroinitializer%s\n", targetTypeStr, dTag))
 			}
 			return
 		}
@@ -2854,7 +2885,7 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			g.emitCallExpr(b, g.deferStack[i])
 		}
 
-		b.WriteString(fmt.Sprintf("  ret %s %s\n", targetTypeStr, finalReg))
+		b.WriteString(fmt.Sprintf("  ret %s %s%s\n", targetTypeStr, finalReg, dTag))
 		return
 	}
 
@@ -2883,7 +2914,7 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 			g.emitCallExpr(b, g.deferStack[i])
 		}
 
-		b.WriteString(fmt.Sprintf("  ret %s %s\n", aggType, curAgg))
+		b.WriteString(fmt.Sprintf("  ret %s %s%s\n", aggType, curAgg, dTag))
 		return
 	}
 }
@@ -4490,20 +4521,22 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 					emitFnName = fnIdent.Value
 				}
 
+				dTag := g.dbg(call.Token.Line, call.Token.Col)
+
 				if retType == "void" {
 					if len(sigParamTypes) > 0 {
-						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  call void (%s) @%s(%s)%s\n", strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", "), dTag))
 					} else {
-						b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", emitFnName, strings.Join(args, ", ")))
+						b.WriteString(fmt.Sprintf("  call void @%s(%s)%s\n", emitFnName, strings.Join(args, ", "), dTag))
 					}
 					return "", sema.TypeVoid
 				}
 
 				callReg := g.nextReg()
 				if len(sigParamTypes) > 0 {
-					b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)\n", callReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", ")))
+					b.WriteString(fmt.Sprintf("  %s = call %s (%s) @%s(%s)%s\n", callReg, retType, strings.Join(sigParamTypes, ", "), emitFnName, strings.Join(args, ", "), dTag))
 				} else {
-					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
+					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)%s\n", callReg, retType, emitFnName, strings.Join(args, ", "), dTag))
 				}
 				return callReg, semaRet
 			}

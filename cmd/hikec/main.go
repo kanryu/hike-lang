@@ -19,9 +19,12 @@ func main() {
 	var sourceFiles []string
 
 	args := os.Args[1:]
+	debugInfo := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-o" && i+1 < len(args) {
+		if arg == "-g" {
+			debugInfo = true
+		} else if arg == "-o" && i+1 < len(args) {
 			outputLL = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "-o=") {
@@ -75,7 +78,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	cg := codegen.New(prog, semaCtx)
+	srcPath := ""
+	if len(sourceFiles) > 0 {
+		srcPath = sourceFiles[0]
+	}
+
+	cg := codegen.New(prog, semaCtx, srcPath, debugInfo)
 	cg.SetVerbose(verbose)
 	llvmIR := cg.Generate()
 
