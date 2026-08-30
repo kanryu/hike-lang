@@ -555,6 +555,9 @@ func (g *CodeGenerator) emitArgConversion(b *strings.Builder, argReg string, arg
 
 	if iface, ok := targetType.(*sema.InterfaceType); ok {
 		if _, srcIsIface := argType.(*sema.InterfaceType); !srcIsIface {
+			if argReg == "null" || argType == nil {
+				return "zeroinitializer"
+			}
 			return g.boxToInterface(b, argReg, argType, iface)
 		}
 	}
@@ -2058,10 +2061,15 @@ func (g *CodeGenerator) emitReturnStmt(b *strings.Builder, s *ast.ReturnStmt, cu
 	if len(s.Values) > 1 {
 		types := []string{}
 		valRegs := []string{}
-		for _, v := range s.Values {
+		for i, v := range s.Values {
 			vReg, vType := g.resolveValue(b, v)
-			types = append(types, vType.LLVMType())
-			valRegs = append(valRegs, vReg)
+			var targetType sema.Type = vType
+			if fnType != nil && i < len(fnType.ReturnTypes) {
+				targetType = fnType.ReturnTypes[i]
+			}
+			finalReg := g.emitArgConversion(b, vReg, vType, targetType)
+			types = append(types, targetType.LLVMType())
+			valRegs = append(valRegs, finalReg)
 		}
 		aggType := fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 		curAgg := "undef"
@@ -2312,8 +2320,16 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 					panic(fmt.Sprintf("[Codegen Error] unknown struct type %s", targetStructName))
 				}
 
-				allocaReg := g.nextReg()
-				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %%struct.%s\n", allocaReg, structName))
+				// ヒープメモリを確保してダングリングポインタを防止
+				structSize := st.Size()
+				if structSize <= 0 {
+					structSize = 8
+				}
+				mallocReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, structSize))
+
+				heapPtrReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %%struct.%s*\n", heapPtrReg, mallocReg, structName))
 
 				for i, fVal := range stLit.Fields {
 					valReg, valType := g.resolveValue(b, fVal.Value)
@@ -2334,12 +2350,12 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 
 					gepReg := g.nextReg()
 					b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-						gepReg, structName, structName, allocaReg, fieldIdx))
+						gepReg, structName, structName, heapPtrReg, fieldIdx))
 
 					valToStore := g.emitArgConversion(b, valReg, valType, fieldType)
 					b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", fieldType.LLVMType(), valToStore, fieldType.LLVMType(), gepReg))
 				}
-				return allocaReg, &sema.PointerType{Base: st}
+				return heapPtrReg, &sema.PointerType{Base: st}
 			}
 		} else if e.Operator == "*" {
 			valReg, valType := g.resolveValue(b, e.Right)
@@ -2628,6 +2644,32 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (string, sema.Type) {
 	leftReg, leftType := g.resolveValue(b, e.Left)
 	rightReg, rightType := g.resolveValue(b, e.Right)
+
+	if e.Operator == "==" || e.Operator == "!=" {
+		// Interface vs nil の比較 (例: err != nil, err == nil)
+		if iface, isIface := leftType.(*sema.InterfaceType); isIface && (rightReg == "null" || rightReg == "zeroinitializer" || rightType == nil || strings.HasSuffix(rightType.LLVMType(), "*")) {
+			dataPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, iface.LLVMType(), leftReg))
+			cmpOp := "icmp eq"
+			if e.Operator == "!=" {
+				cmpOp = "icmp ne"
+			}
+			cmpReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = %s i8* %s, null\n", cmpReg, cmpOp, dataPtr))
+			return cmpReg, sema.TypeBool
+		}
+		if iface, isIface := rightType.(*sema.InterfaceType); isIface && (leftReg == "null" || leftReg == "zeroinitializer" || leftType == nil || strings.HasSuffix(leftType.LLVMType(), "*")) {
+			dataPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, iface.LLVMType(), rightReg))
+			cmpOp := "icmp eq"
+			if e.Operator == "!=" {
+				cmpOp = "icmp ne"
+			}
+			cmpReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = %s i8* %s, null\n", cmpReg, cmpOp, dataPtr))
+			return cmpReg, sema.TypeBool
+		}
+	}
 
 	if leftType == sema.TypeString || rightType == sema.TypeString {
 		if e.Operator == "+" {

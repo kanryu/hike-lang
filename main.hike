@@ -1,7 +1,7 @@
 package main
 
 import (
-	"calc"
+	"std/errors"
 	"std/fmt"
 )
 
@@ -19,40 +19,68 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
+// 1. 標準的な多値返却と errors.New
+func divide(a int, b int) (int, error) {
+	if b == 0 {
+		return 0, errors.New("division by zero")
+	}
+	return a / b, nil
+}
+
+// 2. カスタムエラー構造体
+type CustomError struct {
+	Code int
+	Msg  *byte
+}
+
+func (c *CustomError) Error() *byte {
+	return c.Msg
+}
+
+func parseCode(code int) (int, error) {
+	if code < 0 {
+		return 0, &CustomError{Code: 400, Msg: "negative code not allowed"}
+	}
+	return code * 10, nil
+}
+
 func main() int {
-	fmt.PrintLn(getBanner())
+	fmt.PrintLn("=== Running Error Handling & Multi-Value Return Tests ===")
 	testCount := 0
 
-	// ==========================================
-	// 1. 同一パッケージ内別ファイル (helper.hike) の関数呼び出し
-	// ==========================================
-	multRes := helperMultiply(6, 7)
+	// Test 1: 正常系 (divide 10 / 2 -> 5, err == nil)
+	val1, err1 := divide(10, 2)
 	testCount++
-	assert(multRes == 42, testCount, "Same Package Multi-File: helperMultiply(6, 7) == 42")
+	assert(val1 == 5 && err1 == nil, testCount, "Success Case: divide(10, 2) == (5, nil)")
 
-	// ==========================================
-	// 2. 外部パッケージ (calc) の関数と定数
-	// ==========================================
-	addRes := calc.Add(calc.DefaultBase, 50)
+	// Test 2: 異常系 (divide 10 / 0 -> err != nil)
+	val2, err2 := divide(10, 0)
 	testCount++
-	assert(addRes == 150, testCount, "External Package Func & Const: calc.Add(calc.DefaultBase, 50) == 150")
+	assert(val2 == 0 && err2 != nil, testCount, "Error Case: divide(10, 0) returns non-nil error")
 
-	subRes := calc.Sub(100, 30)
+	// Test 3: error インターフェースの Error() メソッド呼び出し
+	errMsg := err2.Error()
+	fmt.PrintStr("Captured Error: ")
+	fmt.PrintLn(errMsg)
 	testCount++
-	assert(subRes == 70, testCount, "External Package Func: calc.Sub(100, 30) == 70")
+	assert(errMsg != nil, testCount, "Error Method Dispatch: err.Error() returns message")
 
-	// ==========================================
-	// 3. 外部パッケージの構造体とメソッド呼び出し・ミューテーション
-	// ==========================================
-	vec := calc.Vector{X: 3, Y: 4}
-	lenSq := vec.LengthSq()
+	// Test 4: カスタムエラー構造体と多値返却
+	val3, err3 := parseCode(-1)
 	testCount++
-	assert(lenSq == 25, testCount, "External Package Struct & Method: vec.LengthSq() == 25")
+	assert(val3 == 0 && err3 != nil, testCount, "Custom Error: parseCode(-1) returns CustomError")
 
-	vec.Scale(2)
+	// Test 5: 型スイッチによる具象エラーのアンパック
+	var customCode int = 0
+	switch e := err3.(type) {
+	case *CustomError:
+		customCode = e.Code
+	default:
+		customCode = -1
+	}
 	testCount++
-	assert(vec.X == 6 && vec.Y == 8, testCount, "External Package Method Mutation: vec.Scale(2) -> (6, 8)")
+	assert(customCode == 400, testCount, "Type Switch on error: extracted CustomError.Code == 400")
 
-	fmt.PrintLn("=== All Multi-File & Multi-Package Tests Passed ===")
+	fmt.PrintLn("=== All Error Handling Tests Passed ===")
 	return testCount
 }

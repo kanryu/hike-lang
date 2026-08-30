@@ -194,6 +194,14 @@ func NewContext() *Context {
 	ctx.GetTypeID(TypeBool)
 	ctx.GetTypeID(TypeString)
 
+	errorIface := &InterfaceType{
+		Name: "error",
+		Methods: []Method{
+			{Name: "Error", ParamTypes: []Type{}, ReturnTypes: []Type{TypeString}},
+		},
+	}
+	ctx.Interfaces["error"] = errorIface
+	ctx.Aliases["error"] = errorIface
 	ctx.Aliases["any"] = &InterfaceType{Name: "any"}
 	return ctx
 }
@@ -236,6 +244,8 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return TypeString
 		case "any":
 			return &InterfaceType{Name: "any"}
+		case "error":
+			return c.Interfaces["error"]
 		default:
 			return &BasicType{Name: name, ByteSize: 8, LLVM: "%struct." + name}
 		}

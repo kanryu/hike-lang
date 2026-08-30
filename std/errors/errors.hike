@@ -1,0 +1,13 @@
+package errors
+
+type errorString struct {
+	s *byte
+}
+
+func (e *errorString) Error() *byte {
+	return e.s
+}
+
+func New(text *byte) error {
+	return &errorString{s: text}
+}
