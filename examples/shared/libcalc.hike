@@ -1,0 +1,34 @@
+package main
+
+// ジェネリック加算・乗算ロジック
+func Add[T](a T, b T) T {
+	return a + b
+}
+
+func Multiply[T](a T, b T) T {
+	return a * b
+}
+
+// C ABIエクスポート用の具象関数（ゼロコスト抽象化）
+func HikeAddInt(a int, b int) int {
+	return Add[int](a, b)
+}
+
+func HikeAddFloat(a float64, b float64) float64 {
+	return Add[float64](a, b)
+}
+
+func HikeMultiplyInt(a int, b int) int {
+	return Multiply[int](a, b)
+}
+
+// 構造体の処理（C ABI互換のメモリレイアウト）
+type Vector2D struct {
+	X float64
+	Y float64
+}
+
+// ポインタ経由で受け取る
+func HikeDotProduct(v1 *Vector2D, v2 *Vector2D) float64 {
+	return (v1.X * v2.X) + (v1.Y * v2.Y)
+}
