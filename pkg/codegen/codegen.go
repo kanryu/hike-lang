@@ -695,9 +695,16 @@ func (g *CodeGenerator) Generate() string {
 }
 
 func (g *CodeGenerator) emitPrologue() {
-	g.output.WriteString("; ModuleID = 'hike'\n")
-	g.output.WriteString("source_filename = \"hike\"\n")
+	srcName := "main.hike"
+	if g.debugMgr != nil && g.debugMgr.filename != "" {
+		srcName = g.debugMgr.filename
+	}
+	g.output.WriteString(fmt.Sprintf("; ModuleID = '%s'\n", srcName))
+	g.output.WriteString(fmt.Sprintf("source_filename = \"%s\"\n", srcName))
 	g.output.WriteString("target triple = \"x86_64-w64-windows-gnu\"\n\n")
+
+	// LLVM デバッグ用組み込み関数の宣言
+	g.output.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 
 	g.output.WriteString("declare noalias i8* @malloc(i64)\n")
 	g.output.WriteString("declare noalias i8* @calloc(i64, i64)\n")
@@ -1560,6 +1567,13 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		}
 
 		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
+		if g.debugMgr != nil && g.debugMgr.enabled {
+			varID, locID := g.debugMgr.RegisterLocalVariable(p.Name.Value, p.Token.Line, p.Token.Col, pType, true, i+1)
+			if varID > 0 {
+				entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+					pType.LLVMType(), p.Name.Value, varID, locID))
+			}
+		}
 		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
 		g.symbols[p.Name.Value] = Symbol{
 			Name:     p.Name.Value,
@@ -1802,6 +1816,13 @@ func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 	}
 
 	g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", name, targetType.LLVMType()))
+	if g.debugMgr != nil && g.debugMgr.enabled {
+		varID, locID := g.debugMgr.RegisterLocalVariable(name, s.Token.Line, s.Token.Col, targetType, false, 0)
+		if varID > 0 {
+			g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+				targetType.LLVMType(), name, varID, locID))
+		}
+	}
 	g.symbols[name] = Symbol{Name: name, LLVMName: "%" + name, Type: targetType}
 
 	if s.Value != nil {
@@ -1865,6 +1886,13 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
 					if _, exists := g.symbols[vIdent.Value]; !exists {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, mp.Value.LLVMType()))
+						if g.debugMgr != nil && g.debugMgr.enabled {
+							varID, locID := g.debugMgr.RegisterLocalVariable(vIdent.Value, s.Token.Line, s.Token.Col, mp.Value, false, 0)
+							if varID > 0 {
+								g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+									mp.Value.LLVMType(), vIdent.Value, varID, locID))
+							}
+						}
 						g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: mp.Value}
 					}
 					b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), vIdent.Value, dTag))
@@ -1873,6 +1901,13 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
 					if _, exists := g.symbols[okIdent.Value]; !exists {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i1\n", okIdent.Value))
+						if g.debugMgr != nil && g.debugMgr.enabled {
+							varID, locID := g.debugMgr.RegisterLocalVariable(okIdent.Value, s.Token.Line, s.Token.Col, sema.TypeBool, false, 0)
+							if varID > 0 {
+								g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata i1* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+									okIdent.Value, varID, locID))
+							}
+						}
 						g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: "%" + okIdent.Value, Type: sema.TypeBool}
 					}
 					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %%%s%s\n", okReg, okIdent.Value, dTag))
@@ -1906,6 +1941,13 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 				if _, exists := g.symbols[lhsIdent.Value]; !exists {
 					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", lhsIdent.Value, elemType.LLVMType()))
+					if g.debugMgr != nil && g.debugMgr.enabled {
+						varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, elemType, false, 0)
+						if varID > 0 {
+							g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+								elemType.LLVMType(), lhsIdent.Value, varID, locID))
+						}
+					}
 					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: elemType}
 				}
 				sym := g.symbols[lhsIdent.Value]
@@ -2145,8 +2187,16 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			if call, ok := s.Right[0].(*ast.CallExpr); ok {
 				if memExpr, ok := call.Function.(*ast.MemberExpr); ok && memExpr.Field.Value == "NewArena" {
 					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %%struct.Arena\n", lhsIdent.Value))
+					arenaType := &sema.BasicType{Name: "Arena", LLVM: "%struct.Arena"}
+					if g.debugMgr != nil && g.debugMgr.enabled {
+						varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, arenaType, false, 0)
+						if varID > 0 {
+							g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %%struct.Arena* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+								lhsIdent.Value, varID, locID))
+						}
+					}
 					b.WriteString(fmt.Sprintf("  call void @hike_arena_init(%%struct.Arena* %%%s, i64 65536)%s\n", lhsIdent.Value, dTag))
-					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: &sema.BasicType{Name: "Arena", LLVM: "%struct.Arena"}}
+					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: arenaType}
 					return
 				}
 			}
@@ -2163,6 +2213,13 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 			if _, exists := g.symbols[lhsIdent.Value]; !exists {
 				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", lhsIdent.Value, targetType.LLVMType()))
+				if g.debugMgr != nil && g.debugMgr.enabled {
+					varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, targetType, false, 0)
+					if varID > 0 {
+						g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %%%s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+							targetType.LLVMType(), lhsIdent.Value, varID, locID))
+					}
+				}
 				g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: "%" + lhsIdent.Value, Type: targetType}
 			}
 			sym := g.symbols[lhsIdent.Value]

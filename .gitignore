@@ -18,6 +18,7 @@ hikec.exe
 *.obj
 output.ll
 output_*.ll
+*.md5
 
 # Go Build & Test Artifacts
 *.test
