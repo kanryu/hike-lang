@@ -2302,6 +2302,13 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		if val, ok := g.semaCtx.Constants[e.Value]; ok {
 			return fmt.Sprintf("%d", val), sema.TypeInt
 		}
+		if val, ok := g.semaCtx.FloatConstants[e.Value]; ok {
+			s := fmt.Sprintf("%f", val)
+			if !strings.Contains(s, ".") {
+				s += ".0"
+			}
+			return s, sema.TypeFloat64
+		}
 
 		if sym, exists := g.symbols[e.Value]; exists {
 			loadReg := g.nextReg()
@@ -2501,7 +2508,12 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", notReg, bReg))
 			return notReg, sema.TypeBool
 		} else if e.Operator == "-" {
-			valReg, _ := g.resolveValue(b, e.Right)
+			valReg, valType := g.resolveValue(b, e.Right)
+			if valType == sema.TypeFloat64 || valType == sema.TypeFloat32 {
+				negReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = fsub %s 0.0, %s\n", negReg, valType.LLVMType(), valReg))
+				return negReg, valType
+			}
 			negReg := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = sub i64 0, %s\n", negReg, valReg))
 			return negReg, sema.TypeInt
@@ -2509,17 +2521,22 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 
 	case *ast.MemberExpr:
 		// パッケージ定数・グローバル変数の参照解決（例: calc.DefaultBase）
-		if objIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
-			if _, exists := g.symbols[objIdent.Value]; !exists {
-				pkgSymbol := objIdent.Value + "_" + e.Field.Value
-				if val, ok := g.semaCtx.Constants[pkgSymbol]; ok {
-					return fmt.Sprintf("%d", val), sema.TypeInt
+		if pkgIdent, ok := e.Object.(*ast.Identifier); ok {
+			qualified := pkgIdent.Value + "_" + e.Field.Value
+			if val, isConst := g.semaCtx.Constants[qualified]; isConst {
+				return fmt.Sprintf("%d", val), sema.TypeInt
+			}
+			if val, isFloatConst := g.semaCtx.FloatConstants[qualified]; isFloatConst {
+				s := fmt.Sprintf("%f", val)
+				if !strings.Contains(s, ".") {
+					s += ".0"
 				}
-				if gType, exists := g.semaCtx.Globals[pkgSymbol]; exists {
-					loadReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), pkgSymbol))
-					return loadReg, gType
-				}
+				return s, sema.TypeFloat64
+			}
+			if gType, isGlobal := g.semaCtx.Globals[qualified]; isGlobal {
+				resReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", resReg, gType.LLVMType(), gType.LLVMType(), qualified))
+				return resReg, gType
 			}
 		}
 

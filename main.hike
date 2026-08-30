@@ -2,6 +2,7 @@ package main
 
 import (
 	"std/fmt"
+	"std/math"
 )
 
 func assert(cond bool, testNum int, testName *byte) {
@@ -18,92 +19,102 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// 浮動小数点数を返す関数
-func calcArea(radius float64) float64 {
-	pi := 3.1415926535
-	return pi * radius * radius
-}
-
-// 構造体での浮動小数点数
-type Point2D struct {
-	X float64
-	Y float64
-}
-
-func (p *Point2D) DistanceSq() float64 {
-	return (p.X * p.X) + (p.Y * p.Y)
+func almostEqual(a float64, b float64, eps float64) bool {
+	diff := a - b
+	if diff < 0.0 {
+		diff = -diff
+	}
+	return diff <= eps
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Floating-Point (float32 / float64) Tests ===")
+	fmt.PrintLn("=== Running std/math Comprehensive Tests ===")
 	testCount := 0
 
 	// ==========================================
-	// 1. 基本的な四則演算
-	// ==========================================
-	a := 1.5
-	b := 2.5
-	sum := a + b
-	testCount++
-	assert(sum == 4.0, testCount, "float64 Addition: 1.5 + 2.5 == 4.0")
-
-	diff := b - a
-	testCount++
-	assert(diff == 1.0, testCount, "float64 Subtraction: 2.5 - 1.5 == 1.0")
-
-	prod := a * 2.0
-	testCount++
-	assert(prod == 3.0, testCount, "float64 Multiplication: 1.5 * 2.0 == 3.0")
-
-	div := 7.5 / 2.5
-	testCount++
-	assert(div == 3.0, testCount, "float64 Division: 7.5 / 2.5 == 3.0")
-
-	// ==========================================
-	// 2. 比較演算 (<, >, <=, >=, ==, !=)
+	// 1. 数学定数
 	// ==========================================
 	testCount++
-	assert(1.5 < 2.5 && 3.14 > 2.71, testCount, "float64 Comparison: (< and >)")
+	assert(almostEqual(math.Pi, 3.14159265, 0.0001), testCount, "math.Pi ≈ 3.14159")
 
 	testCount++
-	assert(2.0 <= 2.0 && 5.0 >= 4.9, testCount, "float64 Comparison: (<= and >=)")
+	assert(almostEqual(math.E, 2.71828182, 0.0001), testCount, "math.E ≈ 2.71828")
 
 	testCount++
-	assert(1.23 != 4.56, testCount, "float64 Comparison: (!=)")
+	assert(almostEqual(math.Sqrt2, 1.41421356, 0.0001), testCount, "math.Sqrt2 ≈ 1.41421")
 
 	// ==========================================
-	// 3. 型キャスト (int ↔ float64, float32 ↔ float64)
+	// 2. 基本演算: Abs, Sqrt, Pow, Hypot, Mod
 	// ==========================================
-	intVal := 42
-	castFloat := float64(intVal)
 	testCount++
-	assert(castFloat == 42.0, testCount, "Type Cast: int(42) -> float64(42.0)")
+	assert(math.Abs(-42.5) == 42.5, testCount, "math.Abs(-42.5) == 42.5")
 
-	floatVal := 9.99
-	castInt := int(floatVal)
 	testCount++
-	assert(castInt == 9, testCount, "Type Cast: float64(9.99) -> int(9)")
+	assert(math.Sqrt(16.0) == 4.0, testCount, "math.Sqrt(16.0) == 4.0")
 
-	var f32 float32 = float32(3.5)
-	f64 := float64(f32)
 	testCount++
-	assert(f64 == 3.5, testCount, "Type Cast: float32(3.5) -> float64(3.5)")
+	assert(math.Pow(2.0, 8.0) == 256.0, testCount, "math.Pow(2.0, 8.0) == 256.0")
 
-	// ==========================================
-	// 4. 関数呼び出しと実数計算
-	// ==========================================
-	area := calcArea(2.0)
 	testCount++
-	assert(area > 12.56 && area < 12.57, testCount, "Function: calcArea(2.0) ≈ 12.566")
+	assert(math.Hypot(3.0, 4.0) == 5.0, testCount, "math.Hypot(3.0, 4.0) == 5.0")
+
+	testCount++
+	assert(almostEqual(math.Mod(7.5, 2.0), 1.5, 0.0001), testCount, "math.Mod(7.5, 2.0) == 1.5")
 
 	// ==========================================
-	// 5. 構造体フィールドとメソッド
+	// 3. 三角関数: Sin, Cos, Tan
 	// ==========================================
-	pt := Point2D{X: 3.0, Y: 4.0}
-	distSq := pt.DistanceSq()
 	testCount++
-	assert(distSq == 25.0, testCount, "Struct Method: pt.DistanceSq() == 25.0")
+	assert(almostEqual(math.Sin(math.Pi/2.0), 1.0, 0.0001), testCount, "math.Sin(Pi/2) == 1.0")
 
-	fmt.PrintLn("=== All Floating-Point Tests Passed ===")
+	testCount++
+	assert(almostEqual(math.Cos(0.0), 1.0, 0.0001), testCount, "math.Cos(0) == 1.0")
+
+	testCount++
+	assert(almostEqual(math.Tan(math.Pi/4.0), 1.0, 0.0001), testCount, "math.Tan(Pi/4) == 1.0")
+
+	// ==========================================
+	// 4. 丸め・切捨て: Floor, Ceil, Round, Trunc
+	// ==========================================
+	testCount++
+	assert(math.Floor(3.7) == 3.0, testCount, "math.Floor(3.7) == 3.0")
+
+	testCount++
+	assert(math.Ceil(3.2) == 4.0, testCount, "math.Ceil(3.2) == 4.0")
+
+	testCount++
+	assert(math.Round(3.5) == 4.0, testCount, "math.Round(3.5) == 4.0")
+
+	testCount++
+	assert(math.Trunc(3.9) == 3.0, testCount, "math.Trunc(3.9) == 3.0")
+
+	// ==========================================
+	// 5. 指数・対数: Exp, Log, Log10, Log2
+	// ==========================================
+	testCount++
+	assert(almostEqual(math.Exp(1.0), math.E, 0.0001), testCount, "math.Exp(1.0) == math.E")
+
+	testCount++
+	assert(almostEqual(math.Log(math.E), 1.0, 0.0001), testCount, "math.Log(math.E) == 1.0")
+
+	testCount++
+	assert(almostEqual(math.Log10(100.0), 2.0, 0.0001), testCount, "math.Log10(100.0) == 2.0")
+
+	testCount++
+	assert(almostEqual(math.Log2(8.0), 3.0, 0.0001), testCount, "math.Log2(8.0) == 3.0")
+
+	// ==========================================
+	// 6. ユーティリティ: Max, Min, Dim
+	// ==========================================
+	testCount++
+	assert(math.Max(10.5, 20.5) == 20.5, testCount, "math.Max(10.5, 20.5) == 20.5")
+
+	testCount++
+	assert(math.Min(10.5, 20.5) == 10.5, testCount, "math.Min(10.5, 20.5) == 10.5")
+
+	testCount++
+	assert(math.Dim(4.0, -2.0) == 6.0 && math.Dim(-4.0, 2.0) == 0.0, testCount, "math.Dim tests")
+
+	fmt.PrintLn("=== All std/math Tests Passed ===")
 	return testCount
 }

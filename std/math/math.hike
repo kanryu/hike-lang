@@ -1,0 +1,165 @@
+package math
+
+// ==========================================
+// 1. C Runtime Math Extern Bindings
+// ==========================================
+func sqrt(x float64) float64
+func cbrt(x float64) float64
+func pow(x float64, y float64) float64
+func sin(x float64) float64
+func cos(x float64) float64
+func tan(x float64) float64
+func asin(x float64) float64
+func acos(x float64) float64
+func atan(x float64) float64
+func atan2(y float64, x float64) float64
+func sinh(x float64) float64
+func cosh(x float64) float64
+func tanh(x float64) float64
+func exp(x float64) float64
+func log(x float64) float64
+func log10(x float64) float64
+func log2(x float64) float64
+func fabs(x float64) float64
+func floor(x float64) float64
+func ceil(x float64) float64
+func round(x float64) float64
+func trunc(x float64) float64
+func fmod(x float64, y float64) float64
+func hypot(x float64, y float64) float64
+
+// ==========================================
+// 2. Mathematical Constants
+// ==========================================
+const Pi = 3.14159265358979323846
+const E = 2.71828182845904523536
+const Sqrt2 = 1.41421356237309504880
+const SqrtE = 1.64872127070012814685
+const SqrtPi = 1.77245385090551602730
+const SqrtPhi = 1.27201964951406896425
+const Ln2 = 0.69314718055994530942
+const Log2E = 1.44269504088896340736
+const Ln10 = 2.30258509299404568402
+const Log10E = 0.43429448190325182765
+const Phi = 1.61803398874989484820
+
+// ==========================================
+// 3. Standard Math Functions
+// ==========================================
+func Abs(x float64) float64 {
+	return fabs(x)
+}
+
+func Sqrt(x float64) float64 {
+	return sqrt(x)
+}
+
+func Cbrt(x float64) float64 {
+	return cbrt(x)
+}
+
+func Pow(x float64, y float64) float64 {
+	return pow(x, y)
+}
+
+func Sin(x float64) float64 {
+	return sin(x)
+}
+
+func Cos(x float64) float64 {
+	return cos(x)
+}
+
+func Tan(x float64) float64 {
+	return tan(x)
+}
+
+func Asin(x float64) float64 {
+	return asin(x)
+}
+
+func Acos(x float64) float64 {
+	return acos(x)
+}
+
+func Atan(x float64) float64 {
+	return atan(x)
+}
+
+func Atan2(y float64, x float64) float64 {
+	return atan2(y, x)
+}
+
+func Sinh(x float64) float64 {
+	return sinh(x)
+}
+
+func Cosh(x float64) float64 {
+	return cosh(x)
+}
+
+func Tanh(x float64) float64 {
+	return tanh(x)
+}
+
+func Exp(x float64) float64 {
+	return exp(x)
+}
+
+func Log(x float64) float64 {
+	return log(x)
+}
+
+func Log10(x float64) float64 {
+	return log10(x)
+}
+
+func Log2(x float64) float64 {
+	return log2(x)
+}
+
+func Floor(x float64) float64 {
+	return floor(x)
+}
+
+func Ceil(x float64) float64 {
+	return ceil(x)
+}
+
+func Round(x float64) float64 {
+	return round(x)
+}
+
+func Trunc(x float64) float64 {
+	return trunc(x)
+}
+
+func Mod(x float64, y float64) float64 {
+	return fmod(x, y)
+}
+
+func Hypot(p float64, q float64) float64 {
+	return hypot(p, q)
+}
+
+func Max(x float64, y float64) float64 {
+	if x > y {
+		return x
+	}
+	return y
+}
+
+func Min(x float64, y float64) float64 {
+	if x < y {
+		return x
+	}
+	return y
+}
+
+func Dim(x float64, y float64) float64 {
+	v := x - y
+	if v <= 0.0 {
+		return 0.0
+	}
+	return v
+}

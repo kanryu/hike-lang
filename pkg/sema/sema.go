@@ -148,26 +148,28 @@ func (t *TupleType) Size() int {
 }
 
 type Context struct {
-	Structs    map[string]*StructType
-	Interfaces map[string]*InterfaceType
-	Functions  map[string]*FuncType
-	Globals    map[string]Type
-	Constants  map[string]int64
-	Aliases    map[string]Type
-	typeIDs    map[string]int64
-	nextTypeID int64
+	Structs        map[string]*StructType
+	Interfaces     map[string]*InterfaceType
+	Functions      map[string]*FuncType
+	Globals        map[string]Type
+	Constants      map[string]int64
+	FloatConstants map[string]float64 // 追加
+	Aliases        map[string]Type
+	typeIDs        map[string]int64
+	nextTypeID     int64
 }
 
 func NewContext() *Context {
 	ctx := &Context{
-		Structs:    make(map[string]*StructType),
-		Interfaces: make(map[string]*InterfaceType),
-		Functions:  make(map[string]*FuncType),
-		Globals:    make(map[string]Type),
-		Constants:  make(map[string]int64),
-		Aliases:    make(map[string]Type),
-		typeIDs:    make(map[string]int64),
-		nextTypeID: 1,
+		Structs:        make(map[string]*StructType),
+		Interfaces:     make(map[string]*InterfaceType),
+		Functions:      make(map[string]*FuncType),
+		Globals:        make(map[string]Type),
+		Constants:      make(map[string]int64),
+		FloatConstants: make(map[string]float64), // 追加
+		Aliases:        make(map[string]Type),
+		typeIDs:        make(map[string]int64),
+		nextTypeID:     1,
 	}
 
 	ctx.typeIDs["int"] = 1
@@ -347,11 +349,17 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	for _, decl := range prog.Decls {
 		switch d := decl.(type) {
 		case *ast.ConstDecl:
-			var val int64 = 0
 			if il, ok := d.Value.(*ast.IntegerLiteral); ok {
-				val = il.Value
+				ctx.Constants[d.Name.Value] = il.Value
+			} else if fl, ok := d.Value.(*ast.FloatLiteral); ok {
+				ctx.FloatConstants[d.Name.Value] = fl.Value
+			} else if pe, ok := d.Value.(*ast.PrefixExpr); ok && pe.Operator == "-" {
+				if il, ok := pe.Right.(*ast.IntegerLiteral); ok {
+					ctx.Constants[d.Name.Value] = -il.Value
+				} else if fl, ok := pe.Right.(*ast.FloatLiteral); ok {
+					ctx.FloatConstants[d.Name.Value] = -fl.Value
+				}
 			}
-			ctx.Constants[d.Name.Value] = val
 
 		case *ast.VarDecl:
 			var gType Type = TypeInt
