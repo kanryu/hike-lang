@@ -103,6 +103,271 @@ make testcpp
 
 ---
 
+
+## 📚 Language Tour & Syntax Reference
+
+Hike adopts Go's clean, minimalist syntax while compiling down to zero-overhead LLVM IR. Below is a comprehensive guide to the language features and syntax supported by Hike.
+
+---
+
+### 1. Variables, Types & Constants
+
+Hike supports explicit type declarations as well as local type inference via `:=`.
+
+```go
+package main
+
+// Primitive types: int (i64), float64 (double), byte (u8), bool (i1), string (i8*)
+var globalCounter int = 0
+const MaxLimit int = 1024
+
+func DemoVariables() {
+    // Explicit type declaration
+    var a int = 42
+    var b float64 = 3.14159
+    var isEnabled bool = true
+    var msg string = "Hello, Hike!"
+
+    // Type inference (short declaration)
+    count := 100
+    ratio := 0.75
+}
+
+```
+
+---
+
+### 2. Pointers & Structs
+
+Like C and Go, Hike provides plain old data (POD) structures and raw pointer arithmetic without GC tracking.
+
+```go
+package main
+
+type Point struct {
+    X float64
+    Y float64
+}
+
+type Rectangle struct {
+    TopLeft     Point
+    BottomRight Point
+}
+
+func CreatePoint(x float64, y float64) Point {
+    return Point{X: x, Y: y}
+}
+
+// Pointer passing avoids struct copying
+func OffsetPoint(p *Point, dx float64, dy float64) {
+    p.X = p.X + dx
+    p.Y = p.Y + dy
+}
+
+```
+
+---
+
+### 3. Functions & Multiple Return Values
+
+Functions are first-class constructs and support multiple return values, commonly used for status and result pairs.
+
+```go
+package main
+
+// Multiple return values
+func SafeDivide(a int, b int) (int, bool) {
+    if b == 0 {
+        return 0, false
+    }
+    return a / b, true
+}
+
+func DemoFunctions() {
+    result, ok := SafeDivide(10, 2)
+    if ok {
+        // Proceed with result
+    }
+}
+
+```
+
+---
+
+### 4. Control Flow
+
+Hike supports standard Go control flow constructs, including `if` with initializers, three-clause `for`, range loops, and switches.
+
+```go
+package main
+
+func DemoControlFlow(values [5]int) int {
+    sum := 0
+
+    // 1. If statement with optional initializer
+    if n := len(values); n > 0 {
+        sum = sum + 1
+    }
+
+    // 2. Standard 3-clause for loop
+    for i := 0; i < 5; i = i + 1 {
+        sum = sum + values[i]
+    }
+
+    // 3. For-range loop (over arrays/slices)
+    for idx, val := range values {
+        if val < 0 {
+            continue
+        }
+        sum = sum + val
+    }
+
+    // 4. Switch statement
+    status := 200
+    switch status {
+    case 200:
+        sum = sum + 10
+    case 404, 500:
+        sum = sum - 1
+    default:
+        sum = 0
+    }
+
+    return sum
+}
+
+```
+
+---
+
+### 5. Arrays & Slices
+
+Hike features both fixed-size arrays and dynamic slice views.
+
+```go
+package main
+
+func DemoArrays() {
+    // Fixed-size array
+    var arr [4]int
+    arr[0] = 10
+    arr[1] = 20
+
+    // Array literal
+    primes := [3]int{2, 3, 5}
+
+    // Slice expression (view into memory)
+    // Slice header contains: pointer, length, capacity
+    sub := primes[1:3]
+}
+
+```
+
+---
+
+### 6. Zero-Cost Monomorphized Generics
+
+Hike implements compile-time monomorphization for generic functions and structs. Each instantiation generates specialized, concrete LLVM IR code with zero runtime dispatch cost.
+
+```go
+package main
+
+// Generic function constrained by type union
+func Min[T int | float64](a T, b T) T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func DemoGenerics() {
+    // Automatically specializes Min__int and Min__float64
+    minInt := Min(10, 20)
+    minFloat := Min(3.14, 2.71)
+}
+
+```
+
+---
+
+### 7. C-ABI Interoperability & Shared Library Export
+
+Any top-level function taking POD types or pointers is automatically eligible for C-ABI export. When compiled with `-header <name.h>`, `hikec` generates the corresponding C/C++ header.
+
+#### Hike Implementation (`mathlib.hike`)
+
+```go
+package main
+
+type Matrix2x2 struct {
+    M00 float64
+    M01 float64
+    M10 float64
+    M11 float64
+}
+
+// C-ABI Exported function
+func HikeMatrixDeterminant(m *Matrix2x2) float64 {
+    return (m.M00 * m.M11) - (m.M01 * m.M10)
+}
+
+```
+
+#### Auto-Generated C/C++ Header (`mathlib.h`)
+
+```c
+#ifndef HIKE_MATHLIB_H
+#define HIKE_MATHLIB_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef HIKE_API
+  #if defined(_WIN32) || defined(__CYGWIN__)
+    #define HIKE_API __declspec(dllimport)
+  #else
+    #define HIKE_API extern
+  #endif
+#endif
+
+typedef struct Matrix2x2 {
+    double M00;
+    double M01;
+    double M10;
+    double M11;
+} Matrix2x2;
+
+HIKE_API double HikeMatrixDeterminant(Matrix2x2* m);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+```
+
+#### Native C++ Consumption (`main.cpp`)
+
+```cpp
+#include <iostream>
+#include "mathlib.h"
+
+int main() {
+    Matrix2x2 mat = { 1.0, 2.0, 3.0, 4.0 };
+    double det = HikeMatrixDeterminant(&mat);
+    std::cout << "Determinant: " << det << std::endl; // => -2.0
+    return 0;
+}
+
+```
+
+
+
 ## 💡 Example Walkthrough
 
 ### 1. Write Hike Code (`libcalc.hike`)
