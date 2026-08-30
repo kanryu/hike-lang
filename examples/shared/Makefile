@@ -1,42 +1,36 @@
 HIKEC = go run ../../cmd/hikec
 CLANG = clang
+CXX = clang++
 PYTHON = python
 
 SRC = libcalc.hike
 LL = libcalc.ll
+HEADER = libcalc.h
+TARGET = libcalc.dll
+IMPLIB = libcalc.dll.a
+CPPTARGET = cpp_client.exe
 
-# OS判定によるターゲット拡張子と削除コマンドの設定
-ifeq ($(OS),Windows_NT)
-    TARGET = libcalc.dll
-    CLANG_SHARED_FLAGS = -shared -O3 -Wl,--export-all-symbols
-    RM = rm -f
-else
-    TARGET = libcalc.so
-    CLANG_SHARED_FLAGS = -shared -fPIC -O3
-    RM = rm -f
+CXXFLAGS = -static-libstdc++ -static-libgcc
+RM = rm -f
 
-endif
+.PHONY: all clean test testcpp
 
-.PHONY: all clean test
+all: $(TARGET) $(HEADER)
 
-# デフォルトターゲット: hikecでLLVM IRを生成し、clangで共有ライブラリ(DLL/SO)をビルド
-all: $(TARGET)
+$(LL) $(HEADER): $(SRC)
+	$(HIKEC) $(SRC) -o $(LL) -header $(HEADER)
 
-$(LL): $(SRC)
-	$(HIKEC) $(SRC) -o $(LL)
+$(TARGET) $(IMPLIB): $(LL)
+	$(CLANG) -shared -O3 -Wl,--export-all-symbols -Wl,--out-implib,$(IMPLIB) $(LL) -o $(TARGET)
 
-$(TARGET): $(LL)
-	$(CLANG) $(CLANG_SHARED_FLAGS) $(LL) -o $(TARGET)
-
-# テスト実行: ビルド後にPythonクライアントを実行
 test: $(TARGET)
 	$(PYTHON) test_client.py
 
-# クリーンアップ: 中間LLファイル、DLL、SOファイルを削除
+cpp_client.exe: test_client.cpp $(TARGET) $(IMPLIB) $(HEADER)
+	$(CXX) $(CXXFLAGS) test_client.cpp $(IMPLIB) -o cpp_client.exe
+
+testcpp: cpp_client.exe
+	./cpp_client.exe
+
 clean:
-
-
-	$(RM) *.ll *.dll *.so
-
-
-
+	$(RM) *.ll *.dll *.dll.a *.so libcalc.h $(CPPTARGET)
