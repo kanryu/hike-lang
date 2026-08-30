@@ -481,6 +481,94 @@ int main() {
 
 ```
 
+
+## VS Code Source-Level Debugging
+
+Hike natively generates LLVM DWARF debug metadata, enabling full source-level GUI debugging in Visual Studio Code (including breakpoints, step-by-step execution, variable inspection, and call stack unwinding).
+
+### 1. Prerequisites
+
+* **Visual Studio Code**
+* **C/C++ Extension** (`ms-vscode.cpptools`)
+* **GDB** or **LLDB** (e.g., via MSYS2 MinGW-w64 on Windows, or system packages on Linux/macOS)
+* **Clang**
+
+### 2. VS Code Configuration
+
+Create the following configuration files under the `.vscode/` directory in your workspace.
+
+#### `.vscode/tasks.json`
+Automates building the Hike source code into an executable with debug symbols before launching the debugger:
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Hike Debug Executable",
+      "type": "shell",
+      "command": "go run ../../cmd/hikec ${file} -g -o${fileDirname}/main.ll && clang -g -O0 ${fileDirname}/main.ll -o${fileDirname}/app.exe",
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
+
+```
+
+#### `.vscode/launch.json`
+
+Launches the built executable via GDB/LLDB:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Hike Program (F5)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${fileDirname}/app.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${fileDirname}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "preLaunchTask": "Build Hike Debug Executable",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
+
+```
+
+### 3. Debugging Workflow
+
+1. Open any `.hike` file and set breakpoints by clicking in the gutter next to the line numbers.
+2. Press **`F5`** to automatically compile and launch the debug session.
+3. The following features are fully supported:
+* **Step Over (`F10`)**: Advances execution line-by-line within the `.hike` source.
+* **Step Into (`F11`)**: Steps directly into function definitions (`func`).
+* **Step Out (`Shift + F11`)**: Returns to the caller function context.
+* **Variables Panel (Locals)**: Real-time inspection and updates for function parameters and local variables.
+* **Editor Hover**: Hover over any identifier in the editor to inspect its current value.
+* **Call Stack**: Complete stack trace tracking across function call frames.
+
+
 ---
 
 ## 📊 Current Status & Roadmap
