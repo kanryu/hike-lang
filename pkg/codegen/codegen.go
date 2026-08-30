@@ -562,36 +562,80 @@ func (g *CodeGenerator) emitArgConversion(b *strings.Builder, argReg string, arg
 		}
 	}
 
-	// nilリテラル ("null") を非ポインタ型（スライスや集約型など）に変換する場合は zeroinitializer を返す
 	if (argReg == "null" || argReg == "0") && !strings.HasSuffix(targetType.LLVMType(), "*") {
 		return "zeroinitializer"
 	}
 
-	if argType.LLVMType() == targetType.LLVMType() {
+	src := argType.LLVMType()
+	dst := targetType.LLVMType()
+	if src == dst {
 		return argReg
 	}
 
-	if strings.HasSuffix(argType.LLVMType(), "*") && strings.HasSuffix(targetType.LLVMType(), "*") {
+	// 1. ポインタ間の bitcast
+	if strings.HasSuffix(src, "*") && strings.HasSuffix(dst, "*") {
 		convReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, argType.LLVMType(), argReg, targetType.LLVMType()))
+		b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, src, argReg, dst))
+		return convReg
+	}
+	if strings.HasSuffix(src, "*") && dst == "i64" {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", convReg, src, argReg))
+		return convReg
+	}
+	if src == "i64" && strings.HasSuffix(dst, "*") {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", convReg, argReg, dst))
 		return convReg
 	}
 
-	if strings.HasSuffix(argType.LLVMType(), "*") && targetType.LLVMType() == "i64" {
+	// 2. 整数 -> 浮動小数点数 (sitofp)
+	if (src == "i64" || src == "i32" || src == "i8") && (dst == "double" || dst == "float") {
 		convReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", convReg, argType.LLVMType(), argReg))
+		b.WriteString(fmt.Sprintf("  %s = sitofp %s %s to %s\n", convReg, src, argReg, dst))
+		return convReg
+	}
+	if src == "i1" && (dst == "double" || dst == "float") {
+		zextReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", zextReg, argReg))
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = sitofp i64 %s to %s\n", convReg, zextReg, dst))
 		return convReg
 	}
 
-	if argType.LLVMType() == "i64" && strings.HasSuffix(targetType.LLVMType(), "*") {
+	// 3. 浮動小数点数 -> 整数 (fptosi)
+	if (src == "double" || src == "float") && (dst == "i64" || dst == "i32" || dst == "i8") {
 		convReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", convReg, argReg, targetType.LLVMType()))
+		b.WriteString(fmt.Sprintf("  %s = fptosi %s %s to %s\n", convReg, src, argReg, dst))
 		return convReg
 	}
 
-	if argType.LLVMType() == "i1" && targetType.LLVMType() == "i64" {
+	// 4. 浮動小数点数間の拡張・縮小 (fpext / fptrunc)
+	if src == "float" && dst == "double" {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = fpext float %s to double\n", convReg, argReg))
+		return convReg
+	}
+	if src == "double" && dst == "float" {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = fptrunc double %s to float\n", convReg, argReg))
+		return convReg
+	}
+
+	// 5. 整数間の変換
+	if src == "i1" && dst == "i64" {
 		convReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", convReg, argReg))
+		return convReg
+	}
+	if src == "i8" && dst == "i64" {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, argReg))
+		return convReg
+	}
+	if src == "i64" && dst == "i8" {
+		convReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, argReg))
 		return convReg
 	}
 
@@ -2141,6 +2185,13 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 	case *ast.IntegerLiteral:
 		return fmt.Sprintf("%d", e.Value), sema.TypeInt
 
+	case *ast.FloatLiteral:
+		s := fmt.Sprintf("%f", e.Value)
+		if !strings.Contains(s, ".") {
+			s += ".0"
+		}
+		return s, sema.TypeFloat64
+
 	case *ast.StringLiteral:
 		label, length := g.getStringLiteral(e.Value)
 		gepReg := g.nextReg()
@@ -2716,7 +2767,7 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 	rightReg, rightType := g.resolveValue(b, e.Right)
 
 	if e.Operator == "==" || e.Operator == "!=" {
-		// Interface vs nil の比較 (例: err != nil, err == nil)
+		// Interface vs nil の比較
 		if iface, isIface := leftType.(*sema.InterfaceType); isIface && (rightReg == "null" || rightReg == "zeroinitializer" || rightType == nil || strings.HasSuffix(rightType.LLVMType(), "*")) {
 			dataPtr := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, iface.LLVMType(), leftReg))
@@ -2760,7 +2811,7 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 		}
 	}
 
-	// ポインタ演算 (例: ptr + offset, ptr - offset)
+	// ポインタ演算 (ptr + offset, ptr - offset)
 	if ptrType, isPtr := leftType.(*sema.PointerType); isPtr && (rightType == sema.TypeInt || rightType == sema.TypeByte || rightType == nil) {
 		if e.Operator == "+" {
 			elemType := ptrType.Base
@@ -2777,13 +2828,61 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 			return gepReg, ptrType
 		}
 	}
-	if ptrType, isPtr := rightType.(*sema.PointerType); isPtr && (leftType == sema.TypeInt || leftType == sema.TypeByte || leftType == nil) && e.Operator == "+" {
-		elemType := ptrType.Base
-		gepReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n", gepReg, elemType.LLVMType(), ptrType.LLVMType(), rightReg, leftReg))
-		return gepReg, ptrType
+
+	// 浮動小数点演算 (double または float が含まれる場合)
+	isFloat64 := (leftType == sema.TypeFloat64 || rightType == sema.TypeFloat64)
+	isFloat32 := (!isFloat64 && (leftType == sema.TypeFloat32 || rightType == sema.TypeFloat32))
+
+	if isFloat64 || isFloat32 {
+		targetFloatType := sema.TypeFloat64
+		if isFloat32 {
+			targetFloatType = sema.TypeFloat32
+		}
+
+		leftConv := g.emitArgConversion(b, leftReg, leftType, targetFloatType)
+		rightConv := g.emitArgConversion(b, rightReg, rightType, targetFloatType)
+
+		opInst := "fadd"
+		isCompare := false
+
+		switch e.Operator {
+		case "+":
+			opInst = "fadd"
+		case "-":
+			opInst = "fsub"
+		case "*":
+			opInst = "fmul"
+		case "/":
+			opInst = "fdiv"
+		case "==":
+			opInst = "fcmp oeq"
+			isCompare = true
+		case "!=":
+			opInst = "fcmp one"
+			isCompare = true
+		case "<":
+			opInst = "fcmp olt"
+			isCompare = true
+		case ">":
+			opInst = "fcmp ogt"
+			isCompare = true
+		case "<=":
+			opInst = "fcmp ole"
+			isCompare = true
+		case ">=":
+			opInst = "fcmp oge"
+			isCompare = true
+		}
+
+		resReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", resReg, opInst, targetFloatType.LLVMType(), leftConv, rightConv))
+		if isCompare {
+			return resReg, sema.TypeBool
+		}
+		return resReg, targetFloatType
 	}
 
+	// 整数演算
 	opInst := "add"
 	isCompare := false
 
@@ -2912,12 +3011,22 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 	// 3. byte型キャスト: byte(val)
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "byte" && len(call.Args) == 1 {
 		argReg, argType := g.resolveValue(b, call.Args[0])
-		if argType != nil && argType.LLVMType() == "i8" {
-			return argReg, sema.TypeByte
-		}
-		truncReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", truncReg, argReg))
-		return truncReg, sema.TypeByte
+		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeByte)
+		return convReg, sema.TypeByte
+	}
+
+	// float64(x) / float(x) 型キャスト
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && (fnIdent.Value == "float64" || fnIdent.Value == "float") && len(call.Args) == 1 {
+		argReg, argType := g.resolveValue(b, call.Args[0])
+		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat64)
+		return convReg, sema.TypeFloat64
+	}
+
+	// float32(x) 型キャスト
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "float32" && len(call.Args) == 1 {
+		argReg, argType := g.resolveValue(b, call.Args[0])
+		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat32)
+		return convReg, sema.TypeFloat32
 	}
 
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
@@ -3233,24 +3342,11 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
+	// int(x) 型キャスト
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "int" && len(call.Args) == 1 {
 		argReg, argType := g.resolveValue(b, call.Args[0])
-		srcTypeStr := "i64"
-		if argType != nil && argType.LLVMType() != "" {
-			srcTypeStr = argType.LLVMType()
-		}
-		if srcTypeStr == "i64" {
-			return argReg, sema.TypeInt
-		}
-		castReg := g.nextReg()
-		if strings.HasSuffix(srcTypeStr, "*") {
-			b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", castReg, srcTypeStr, argReg))
-		} else if srcTypeStr == "i1" || srcTypeStr == "i8" {
-			b.WriteString(fmt.Sprintf("  %s = zext %s %s to i64\n", castReg, srcTypeStr, argReg))
-		} else {
-			b.WriteString(fmt.Sprintf("  %s = sext %s %s to i64\n", castReg, srcTypeStr, argReg))
-		}
-		return castReg, sema.TypeInt
+		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeInt)
+		return convReg, sema.TypeInt
 	}
 
 	if memExpr, ok := call.Function.(*ast.MemberExpr); ok {

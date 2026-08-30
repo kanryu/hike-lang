@@ -1095,6 +1095,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		}
 	case token.INT:
 		leftExp = p.parseIntegerLiteral()
+	case token.FLOAT:
+		leftExp = p.parseFloatLiteral()
 	case token.STRING:
 		leftExp = p.parseStringLiteral()
 	case token.NIL:
@@ -1273,6 +1275,15 @@ func (p *Parser) parseIntegerLiteral() *ast.IntegerLiteral {
 		return nil
 	}
 	return &ast.IntegerLiteral{Token: p.curToken, Value: val}
+}
+
+func (p *Parser) parseFloatLiteral() *ast.FloatLiteral {
+	val, err := strconv.ParseFloat(p.curToken.Literal, 64)
+	if err != nil {
+		p.errors = append(p.errors, fmt.Sprintf("could not parse %q as float", p.curToken.Literal))
+		return nil
+	}
+	return &ast.FloatLiteral{Token: p.curToken, Value: val}
 }
 
 func (p *Parser) parseStringLiteral() *ast.StringLiteral {

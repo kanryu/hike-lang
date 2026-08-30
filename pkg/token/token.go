@@ -13,8 +13,10 @@ const (
 	ILLEGAL = "ILLEGAL"
 	EOF     = "EOF"
 
+	// Literals
 	IDENT  = "IDENT"
 	INT    = "INT"
+	FLOAT  = "FLOAT" // 追加
 	STRING = "STRING"
 
 	// Operators

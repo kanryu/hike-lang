@@ -24,11 +24,13 @@ func (t *BasicType) LLVMType() string { return t.LLVM }
 func (t *BasicType) Size() int        { return t.ByteSize }
 
 var (
-	TypeInt    = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
-	TypeByte   = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
-	TypeBool   = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
-	TypeString = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"}
-	TypeVoid   = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
+	TypeInt     = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
+	TypeByte    = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
+	TypeBool    = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
+	TypeFloat32 = &BasicType{Name: "float32", ByteSize: 4, LLVM: "float"}
+	TypeFloat64 = &BasicType{Name: "float64", ByteSize: 8, LLVM: "double"}
+	TypeString  = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"}
+	TypeVoid    = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
 
 type PointerType struct {
@@ -172,7 +174,9 @@ func NewContext() *Context {
 	ctx.typeIDs["byte"] = 2
 	ctx.typeIDs["bool"] = 3
 	ctx.typeIDs["string"] = 4
-	ctx.nextTypeID = 5
+	ctx.typeIDs["float32"] = 5
+	ctx.typeIDs["float64"] = 6
+	ctx.nextTypeID = 7
 
 	errorIface := &InterfaceType{
 		Name: "error",
@@ -238,6 +242,10 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return TypeByte
 		case "bool":
 			return TypeBool
+		case "float32":
+			return TypeFloat32
+		case "float64", "float":
+			return TypeFloat64
 		case "string":
 			return TypeString
 		case "any":

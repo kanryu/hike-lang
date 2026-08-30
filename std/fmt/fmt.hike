@@ -13,6 +13,10 @@ func PrintInt(v int) {
 	printf("%d", v)
 }
 
+func PrintFloat(f float64) {
+	printf("%f", f)
+}
+
 func PrintLn(s *byte) {
 	if s == nil {
 		printf("\n")

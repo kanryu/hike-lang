@@ -2,8 +2,6 @@ package main
 
 import (
 	"std/fmt"
-	"std/strconv"
-	"std/strings"
 )
 
 func assert(cond bool, testNum int, testName *byte) {
@@ -20,85 +18,92 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
+// 浮動小数点数を返す関数
+func calcArea(radius float64) float64 {
+	pi := 3.1415926535
+	return pi * radius * radius
+}
+
+// 構造体での浮動小数点数
+type Point2D struct {
+	X float64
+	Y float64
+}
+
+func (p *Point2D) DistanceSq() float64 {
+	return (p.X * p.X) + (p.Y * p.Y)
+}
+
 func main() int {
-	fmt.PrintLn("=== Running std/strings & std/strconv Comprehensive Tests ===")
+	fmt.PrintLn("=== Running Floating-Point (float32 / float64) Tests ===")
 	testCount := 0
 
 	// ==========================================
-	// 1. std/strings: HasPrefix / HasSuffix
+	// 1. 基本的な四則演算
 	// ==========================================
+	a := 1.5
+	b := 2.5
+	sum := a + b
 	testCount++
-	assert(strings.HasPrefix("hello world", "hello"), testCount, "strings.HasPrefix('hello world', 'hello') == true")
+	assert(sum == 4.0, testCount, "float64 Addition: 1.5 + 2.5 == 4.0")
 
+	diff := b - a
 	testCount++
-	assert(strings.HasSuffix("main.hike", ".hike"), testCount, "strings.HasSuffix('main.hike', '.hike') == true")
+	assert(diff == 1.0, testCount, "float64 Subtraction: 2.5 - 1.5 == 1.0")
 
-	// ==========================================
-	// 2. std/strings: Index / Contains / Count
-	// ==========================================
+	prod := a * 2.0
 	testCount++
-	assert(strings.Index("compiler design", "design") == 9, testCount, "strings.Index('compiler design', 'design') == 9")
+	assert(prod == 3.0, testCount, "float64 Multiplication: 1.5 * 2.0 == 3.0")
 
+	div := 7.5 / 2.5
 	testCount++
-	assert(strings.Contains("quick brown fox", "brown"), testCount, "strings.Contains('quick brown fox', 'brown') == true")
-
-	testCount++
-	assert(strings.Count("banana", "an") == 2, testCount, "strings.Count('banana', 'an') == 2")
-
-	// ==========================================
-	// 3. std/strings: Join / Split / Repeat
-	// ==========================================
-	words := []string{"Go", "Rust", "Hike"}
-	joined := strings.Join(words, ", ")
-	testCount++
-	assert(joined == "Go, Rust, Hike", testCount, "strings.Join(words, ', ') == 'Go, Rust, Hike'")
-
-	parts := strings.Split("a:b:c:d", ":")
-	testCount++
-	assert(len(parts) == 4 && parts[0] == "a" && parts[3] == "d", testCount, "strings.Split('a:b:c:d', ':') -> length 4")
-
-	repeated := strings.Repeat("Na", 4)
-	testCount++
-	assert(repeated == "NaNaNaNa", testCount, "strings.Repeat('Na', 4) == 'NaNaNaNa'")
+	assert(div == 3.0, testCount, "float64 Division: 7.5 / 2.5 == 3.0")
 
 	// ==========================================
-	// 4. std/strconv: Itoa / Atoi
+	// 2. 比較演算 (<, >, <=, >=, ==, !=)
 	// ==========================================
-	s1 := strconv.Itoa(12345)
 	testCount++
-	assert(s1 == "12345", testCount, "strconv.Itoa(12345) == '12345'")
+	assert(1.5 < 2.5 && 3.14 > 2.71, testCount, "float64 Comparison: (< and >)")
 
-	s2 := strconv.Itoa(-42)
 	testCount++
-	assert(s2 == "-42", testCount, "strconv.Itoa(-42) == '-42'")
+	assert(2.0 <= 2.0 && 5.0 >= 4.9, testCount, "float64 Comparison: (<= and >=)")
 
-	n1, err1 := strconv.Atoi("98765")
 	testCount++
-	assert(err1 == nil && n1 == 98765, testCount, "strconv.Atoi('98765') == 98765")
-
-	n2, err2 := strconv.Atoi("-100")
-	testCount++
-	assert(err2 == nil && n2 == -100, testCount, "strconv.Atoi('-100') == -100")
+	assert(1.23 != 4.56, testCount, "float64 Comparison: (!=)")
 
 	// ==========================================
-	// 5. std/strconv: FormatInt / ParseInt (基数変換)
+	// 3. 型キャスト (int ↔ float64, float32 ↔ float64)
 	// ==========================================
-	hexStr := strconv.FormatInt(255, 16)
+	intVal := 42
+	castFloat := float64(intVal)
 	testCount++
-	assert(hexStr == "ff", testCount, "strconv.FormatInt(255, 16) == 'ff'")
+	assert(castFloat == 42.0, testCount, "Type Cast: int(42) -> float64(42.0)")
 
-	binStr := strconv.FormatInt(10, 2)
+	floatVal := 9.99
+	castInt := int(floatVal)
 	testCount++
-	assert(binStr == "1010", testCount, "strconv.FormatInt(10, 2) == '1010'")
+	assert(castInt == 9, testCount, "Type Cast: float64(9.99) -> int(9)")
 
-	parsedHex, pHexErr := strconv.ParseInt("1a", 16, 64)
+	var f32 float32 = float32(3.5)
+	f64 := float64(f32)
 	testCount++
-	assert(pHexErr == nil && parsedHex == 26, testCount, "strconv.ParseInt('1a', 16, 64) == 26")
+	assert(f64 == 3.5, testCount, "Type Cast: float32(3.5) -> float64(3.5)")
 
-	parsedBin, pBinErr := strconv.ParseInt("1101", 2, 64)
+	// ==========================================
+	// 4. 関数呼び出しと実数計算
+	// ==========================================
+	area := calcArea(2.0)
 	testCount++
-	assert(pBinErr == nil && parsedBin == 13, testCount, "strconv.ParseInt('1101', 2, 64) == 13")
+	assert(area > 12.56 && area < 12.57, testCount, "Function: calcArea(2.0) ≈ 12.566")
 
-	fmt.PrintLn("=== All std/strings & std/strconv Tests Passed ===")
+	// ==========================================
+	// 5. 構造体フィールドとメソッド
+	// ==========================================
+	pt := Point2D{X: 3.0, Y: 4.0}
+	distSq := pt.DistanceSq()
+	testCount++
+	assert(distSq == 25.0, testCount, "Struct Method: pt.DistanceSq() == 25.0")
+
+	fmt.PrintLn("=== All Floating-Point Tests Passed ===")
 	return testCount
 }
