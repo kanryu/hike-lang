@@ -1363,5 +1363,44 @@ func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
 	}
 	p.nextToken()
 	field := p.parseIdentifier()
+
+	// パッケージ修飾構造体リテラル (例: calc.Vector{X: 3, Y: 4}) の判定
+	if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+		if pkgIdent, ok := obj.(*ast.Identifier); ok {
+			p.nextToken() // '{' へ進む
+			namedType := &ast.NamedType{
+				Token:   pkgIdent.Token,
+				Package: pkgIdent,
+				Name:    field,
+			}
+			fields := []*ast.StructFieldValue{}
+			if !p.peekTokenIs(token.RBRACE) {
+				p.nextToken()
+				for {
+					var fName *ast.Identifier = nil
+					if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+						fName = p.parseIdentifier()
+						p.nextToken()
+						p.nextToken()
+					}
+					val := p.parseExpression(LOWEST)
+					fields = append(fields, &ast.StructFieldValue{Name: fName, Value: val})
+
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						if p.peekTokenIs(token.RBRACE) {
+							break
+						}
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+			}
+			p.expectPeek(token.RBRACE)
+			return &ast.StructLiteral{Token: pkgIdent.Token, Type: namedType, Fields: fields}
+		}
+	}
+
 	return &ast.MemberExpr{Token: tok, Object: obj, Field: field}
 }

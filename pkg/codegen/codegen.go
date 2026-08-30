@@ -2302,9 +2302,14 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 					return "@" + ident.Value, &sema.PointerType{Base: gType}
 				}
 			} else if stLit, ok := e.Right.(*ast.StructLiteral); ok {
-				st, structName := g.findStructByName(stLit.Type.Name.Value)
+				targetStructName := stLit.Type.Name.Value
+				if stLit.Type.Package != nil {
+					targetStructName = stLit.Type.Package.Value + "_" + stLit.Type.Name.Value
+				}
+
+				st, structName := g.findStructByName(targetStructName)
 				if st == nil {
-					panic(fmt.Sprintf("[Codegen Error] unknown struct type %s", stLit.Type.Name.Value))
+					panic(fmt.Sprintf("[Codegen Error] unknown struct type %s", targetStructName))
 				}
 
 				allocaReg := g.nextReg()
@@ -2366,6 +2371,21 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		}
 
 	case *ast.MemberExpr:
+		// パッケージ定数・グローバル変数の参照解決（例: calc.DefaultBase）
+		if objIdent, isIdent := e.Object.(*ast.Identifier); isIdent {
+			if _, exists := g.symbols[objIdent.Value]; !exists {
+				pkgSymbol := objIdent.Value + "_" + e.Field.Value
+				if val, ok := g.semaCtx.Constants[pkgSymbol]; ok {
+					return fmt.Sprintf("%d", val), sema.TypeInt
+				}
+				if gType, exists := g.semaCtx.Globals[pkgSymbol]; exists {
+					loadReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %s, %s* @%s\n", loadReg, gType.LLVMType(), gType.LLVMType(), pkgSymbol))
+					return loadReg, gType
+				}
+			}
+		}
+
 		objPtrReg, _, st, structName := g.resolveStructPtr(b, e.Object)
 		if st == nil {
 			panic(fmt.Sprintf("[Codegen Error] struct type not found for member expr %s", e.Field.Value))
@@ -3077,6 +3097,8 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 					callReg := g.nextReg()
 					b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n", callReg, retType, emitFnName, strings.Join(args, ", ")))
 					return callReg, semaRet
+				} else {
+					panic(fmt.Sprintf("[Codegen Error] undefined package function or symbol '%s.%s'", pkgIdent.Value, methodName))
 				}
 			}
 		}

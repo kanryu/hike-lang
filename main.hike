@@ -1,6 +1,7 @@
 package main
 
 import (
+	"calc"
 	"std/fmt"
 )
 
@@ -18,60 +19,40 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-type Rect struct {
-	Width  int
-	Height int
-}
-
-func inspectType(val any) int {
-	switch v := val.(type) {
-	case int:
-		return v * 2
-	case string:
-		return 100
-	case bool:
-		if v {
-			return 1
-		}
-		return 0
-	case *Rect:
-		return v.Width * v.Height
-	default:
-		return -1
-	}
-}
-
 func main() int {
-	fmt.PrintLn("=== Running Type Switch Tests ===")
+	fmt.PrintLn(getBanner())
 	testCount := 0
 
-	// 1. int 型のマッチングと演算 (v * 2)
-	res1 := inspectType(21)
+	// ==========================================
+	// 1. 同一パッケージ内別ファイル (helper.hike) の関数呼び出し
+	// ==========================================
+	multRes := helperMultiply(6, 7)
 	testCount++
-	assert(res1 == 42, testCount, "Type Switch: case int evaluates (21 * 2 == 42)")
+	assert(multRes == 42, testCount, "Same Package Multi-File: helperMultiply(6, 7) == 42")
 
-	// 2. string 型のマッチング
-	res2 := inspectType("hello")
+	// ==========================================
+	// 2. 外部パッケージ (calc) の関数と定数
+	// ==========================================
+	addRes := calc.Add(calc.DefaultBase, 50)
 	testCount++
-	assert(res2 == 100, testCount, "Type Switch: case string evaluates == 100")
+	assert(addRes == 150, testCount, "External Package Func & Const: calc.Add(calc.DefaultBase, 50) == 150")
 
-	// 3. bool 型のマッチング
-	res3 := inspectType(true)
+	subRes := calc.Sub(100, 30)
 	testCount++
-	assert(res3 == 1, testCount, "Type Switch: case bool evaluates == 1")
+	assert(subRes == 70, testCount, "External Package Func: calc.Sub(100, 30) == 70")
 
-	// 4. *Rect 構造体ポインタのマッチングとフィールドアクセス
-	r := Rect{Width: 10, Height: 5}
-	res4 := inspectType(&r)
+	// ==========================================
+	// 3. 外部パッケージの構造体とメソッド呼び出し・ミューテーション
+	// ==========================================
+	vec := calc.Vector{X: 3, Y: 4}
+	lenSq := vec.LengthSq()
 	testCount++
-	assert(res4 == 50, testCount, "Type Switch: case *Rect evaluates (10 * 5 == 50)")
+	assert(lenSq == 25, testCount, "External Package Struct & Method: vec.LengthSq() == 25")
 
-	// 5. default 節へのフォールバック
-	dummyArr := [2]int{1, 2}
-	res5 := inspectType(dummyArr)
+	vec.Scale(2)
 	testCount++
-	assert(res5 == -1, testCount, "Type Switch: default fallback evaluates == -1")
+	assert(vec.X == 6 && vec.Y == 8, testCount, "External Package Method Mutation: vec.Scale(2) -> (6, 8)")
 
-	fmt.PrintLn("=== All Type Switch Tests Passed ===")
+	fmt.PrintLn("=== All Multi-File & Multi-Package Tests Passed ===")
 	return testCount
 }

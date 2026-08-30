@@ -1,9 +1,10 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"hikec-go/pkg/codegen"
 	"hikec-go/pkg/loader"
@@ -11,60 +12,79 @@ import (
 )
 
 func main() {
-	var outputFile string
-	var verbose bool
+	outPath := "output.ll"
+	verbose := false
+	var inputTargets []string
 
-	flag.StringVar(&outputFile, "o", "output.ll", "Output LLVM IR file path")
-	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
-	flag.Parse()
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-o" || arg == "--o" || arg == "-output" {
+			if i+1 < len(args) {
+				outPath = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-o=") {
+			outPath = strings.TrimPrefix(arg, "-o=")
+		} else if strings.HasPrefix(arg, "--o=") {
+			outPath = strings.TrimPrefix(arg, "--o=")
+		} else if arg == "-v" || arg == "--verbose" || arg == "-verbose" {
+			verbose = true
+		} else if strings.HasPrefix(arg, "-") {
+			// 未知のフラグ
+		} else {
+			inputTargets = append(inputTargets, arg)
+		}
+	}
 
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Usage: hikec [-v] [-o output.ll] <entry_file.hike>")
+	if len(inputTargets) == 0 {
+		fmt.Println("Usage: hikec [options] <file1.hike> [file2.hike...] / <dir>")
+		fmt.Println("Options:")
+		fmt.Println("  -o <path>    Output LLVM IR file path (default: output.ll)")
+		fmt.Println("  -v           Enable verbose logging")
 		os.Exit(1)
 	}
 
-	entryFile := args[0]
-	if verbose {
-		fmt.Printf("[CLI] Loading entry file: %s (Verbose Mode: ON)\n", entryFile)
-	}
-
-	// 1. プログラム全体の読み込みと再帰インポート解決
-	l := loader.New(verbose)
-	prog, err := l.Load(entryFile)
+	rootDir, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Loader error: %v\n", err)
+		rootDir = "."
+	}
+
+	ld := loader.New(rootDir)
+	ld.SetVerbose(verbose)
+
+	if verbose {
+		fmt.Printf("[CLI] Loading %d source target(s) (Verbose Mode: ON)\n", len(inputTargets))
+	}
+
+	prog, err := ld.Load(inputTargets...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Load Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2. セマンティクス解析 (型検査・レイアウト計算)
 	if verbose {
 		fmt.Println("[SEMA] Starting semantic analysis...")
 	}
 	semaCtx, err := sema.Analyze(prog)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Semantic error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Semantic Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 3. LLVM IR コード生成
 	if verbose {
 		fmt.Println("[CODEGEN] Starting LLVM IR generation...")
 	}
 	cg := codegen.New(prog, semaCtx)
 	cg.SetVerbose(verbose)
-	ir := cg.Generate()
+	llvmIR := cg.Generate()
 
-	// 4. LLVM IR の書き出し
-	err = os.WriteFile(outputFile, []byte(ir), 0644)
+	cleanOutPath := filepath.Clean(outPath)
+	err = os.WriteFile(cleanOutPath, []byte(llvmIR), 0644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write output file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "File Write Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if verbose {
-		fmt.Printf("[CLI] Compilation finished successfully: %s -> %s\n", entryFile, outputFile)
-	} else {
-		fmt.Printf("Compiled %s -> %s\n", entryFile, outputFile)
-	}
+	fmt.Printf("Compiled [%d target(s)] -> %s\n", len(inputTargets), cleanOutPath)
 }
