@@ -2,7 +2,6 @@ package main
 
 import (
 	"std/fmt"
-	"std/math"
 )
 
 func assert(cond bool, testNum int, testName *byte) {
@@ -19,102 +18,91 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-func almostEqual(a float64, b float64, eps float64) bool {
-	diff := a - b
-	if diff < 0.0 {
-		diff = -diff
-	}
-	return diff <= eps
-}
-
 func main() int {
-	fmt.PrintLn("=== Running std/math Comprehensive Tests ===")
+	fmt.PrintLn("=== Running map[K]V Comprehensive Tests ===")
 	testCount := 0
 
 	// ==========================================
-	// 1. 数学定数
+	// 1. 基本的な代入と参照: make(map[string]int)
 	// ==========================================
-	testCount++
-	assert(almostEqual(math.Pi, 3.14159265, 0.0001), testCount, "math.Pi ≈ 3.14159")
+	scores := make(map[string]int)
+	scores["Alice"] = 95
+	scores["Bob"] = 80
+	scores["Charlie"] = 70
 
 	testCount++
-	assert(almostEqual(math.E, 2.71828182, 0.0001), testCount, "math.E ≈ 2.71828")
+	assert(scores["Alice"] == 95, testCount, "map[string]int: scores['Alice'] == 95")
 
 	testCount++
-	assert(almostEqual(math.Sqrt2, 1.41421356, 0.0001), testCount, "math.Sqrt2 ≈ 1.41421")
-
-	// ==========================================
-	// 2. 基本演算: Abs, Sqrt, Pow, Hypot, Mod
-	// ==========================================
-	testCount++
-	assert(math.Abs(-42.5) == 42.5, testCount, "math.Abs(-42.5) == 42.5")
+	assert(scores["Bob"] == 80, testCount, "map[string]int: scores['Bob'] == 80")
 
 	testCount++
-	assert(math.Sqrt(16.0) == 4.0, testCount, "math.Sqrt(16.0) == 4.0")
-
-	testCount++
-	assert(math.Pow(2.0, 8.0) == 256.0, testCount, "math.Pow(2.0, 8.0) == 256.0")
-
-	testCount++
-	assert(math.Hypot(3.0, 4.0) == 5.0, testCount, "math.Hypot(3.0, 4.0) == 5.0")
-
-	testCount++
-	assert(almostEqual(math.Mod(7.5, 2.0), 1.5, 0.0001), testCount, "math.Mod(7.5, 2.0) == 1.5")
+	assert(scores["Charlie"] == 70, testCount, "map[string]int: scores['Charlie'] == 70")
 
 	// ==========================================
-	// 3. 三角関数: Sin, Cos, Tan
+	// 2. 組み込み関数 len() と値の更新
 	// ==========================================
 	testCount++
-	assert(almostEqual(math.Sin(math.Pi/2.0), 1.0, 0.0001), testCount, "math.Sin(Pi/2) == 1.0")
+	assert(len(scores) == 3, testCount, "len(scores) == 3")
 
+	scores["Bob"] = 88 // 上書き更新
 	testCount++
-	assert(almostEqual(math.Cos(0.0), 1.0, 0.0001), testCount, "math.Cos(0) == 1.0")
-
-	testCount++
-	assert(almostEqual(math.Tan(math.Pi/4.0), 1.0, 0.0001), testCount, "math.Tan(Pi/4) == 1.0")
+	assert(scores["Bob"] == 88 && len(scores) == 3, testCount, "Update map key: scores['Bob'] == 88")
 
 	// ==========================================
-	// 4. 丸め・切捨て: Floor, Ceil, Round, Trunc
+	// 3. 存在確認（カンマokイディオム）
 	// ==========================================
+	val1, ok1 := scores["Alice"]
 	testCount++
-	assert(math.Floor(3.7) == 3.0, testCount, "math.Floor(3.7) == 3.0")
+	assert(ok1 && val1 == 95, testCount, "Comma-ok: existing key 'Alice' -> ok == true")
 
+	val2, ok2 := scores["David"]
 	testCount++
-	assert(math.Ceil(3.2) == 4.0, testCount, "math.Ceil(3.2) == 4.0")
-
-	testCount++
-	assert(math.Round(3.5) == 4.0, testCount, "math.Round(3.5) == 4.0")
-
-	testCount++
-	assert(math.Trunc(3.9) == 3.0, testCount, "math.Trunc(3.9) == 3.0")
+	assert(!ok2 && val2 == 0, testCount, "Comma-ok: non-existing key 'David' -> ok == false, val == 0")
 
 	// ==========================================
-	// 5. 指数・対数: Exp, Log, Log10, Log2
+	// 4. 組み込み関数 delete()
 	// ==========================================
+	delete(scores, "Charlie")
 	testCount++
-	assert(almostEqual(math.Exp(1.0), math.E, 0.0001), testCount, "math.Exp(1.0) == math.E")
+	assert(len(scores) == 2, testCount, "delete(scores, 'Charlie') -> len == 2")
 
+	_, ok3 := scores["Charlie"]
 	testCount++
-	assert(almostEqual(math.Log(math.E), 1.0, 0.0001), testCount, "math.Log(math.E) == 1.0")
-
-	testCount++
-	assert(almostEqual(math.Log10(100.0), 2.0, 0.0001), testCount, "math.Log10(100.0) == 2.0")
-
-	testCount++
-	assert(almostEqual(math.Log2(8.0), 3.0, 0.0001), testCount, "math.Log2(8.0) == 3.0")
+	assert(!ok3, testCount, "Deleted key 'Charlie' -> ok == false")
 
 	// ==========================================
-	// 6. ユーティリティ: Max, Min, Dim
+	// 5. 整数キーのマップ: make(map[int]string)
 	// ==========================================
-	testCount++
-	assert(math.Max(10.5, 20.5) == 20.5, testCount, "math.Max(10.5, 20.5) == 20.5")
+	httpStatus := make(map[int]string)
+	httpStatus[200] = "OK"
+	httpStatus[404] = "Not Found"
+	httpStatus[500] = "Internal Server Error"
 
 	testCount++
-	assert(math.Min(10.5, 20.5) == 10.5, testCount, "math.Min(10.5, 20.5) == 10.5")
+	assert(httpStatus[200] == "OK" && httpStatus[404] == "Not Found", testCount, "map[int]string: Status code mapping")
 
 	testCount++
-	assert(math.Dim(4.0, -2.0) == 6.0 && math.Dim(-4.0, 2.0) == 0.0, testCount, "math.Dim tests")
+	assert(len(httpStatus) == 3, testCount, "len(httpStatus) == 3")
 
-	fmt.PrintLn("=== All std/math Tests Passed ===")
+	// ==========================================
+	// 6. for k, v := range m 反復走査
+	// ==========================================
+	counts := make(map[string]int)
+	counts["a"] = 10
+	counts["b"] = 20
+	counts["c"] = 30
+
+	sum := 0
+	numItems := 0
+	for k, v := range counts {
+		sum += v
+		numItems++
+	}
+
+	testCount++
+	assert(sum == 60 && numItems == 3, testCount, "for k, v := range map: sum of values == 60")
+
+	fmt.PrintLn("=== All map[K]V Tests Passed ===")
 	return testCount
 }

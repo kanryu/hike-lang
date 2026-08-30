@@ -1,6 +1,8 @@
 package ast
 
-import "hikec-go/pkg/token"
+import (
+	"hikec-go/pkg/token"
+)
 
 type Node interface {
 	TokenLiteral() string
@@ -404,6 +406,16 @@ type SliceLiteral struct {
 
 func (sl *SliceLiteral) expressionNode()      {}
 func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+type MapType struct {
+	Token token.Token // 'map'
+	Key   TypeExpr
+	Value TypeExpr
+}
+
+func (mt *MapType) typeExprNode()        {}
+func (mt *MapType) expressionNode()      {}
+func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
 
 type StructFieldValue struct {
 	Name  *Identifier

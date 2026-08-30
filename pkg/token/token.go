@@ -68,9 +68,11 @@ const (
 	LBRACKET = "["
 	RBRACKET = "]"
 
+	// Keywords
 	PACKAGE   = "PACKAGE"
 	IMPORT    = "IMPORT"
 	FUNC      = "FUNC"
+	MAP       = "MAP" // 追加
 	RETURN    = "RETURN"
 	TYPE      = "TYPE"
 	STRUCT    = "STRUCT"
@@ -95,24 +97,24 @@ var keywords = map[string]TokenType{
 	"package":   PACKAGE,
 	"import":    IMPORT,
 	"func":      FUNC,
-	"return":    RETURN,
+	"var":       VAR,
+	"const":     CONST,
 	"type":      TYPE,
 	"struct":    STRUCT,
 	"interface": INTERFACE,
-	"const":     CONST,
-	"iota":      IOTA,
-	"range":     RANGE,
-	"break":     BREAK,
-	"continue":  CONTINUE,
+	"map":       MAP, // 追加
 	"if":        IF,
 	"else":      ELSE,
 	"for":       FOR,
+	"range":     RANGE,
 	"switch":    SWITCH,
 	"case":      CASE,
 	"default":   DEFAULT,
+	"return":    RETURN,
 	"defer":     DEFER,
+	"break":     BREAK,
+	"continue":  CONTINUE,
 	"nil":       NIL,
-	"var":       VAR, // 追加
 }
 
 func LookupIdent(ident string) TokenType {

@@ -600,6 +600,17 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		}
 		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, ReturnTypes: returnTypes}
 	}
+	if p.curTokenIs(token.MAP) {
+		tok := p.curToken
+		p.nextToken() // 'map' の次へ
+		p.expectCurrent(token.LBRACKET)
+		p.nextToken()
+		keyType := p.parseTypeExpr()
+		p.expectPeek(token.RBRACKET)
+		p.nextToken()
+		valType := p.parseTypeExpr()
+		return &ast.MapType{Token: tok, Key: keyType, Value: valType}
+	}
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
 
@@ -1152,6 +1163,11 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		}
 		body := p.parseBlockStmt()
 		leftExp = &ast.FuncLit{Token: tok, Params: params, ReturnTypes: returnTypes, Body: body}
+
+	case token.MAP:
+		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
+			leftExp = expr
+		}
 
 	case token.LBRACKET:
 		tok := p.curToken

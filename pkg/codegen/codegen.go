@@ -785,6 +785,338 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("  store i8 0, i8* %null_ptr\n")
 	g.output.WriteString("  ret i8* %buf\n")
 	g.output.WriteString("}\n\n")
+
+	g.output.WriteString("%struct.__hike_map_entry = type { i64, i64, i64, %struct.__hike_map_entry* }\n")
+	g.output.WriteString("%struct.__hike_map = type { %struct.__hike_map_entry**, i64, i64, i64 }\n\n")
+
+	g.output.WriteString(`define i64 @__hike_hash_str(i8* %s) {
+entry:
+  %null_chk = icmp eq i8* %s, null
+  br i1 %null_chk, label %ret_zero, label %loop_init
+ret_zero:
+  ret i64 0
+loop_init:
+  br label %loop.cond
+loop.cond:
+  %h = phi i64 [ -3750763034362895579, %loop_init ], [ %h.next, %loop.body ]
+  %ptr = phi i8* [ %s, %loop_init ], [ %ptr.next, %loop.body ]
+  %ch = load i8, i8* %ptr
+  %is_null = icmp eq i8 %ch, 0
+  br i1 %is_null, label %loop.end, label %loop.body
+loop.body:
+  %ch.zext = zext i8 %ch to i64
+  %h.xor = xor i64 %h, %ch.zext
+  %h.next = mul i64 %h.xor, 1099511628211
+  %ptr.next = getelementptr inbounds i8, i8* %ptr, i64 1
+  br label %loop.cond
+loop.end:
+  ret i64 %h
+}
+
+define i1 @__hike_map_key_eq(i64 %k1, i64 %k2, i64 %is_str) {
+entry:
+  %is_s = icmp ne i64 %is_str, 0
+  br i1 %is_s, label %check_str, label %check_int
+check_int:
+  %eq_int = icmp eq i64 %k1, %k2
+  ret i1 %eq_int
+check_str:
+  %p1 = inttoptr i64 %k1 to i8*
+  %p2 = inttoptr i64 %k2 to i8*
+  %eq_ptr = icmp eq i8* %p1, %p2
+  br i1 %eq_ptr, label %ret_true, label %check_null
+check_null:
+  %n1 = icmp eq i8* %p1, null
+  %n2 = icmp eq i8* %p2, null
+  %either_null = or i1 %n1, %n2
+  br i1 %either_null, label %ret_false, label %do_cmp
+do_cmp:
+  %res = call i32 @strcmp(i8* %p1, i8* %p2)
+  %is_z = icmp eq i32 %res, 0
+  ret i1 %is_z
+ret_true:
+  ret i1 true
+ret_false:
+  ret i1 false
+}
+
+define %struct.__hike_map* @__hike_map_create(i64 %cap, i64 %is_str) {
+entry:
+  %raw = call i8* @malloc(i64 32)
+  %m = bitcast i8* %raw to %struct.__hike_map*
+  %buckets_raw = call i8* @calloc(i64 16, i64 8)
+  %buckets = bitcast i8* %buckets_raw to %struct.__hike_map_entry**
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  store %struct.__hike_map_entry** %buckets, %struct.__hike_map_entry*** %p_b
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  store i64 16, i64* %p_nb
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  store i64 0, i64* %p_len
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  store i64 %is_str, i64* %p_str
+  ret %struct.__hike_map* %m
+}
+
+define void @__hike_map_grow(%struct.__hike_map* %m) {
+entry:
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %old_nb = load i64, i64* %p_nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %old_b = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %new_nb = mul i64 %old_nb, 2
+  %new_raw = call i8* @calloc(i64 %new_nb, i64 8)
+  %new_b = bitcast i8* %new_raw to %struct.__hike_map_entry**
+  br label %loop.i
+loop.i:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %loop.i.inc ]
+  %cmp.i = icmp slt i64 %i, %old_nb
+  br i1 %cmp.i, label %loop.entry.init, label %loop.i.done
+loop.entry.init:
+  %p_cur_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %old_b, i64 %i
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_cur_head
+  br label %loop.entry
+loop.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %loop.entry.init ], [ %nxt, %loop.entry.body ]
+  %has_cur = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_cur, label %loop.entry.body, label %loop.i.inc
+loop.entry.body:
+  %p_nxt = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %nxt = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_nxt
+  %p_hash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %h_val = load i64, i64* %p_hash
+  %h_pos = and i64 %h_val, 9223372036854775807
+  %new_idx = urem i64 %h_pos, %new_nb
+  %p_new_slot = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %new_b, i64 %new_idx
+  %existing = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_new_slot
+  store %struct.__hike_map_entry* %existing, %struct.__hike_map_entry** %p_nxt
+  store %struct.__hike_map_entry* %cur, %struct.__hike_map_entry** %p_new_slot
+  br label %loop.entry
+loop.i.inc:
+  %i.next = add i64 %i, 1
+  br label %loop.i
+loop.i.done:
+  %old_b_raw = bitcast %struct.__hike_map_entry** %old_b to i8*
+  call void @free(i8* %old_b_raw)
+  store %struct.__hike_map_entry** %new_b, %struct.__hike_map_entry*** %p_b
+  store i64 %new_nb, i64* %p_nb
+  ret void
+}
+
+define void @__hike_map_set(%struct.__hike_map* %m, i64 %key, i64 %val) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_void, label %check_grow
+ret_void:
+  ret void
+check_grow:
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %cur_len = load i64, i64* %p_len
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i64, i64* %p_nb
+  %limit = mul i64 %nb, 3
+  %limit_div = sdiv i64 %limit, 4
+  %needs_grow = icmp sge i64 %cur_len, %limit_div
+  br i1 %needs_grow, label %do_grow, label %do_hash
+do_grow:
+  call void @__hike_map_grow(%struct.__hike_map* %m)
+  br label %do_hash
+do_hash:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i64, i64* %p_str
+  %is_s = icmp ne i64 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i64 %key to i8*
+  %h_s = call i64 @__hike_hash_str(i8* %k_ptr)
+  br label %lookup
+hash_int:
+  br label %lookup
+lookup:
+  %hash = phi i64 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb_2 = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb_cur = load i64, i64* %p_nb_2
+  %h_pos = and i64 %hash, 9223372036854775807
+  %idx = urem i64 %h_pos, %nb_cur
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i64 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %lookup ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %insert_new
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i64, i64* %p_ehash
+  %hash_match = icmp eq i64 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i64, i64* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i64 %ekey, i64 %key, i64 %is_str)
+  br i1 %key_match, label %update_val, label %search.next
+update_val:
+  %p_eval = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 2
+  store i64 %val, i64* %p_eval
+  ret void
+search.next:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  br label %search.entry
+insert_new:
+  %new_entry_raw = call i8* @malloc(i64 32)
+  %new_e = bitcast i8* %new_entry_raw to %struct.__hike_map_entry*
+  %np_hash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 0
+  store i64 %hash, i64* %np_hash
+  %np_key = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 1
+  store i64 %key, i64* %np_key
+  %np_val = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 2
+  store i64 %val, i64* %np_val
+  %np_next = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 3
+  %cur_head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  store %struct.__hike_map_entry* %cur_head, %struct.__hike_map_entry** %np_next
+  store %struct.__hike_map_entry* %new_e, %struct.__hike_map_entry** %p_head
+  %new_len = add i64 %cur_len, 1
+  store i64 %new_len, i64* %p_len
+  ret void
+}
+
+define i1 @__hike_map_get(%struct.__hike_map* %m, i64 %key, i64* %out_val) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_not_found, label %do_lookup
+ret_not_found:
+  store i64 0, i64* %out_val
+  ret i1 false
+do_lookup:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i64, i64* %p_str
+  %is_s = icmp ne i64 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i64 %key to i8*
+  %h_s = call i64 @__hike_hash_str(i8* %k_ptr)
+  br label %search_init
+hash_int:
+  br label %search_init
+search_init:
+  %hash = phi i64 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i64, i64* %p_nb
+  %h_pos = and i64 %hash, 9223372036854775807
+  %idx = urem i64 %h_pos, %nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i64 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %search_init ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %ret_not_found
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i64, i64* %p_ehash
+  %hash_match = icmp eq i64 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i64, i64* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i64 %ekey, i64 %key, i64 %is_str)
+  br i1 %key_match, label %found, label %search.next
+found:
+  %p_eval = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 2
+  %val = load i64, i64* %p_eval
+  store i64 %val, i64* %out_val
+  ret i1 true
+search.next:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  br label %search.entry
+}
+
+define void @__hike_map_delete(%struct.__hike_map* %m, i64 %key) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_void, label %do_del
+ret_void:
+  ret void
+do_del:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i64, i64* %p_str
+  %is_s = icmp ne i64 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i64 %key to i8*
+  %h_s = call i64 @__hike_hash_str(i8* %k_ptr)
+  br label %search_init
+hash_int:
+  br label %search_init
+search_init:
+  %hash = phi i64 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i64, i64* %p_nb
+  %h_pos = and i64 %hash, 9223372036854775807
+  %idx = urem i64 %h_pos, %nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i64 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %prev = phi %struct.__hike_map_entry* [ null, %search_init ], [ %cur, %search.next ]
+  %cur = phi %struct.__hike_map_entry* [ %head, %search_init ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %ret_void
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i64, i64* %p_ehash
+  %hash_match = icmp eq i64 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i64, i64* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i64 %ekey, i64 %key, i64 %is_str)
+  br i1 %key_match, label %do_unlink, label %search.next
+do_unlink:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %nxt = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  %has_prev = icmp ne %struct.__hike_map_entry* %prev, null
+  br i1 %has_prev, label %unlink_prev, label %unlink_head
+unlink_prev:
+  %p_pnext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %prev, i32 0, i32 3
+  store %struct.__hike_map_entry* %nxt, %struct.__hike_map_entry** %p_pnext
+  br label %after_unlink
+unlink_head:
+  store %struct.__hike_map_entry* %nxt, %struct.__hike_map_entry** %p_head
+  br label %after_unlink
+after_unlink:
+  %cur_raw = bitcast %struct.__hike_map_entry* %cur to i8*
+  call void @free(i8* %cur_raw)
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %cur_len = load i64, i64* %p_len
+  %new_len = sub i64 %cur_len, 1
+  store i64 %new_len, i64* %p_len
+  ret void
+search.next:
+  %p_enext2 = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext2
+  br label %search.entry
+}
+
+define i64 @__hike_map_len(%struct.__hike_map* %m) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_zero, label %get_len
+ret_zero:
+  ret i64 0
+get_len:
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %l = load i64, i64* %p_len
+  ret i64 %l
+}
+` + "\n")
 }
 
 func (g *CodeGenerator) scanCaptures(fl *ast.FuncLit) []string {
@@ -1342,6 +1674,76 @@ func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 }
 
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
+	// =========================================================================
+	// 1. マップの存在確認（カンマokイディオム: val, ok := m[key]）
+	// =========================================================================
+	if len(s.Left) == 2 && len(s.Right) == 1 {
+		if idxExpr, isIdx := s.Right[0].(*ast.IndexExpr); isIdx {
+			baseReg, baseType := g.resolveValue(b, idxExpr.Left)
+			if mp, isMap := baseType.(*sema.MapType); isMap {
+				keyReg, keyType := g.resolveValue(b, idxExpr.Index)
+				keyArg := keyReg
+				if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
+					pInt := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
+					keyArg = pInt
+				} else if keyType == sema.TypeFloat64 {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
+					keyArg = castReg
+				}
+
+				outAlloca := g.nextReg()
+				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", outAlloca))
+				okReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call i1 @__hike_map_get(%%struct.__hike_map* %s, i64 %s, i64* %s)\n", okReg, baseReg, keyArg, outAlloca))
+
+				rawValReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", rawValReg, outAlloca))
+
+				var finalValReg string = rawValReg
+				if mp.Value == sema.TypeString || strings.HasSuffix(mp.Value.LLVMType(), "*") {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", castReg, rawValReg, mp.Value.LLVMType()))
+					finalValReg = castReg
+				} else if mp.Value == sema.TypeFloat64 {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast i64 %s to double\n", castReg, rawValReg))
+					finalValReg = castReg
+				} else if mp.Value == sema.TypeBool {
+					truncReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", truncReg, rawValReg))
+					finalValReg = truncReg
+				} else if mp.Value == sema.TypeByte {
+					truncReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", truncReg, rawValReg))
+					finalValReg = truncReg
+				}
+
+				// 左辺 1 個目 (val)
+				if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
+					if _, exists := g.symbols[vIdent.Value]; !exists {
+						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, mp.Value.LLVMType()))
+						g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: mp.Value}
+					}
+					b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), vIdent.Value))
+				}
+				// 左辺 2 個目 (ok)
+				if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
+					if _, exists := g.symbols[okIdent.Value]; !exists {
+						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i1\n", okIdent.Value))
+						g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: "%" + okIdent.Value, Type: sema.TypeBool}
+					}
+					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %%%s\n", okReg, okIdent.Value))
+				}
+				return
+			}
+		}
+	}
+
+	// =========================================================================
+	// 2. 通常の多値返却代入（タプル代入: a, b := fn()）
+	// =========================================================================
 	if len(s.Left) > 1 && len(s.Right) == 1 {
 		rhsReg, rhsType := g.resolveValue(b, s.Right[0])
 
@@ -1375,6 +1777,9 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		return
 	}
 
+	// =========================================================================
+	// 3. 単一値代入（x = y, m[k] = v, a[i] = v, s.f = v など）
+	// =========================================================================
 	if len(s.Left) == 1 && len(s.Right) == 1 {
 		if lhsIdent, ok := s.Left[0].(*ast.Identifier); ok && lhsIdent.Value == "_" {
 			g.resolveValue(b, s.Right[0])
@@ -1391,8 +1796,47 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		isCompound := (op == "+=" || op == "-=" || op == "*=" || op == "/=" ||
 			op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=")
 
+		// (A) インデックス代入: m[k] = v, arr[i] = v, slice[i] = v
 		if lhsIndex, isLhsIndex := s.Left[0].(*ast.IndexExpr); isLhsIndex {
 			baseReg, baseType := g.resolveValue(b, lhsIndex.Left)
+
+			// --- マップ要素代入: m[k] = v ---
+			if mp, isMap := baseType.(*sema.MapType); isMap {
+				keyReg, keyType := g.resolveValue(b, lhsIndex.Index)
+				valReg, valType := g.resolveValue(b, s.Right[0])
+
+				keyArg := keyReg
+				if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
+					pInt := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
+					keyArg = pInt
+				} else if keyType == sema.TypeFloat64 {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
+					keyArg = castReg
+				}
+
+				convVal := g.emitArgConversion(b, valReg, valType, mp.Value)
+				valArg := convVal
+				if mp.Value == sema.TypeString || strings.HasSuffix(mp.Value.LLVMType(), "*") {
+					pInt := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, mp.Value.LLVMType(), convVal))
+					valArg = pInt
+				} else if mp.Value == sema.TypeFloat64 {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, convVal))
+					valArg = castReg
+				} else if mp.Value == sema.TypeBool || mp.Value == sema.TypeByte {
+					zextReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = zext %s %s to i64\n", zextReg, mp.Value.LLVMType(), convVal))
+					valArg = zextReg
+				}
+
+				b.WriteString(fmt.Sprintf("  call void @__hike_map_set(%%struct.__hike_map* %s, i64 %s, i64 %s)\n", baseReg, keyArg, valArg))
+				return
+			}
+
+			// --- 配列要素代入: arr[i] = v ---
 			idxReg, _ := g.resolveValue(b, lhsIndex.Index)
 			valReg, valType := g.resolveValue(b, s.Right[0])
 
@@ -1452,6 +1896,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				return
 			}
 
+			// --- スライス要素代入: slice[i] = v ---
 			var dataPtrReg string
 			var elemType sema.Type = sema.TypeByte
 
@@ -1517,6 +1962,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
+		// (B) 単純変数への代入: x = v
 		if lhsIdent, isLhsIdent := s.Left[0].(*ast.Identifier); isLhsIdent {
 			if gType, isGlobal := g.semaCtx.Globals[lhsIdent.Value]; isGlobal {
 				valReg, valType := g.resolveValue(b, s.Right[0])
@@ -1616,6 +2062,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			return
 		}
 
+		// (C) 構造体フィールドへの代入: obj.field = v
 		if lhsMember, isLhsMember := s.Left[0].(*ast.MemberExpr); isLhsMember {
 			objPtrReg, _, st, structName := g.resolveStructPtr(b, lhsMember.Object)
 			if st == nil {
@@ -1759,6 +2206,161 @@ func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentF
 
 func (g *CodeGenerator) emitForRangeStmt(b *strings.Builder, s *ast.ForRangeStmt, currentFn string) {
 	xReg, xType := g.resolveValue(b, s.X)
+
+	if mp, isMap := xType.(*sema.MapType); isMap {
+		var keyIdent *ast.Identifier = nil
+		if s.Key != nil {
+			if kId, ok := s.Key.(*ast.Identifier); ok {
+				keyIdent = kId
+			}
+		}
+		var valIdent *ast.Identifier = nil
+		if s.Value != nil {
+			if vId, ok := s.Value.(*ast.Identifier); ok {
+				valIdent = vId
+			}
+		}
+
+		if keyIdent != nil && keyIdent.Value != "_" {
+			if _, exists := g.symbols[keyIdent.Value]; !exists {
+				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", keyIdent.Value, mp.Key.LLVMType()))
+				g.symbols[keyIdent.Value] = Symbol{Name: keyIdent.Value, LLVMName: "%" + keyIdent.Value, Type: mp.Key}
+			}
+		}
+		if valIdent != nil && valIdent.Value != "_" {
+			if _, exists := g.symbols[valIdent.Value]; !exists {
+				g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", valIdent.Value, mp.Value.LLVMType()))
+				g.symbols[valIdent.Value] = Symbol{Name: valIdent.Value, LLVMName: "%" + valIdent.Value, Type: mp.Value}
+			}
+		}
+
+		lblBucketCond := g.nextLabel("maprange.bcond")
+		lblBucketBody := g.nextLabel("maprange.bbody")
+		lblBucketPost := g.nextLabel("maprange.bpost")
+		lblEntryCond := g.nextLabel("maprange.econd")
+		lblEntryBody := g.nextLabel("maprange.ebody")
+		lblEntryPost := g.nextLabel("maprange.epost")
+		lblEnd := g.nextLabel("maprange.end")
+
+		g.loopStack = append(g.loopStack, loopContext{breakLabel: lblEnd, continueLabel: lblEntryPost})
+		defer func() {
+			g.loopStack = g.loopStack[:len(g.loopStack)-1]
+		}()
+
+		pBuckets := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map, %%struct.__hike_map* %s, i32 0, i32 0\n", pBuckets, xReg))
+		buckets := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %%struct.__hike_map_entry**, %%struct.__hike_map_entry*** %s\n", buckets, pBuckets))
+
+		pNumBuckets := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map, %%struct.__hike_map* %s, i32 0, i32 1\n", pNumBuckets, xReg))
+		numBuckets := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", numBuckets, pNumBuckets))
+
+		bIdxAlloca := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", bIdxAlloca))
+		b.WriteString(fmt.Sprintf("  store i64 0, i64* %s\n", bIdxAlloca))
+
+		curEntryAlloca := g.nextReg()
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %%struct.__hike_map_entry*\n", curEntryAlloca))
+
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblBucketCond))
+
+		// Bucket Loop Condition
+		b.WriteString(fmt.Sprintf("%s:\n", lblBucketCond))
+		curBIdx := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", curBIdx, bIdxAlloca))
+		cmpB := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, %s\n", cmpB, curBIdx, numBuckets))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cmpB, lblBucketBody, lblEnd))
+
+		// Bucket Loop Body
+		b.WriteString(fmt.Sprintf("%s:\n", lblBucketBody))
+		pHead := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map_entry*, %%struct.__hike_map_entry** %s, i64 %s\n", pHead, buckets, curBIdx))
+		head := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %%struct.__hike_map_entry*, %%struct.__hike_map_entry** %s\n", head, pHead))
+		b.WriteString(fmt.Sprintf("  store %%struct.__hike_map_entry* %s, %%struct.__hike_map_entry** %s\n", head, curEntryAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEntryCond))
+
+		// Entry Loop Condition
+		b.WriteString(fmt.Sprintf("%s:\n", lblEntryCond))
+		curEntry := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %%struct.__hike_map_entry*, %%struct.__hike_map_entry** %s\n", curEntry, curEntryAlloca))
+		hasEntry := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = icmp ne %%struct.__hike_map_entry* %s, null\n", hasEntry, curEntry))
+		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasEntry, lblEntryBody, lblBucketPost))
+
+		// Entry Loop Body (User Body)
+		b.WriteString(fmt.Sprintf("%s:\n", lblEntryBody))
+		if keyIdent != nil && keyIdent.Value != "_" {
+			pRawKey := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map_entry, %%struct.__hike_map_entry* %s, i32 0, i32 1\n", pRawKey, curEntry))
+			rawKey := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", rawKey, pRawKey))
+
+			var finalKey string = rawKey
+			if mp.Key == sema.TypeString || strings.HasSuffix(mp.Key.LLVMType(), "*") {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", castReg, rawKey, mp.Key.LLVMType()))
+				finalKey = castReg
+			}
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", mp.Key.LLVMType(), finalKey, mp.Key.LLVMType(), keyIdent.Value))
+		}
+
+		if valIdent != nil && valIdent.Value != "_" {
+			pRawVal := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map_entry, %%struct.__hike_map_entry* %s, i32 0, i32 2\n", pRawVal, curEntry))
+			rawVal := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", rawVal, pRawVal))
+
+			var finalVal string = rawVal
+			if mp.Value == sema.TypeString || strings.HasSuffix(mp.Value.LLVMType(), "*") {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", castReg, rawVal, mp.Value.LLVMType()))
+				finalVal = castReg
+			} else if mp.Value == sema.TypeFloat64 {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast i64 %s to double\n", castReg, rawVal))
+				finalVal = castReg
+			} else if mp.Value == sema.TypeBool {
+				truncReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", truncReg, rawVal))
+				finalVal = truncReg
+			} else if mp.Value == sema.TypeByte {
+				truncReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", truncReg, rawVal))
+				finalVal = truncReg
+			}
+			b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", mp.Value.LLVMType(), finalVal, mp.Value.LLVMType(), valIdent.Value))
+		}
+
+		g.emitStatement(b, s.Body, currentFn)
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEntryPost))
+
+		// Entry Loop Post
+		b.WriteString(fmt.Sprintf("%s:\n", lblEntryPost))
+		curE := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %%struct.__hike_map_entry*, %%struct.__hike_map_entry** %s\n", curE, curEntryAlloca))
+		pNextE := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.__hike_map_entry, %%struct.__hike_map_entry* %s, i32 0, i32 3\n", pNextE, curE))
+		nextE := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = load %%struct.__hike_map_entry*, %%struct.__hike_map_entry** %s\n", nextE, pNextE))
+		b.WriteString(fmt.Sprintf("  store %%struct.__hike_map_entry* %s, %%struct.__hike_map_entry** %s\n", nextE, curEntryAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblEntryCond))
+
+		// Bucket Loop Post
+		b.WriteString(fmt.Sprintf("%s:\n", lblBucketPost))
+		nextBIdx := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = add i64 %s, 1\n", nextBIdx, curBIdx))
+		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", nextBIdx, bIdxAlloca))
+		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblBucketCond))
+
+		b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
+		return
+	}
+
+	// (以降の Slice / Array / String range 走査処理はそのまま維持)
 	var lenReg string
 	var dataPtrReg string
 	var elemType sema.Type = sema.TypeByte
@@ -2556,6 +3158,46 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 
 	case *ast.IndexExpr:
 		baseReg, baseType := g.resolveValue(b, e.Left)
+
+		if mp, isMap := baseType.(*sema.MapType); isMap {
+			keyReg, keyType := g.resolveValue(b, e.Index)
+			keyArg := keyReg
+			if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
+				pInt := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
+				keyArg = pInt
+			} else if keyType == sema.TypeFloat64 {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
+				keyArg = castReg
+			}
+
+			outAlloca := g.nextReg()
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", outAlloca))
+			b.WriteString(fmt.Sprintf("  call i1 @__hike_map_get(%%struct.__hike_map* %s, i64 %s, i64* %s)\n", baseReg, keyArg, outAlloca))
+
+			rawValReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", rawValReg, outAlloca))
+
+			if mp.Value == sema.TypeString || strings.HasSuffix(mp.Value.LLVMType(), "*") {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", castReg, rawValReg, mp.Value.LLVMType()))
+				return castReg, mp.Value
+			} else if mp.Value == sema.TypeFloat64 {
+				castReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast i64 %s to double\n", castReg, rawValReg))
+				return castReg, mp.Value
+			} else if mp.Value == sema.TypeBool {
+				truncReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i1\n", truncReg, rawValReg))
+				return truncReg, mp.Value
+			} else if mp.Value == sema.TypeByte {
+				truncReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", truncReg, rawValReg))
+				return truncReg, mp.Value
+			}
+			return rawValReg, mp.Value
+		}
 		idxReg, _ := g.resolveValue(b, e.Index)
 
 		if arr, isArr := baseType.(*sema.ArrayType); isArr {
@@ -2963,6 +3605,48 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 }
 
 func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr) (string, sema.Type) {
+	// make(map[K]V, [cap])
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "make" && len(call.Args) >= 1 {
+		if mapTypeNode, ok := call.Args[0].(*ast.MapType); ok {
+			kType := g.semaCtx.ResolveType(mapTypeNode.Key)
+			vType := g.semaCtx.ResolveType(mapTypeNode.Value)
+			resMapType := &sema.MapType{Key: kType, Value: vType}
+
+			isStr := 0
+			if kType == sema.TypeString || (kType != nil && kType.TypeName() == "string") {
+				isStr = 1
+			}
+
+			capReg := "16"
+			if len(call.Args) >= 2 {
+				capReg, _ = g.resolveValue(b, call.Args[1])
+			}
+
+			callReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_map* @__hike_map_create(i64 %s, i64 %d)\n", callReg, capReg, isStr))
+			return callReg, resMapType
+		}
+	}
+
+	// delete(m, key)
+	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "delete" && len(call.Args) == 2 {
+		mReg, _ := g.resolveValue(b, call.Args[0])
+		keyReg, keyType := g.resolveValue(b, call.Args[1])
+
+		keyArg := keyReg
+		if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
+			pInt := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
+			keyArg = pInt
+		} else if keyType == sema.TypeFloat64 {
+			castReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
+			keyArg = castReg
+		}
+
+		b.WriteString(fmt.Sprintf("  call void @__hike_map_delete(%%struct.__hike_map* %s, i64 %s)\n", mReg, keyArg))
+		return "", sema.TypeVoid
+	}
 	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "make" && len(call.Args) >= 2 {
 		var elemType sema.Type = sema.TypeByte
 		if slType, ok := call.Args[0].(*ast.SliceType); ok {
@@ -3295,6 +3979,11 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			if fnIdent.Value == "len" && (argType == sema.TypeString || (argType != nil && (argType.TypeName() == "string" || argType.LLVMType() == "i8*"))) {
 				lenReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenReg, argReg))
+				return lenReg, sema.TypeInt
+			}
+			if _, isMap := argType.(*sema.MapType); isMap {
+				lenReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call i64 @__hike_map_len(%%struct.__hike_map* %s)\n", lenReg, argReg))
 				return lenReg, sema.TypeInt
 			}
 		}

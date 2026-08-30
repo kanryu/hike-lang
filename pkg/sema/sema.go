@@ -147,6 +147,21 @@ func (t *TupleType) Size() int {
 	return sz
 }
 
+type MapType struct {
+	Key   Type
+	Value Type
+}
+
+func (t *MapType) TypeName() string {
+	return fmt.Sprintf("map[%s]%s", t.Key.TypeName(), t.Value.TypeName())
+}
+func (t *MapType) LLVMType() string {
+	return "%struct.__hike_map*"
+}
+func (t *MapType) Size() int {
+	return 8
+}
+
 type Context struct {
 	Structs        map[string]*StructType
 	Interfaces     map[string]*InterfaceType
@@ -266,6 +281,10 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	case *ast.ArrayType:
 		elem := c.ResolveType(t.Elem)
 		return &ArrayType{Len: int(t.Len), Elem: elem}
+	case *ast.MapType:
+		k := c.ResolveType(t.Key)
+		v := c.ResolveType(t.Value)
+		return &MapType{Key: k, Value: v}
 	case *ast.InterfaceType:
 		methods := []Method{}
 		for _, m := range t.Methods {
