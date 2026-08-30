@@ -12,15 +12,16 @@ A systems programming language with Go-like ergonomics that compiles via LLVM IR
 
 **Hike** is a systems programming language designed to combine the clean syntax and developer productivity of Go with the zero-overhead, predictable performance of C/C++. It completely eliminates garbage collection (GC) pauses, green-thread runtimes, and bloated runtime layers.
 
-Operating as an expressive, high-level frontend that emits clean LLVM IR, Hike **hitchhikes** on the mature optimization and code generation pipelines of LLVM and Clang. It serves as a first-class shared library (`.dll` / `.so`) provider that seamlessly integrates into existing C, C++, Python, Rust, and game engine ecosystems without manual binding glue.
+Operating as an expressive, high-level frontend that emits clean LLVM IR, Hike **hitchhikes** on the mature optimization and code generation pipelines of LLVM and Clang. It can build **standalone native executables** as well as **ultra-lightweight shared libraries (`.dll` / `.so`)** with auto-generated C/C++ headers for seamless cross-language integration.
 
 ---
 
 ## ✨ Key Features
 
 * **Go-Inspired Ergonomics**: Multi-return values, slices, structs, type inference (`:=`), and clean syntax familiar to Go developers.
+* **Dual Target Flexibility**: Compiles into standalone native executables or ultra-lightweight shared libraries (`.dll` / `.so`).
 * **Zero-Cost Monomorphized Generics**: Full compile-time specialization of generic functions and types without dynamic dispatch penalties.
-* **Zero Runtime Overhead**: No GC pauses, no background runtime scheduler, and C-equivalent memory layout and execution speed (~90KB output binaries).
+* **Zero Runtime Overhead**: No GC pauses, no background runtime scheduler, and C-equivalent memory layout and execution speed.
 * **First-Class C-ABI Provider**: Emits pure C-ABI compliant binaries (POD structs, pointer passing, plain functions) and automatically generates matching C/C++ header files (`.h`).
 * **Hitchhiking Clang/LLVM Infrastructure**: Delegates platform-specific binary formatting (PE/COFF, ELF, Mach-O) and deep optimization passes (`-O3`, SIMD vectorization) directly to Clang/LLVM.
 
@@ -73,7 +74,19 @@ go build -o hikec ./cmd/hikec
 
 ```
 
-### 3. Run Shared Library Example
+### 3. Build a Standalone Executable
+
+```bash
+# Compile Hike code to LLVM IR
+hikec main.hike -o main.ll
+
+# Compile to native executable with Clang
+clang -O3 main.ll -o app.exe
+
+# Run
+./app.exe
+
+### 4. Run Shared Library Example
 
 The `examples/shared` directory contains a complete end-to-end example demonstrating shared library generation and consumption from both Python (`ctypes`) and C++.
 
