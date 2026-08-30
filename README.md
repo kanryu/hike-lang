@@ -28,23 +28,24 @@ Operating as an expressive, high-level frontend that emits clean LLVM IR, Hike *
 
 ## 🛠️ Architecture
 
-```text
-  [ .hike Source Code ]
+```text[ .hike Source Code ]
            │
            ▼  (hikec: Go Frontend & Semantic Analysis)
   [ AST & Monomorphization ]
-     ├───► Auto-Generated C/C++ Header (.h)
+     ├───► Auto-Generated C/C++ Header (.h) [Optional / Library Mode]
      │
      ▼  (LLVM IR Codegen)
   [ Pure LLVM IR (.ll) ]
      │
      ▼  (Clang / LLVM Optimizer -O3)
-  [ Shared Library (.dll / .so) + Import Library (.dll.a) ]
-     │
-     ├───► Linked by Native C / C++ Applications (Zero Glue)
-     └───► Loaded by Python (ctypes) / Rust / Node.js
-
-
+  ┌─────────────────────────────────────────────────────────────┐
+  │                                                             │
+  ▼                                                             ▼
+[ Standalone Executable ]                     [ Shared Library & Import Lib ]
+(.exe / native binary)                        (.dll / .so / .dll.a)
+  │                                             │
+  ▼                                             ├──► Native C/C++ Applications
+Direct CLI Execution                            └──► Python (ctypes) / Rust / Node.js
 ```
 
 ---
