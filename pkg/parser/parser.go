@@ -38,6 +38,7 @@ var precedences = map[token.TokenType]int{
 	token.MINUS:     SUM,
 	token.SLASH:     PRODUCT,
 	token.ASTERISK:  PRODUCT,
+	token.PERCENT:   PRODUCT, // token.PERCENT のみ登録
 	token.AMPERSAND: PRODUCT,
 	token.SHL:       PRODUCT,
 	token.SHR:       PRODUCT,
@@ -100,6 +101,14 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 		return true
 	}
 	p.errors = append(p.errors, fmt.Sprintf("expected next token to be %s, got %s instead", t, p.peekToken.Type))
+	return false
+}
+
+func (p *Parser) expectCurrent(t token.TokenType) bool {
+	if p.curTokenIs(t) {
+		return true
+	}
+	p.errors = append(p.errors, fmt.Sprintf("expected current token to be %s, got %s instead", t, p.curToken.Type))
 	return false
 }
 
@@ -1230,10 +1239,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
 		switch p.peekToken.Type {
-		case token.PLUS, token.MINUS, token.SLASH, token.ASTERISK,
+		case token.PLUS, token.MINUS, token.SLASH, token.ASTERISK, token.PERCENT,
 			token.EQ, token.NEQ, token.LT, token.GT, token.LE, token.GE,
-			token.LAND, token.LOR,
-			token.AMPERSAND, token.OR, token.CARET, token.SHL, token.SHR:
+			token.LAND, token.LOR, token.OR, token.CARET, token.AMPERSAND,
+			token.SHL, token.SHR:
 			p.nextToken()
 			leftExp = p.parseBinaryExpr(leftExp)
 		case token.LPAREN:
@@ -1317,35 +1326,38 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 }
 
 func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
-	tok := p.curToken
+	tok := p.curToken // '['
+	p.nextToken()
 
-	if p.peekTokenIs(token.COLON) {
+	// 先頭が ':' の場合（例: arr[:high]）
+	if p.curTokenIs(token.COLON) {
 		p.nextToken()
 		var high ast.Expression = nil
-		if !p.peekTokenIs(token.RBRACKET) {
-			p.nextToken()
+		if !p.curTokenIs(token.RBRACKET) {
 			high = p.parseExpression(LOWEST)
+			p.nextToken()
 		}
-		p.expectPeek(token.RBRACKET)
+		p.expectCurrent(token.RBRACKET)
 		return &ast.SliceExpr{Token: tok, Left: left, Low: nil, High: high}
 	}
 
-	p.nextToken()
-	idx := p.parseExpression(LOWEST)
+	indexOrLow := p.parseExpression(LOWEST)
 
+	// ':' が続く場合はスライス式（例: arr[low:high]）
 	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':' へ進む
 		p.nextToken()
 		var high ast.Expression = nil
-		if !p.peekTokenIs(token.RBRACKET) {
-			p.nextToken()
+		if !p.curTokenIs(token.RBRACKET) {
 			high = p.parseExpression(LOWEST)
+			p.nextToken()
 		}
-		p.expectPeek(token.RBRACKET)
-		return &ast.SliceExpr{Token: tok, Left: left, Low: idx, High: high}
+		p.expectCurrent(token.RBRACKET)
+		return &ast.SliceExpr{Token: tok, Left: left, Low: indexOrLow, High: high}
 	}
 
 	p.expectPeek(token.RBRACKET)
-	return &ast.IndexExpr{Token: tok, Left: left, Index: idx}
+	return &ast.IndexExpr{Token: tok, Left: left, Index: indexOrLow}
 }
 
 func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {

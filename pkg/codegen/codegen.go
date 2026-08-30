@@ -2741,6 +2741,7 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 		}
 	}
 
+	// 文字列連結・比較
 	if leftType == sema.TypeString || rightType == sema.TypeString {
 		if e.Operator == "+" {
 			concatReg := g.nextReg()
@@ -2759,6 +2760,30 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 		}
 	}
 
+	// ポインタ演算 (例: ptr + offset, ptr - offset)
+	if ptrType, isPtr := leftType.(*sema.PointerType); isPtr && (rightType == sema.TypeInt || rightType == sema.TypeByte || rightType == nil) {
+		if e.Operator == "+" {
+			elemType := ptrType.Base
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n", gepReg, elemType.LLVMType(), ptrType.LLVMType(), leftReg, rightReg))
+			return gepReg, ptrType
+		}
+		if e.Operator == "-" {
+			elemType := ptrType.Base
+			negReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = sub i64 0, %s\n", negReg, rightReg))
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n", gepReg, elemType.LLVMType(), ptrType.LLVMType(), leftReg, negReg))
+			return gepReg, ptrType
+		}
+	}
+	if ptrType, isPtr := rightType.(*sema.PointerType); isPtr && (leftType == sema.TypeInt || leftType == sema.TypeByte || leftType == nil) && e.Operator == "+" {
+		elemType := ptrType.Base
+		gepReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n", gepReg, elemType.LLVMType(), ptrType.LLVMType(), rightReg, leftReg))
+		return gepReg, ptrType
+	}
+
 	opInst := "add"
 	isCompare := false
 
@@ -2771,15 +2796,17 @@ func (g *CodeGenerator) emitBinaryExpr(b *strings.Builder, e *ast.BinaryExpr) (s
 		opInst = "mul"
 	case "/":
 		opInst = "sdiv"
+	case "%":
+		opInst = "srem"
 	case "&":
 		opInst = "and"
-	case "|=":
+	case "|":
 		opInst = "or"
-	case "^=":
+	case "^":
 		opInst = "xor"
-	case "<<=":
+	case "<<":
 		opInst = "shl"
-	case ">>=":
+	case ">>":
 		opInst = "ashr"
 	case "==":
 		opInst = "icmp eq"
@@ -3218,8 +3245,8 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		castReg := g.nextReg()
 		if strings.HasSuffix(srcTypeStr, "*") {
 			b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", castReg, srcTypeStr, argReg))
-		} else if srcTypeStr == "i1" {
-			b.WriteString(fmt.Sprintf("  %s = zext i1 %s to i64\n", castReg, argReg))
+		} else if srcTypeStr == "i1" || srcTypeStr == "i8" {
+			b.WriteString(fmt.Sprintf("  %s = zext %s %s to i64\n", castReg, srcTypeStr, argReg))
 		} else {
 			b.WriteString(fmt.Sprintf("  %s = sext %s %s to i64\n", castReg, srcTypeStr, argReg))
 		}

@@ -1,0 +1,134 @@
+package strconv
+
+import (
+	"std/errors"
+)
+
+func Itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	val := n
+	if val < 0 {
+		neg = true
+		val = -val
+	}
+	buf := make([]byte, 32)
+	pos := 30
+	buf[31] = byte(0)
+	for val > 0 {
+		rem := val % 10
+		buf[pos] = byte(48 + rem)
+		pos--
+		val = val / 10
+	}
+	if neg {
+		buf[pos] = byte(45) // '-'
+		pos--
+	}
+	start := pos + 1
+	return string(buf[start:31])
+}
+
+func Atoi(s string) (int, error) {
+	if len(s) == 0 {
+		return 0, errors.New("empty string")
+	}
+	neg := false
+	idx := 0
+	if s[0] == byte(45) { // '-'
+		neg = true
+		idx = 1
+	} else if s[0] == byte(43) { // '+'
+		idx = 1
+	}
+	if idx >= len(s) {
+		return 0, errors.New("invalid syntax")
+	}
+	res := 0
+	for idx < len(s) {
+		c := s[idx]
+		if c < byte(48) || c > byte(57) {
+			return 0, errors.New("invalid syntax")
+		}
+		res = res*10 + (int(c) - 48)
+		idx++
+	}
+	if neg {
+		res = -res
+	}
+	return res, nil
+}
+
+func FormatInt(val int, base int) string {
+	if base < 2 || base > 36 {
+		return ""
+	}
+	if val == 0 {
+		return "0"
+	}
+	neg := false
+	n := val
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	digits := "0123456789abcdefghijklmnopqrstuvwxyz"
+	buf := make([]byte, 70)
+	pos := 68
+	buf[69] = byte(0)
+	for n > 0 {
+		rem := n % base
+		buf[pos] = digits[rem]
+		pos--
+		n = n / base
+	}
+	if neg {
+		buf[pos] = byte(45) // '-'
+		pos--
+	}
+	start := pos + 1
+	return string(buf[start:69])
+}
+
+func ParseInt(s string, base int, bitSize int) (int, error) {
+	if len(s) == 0 {
+		return 0, errors.New("empty string")
+	}
+	if base < 2 || base > 36 {
+		return 0, errors.New("invalid base")
+	}
+	neg := false
+	idx := 0
+	if s[0] == byte(45) { // '-'
+		neg = true
+		idx = 1
+	} else if s[0] == byte(43) { // '+'
+		idx = 1
+	}
+	if idx >= len(s) {
+		return 0, errors.New("invalid syntax")
+	}
+	res := 0
+	for idx < len(s) {
+		c := s[idx]
+		val := -1
+		if c >= byte(48) && c <= byte(57) {
+			val = int(c) - 48
+		} else if c >= byte(97) && c <= byte(122) {
+			val = int(c) - 97 + 10
+		} else if c >= byte(65) && c <= byte(90) {
+			val = int(c) - 65 + 10
+		}
+		if val < 0 || val >= base {
+			return 0, errors.New("invalid syntax")
+		}
+		res = res*base + val
+		idx++
+	}
+	if neg {
+		res = -res
+	}
+	return res, nil
+}

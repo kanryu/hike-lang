@@ -170,6 +170,8 @@ func (l *Lexer) NextToken() token.Token {
 		} else {
 			tok = newToken(token.SLASH, l.ch, startLine, startCol)
 		}
+	case '%':
+		tok = newToken(token.PERCENT, l.ch, startLine, startCol)
 	case '!':
 		if l.peekChar() == '=' {
 			ch := l.ch

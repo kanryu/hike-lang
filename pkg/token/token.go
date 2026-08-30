@@ -17,9 +17,11 @@ const (
 	INT    = "INT"
 	STRING = "STRING"
 
+	// Operators
 	ASSIGN    = "="
 	PLUS      = "+"
 	MINUS     = "-"
+	PERCENT   = "%" // 追加
 	BANG      = "!"
 	ASTERISK  = "*"
 	SLASH     = "/"

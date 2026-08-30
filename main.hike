@@ -2,8 +2,8 @@ package main
 
 import (
 	"std/fmt"
-	"std/io"
-	"std/os"
+	"std/strconv"
+	"std/strings"
 )
 
 func assert(cond bool, testNum int, testName *byte) {
@@ -20,86 +20,85 @@ func assert(cond bool, testNum int, testName *byte) {
 	}
 }
 
-// io.Writer インターフェース経由での書き込みテスト
-func writeMessage(w io.Writer, msg *byte) (int, error) {
-	b := []byte(msg)
-	return w.Write(b)
-}
-
-// io.Reader インターフェース経由での読み込みテスト
-func readMessage(r io.Reader, size int) ([]byte, int, error) {
-	buf := make([]byte, size)
-	n, err := r.Read(buf)
-	return buf, n, err
-}
-
 func main() int {
-	fmt.PrintLn("=== Running std/os & std/io Comprehensive Tests ===")
+	fmt.PrintLn("=== Running std/strings & std/strconv Comprehensive Tests ===")
 	testCount := 0
 
 	// ==========================================
-	// 1. os.Args CLI引数テスト
+	// 1. std/strings: HasPrefix / HasSuffix
 	// ==========================================
 	testCount++
-	assert(len(os.Args) >= 1, testCount, "os.Args: length is at least 1 (program name)")
-	fmt.PrintStr("Program Executable: ")
-	fmt.PrintLn(os.Args[0])
+	assert(strings.HasPrefix("hello world", "hello"), testCount, "strings.HasPrefix('hello world', 'hello') == true")
+
+	testCount++
+	assert(strings.HasSuffix("main.hike", ".hike"), testCount, "strings.HasSuffix('main.hike', '.hike') == true")
 
 	// ==========================================
-	// 2. os.Create と File.WriteString
+	// 2. std/strings: Index / Contains / Count
 	// ==========================================
-	fileName := "test_output.txt"
-	f, err := os.Create(fileName)
 	testCount++
-	assert(err == nil && f != nil, testCount, "os.Create: created test_output.txt")
+	assert(strings.Index("compiler design", "design") == 9, testCount, "strings.Index('compiler design', 'design') == 9")
 
-	written, wErr := f.WriteString("Hello Hike Standard Library!")
 	testCount++
-	assert(wErr == nil && written == 28, testCount, "File.WriteString: wrote 28 bytes")
-	f.Close()
+	assert(strings.Contains("quick brown fox", "brown"), testCount, "strings.Contains('quick brown fox', 'brown') == true")
 
-	// ==========================================
-	// 3. os.Open と File.Read (バッファ読み込み)
-	// ==========================================
-	fOpen, oErr := os.Open(fileName)
 	testCount++
-	assert(oErr == nil && fOpen != nil, testCount, "os.Open: opened test_output.txt")
-
-	readBuf := make([]byte, 64)
-	nRead, rErr := fOpen.Read(readBuf)
-	testCount++
-	assert(rErr == nil && nRead == 28, testCount, "File.Read: read exactly 28 bytes")
-	fOpen.Close()
+	assert(strings.Count("banana", "an") == 2, testCount, "strings.Count('banana', 'an') == 2")
 
 	// ==========================================
-	// 4. io.Writer / io.Reader インターフェース適合
+	// 3. std/strings: Join / Split / Repeat
 	// ==========================================
-	fOut, _ := os.Create("test_io.txt")
-	wn, iwErr := writeMessage(fOut, "Interface I/O Works!")
-	fOut.Close()
+	words := []string{"Go", "Rust", "Hike"}
+	joined := strings.Join(words, ", ")
 	testCount++
-	assert(iwErr == nil && wn == 20, testCount, "io.Writer Interface Dispatch to *os.File")
+	assert(joined == "Go, Rust, Hike", testCount, "strings.Join(words, ', ') == 'Go, Rust, Hike'")
 
-	fIn, _ := os.Open("test_io.txt")
-	inBuf, inN, irErr := readMessage(fIn, 32)
-	fIn.Close()
+	parts := strings.Split("a:b:c:d", ":")
 	testCount++
-	assert(irErr == nil && inN == 20, testCount, "io.Reader Interface Dispatch to *os.File")
-	fmt.PrintStr("Read Content: ")
-	fmt.PrintLn(string(inBuf[0:inN]))
+	assert(len(parts) == 4 && parts[0] == "a" && parts[3] == "d", testCount, "strings.Split('a:b:c:d', ':') -> length 4")
+
+	repeated := strings.Repeat("Na", 4)
+	testCount++
+	assert(repeated == "NaNaNaNa", testCount, "strings.Repeat('Na', 4) == 'NaNaNaNa'")
 
 	// ==========================================
-	// 5. os.WriteFile / os.ReadFile 便利関数
+	// 4. std/strconv: Itoa / Atoi
 	// ==========================================
-	testData := []byte("Convenient File I/O")
-	wfErr := os.WriteFile("test_helper.txt", testData)
+	s1 := strconv.Itoa(12345)
 	testCount++
-	assert(wfErr == nil, testCount, "os.WriteFile: wrote file successfully")
+	assert(s1 == "12345", testCount, "strconv.Itoa(12345) == '12345'")
 
-	readData, rfErr := os.ReadFile("test_helper.txt")
+	s2 := strconv.Itoa(-42)
 	testCount++
-	assert(rfErr == nil && len(readData) == 19, testCount, "os.ReadFile: read file content correctly")
+	assert(s2 == "-42", testCount, "strconv.Itoa(-42) == '-42'")
 
-	fmt.PrintLn("=== All std/os & std/io Tests Passed ===")
+	n1, err1 := strconv.Atoi("98765")
+	testCount++
+	assert(err1 == nil && n1 == 98765, testCount, "strconv.Atoi('98765') == 98765")
+
+	n2, err2 := strconv.Atoi("-100")
+	testCount++
+	assert(err2 == nil && n2 == -100, testCount, "strconv.Atoi('-100') == -100")
+
+	// ==========================================
+	// 5. std/strconv: FormatInt / ParseInt (基数変換)
+	// ==========================================
+	hexStr := strconv.FormatInt(255, 16)
+	testCount++
+	assert(hexStr == "ff", testCount, "strconv.FormatInt(255, 16) == 'ff'")
+
+	binStr := strconv.FormatInt(10, 2)
+	testCount++
+	assert(binStr == "1010", testCount, "strconv.FormatInt(10, 2) == '1010'")
+
+	parsedHex, pHexErr := strconv.ParseInt("1a", 16, 64)
+	testCount++
+	assert(pHexErr == nil && parsedHex == 26, testCount, "strconv.ParseInt('1a', 16, 64) == 26")
+
+	parsedBin, pBinErr := strconv.ParseInt("1101", 2, 64)
+	testCount++
+	assert(pBinErr == nil && parsedBin == 13, testCount, "strconv.ParseInt('1101', 2, 64) == 13")
+
+	fmt.PrintLn("=== All std/strings & std/strconv Tests Passed ===")
 	return testCount
 }
