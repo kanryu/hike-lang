@@ -638,8 +638,93 @@ cd examples/wasm
 make run
 
 ```
+## CLI Command Reference (`hikec`)
 
+The Hike compiler provides a unified CLI toolchain for generating LLVM IR, building standalone native or WebAssembly binaries via Clang, and executing programs directly.
 
+### Usage
+
+```bash
+hikec <command> [options] <source.hike...>
+
+```
+
+If no subcommand is specified, `hikec` defaults to `emit-ir` for seamless backward compatibility.
+
+---
+
+### Commands
+
+* **`emit-ir`** *(default)*
+Compiles Hike source code into target-specific LLVM IR (`.ll`). Also supports exporting C/C++ header bindings.
+* **`build`**
+Invokes Clang to compile Hike source directly into an executable binary (`.exe`, ELF, Mach-O) or WebAssembly module (`.wasm`).
+* **`run`**
+Builds the Hike source into a temporary binary and executes it immediately.
+
+---
+
+### Command Options
+
+| Option | Target Command(s) | Description | Default |
+| --- | --- | --- | --- |
+| `-o <path>` | `emit-ir`, `build` | Specifies the output file path. | `<source>.ll` / `<source>.exe` / `<source>.wasm` |
+| `-target <name>` | `emit-ir`, `build` | Specifies the compilation target (`windows`, `linux`, `darwin`, `wasm32`, `wasm64`). | Host platform |
+| `-header <path>` | `emit-ir` | Generates a C/C++ interoperability header file (`.h`). | *(Disabled)* |
+| `-g` | `emit-ir`, `build` | Emits DWARF debug metadata for VS Code / GDB / LLDB step debugging. | `false` |
+| `-v`, `--verbose` | All | Enables verbose logging throughout loader, semantic, and codegen stages. | `false` |
+
+---
+
+### Examples
+
+#### 1. Direct Execution (`run`)
+
+Build and run a Hike source file in a single command:
+
+```bash
+hikec run main.hike
+
+```
+
+#### 2. Native Binary Compilation (`build`)
+
+Compile an optimized executable for the host machine:
+
+```bash
+hikec build -o app.exe main.hike
+
+```
+
+#### 3. WebAssembly Compilation (`build -target wasm32`)
+
+Compile into a standalone `.wasm` module:
+
+```bash
+hikec build -target wasm32 -o app.wasm main.hike
+
+```
+
+#### 4. LLVM IR & C/C++ Header Generation (`emit-ir`)
+
+Export LLVM IR together with C-ABI compatible headers for shared libraries:
+
+```bash
+hikec emit-ir -header libmath.h -o libmath.ll math.hike
+
+```
+
+---
+
+### Toolchain & Runtime Requirements
+
+* **LLVM / Clang**: Required for `hikec build` and `hikec run`. Ensure `clang` (and `lld` / `wasm-ld`) is accessible in your system `PATH`.
+* **Windows Target Runtime**:
+When building native Windows executables (`.exe`), the current version of the Hike compiler targets the GNU ABI (`x86_64-w64-windows-gnu`) and relies on **MinGW-w64 GCC runtime libraries** (`libgcc_eh`, `libmsvcrt`, etc.). Ensure that MinGW-w64 (`bin` directory) is properly installed and registered in your system `PATH`.
+* **WebAssembly Target**:
+WebAssembly builds target `wasm32-unknown-unknown` using `-nostdlib` and standalone imports, requiring no external WASI-SDK installations.
+
+---
 ## VS Code Source-Level Debugging
 
 Hike natively generates LLVM DWARF debug metadata, enabling full source-level GUI debugging in Visual Studio Code (including breakpoints, step-by-step execution, variable inspection, and call stack unwinding).
