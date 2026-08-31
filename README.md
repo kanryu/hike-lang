@@ -482,6 +482,164 @@ int main() {
 ```
 
 
+## WebAssembly (Wasm) Compilation & Execution
+
+Hike natively supports standalone WebAssembly (`wasm32-unknown-unknown`) compilation directly from its LLVM IR backend. You can compile Hike programs to `.wasm` binaries without requiring heavy third-party WASI-SDK toolchains and run them in Node.js or modern browsers using lightweight JavaScript bindings.
+
+### 1. Prerequisites
+
+* **LLVM / Clang** (with `lld` / `wasm-ld`)
+* **Node.js** (v18+)
+
+### 2. Sample Code (`main.hike`)
+
+```go
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("Hello from Hike on WebAssembly (Node.js)!\n")
+    return 0
+}
+
+```
+
+### 3. Build & Run Pipeline
+
+You can compile and execute Hike on WebAssembly in two quick steps:
+
+#### Step 1: Generate Wasm32 LLVM IR
+
+```bash
+hikec -target wasm32 -o main.ll main.hike
+
+```
+
+#### Step 2: Compile to Standalone `.wasm` via Clang
+
+```bash
+clang --target=wasm32-unknown-unknown -O2 -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined main.ll -o app.wasm
+
+```
+
+#### Step 3: Run with Node.js Runner
+
+```bash
+node run_wasm.js
+
+```
+
+---
+
+### 4. JavaScript Runtime Host (`run_wasm.js`)
+
+The standalone runner provides the runtime memory environment and binds C-ABI symbols (like `printf` and memory utilities) to JavaScript implementations:
+
+```javascript
+const fs = require('fs');
+
+const wasmBuffer = fs.readFileSync('app.wasm');
+
+(async () => {
+  let wasmMemory;
+  let heapPtr = 65536; // 64KB heap offset
+
+  function getMemoryView() {
+    return new Uint8Array(wasmMemory.buffer);
+  }
+
+  function readCString(ptr) {
+    if (!wasmMemory || ptr === 0) return '';
+    const mem = getMemoryView();
+    let end = ptr;
+    while (end < mem.length && mem[end] !== 0) {
+      end++;
+    }
+    return new TextDecoder('utf-8').decode(mem.subarray(ptr, end));
+  }
+
+  const importObject = {
+    env: {
+      printf: (formatPtr) => {
+        const str = readCString(formatPtr);
+        process.stdout.write(str);
+        return BigInt(str.length);
+      },
+      malloc: (size) => {
+        const s = Number(size);
+        const ptr = heapPtr;
+        heapPtr += (s + 7) & ~7;
+        return ptr;
+      },
+      calloc: (num, size) => {
+        const total = Number(num) * Number(size);
+        const ptr = heapPtr;
+        heapPtr += (total + 7) & ~7;
+        const mem = getMemoryView();
+        mem.fill(0, ptr, ptr + total);
+        return ptr;
+      },
+      free: (ptr) => {},
+      strlen: (ptr) => {
+        const mem = getMemoryView();
+        let len = 0;
+        while (mem[ptr + len] !== 0) len++;
+        return BigInt(len);
+      },
+      strcmp: (ptrA, ptrB) => {
+        const mem = getMemoryView();
+        let i = 0;
+        while (true) {
+          const a = mem[ptrA + i];
+          const b = mem[ptrB + i];
+          if (a !== b) return a - b;
+          if (a === 0) return 0;
+          i++;
+        }
+      },
+      memcpy: (dst, src, len) => {
+        const mem = getMemoryView();
+        mem.copyWithin(dst, src, src + Number(len));
+        return dst;
+      },
+      memcmp: (ptrA, ptrB, len) => {
+        const mem = getMemoryView();
+        const length = Number(len);
+        for (let i = 0; i < length; i++) {
+          const a = mem[ptrA + i];
+          const b = mem[ptrB + i];
+          if (a !== b) return a - b;
+        }
+        return 0;
+      },
+    },
+  };
+
+  const { instance } = await WebAssembly.instantiate(wasmBuffer, importObject);
+  wasmMemory = instance.exports.memory;
+
+  if (instance.exports.main) {
+    const exitCode = instance.exports.main(0, 0);
+    process.exit(Number(exitCode));
+  }
+})();
+
+```
+
+---
+
+### 5. Automation Example
+
+Run the automated build and verification pipeline directly from the `examples/wasm` directory:
+
+```bash
+cd examples/wasm
+make run
+
+```
+
+
 ## VS Code Source-Level Debugging
 
 Hike natively generates LLVM DWARF debug metadata, enabling full source-level GUI debugging in Visual Studio Code (including breakpoints, step-by-step execution, variable inspection, and call stack unwinding).
