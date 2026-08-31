@@ -1,0 +1,153 @@
+package map
+
+func malloc(size int) *byte
+func free(ptr *byte) void
+func calloc(num int, size int) *byte
+
+type Entry[K, V] struct {
+    hash int
+    key  K
+    val  V
+    next *Entry[K, V]
+}
+
+type Map[K, V] struct {
+    buckets **Entry[K, V]
+    numBuckets int
+    length     int
+}
+
+// ハッシュ計算（文字列/ポインタ/整数に対応）
+func hashKey[K](key K) int {
+    return int(key)
+}
+
+func keyEqual[K](a K, b K) bool {
+    return a == b
+}
+
+func New[K, V](initialCap int) Map[K, V] {
+    if initialCap <= 0 {
+        initialCap = 16
+    }
+    var m Map[K, V]
+    m.numBuckets = initialCap
+    m.length = 0
+    m.buckets = calloc(initialCap, 8)
+    return m
+}
+
+func Set[K, V](m *Map[K, V], key K, val V) {
+    if m.buckets == nil {
+        *m = New[K, V](16)
+    }
+
+    if m.length * 4 >= m.numBuckets * 3 {
+        grow[K, V](m)
+    }
+
+    h := hashKey[K](key)
+    idx := h % m.numBuckets
+    if idx < 0 {
+        idx = -idx
+    }
+
+    cur := m.buckets[idx]
+    for cur != nil {
+        if cur.hash == h && keyEqual[K](cur.key, key) {
+            cur.val = val
+            return
+        }
+        cur = cur.next
+    }
+
+    var newEntry *Entry[K, V] = malloc(32)
+    newEntry.hash = h
+    newEntry.key = key
+    newEntry.val = val
+    newEntry.next = m.buckets[idx]
+    m.buckets[idx] = newEntry
+    m.length = m.length + 1
+}
+
+func Get[K, V](m *Map[K, V], key K) (V, bool) {
+    if m.buckets == nil || m.length == 0 {
+        var zero V
+        return zero, false
+    }
+
+    h := hashKey[K](key)
+    idx := h % m.numBuckets
+    if idx < 0 {
+        idx = -idx
+    }
+
+    cur := m.buckets[idx]
+    for cur != nil {
+        if cur.hash == h && keyEqual[K](cur.key, key) {
+            return cur.val, true
+        }
+        cur = cur.next
+    }
+
+    var zero V
+    return zero, false
+}
+
+func Delete[K, V](m *Map[K, V], key K) {
+    if m.buckets == nil || m.length == 0 {
+        return
+    }
+
+    h := hashKey[K](key)
+    idx := h % m.numBuckets
+    if idx < 0 {
+        idx = -idx
+    }
+
+    var prev *Entry[K, V] = nil
+    cur := m.buckets[idx]
+
+    for cur != nil {
+        if cur.hash == h && keyEqual[K](cur.key, key) {
+            if prev == nil {
+                m.buckets[idx] = cur.next
+            } else {
+                prev.next = cur.next
+            }
+            free(cur)
+            m.length = m.length - 1
+            return
+        }
+        prev = cur
+        cur = cur.next
+    }
+}
+
+func Len[K, V](m *Map[K, V]) int {
+    return m.length
+}
+
+func grow[K, V](m *Map[K, V]) {
+    oldBuckets := m.buckets
+    oldNum := m.numBuckets
+    newNum := oldNum * 2
+
+    m.buckets = calloc(newNum, 8)
+    m.numBuckets = newNum
+
+    for i := 0; i < oldNum; i++ {
+        cur := oldBuckets[i]
+        for cur != nil {
+            nxt := cur.next
+            idx := cur.hash % newNum
+            if idx < 0 {
+                idx = -idx
+            }
+            cur.next = m.buckets[idx]
+            m.buckets[idx] = cur
+            cur = nxt
+        }
+    }
+    free(oldBuckets)
+}

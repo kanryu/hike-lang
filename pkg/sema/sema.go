@@ -174,6 +174,7 @@ type Context struct {
 	GenericFuncs   map[string]*ast.FuncDecl
 	typeIDs        map[string]int64
 	nextTypeID     int64
+	HasMapImport   bool // "std/map" がインポートされているか
 }
 
 func NewContext() *Context {
@@ -434,6 +435,20 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
+	// Pass 0: インポート宣言の検査
+	for _, imp := range prog.Imports {
+		if imp.Path == "std/map" || imp.Path == "map" {
+			ctx.HasMapImport = true
+		}
+	}
+
+	// Pass 0.5: マップ構文のインポート整合性チェック
+	for _, decl := range prog.Decls {
+		if err := validateMapUsage(decl, ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	// Pass 1: 全ての名前付き型およびジェネリックテンプレートの先行登録
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
@@ -560,4 +575,190 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	}
 
 	return ctx, nil
+}
+
+// マップ型・構文のチェック関数
+func (c *Context) EnsureMapSupported(line, col int) error {
+	if !c.HasMapImport {
+		return fmt.Errorf("line %d:%d: map syntax requires importing 'std/map'", line, col)
+	}
+	return nil
+}
+
+// AST内を走査して map[K]V や make(map...) の使用を検査する
+func validateMapUsage(node ast.Node, ctx *Context) error {
+	if node == nil {
+		return nil
+	}
+
+	var checkType func(t ast.TypeExpr) error
+	var checkExpr func(e ast.Expression) error
+	var checkStmt func(s ast.Statement) error
+
+	checkType = func(t ast.TypeExpr) error {
+		if t == nil {
+			return nil
+		}
+		if mt, ok := t.(*ast.MapType); ok {
+			if !ctx.HasMapImport {
+				return fmt.Errorf("line %d:%d: map type 'map[%s]%s' requires importing 'std/map'",
+					mt.Token.Line, mt.Token.Col, mt.Key.TokenLiteral(), mt.Value.TokenLiteral())
+			}
+			if err := checkType(mt.Key); err != nil {
+				return err
+			}
+			return checkType(mt.Value)
+		}
+		if pt, ok := t.(*ast.PointerType); ok {
+			return checkType(pt.Base)
+		}
+		if sl, ok := t.(*ast.SliceType); ok {
+			return checkType(sl.Elem)
+		}
+		if ar, ok := t.(*ast.ArrayType); ok {
+			return checkType(ar.Elem)
+		}
+		return nil
+	}
+
+	checkExpr = func(e ast.Expression) error {
+		if e == nil {
+			return nil
+		}
+		if te, ok := e.(ast.TypeExpr); ok {
+			return checkType(te)
+		}
+		switch n := e.(type) {
+		case *ast.CallExpr:
+			if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "make" || id.Value == "delete") {
+				if len(n.Args) > 0 {
+					if _, isMap := n.Args[0].(*ast.MapType); isMap && !ctx.HasMapImport {
+						return fmt.Errorf("line %d:%d: '%s(map...)' requires importing 'std/map'",
+							n.Token.Line, n.Token.Col, id.Value)
+					}
+				}
+			}
+			if err := checkExpr(n.Function); err != nil {
+				return err
+			}
+			for _, arg := range n.Args {
+				if err := checkExpr(arg); err != nil {
+					return err
+				}
+			}
+		case *ast.BinaryExpr:
+			if err := checkExpr(n.Left); err != nil {
+				return err
+			}
+			return checkExpr(n.Right)
+		case *ast.PrefixExpr:
+			return checkExpr(n.Right)
+		case *ast.IndexExpr:
+			if err := checkExpr(n.Left); err != nil {
+				return err
+			}
+			return checkExpr(n.Index)
+		case *ast.MemberExpr:
+			return checkExpr(n.Object)
+		case *ast.StructLiteral:
+			for _, f := range n.Fields {
+				if err := checkExpr(f.Value); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	checkStmt = func(s ast.Statement) error {
+		if s == nil {
+			return nil
+		}
+		switch st := s.(type) {
+		case *ast.VarDecl:
+			if err := checkType(st.Type); err != nil {
+				return err
+			}
+			return checkExpr(st.Value)
+		case *ast.AssignStmt:
+			if err := checkType(st.Type); err != nil {
+				return err
+			}
+			for _, l := range st.Left {
+				if err := checkExpr(l); err != nil {
+					return err
+				}
+			}
+			for _, r := range st.Right {
+				if err := checkExpr(r); err != nil {
+					return err
+				}
+			}
+		case *ast.ExprStmt:
+			return checkExpr(st.Expr)
+		case *ast.BlockStmt:
+			for _, inner := range st.Statements {
+				if err := checkStmt(inner); err != nil {
+					return err
+				}
+			}
+		case *ast.IfStmt:
+			if err := checkStmt(st.Init); err != nil {
+				return err
+			}
+			if err := checkExpr(st.Condition); err != nil {
+				return err
+			}
+			if err := checkStmt(st.Consequence); err != nil {
+				return err
+			}
+			return checkStmt(st.Alternative)
+		case *ast.ForStmt:
+			if err := checkStmt(st.Init); err != nil {
+				return err
+			}
+			if err := checkExpr(st.Cond); err != nil {
+				return err
+			}
+			if err := checkStmt(st.Post); err != nil {
+				return err
+			}
+			return checkStmt(st.Body)
+		case *ast.ForRangeStmt:
+			if err := checkExpr(st.X); err != nil {
+				return err
+			}
+			return checkStmt(st.Body)
+		case *ast.ReturnStmt:
+			for _, v := range st.Values {
+				if err := checkExpr(v); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	if td, ok := node.(*ast.TypeDecl); ok {
+		return checkType(td.Type)
+	}
+	if fd, ok := node.(*ast.FuncDecl); ok {
+		for _, p := range fd.Params {
+			if err := checkType(p.Type); err != nil {
+				return err
+			}
+		}
+		for _, rt := range fd.ReturnTypes {
+			if err := checkType(rt); err != nil {
+				return err
+			}
+		}
+		if fd.Body != nil {
+			return checkStmt(fd.Body)
+		}
+	}
+	if vd, ok := node.(*ast.VarDecl); ok {
+		return checkStmt(vd)
+	}
+	return nil
 }
