@@ -4,6 +4,23 @@ func malloc(size int) *byte
 func free(ptr *byte) void
 func calloc(num int, size int) *byte
 
+// =============================================================================
+// MapBehavior インターフェース定義
+// =============================================================================
+
+// MapBehavior はマップ特殊構文（m[k] = v、v, ok := m[k]、delete(m, k)、len(m)）を
+// カスタム構造体で利用可能にするためのプロトコルインターフェースです。
+type MapBehavior[K, V] interface {
+    Set(key K, val V) void
+    Get(key K) (V, bool)
+    Delete(key K) void
+    Len() int
+}
+
+// =============================================================================
+// 標準ハッシュテーブル実装 (Map[K, V])
+// =============================================================================
+
 type Entry[K, V] struct {
     hash int
     key  K

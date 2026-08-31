@@ -762,3 +762,116 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 	}
 	return nil
 }
+
+// CheckMapBehavior は構造体が MapBehavior[K, V] インターフェースを満たしているかを厳密に検証し、
+// 満たしていれば (keyType, valType, true) を返します。
+func (c *Context) CheckMapBehavior(t Type) (Type, Type, bool) {
+	if t == nil {
+		return nil, nil, false
+	}
+
+	typeName := t.TypeName()
+	typeName = strings.TrimPrefix(typeName, "*")
+
+	st, exists := c.Structs[typeName]
+	if !exists || st == nil {
+		return nil, nil, false
+	}
+
+	// 1. 各種メソッドの探索 (レシーバ型: T または *T)
+	setFn := c.lookupMethod(typeName, "Set")
+	getFn := c.lookupMethod(typeName, "Get")
+	delFn := c.lookupMethod(typeName, "Delete")
+	lenFn := c.lookupMethod(typeName, "Len")
+
+	if setFn == nil || getFn == nil || delFn == nil || lenFn == nil {
+		return nil, nil, false
+	}
+
+	// 2. Len() int の検証
+	// レシーバを除いて引数0、戻り値が int 1つ
+	paramOffset := 0
+	if setFn.Receiver != nil {
+		paramOffset = 1
+	}
+
+	if len(lenFn.ParamTypes)-paramOffset != 0 || len(lenFn.ReturnTypes) != 1 || lenFn.ReturnTypes[0].TypeName() != "int" {
+		return nil, nil, false
+	}
+
+	// 3. Set(key K, val V) の検証
+	if len(setFn.ParamTypes)-paramOffset != 2 {
+		return nil, nil, false
+	}
+	keyType := setFn.ParamTypes[paramOffset]
+	valType := setFn.ParamTypes[paramOffset+1]
+
+	// 4. Get(key K) (V, bool) の検証
+	if len(getFn.ParamTypes)-paramOffset != 1 {
+		return nil, nil, false
+	}
+	if getFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
+		return nil, nil, false
+	}
+	if len(getFn.ReturnTypes) != 2 {
+		return nil, nil, false
+	}
+	if getFn.ReturnTypes[0].TypeName() != valType.TypeName() || getFn.ReturnTypes[1].TypeName() != "bool" {
+		return nil, nil, false
+	}
+
+	// 5. Delete(key K) の検証
+	if len(delFn.ParamTypes)-paramOffset != 1 {
+		return nil, nil, false
+	}
+	if delFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
+		return nil, nil, false
+	}
+
+	return keyType, valType, true
+}
+
+func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) (Type, error) {
+	if leftType == nil {
+		return TypeVoid, fmt.Errorf("cannot index nil type")
+	}
+
+	// 組み込み map[K]V
+	if mp, ok := leftType.(*MapType); ok {
+		return mp.Value, nil
+	}
+
+	// MapBehavior インターフェース充足チェック
+	if _, valType, ok := c.CheckMapBehavior(leftType); ok {
+		return valType, nil
+	}
+
+	// スライス・配列・文字列
+	if sl, ok := leftType.(*SliceType); ok {
+		return sl.Elem, nil
+	}
+	if ar, ok := leftType.(*ArrayType); ok {
+		return ar.Elem, nil
+	}
+	if pt, ok := leftType.(*PointerType); ok {
+		return pt.Base, nil
+	}
+	if leftType == TypeString {
+		return TypeByte, nil
+	}
+
+	return TypeVoid, fmt.Errorf("type '%s' does not support indexing or MapBehavior interface", leftType.TypeName())
+}
+
+func (c *Context) lookupMethod(structName, methodName string) *FuncType {
+	fullName := structName + "_" + methodName
+	if fn, ok := c.Functions[fullName]; ok {
+		return fn
+	}
+	for fnName, fn := range c.Functions {
+		if strings.HasSuffix(fnName, "_"+methodName) && strings.Contains(fnName, structName) {
+			return fn
+		}
+	}
+	return nil
+}

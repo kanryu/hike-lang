@@ -240,50 +240,6 @@ func (g *CodeGenerator) findStruct(t sema.Type, fieldName string) (*sema.StructT
 	return nil, ""
 }
 
-func (g *CodeGenerator) resolveStructPtr(b *strings.Builder, expr ast.Expression) (string, sema.Type, *sema.StructType, string) {
-	if ident, ok := expr.(*ast.Identifier); ok {
-		if sym, exists := g.symbols[ident.Value]; exists {
-			if strings.HasSuffix(sym.Type.LLVMType(), "*") {
-				loadReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
-				st, sName := g.findStruct(sym.Type, "")
-				return loadReg, sym.Type, st, sName
-			} else {
-				st, sName := g.findStruct(sym.Type, "")
-				return sym.LLVMName, &sema.PointerType{Base: sym.Type}, st, sName
-			}
-		}
-	}
-
-	if mem, ok := expr.(*ast.MemberExpr); ok {
-		parentPtr, _, parentSt, parentName := g.resolveStructPtr(b, mem.Object)
-		if parentSt != nil {
-			gepReg, fieldType, _, found := g.resolveFieldPath(parentSt, parentName, parentPtr, mem.Field.Value, b)
-			if found {
-				st, sName := g.findStruct(fieldType, "")
-				if _, isPtr := fieldType.(*sema.PointerType); isPtr {
-					loadReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
-					return loadReg, fieldType, st, sName
-				}
-				return gepReg, &sema.PointerType{Base: fieldType}, st, sName
-			}
-		}
-	}
-
-	valReg, valType := g.resolveValue(b, expr)
-	if strings.HasSuffix(valType.LLVMType(), "*") {
-		st, sName := g.findStruct(valType, "")
-		return valReg, valType, st, sName
-	}
-
-	allocaReg := g.nextReg()
-	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", allocaReg, valType.LLVMType()))
-	b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", valType.LLVMType(), valReg, valType.LLVMType(), allocaReg))
-	st, sName := g.findStruct(valType, "")
-	return allocaReg, &sema.PointerType{Base: valType}, st, sName
-}
-
 func (g *CodeGenerator) resolveFieldPath(st *sema.StructType, structName string, curPtrReg string, fieldName string, b *strings.Builder) (string, sema.Type, string, bool) {
 	if st == nil {
 		return "", nil, "", false
@@ -2128,6 +2084,121 @@ func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 	}
 }
 
+func (g *CodeGenerator) resolveArrayPtr(b *strings.Builder, expr ast.Expression) (string, *sema.ArrayType) {
+	if ident, ok := expr.(*ast.Identifier); ok {
+		if sym, exists := g.symbols[ident.Value]; exists {
+			if arr, isArr := sym.Type.(*sema.ArrayType); isArr {
+				return sym.LLVMName, arr
+			}
+		}
+		if gType, exists := g.semaCtx.Globals[ident.Value]; exists {
+			if arr, isArr := gType.(*sema.ArrayType); isArr {
+				return "@" + ident.Value, arr
+			}
+		}
+	}
+
+	if mem, ok := expr.(*ast.MemberExpr); ok {
+		objPtrReg, _, st, structName := g.resolveStructPtr(b, mem.Object)
+		if st != nil {
+			gepReg, fieldType, _, found := g.resolveFieldPath(st, structName, objPtrReg, mem.Field.Value, b)
+			if found {
+				if arr, isArr := fieldType.(*sema.ArrayType); isArr {
+					return gepReg, arr
+				}
+			}
+		}
+	}
+
+	if idx, ok := expr.(*ast.IndexExpr); ok {
+		parentPtr, parentArr := g.resolveArrayPtr(b, idx.Left)
+		if parentPtr != "" && parentArr != nil {
+			if elemArr, isElemArr := parentArr.Elem.(*sema.ArrayType); isElemArr {
+				idxReg, _ := g.resolveValue(b, idx.Index)
+				gepReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
+					gepReg, parentArr.LLVMType(), parentArr.LLVMType(), parentPtr, idxReg))
+				return gepReg, elemArr
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func (g *CodeGenerator) resolveStructPtr(b *strings.Builder, expr ast.Expression) (string, sema.Type, *sema.StructType, string) {
+	if ident, ok := expr.(*ast.Identifier); ok {
+		if sym, exists := g.symbols[ident.Value]; exists {
+			if strings.HasSuffix(sym.Type.LLVMType(), "*") {
+				loadReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, sym.Type.LLVMType(), sym.Type.LLVMType(), sym.LLVMName))
+				st, sName := g.findStruct(sym.Type, "")
+				return loadReg, sym.Type, st, sName
+			} else {
+				st, sName := g.findStruct(sym.Type, "")
+				return sym.LLVMName, &sema.PointerType{Base: sym.Type}, st, sName
+			}
+		}
+	}
+
+	if mem, ok := expr.(*ast.MemberExpr); ok {
+		parentPtr, _, parentSt, parentName := g.resolveStructPtr(b, mem.Object)
+		if parentSt != nil {
+			gepReg, fieldType, _, found := g.resolveFieldPath(parentSt, parentName, parentPtr, mem.Field.Value, b)
+			if found {
+				st, sName := g.findStruct(fieldType, "")
+				if _, isPtr := fieldType.(*sema.PointerType); isPtr {
+					loadReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, fieldType.LLVMType(), fieldType.LLVMType(), gepReg))
+					return loadReg, fieldType, st, sName
+				}
+				return gepReg, &sema.PointerType{Base: fieldType}, st, sName
+			}
+		}
+	}
+
+	if idx, ok := expr.(*ast.IndexExpr); ok {
+		if arrPtr, arr := g.resolveArrayPtr(b, idx.Left); arrPtr != "" && arr != nil {
+			idxReg, _ := g.resolveValue(b, idx.Index)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
+				gepReg, arr.LLVMType(), arr.LLVMType(), arrPtr, idxReg))
+			st, sName := g.findStruct(arr.Elem, "")
+			return gepReg, &sema.PointerType{Base: arr.Elem}, st, sName
+		}
+		baseReg, baseType := g.resolveValue(b, idx.Left)
+		if sl, isSlice := baseType.(*sema.SliceType); isSlice {
+			rawPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtr, sl.LLVMType(), baseReg))
+			typedPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, rawPtr, sl.Elem.LLVMType()))
+			idxReg, _ := g.resolveValue(b, idx.Index)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", gepReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedPtr, idxReg))
+			st, sName := g.findStruct(sl.Elem, "")
+			return gepReg, &sema.PointerType{Base: sl.Elem}, st, sName
+		} else if ptr, isPtr := baseType.(*sema.PointerType); isPtr {
+			idxReg, _ := g.resolveValue(b, idx.Index)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n", gepReg, ptr.Base.LLVMType(), ptr.LLVMType(), baseReg, idxReg))
+			st, sName := g.findStruct(ptr.Base, "")
+			return gepReg, ptr, st, sName
+		}
+	}
+
+	valReg, valType := g.resolveValue(b, expr)
+	if strings.HasSuffix(valType.LLVMType(), "*") {
+		st, sName := g.findStruct(valType, "")
+		return valReg, valType, st, sName
+	}
+
+	allocaReg := g.nextReg()
+	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", allocaReg, valType.LLVMType()))
+	b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", valType.LLVMType(), valReg, valType.LLVMType(), allocaReg))
+	st, sName := g.findStruct(valType, "")
+	return allocaReg, &sema.PointerType{Base: valType}, st, sName
+}
+
 func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 	dTag := g.dbg(s.Token.Line, s.Token.Col)
 
@@ -2136,8 +2207,48 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 	// =========================================================================
 	if len(s.Left) == 2 && len(s.Right) == 1 {
 		if idxExpr, isIdx := s.Right[0].(*ast.IndexExpr); isIdx {
-			baseReg, baseType := g.resolveValue(b, idxExpr.Left)
-			if mp, isMap := baseType.(*sema.MapType); isMap {
+			objPtrReg, baseType, st, structName := g.resolveStructPtr(b, idxExpr.Left)
+
+			// MapBehavior インターフェース充足構造体: m.Get(key)
+			if _, _, isMapBehavior := g.semaCtx.CheckMapBehavior(baseType); isMapBehavior && st != nil {
+				targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Get", b)
+				if found && targetFn != nil {
+					keyReg, keyType := g.resolveValue(b, idxExpr.Index)
+					keyConv := g.emitArgConversion(b, keyReg, keyType, targetFn.ParamTypes[1])
+
+					tupleReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = call { %s, i1 } @%s(%s %s, %s %s)%s\n",
+						tupleReg, targetFn.ReturnTypes[0].LLVMType(), targetFnName,
+						targetFn.ParamTypes[0].LLVMType(), finalRecvPtr,
+						targetFn.ParamTypes[1].LLVMType(), keyConv,
+						dTag))
+
+					valReg := g.nextReg()
+					okReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = extractvalue { %s, i1 } %s, 0\n", valReg, targetFn.ReturnTypes[0].LLVMType(), tupleReg))
+					b.WriteString(fmt.Sprintf("  %s = extractvalue { %s, i1 } %s, 1\n", okReg, targetFn.ReturnTypes[0].LLVMType(), tupleReg))
+
+					if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
+						if _, exists := g.symbols[vIdent.Value]; !exists {
+							g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, targetFn.ReturnTypes[0].LLVMType()))
+							g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: "%" + vIdent.Value, Type: targetFn.ReturnTypes[0]}
+						}
+						b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", targetFn.ReturnTypes[0].LLVMType(), valReg, targetFn.ReturnTypes[0].LLVMType(), vIdent.Value))
+					}
+					if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
+						if _, exists := g.symbols[okIdent.Value]; !exists {
+							g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i1\n", okIdent.Value))
+							g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: "%" + okIdent.Value, Type: sema.TypeBool}
+						}
+						b.WriteString(fmt.Sprintf("  store i1 %s, i1* %%%s\n", okReg, okIdent.Value))
+					}
+					return
+				}
+			}
+
+			// 組み込み map[K]V
+			baseReg, baseTypeVal := g.resolveValue(b, idxExpr.Left)
+			if mp, isMap := baseTypeVal.(*sema.MapType); isMap {
 				keyReg, keyType := g.resolveValue(b, idxExpr.Index)
 				keyArg := keyReg
 				if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
@@ -2177,7 +2288,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					finalValReg = truncReg
 				}
 
-				// 左辺 1 個目 (val)
 				if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
 					if _, exists := g.symbols[vIdent.Value]; !exists {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", vIdent.Value, mp.Value.LLVMType()))
@@ -2192,7 +2302,6 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					}
 					b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), vIdent.Value, dTag))
 				}
-				// 左辺 2 個目 (ok)
 				if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
 					if _, exists := g.symbols[okIdent.Value]; !exists {
 						g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca i1\n", okIdent.Value))
@@ -2276,10 +2385,31 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 
 		// (A) インデックス代入: m[k] = v, arr[i] = v, slice[i] = v, ptr[i] = v
 		if lhsIndex, isLhsIndex := s.Left[0].(*ast.IndexExpr); isLhsIndex {
-			baseReg, baseType := g.resolveValue(b, lhsIndex.Left)
+			// MapBehavior インターフェース充足構造体: m.Set(key, val)
+			objPtrReg, baseType, st, structName := g.resolveStructPtr(b, lhsIndex.Left)
+			if _, _, isMapBehavior := g.semaCtx.CheckMapBehavior(baseType); isMapBehavior && st != nil {
+				targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Set", b)
+				if found && targetFn != nil {
+					keyReg, keyType := g.resolveValue(b, lhsIndex.Index)
+					valReg, valType := g.resolveValue(b, s.Right[0])
 
-			// --- マップ要素代入: m[k] = v ---
-			if mp, isMap := baseType.(*sema.MapType); isMap {
+					keyConv := g.emitArgConversion(b, keyReg, keyType, targetFn.ParamTypes[1])
+					valConv := g.emitArgConversion(b, valReg, valType, targetFn.ParamTypes[2])
+
+					b.WriteString(fmt.Sprintf("  call void @%s(%s %s, %s %s, %s %s)%s\n",
+						targetFnName,
+						targetFn.ParamTypes[0].LLVMType(), finalRecvPtr,
+						targetFn.ParamTypes[1].LLVMType(), keyConv,
+						targetFn.ParamTypes[2].LLVMType(), valConv,
+						dTag))
+					return
+				}
+			}
+
+			baseReg, baseTypeVal := g.resolveValue(b, lhsIndex.Left)
+
+			// --- 組み込みマップ要素代入: m[k] = v ---
+			if mp, isMap := baseTypeVal.(*sema.MapType); isMap {
 				keyReg, keyType := g.resolveValue(b, lhsIndex.Index)
 				valReg, valType := g.resolveValue(b, s.Right[0])
 
@@ -2315,20 +2445,13 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			}
 
 			// --- 配列要素代入: arr[i] = v ---
-			idxReg, _ := g.resolveValue(b, lhsIndex.Index)
-			valReg, valType := g.resolveValue(b, s.Right[0])
-
-			if arr, isArr := baseType.(*sema.ArrayType); isArr {
-				arrPtrReg := baseReg
-				if objIdent, isIdent := lhsIndex.Left.(*ast.Identifier); isIdent {
-					if sym, ok := g.symbols[objIdent.Value]; ok {
-						arrPtrReg = sym.LLVMName
-					}
-				}
+			if arrPtr, arr := g.resolveArrayPtr(b, lhsIndex.Left); arrPtr != "" && arr != nil {
+				idxReg, _ := g.resolveValue(b, lhsIndex.Index)
+				valReg, valType := g.resolveValue(b, s.Right[0])
 
 				gepReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
-					gepReg, arr.LLVMType(), arr.LLVMType(), arrPtrReg, idxReg))
+					gepReg, arr.LLVMType(), arr.LLVMType(), arrPtr, idxReg))
 
 				finalValReg := valReg
 				if isCompound {
@@ -2366,22 +2489,25 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 			}
 
 			// --- スライス / ポインタ要素代入: slice[i] = v, ptr[i] = v ---
+			idxReg, _ := g.resolveValue(b, lhsIndex.Index)
+			valReg, valType := g.resolveValue(b, s.Right[0])
+
 			var typedPtrReg string
 			var elemType sema.Type = sema.TypeByte
 
-			if sl, isSlice := baseType.(*sema.SliceType); isSlice {
+			if sl, isSlice := baseTypeVal.(*sema.SliceType); isSlice {
 				elemType = sl.Elem
 				rawPtr := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtr, sl.LLVMType(), baseReg))
 				typedPtrReg = g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, rawPtr, elemType.LLVMType()))
-			} else if ptr, isPtr := baseType.(*sema.PointerType); isPtr {
+			} else if ptr, isPtr := baseTypeVal.(*sema.PointerType); isPtr {
 				elemType = ptr.Base
-				if baseType.LLVMType() == elemType.LLVMType()+"*" {
+				if baseTypeVal.LLVMType() == elemType.LLVMType()+"*" {
 					typedPtrReg = baseReg
 				} else {
 					typedPtrReg = g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s*\n", typedPtrReg, baseType.LLVMType(), baseReg, elemType.LLVMType()))
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s*\n", typedPtrReg, baseTypeVal.LLVMType(), baseReg, elemType.LLVMType()))
 				}
 			} else {
 				typedPtrReg = g.nextReg()
@@ -3515,9 +3641,14 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 					return "@" + ident.Value, &sema.PointerType{Base: gType}
 				}
 			} else if idxExpr, ok := e.Right.(*ast.IndexExpr); ok {
+				if arrPtr, arr := g.resolveArrayPtr(b, idxExpr.Left); arrPtr != "" && arr != nil {
+					idxReg, _ := g.resolveValue(b, idxExpr.Index)
+					gepReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n", gepReg, arr.LLVMType(), arr.LLVMType(), arrPtr, idxReg))
+					return gepReg, &sema.PointerType{Base: arr.Elem}
+				}
 				baseReg, baseType := g.resolveValue(b, idxExpr.Left)
 				idxReg, _ := g.resolveValue(b, idxExpr.Index)
-
 				if sl, isSlice := baseType.(*sema.SliceType); isSlice {
 					dataPtr := g.nextReg()
 					b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, sl.LLVMType(), baseReg))
@@ -3526,16 +3657,6 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 					gepReg := g.nextReg()
 					b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", gepReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedPtr, idxReg))
 					return gepReg, &sema.PointerType{Base: sl.Elem}
-				} else if arr, isArr := baseType.(*sema.ArrayType); isArr {
-					arrPtrReg := baseReg
-					if objIdent, isIdent := idxExpr.Left.(*ast.Identifier); isIdent {
-						if sym, ok := g.symbols[objIdent.Value]; ok {
-							arrPtrReg = sym.LLVMName
-						}
-					}
-					gepReg := g.nextReg()
-					b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n", gepReg, arr.LLVMType(), arr.LLVMType(), arrPtrReg, idxReg))
-					return gepReg, &sema.PointerType{Base: arr.Elem}
 				}
 			} else if memExpr, ok := e.Right.(*ast.MemberExpr); ok {
 				objPtrReg, _, st, structName := g.resolveStructPtr(b, memExpr.Object)
@@ -3627,7 +3748,6 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		}
 
 	case *ast.MemberExpr:
-		// パッケージ定数・グローバル変数の参照解決（例: calc.DefaultBase）
 		if pkgIdent, ok := e.Object.(*ast.Identifier); ok {
 			qualified := pkgIdent.Value + "_" + e.Field.Value
 			if val, isConst := g.semaCtx.Constants[qualified]; isConst {
@@ -3662,6 +3782,36 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		return loadReg, fieldType
 
 	case *ast.IndexExpr:
+		if arrPtr, arr := g.resolveArrayPtr(b, e.Left); arrPtr != "" && arr != nil {
+			idxReg, _ := g.resolveValue(b, e.Index)
+			gepReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
+				gepReg, arr.LLVMType(), arr.LLVMType(), arrPtr, idxReg))
+			loadReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, arr.Elem.LLVMType(), arr.Elem.LLVMType(), gepReg))
+			return loadReg, arr.Elem
+		}
+
+		// MapBehavior インターフェース充足構造体: m.Get(key) -> extract value
+		objPtrReg, baseTypeStruct, st, structName := g.resolveStructPtr(b, e.Left)
+		if _, _, isMapBehavior := g.semaCtx.CheckMapBehavior(baseTypeStruct); isMapBehavior && st != nil {
+			targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Get", b)
+			if found && targetFn != nil {
+				keyReg, keyType := g.resolveValue(b, e.Index)
+				keyConv := g.emitArgConversion(b, keyReg, keyType, targetFn.ParamTypes[1])
+
+				tupleReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call { %s, i1 } @%s(%s %s, %s %s)\n",
+					tupleReg, targetFn.ReturnTypes[0].LLVMType(), targetFnName,
+					targetFn.ParamTypes[0].LLVMType(), finalRecvPtr,
+					targetFn.ParamTypes[1].LLVMType(), keyConv))
+
+				valReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue { %s, i1 } %s, 0\n", valReg, targetFn.ReturnTypes[0].LLVMType(), tupleReg))
+				return valReg, targetFn.ReturnTypes[0]
+			}
+		}
+
 		baseReg, baseType := g.resolveValue(b, e.Left)
 
 		if mp, isMap := baseType.(*sema.MapType); isMap {
@@ -3703,23 +3853,8 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			}
 			return rawValReg, mp.Value
 		}
+
 		idxReg, _ := g.resolveValue(b, e.Index)
-
-		if arr, isArr := baseType.(*sema.ArrayType); isArr {
-			arrPtrReg := baseReg
-			if objIdent, isIdent := e.Left.(*ast.Identifier); isIdent {
-				if sym, ok := g.symbols[objIdent.Value]; ok {
-					arrPtrReg = sym.LLVMName
-				}
-			}
-			gepReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 0, i64 %s\n",
-				gepReg, arr.LLVMType(), arr.LLVMType(), arrPtrReg, idxReg))
-			loadReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", loadReg, arr.Elem.LLVMType(), arr.Elem.LLVMType(), gepReg))
-			return loadReg, arr.Elem
-		}
-
 		var typedPtrReg string
 		var elemType sema.Type = sema.TypeByte
 
@@ -4122,7 +4257,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 	// 0. ジェネリック関数呼び出しの単相化（Monomorphization）解決
 	// =========================================================================
 	if idxExpr, isIdx := call.Function.(*ast.IndexExpr); isIdx {
-		// 単一型引数の明示的呼び出し: Min[int](10, 20)
 		if id, isId := idxExpr.Left.(*ast.Identifier); isId {
 			if _, isGen := g.semaCtx.GenericFuncs[id.Value]; isGen {
 				tArg := g.resolveTypeFromExpr(idxExpr.Index)
@@ -4131,7 +4265,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			}
 		}
 	} else if genExpr, isGenExpr := call.Function.(*ast.GenericInstExpr); isGenExpr {
-		// 複数型引数の明示的呼び出し: Pair[int, string](...)
 		if id, isId := genExpr.Left.(*ast.Identifier); isId {
 			if _, isGen := g.semaCtx.GenericFuncs[id.Value]; isGen {
 				var resArgs []sema.Type
@@ -4143,7 +4276,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			}
 		}
 	} else if id, isId := call.Function.(*ast.Identifier); isId {
-		// 引数からの型推論付き呼び出し: Identity(999) -> Identity__int(999)
 		if genTemplate, isGen := g.semaCtx.GenericFuncs[id.Value]; isGen {
 			var infTypes []sema.Type
 			for i, arg := range call.Args {
@@ -4160,379 +4292,116 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 	// =========================================================================
 	// 1. make / delete / len / append / 型キャスト等の組み込み処理
 	// =========================================================================
+	if fnIdent, isIdent := call.Function.(*ast.Identifier); isIdent {
+		// make(map[K]V, [cap])
+		if fnIdent.Value == "make" && len(call.Args) >= 1 {
+			if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
+				kType := g.semaCtx.ResolveType(mapTypeNode.Key)
+				vType := g.semaCtx.ResolveType(mapTypeNode.Value)
+				resMapType := &sema.MapType{Key: kType, Value: vType}
 
-	// make(map[K]V, [cap])
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "make" && len(call.Args) >= 1 {
-		if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
-			kType := g.semaCtx.ResolveType(mapTypeNode.Key)
-			vType := g.semaCtx.ResolveType(mapTypeNode.Value)
-			resMapType := &sema.MapType{Key: kType, Value: vType}
+				isStr := 0
+				if kType == sema.TypeString || (kType != nil && kType.TypeName() == "string") {
+					isStr = 1
+				}
 
-			isStr := 0
-			if kType == sema.TypeString || (kType != nil && kType.TypeName() == "string") {
-				isStr = 1
+				capReg := "16"
+				if len(call.Args) >= 2 {
+					capReg, _ = g.resolveValue(b, call.Args[1])
+				}
+
+				callReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_map* @__hike_map_create(i64 %s, i64 %d)\n", callReg, capReg, isStr))
+				return callReg, resMapType
+			}
+		}
+
+		// make([]T, len, [cap])
+		if fnIdent.Value == "make" && len(call.Args) >= 2 {
+			var elemType sema.Type = sema.TypeByte
+			if slType, okSlice := call.Args[0].(*ast.SliceType); okSlice {
+				elemType = g.semaCtx.ResolveType(slType.Elem)
 			}
 
-			capReg := "16"
-			if len(call.Args) >= 2 {
-				capReg, _ = g.resolveValue(b, call.Args[1])
+			lenValReg, _ := g.resolveValue(b, call.Args[1])
+			capValReg := lenValReg
+			if len(call.Args) >= 3 {
+				capValReg, _ = g.resolveValue(b, call.Args[2])
 			}
 
-			callReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_map* @__hike_map_create(i64 %s, i64 %d)\n", callReg, capReg, isStr))
-			return callReg, resMapType
-		}
-	}
-
-	// delete(m, key)
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "delete" && len(call.Args) == 2 {
-		mReg, _ := g.resolveValue(b, call.Args[0])
-		keyReg, keyType := g.resolveValue(b, call.Args[1])
-
-		keyArg := keyReg
-		if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
-			pInt := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
-			keyArg = pInt
-		} else if keyType == sema.TypeFloat64 {
-			castReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
-			keyArg = castReg
-		}
-
-		b.WriteString(fmt.Sprintf("  call void @__hike_map_delete(%%struct.__hike_map* %s, i64 %s)\n", mReg, keyArg))
-		return "", sema.TypeVoid
-	}
-
-	// make([]T, len, [cap])
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "make" && len(call.Args) >= 2 {
-		var elemType sema.Type = sema.TypeByte
-		if slType, okSlice := call.Args[0].(*ast.SliceType); okSlice {
-			elemType = g.semaCtx.ResolveType(slType.Elem)
-		}
-
-		lenReg, _ := g.resolveValue(b, call.Args[1])
-		capReg := lenReg
-		if len(call.Args) >= 3 {
-			capReg, _ = g.resolveValue(b, call.Args[2])
-		}
-
-		elemSize := elemType.Size()
-		if elemSize <= 0 {
-			elemSize = 1
-		}
-
-		callocReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i8* @calloc(i64 %s, i64 %d)\n", callocReg, capReg, elemSize))
-
-		resSliceType := &sema.SliceType{Elem: elemType}
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), callocReg))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, lenReg))
-		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, capReg))
-
-		return t3, resSliceType
-	}
-
-	// []byte(msg) キャスト
-	if slType, ok := call.Function.(*ast.SliceType); ok && len(call.Args) == 1 {
-		elemType := g.semaCtx.ResolveType(slType.Elem)
-		argReg, _ := g.resolveValue(b, call.Args[0])
-
-		resSliceType := &sema.SliceType{Elem: elemType}
-		lenReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenReg, argReg))
-
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), argReg))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, lenReg))
-		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, lenReg))
-
-		return t3, resSliceType
-	}
-
-	// string(buf[0:n]) キャスト
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "string" && len(call.Args) == 1 {
-		argReg, argType := g.resolveValue(b, call.Args[0])
-		if sl, isSlice := argType.(*sema.SliceType); isSlice {
-			dataPtr := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, sl.LLVMType(), argReg))
-			return dataPtr, sema.TypeString
-		}
-		return argReg, sema.TypeString
-	}
-
-	// byte(val) キャスト
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "byte" && len(call.Args) == 1 {
-		argReg, argType := g.resolveValue(b, call.Args[0])
-		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeByte)
-		return convReg, sema.TypeByte
-	}
-
-	// float64(x) / float(x) キャスト
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && (fnIdent.Value == "float64" || fnIdent.Value == "float") && len(call.Args) == 1 {
-		argReg, argType := g.resolveValue(b, call.Args[0])
-		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat64)
-		return convReg, sema.TypeFloat64
-	}
-
-	// float32(x) キャスト
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "float32" && len(call.Args) == 1 {
-		argReg, argType := g.resolveValue(b, call.Args[0])
-		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat32)
-		return convReg, sema.TypeFloat32
-	}
-
-	// int(x) キャスト
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "int" && len(call.Args) == 1 {
-		argReg, argType := g.resolveValue(b, call.Args[0])
-		convReg := g.emitArgConversion(b, argReg, argType, sema.TypeInt)
-		return convReg, sema.TypeInt
-	}
-
-	// append(slice, elems...)
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
-		slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
-		slice2Reg, slice2Type := g.resolveValue(b, call.Args[1])
-
-		sl1, isSlice1 := slice1Type.(*sema.SliceType)
-		sl2, _ := slice2Type.(*sema.SliceType)
-		if !isSlice1 || sl2 == nil {
-			panic("[Codegen Error] both arguments to append with ellipsis must be slices")
-		}
-
-		elemSize := sl1.Elem.Size()
-		if elemSize <= 0 {
-			elemSize = 1
-		}
-
-		s1Ptr := g.nextReg()
-		s1Len := g.nextReg()
-		s1Cap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s1Ptr, sl1.LLVMType(), slice1Reg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s1Len, sl1.LLVMType(), slice1Reg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", s1Cap, sl1.LLVMType(), slice1Reg))
-
-		s2Ptr := g.nextReg()
-		s2Len := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s2Ptr, sl2.LLVMType(), slice2Reg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s2Len, sl2.LLVMType(), slice2Reg))
-
-		totalLen := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = add i64 %s, %s\n", totalLen, s1Len, s2Len))
-
-		condReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, s1Cap, totalLen))
-
-		lblGrow := g.nextLabel("appendslice.grow")
-		lblNoGrow := g.nextLabel("appendslice.nogrow")
-		lblCopy := g.nextLabel("appendslice.copy")
-
-		resPtrAlloca := g.nextReg()
-		resCapAlloca := g.nextReg()
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
-
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
-		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", s1Ptr, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", s1Cap, resCapAlloca))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
-		doubleCap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCap, s1Cap))
-		cmpCap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCap, doubleCap, totalLen))
-		growCap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCap, cmpCap, doubleCap, totalLen))
-		isSmall := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmall, growCap))
-		newCap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCap, isSmall, growCap))
-
-		newBytes := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytes, newCap, elemSize))
-		newPtr := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtr, newBytes))
-
-		lblS1Copy := g.nextLabel("appendslice.s1copy")
-		lblAfterS1Copy := g.nextLabel("appendslice.after_s1copy")
-		hasS1Len := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS1Len, s1Len))
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS1Len, lblS1Copy, lblAfterS1Copy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblS1Copy))
-		s1Bytes := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1Bytes, s1Len, elemSize))
-		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtr, s1Ptr, s1Bytes))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterS1Copy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblAfterS1Copy))
-		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtr, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCap, resCapAlloca))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
-		finalPtr := g.nextReg()
-		finalCap := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtr, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCap, resCapAlloca))
-
-		lblS2Copy := g.nextLabel("appendslice.s2copy")
-		lblDone := g.nextLabel("appendslice.done")
-		hasS2Len := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS2Len, s2Len))
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS2Len, lblS2Copy, lblDone))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblS2Copy))
-		s1OffsetBytes := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1OffsetBytes, s1Len, elemSize))
-		destS2Ptr := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", destS2Ptr, finalPtr, s1OffsetBytes))
-		s2Bytes := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s2Bytes, s2Len, elemSize))
-		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", destS2Ptr, s2Ptr, s2Bytes))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblDone))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblDone))
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, sl1.LLVMType(), finalPtr))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, sl1.LLVMType(), t1, totalLen))
-		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, sl1.LLVMType(), t2, finalCap))
-
-		return t3, sl1
-	}
-
-	// append(slice, val1, val2, ...)
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && fnIdent.Value == "append" && len(call.Args) >= 2 {
-		sliceReg, sliceType := g.resolveValue(b, call.Args[0])
-
-		sl, isSlice := sliceType.(*sema.SliceType)
-		if !isSlice {
-			panic("[Codegen Error] first argument to append must be a slice")
-		}
-
-		elemSize := sl.Elem.Size()
-		if elemSize <= 0 {
-			elemSize = 1
-		}
-
-		numElems := len(call.Args) - 1
-
-		oldPtrReg := g.nextReg()
-		oldLenReg := g.nextReg()
-		oldCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", oldPtrReg, sl.LLVMType(), sliceReg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", oldLenReg, sl.LLVMType(), sliceReg))
-		b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", oldCapReg, sl.LLVMType(), sliceReg))
-
-		lblGrow := g.nextLabel("append.grow")
-		lblNoGrow := g.nextLabel("append.nogrow")
-		lblStore := g.nextLabel("append.store")
-
-		resPtrAlloca := g.nextReg()
-		resCapAlloca := g.nextReg()
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
-		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
-
-		reqCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", reqCapReg, oldLenReg, numElems))
-
-		condReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, oldCapReg, reqCapReg))
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
-		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", oldPtrReg, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", oldCapReg, resCapAlloca))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
-		doubleCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCapReg, oldCapReg))
-
-		cmpCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCapReg, doubleCapReg, reqCapReg))
-		growCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCapReg, cmpCapReg, doubleCapReg, reqCapReg))
-
-		isSmallReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmallReg, growCapReg))
-		newCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCapReg, isSmallReg, growCapReg))
-
-		newBytesReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytesReg, newCapReg, elemSize))
-		newPtrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtrReg, newBytesReg))
-
-		lblCopy := g.nextLabel("append.copy")
-		lblAfterCopy := g.nextLabel("append.after_copy")
-		hasOldLenReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasOldLenReg, oldLenReg))
-		b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasOldLenReg, lblCopy, lblAfterCopy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
-		copyBytesReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", copyBytesReg, oldLenReg, elemSize))
-		b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtrReg, oldPtrReg, copyBytesReg))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterCopy))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblAfterCopy))
-		b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtrReg, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCapReg, resCapAlloca))
-		b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
-
-		b.WriteString(fmt.Sprintf("%s:\n", lblStore))
-		finalPtrReg := g.nextReg()
-		finalCapReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtrReg, resPtrAlloca))
-		b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCapReg, resCapAlloca))
-
-		typedFinalPtrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedFinalPtrReg, finalPtrReg, sl.Elem.LLVMType()))
-
-		for i := 0; i < numElems; i++ {
-			elemReg, elemType := g.resolveValue(b, call.Args[1+i])
-
-			offsetReg := oldLenReg
-			if i > 0 {
-				offsetReg = g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", offsetReg, oldLenReg, i))
+			elemSize := elemType.Size()
+			if elemSize <= 0 {
+				elemSize = 1
 			}
 
-			destElemPtrReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", destElemPtrReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedFinalPtrReg, offsetReg))
+			callocReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @calloc(i64 %s, i64 %d)\n", callocReg, capValReg, elemSize))
 
-			valToStore := g.emitArgConversion(b, elemReg, elemType, sl.Elem)
-			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", sl.Elem.LLVMType(), valToStore, sl.Elem.LLVMType(), destElemPtrReg))
+			resSliceType := &sema.SliceType{Elem: elemType}
+			t1 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), callocReg))
+			t2 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, lenValReg))
+			t3 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, capValReg))
+
+			return t3, resSliceType
 		}
 
-		newLenReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", newLenReg, oldLenReg, numElems))
+		// delete(m, key)
+		if fnIdent.Value == "delete" && len(call.Args) == 2 {
+			// MapBehavior インターフェース充足構造体: m.Delete(k)
+			objPtrReg, baseType, st, structName := g.resolveStructPtr(b, call.Args[0])
+			if _, _, isMapBehavior := g.semaCtx.CheckMapBehavior(baseType); isMapBehavior && st != nil {
+				targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Delete", b)
+				if found && targetFn != nil {
+					kReg, kType := g.resolveValue(b, call.Args[1])
+					kConv := g.emitArgConversion(b, kReg, kType, targetFn.ParamTypes[1])
+					b.WriteString(fmt.Sprintf("  call void @%s(%s %s, %s %s)\n",
+						targetFnName,
+						targetFn.ParamTypes[0].LLVMType(), finalRecvPtr,
+						targetFn.ParamTypes[1].LLVMType(), kConv))
+					return "", sema.TypeVoid
+				}
+			}
 
-		retSliceType := "{ i8*, i64, i64 }"
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, retSliceType, finalPtrReg))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, retSliceType, t1, newLenReg))
-		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, retSliceType, t2, finalCapReg))
+			// 組み込み map[K]V
+			mReg, mType := g.resolveValue(b, call.Args[0])
+			if _, isMap := mType.(*sema.MapType); isMap {
+				keyReg, keyType := g.resolveValue(b, call.Args[1])
 
-		return t3, sl
-	}
+				keyArg := keyReg
+				if keyType == sema.TypeString || strings.HasSuffix(keyType.LLVMType(), "*") {
+					pInt := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, keyType.LLVMType(), keyReg))
+					keyArg = pInt
+				} else if keyType == sema.TypeFloat64 {
+					castReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast double %s to i64\n", castReg, keyReg))
+					keyArg = castReg
+				}
 
-	// len / cap
-	if fnIdent, ok := call.Function.(*ast.Identifier); ok && len(call.Args) == 1 {
-		if fnIdent.Value == "len" || fnIdent.Value == "cap" {
+				b.WriteString(fmt.Sprintf("  call void @__hike_map_delete(%%struct.__hike_map* %s, i64 %s)\n", mReg, keyArg))
+				return "", sema.TypeVoid
+			}
+		}
+
+		// len(m) / cap(m)
+		if (fnIdent.Value == "len" || fnIdent.Value == "cap") && len(call.Args) == 1 {
+			// MapBehavior インターフェース充足構造体: m.Len()
+			if fnIdent.Value == "len" {
+				objPtrReg, baseType, st, structName := g.resolveStructPtr(b, call.Args[0])
+				if _, _, isMapBehavior := g.semaCtx.CheckMapBehavior(baseType); isMapBehavior && st != nil {
+					targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Len", b)
+					if found && targetFn != nil {
+						callReg := g.nextReg()
+						b.WriteString(fmt.Sprintf("  %s = call i64 @%s(%s %s)\n",
+							callReg, targetFnName, targetFn.ParamTypes[0].LLVMType(), finalRecvPtr))
+						return callReg, sema.TypeInt
+					}
+				}
+			}
+
 			argReg, argType := g.resolveValue(b, call.Args[0])
 			if sl, isSlice := argType.(*sema.SliceType); isSlice {
 				idx := 1
@@ -4544,16 +4413,310 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 				return resReg, sema.TypeInt
 			}
 			if fnIdent.Value == "len" && (argType == sema.TypeString || (argType != nil && (argType.TypeName() == "string" || argType.LLVMType() == "i8*"))) {
-				lenReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenReg, argReg))
-				return lenReg, sema.TypeInt
+				lenCalcReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenCalcReg, argReg))
+				return lenCalcReg, sema.TypeInt
 			}
 			if _, isMap := argType.(*sema.MapType); isMap {
-				lenReg := g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = call i64 @__hike_map_len(%%struct.__hike_map* %s)\n", lenReg, argReg))
-				return lenReg, sema.TypeInt
+				lenCalcReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = call i64 @__hike_map_len(%%struct.__hike_map* %s)\n", lenCalcReg, argReg))
+				return lenCalcReg, sema.TypeInt
 			}
 		}
+
+		// string(buf[0:n]) キャスト
+		if fnIdent.Value == "string" && len(call.Args) == 1 {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			if sl, isSlice := argType.(*sema.SliceType); isSlice {
+				dataPtr := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, sl.LLVMType(), argReg))
+				return dataPtr, sema.TypeString
+			}
+			return argReg, sema.TypeString
+		}
+
+		// byte(val) キャスト
+		if fnIdent.Value == "byte" && len(call.Args) == 1 {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeByte)
+			return convReg, sema.TypeByte
+		}
+
+		// float64(x) / float(x) キャスト
+		if (fnIdent.Value == "float64" || fnIdent.Value == "float") && len(call.Args) == 1 {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat64)
+			return convReg, sema.TypeFloat64
+		}
+
+		// float32(x) キャスト
+		if fnIdent.Value == "float32" && len(call.Args) == 1 {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat32)
+			return convReg, sema.TypeFloat32
+		}
+
+		// int(x) キャスト
+		if fnIdent.Value == "int" && len(call.Args) == 1 {
+			argReg, argType := g.resolveValue(b, call.Args[0])
+			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeInt)
+			return convReg, sema.TypeInt
+		}
+
+		// append(slice, elems...)
+		if fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
+			slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
+			slice2Reg, slice2Type := g.resolveValue(b, call.Args[1])
+
+			sl1, isSlice1 := slice1Type.(*sema.SliceType)
+			sl2, _ := slice2Type.(*sema.SliceType)
+			if !isSlice1 || sl2 == nil {
+				panic("[Codegen Error] both arguments to append with ellipsis must be slices")
+			}
+
+			elemSize := sl1.Elem.Size()
+			if elemSize <= 0 {
+				elemSize = 1
+			}
+
+			s1Ptr := g.nextReg()
+			s1Len := g.nextReg()
+			s1Cap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s1Ptr, sl1.LLVMType(), slice1Reg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s1Len, sl1.LLVMType(), slice1Reg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", s1Cap, sl1.LLVMType(), slice1Reg))
+
+			s2Ptr := g.nextReg()
+			s2Len := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", s2Ptr, sl2.LLVMType(), slice2Reg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", s2Len, sl2.LLVMType(), slice2Reg))
+
+			totalLen := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = add i64 %s, %s\n", totalLen, s1Len, s2Len))
+
+			condReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, s1Cap, totalLen))
+
+			lblGrow := g.nextLabel("appendslice.grow")
+			lblNoGrow := g.nextLabel("appendslice.nogrow")
+			lblCopy := g.nextLabel("appendslice.copy")
+
+			resPtrAlloca := g.nextReg()
+			resCapAlloca := g.nextReg()
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
+
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
+			b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", s1Ptr, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", s1Cap, resCapAlloca))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
+			doubleCap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCap, s1Cap))
+			cmpCap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCap, doubleCap, totalLen))
+			growCap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCap, cmpCap, doubleCap, totalLen))
+			isSmall := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmall, growCap))
+			newCap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCap, isSmall, growCap))
+
+			newBytes := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytes, newCap, elemSize))
+			newPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtr, newBytes))
+
+			lblS1Copy := g.nextLabel("appendslice.s1copy")
+			lblAfterS1Copy := g.nextLabel("appendslice.after_s1copy")
+			hasS1Len := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS1Len, s1Len))
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS1Len, lblS1Copy, lblAfterS1Copy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblS1Copy))
+			s1Bytes := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1Bytes, s1Len, elemSize))
+			b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtr, s1Ptr, s1Bytes))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterS1Copy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblAfterS1Copy))
+			b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtr, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCap, resCapAlloca))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCopy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
+			finalPtr := g.nextReg()
+			finalCap := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtr, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCap, resCapAlloca))
+
+			lblS2Copy := g.nextLabel("appendslice.s2copy")
+			lblDone := g.nextLabel("appendslice.done")
+			hasS2Len := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasS2Len, s2Len))
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasS2Len, lblS2Copy, lblDone))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblS2Copy))
+			s1OffsetBytes := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s1OffsetBytes, s1Len, elemSize))
+			destS2Ptr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8, i8* %s, i64 %s\n", destS2Ptr, finalPtr, s1OffsetBytes))
+			s2Bytes := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", s2Bytes, s2Len, elemSize))
+			b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", destS2Ptr, s2Ptr, s2Bytes))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblDone))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblDone))
+			t1 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, sl1.LLVMType(), finalPtr))
+			t2 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, sl1.LLVMType(), t1, totalLen))
+			t3 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, sl1.LLVMType(), t2, finalCap))
+
+			return t3, sl1
+		}
+
+		// append(slice, val1, val2, ...)
+		if fnIdent.Value == "append" && len(call.Args) >= 2 {
+			sliceReg, sliceType := g.resolveValue(b, call.Args[0])
+
+			sl, isSlice := sliceType.(*sema.SliceType)
+			if !isSlice {
+				panic("[Codegen Error] first argument to append must be a slice")
+			}
+
+			elemSize := sl.Elem.Size()
+			if elemSize <= 0 {
+				elemSize = 1
+			}
+
+			numElems := len(call.Args) - 1
+
+			oldPtrReg := g.nextReg()
+			oldLenReg := g.nextReg()
+			oldCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", oldPtrReg, sl.LLVMType(), sliceReg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", oldLenReg, sl.LLVMType(), sliceReg))
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", oldCapReg, sl.LLVMType(), sliceReg))
+
+			lblGrow := g.nextLabel("append.grow")
+			lblNoGrow := g.nextLabel("append.nogrow")
+			lblStore := g.nextLabel("append.store")
+
+			resPtrAlloca := g.nextReg()
+			resCapAlloca := g.nextReg()
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i8*\n", resPtrAlloca))
+			g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i64\n", resCapAlloca))
+
+			reqCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", reqCapReg, oldLenReg, numElems))
+
+			condReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sge i64 %s, %s\n", condReg, oldCapReg, reqCapReg))
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", condReg, lblNoGrow, lblGrow))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblNoGrow))
+			b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", oldPtrReg, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", oldCapReg, resCapAlloca))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblGrow))
+			doubleCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, 2\n", doubleCapReg, oldCapReg))
+
+			cmpCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, %s\n", cmpCapReg, doubleCapReg, reqCapReg))
+			growCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 %s, i64 %s\n", growCapReg, cmpCapReg, doubleCapReg, reqCapReg))
+
+			isSmallReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp slt i64 %s, 4\n", isSmallReg, growCapReg))
+			newCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = select i1 %s, i64 4, i64 %s\n", newCapReg, isSmallReg, growCapReg))
+
+			newBytesReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", newBytesReg, newCapReg, elemSize))
+			newPtrReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", newPtrReg, newBytesReg))
+
+			lblCopy := g.nextLabel("append.copy")
+			lblAfterCopy := g.nextLabel("append.after_copy")
+			hasOldLenReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = icmp sgt i64 %s, 0\n", hasOldLenReg, oldLenReg))
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", hasOldLenReg, lblCopy, lblAfterCopy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblCopy))
+			copyBytesReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = mul i64 %s, %d\n", copyBytesReg, oldLenReg, elemSize))
+			b.WriteString(fmt.Sprintf("  call i8* @memcpy(i8* %s, i8* %s, i64 %s)\n", newPtrReg, oldPtrReg, copyBytesReg))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblAfterCopy))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblAfterCopy))
+			b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", newPtrReg, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  store i64 %s, i64* %s\n", newCapReg, resCapAlloca))
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblStore))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblStore))
+			finalPtrReg := g.nextReg()
+			finalCapReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", finalPtrReg, resPtrAlloca))
+			b.WriteString(fmt.Sprintf("  %s = load i64, i64* %s\n", finalCapReg, resCapAlloca))
+
+			typedFinalPtrReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedFinalPtrReg, finalPtrReg, sl.Elem.LLVMType()))
+
+			for i := 0; i < numElems; i++ {
+				elemReg, elemType := g.resolveValue(b, call.Args[1+i])
+
+				offsetReg := oldLenReg
+				if i > 0 {
+					offsetReg = g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", offsetReg, oldLenReg, i))
+				}
+
+				destElemPtrReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", destElemPtrReg, sl.Elem.LLVMType(), sl.Elem.LLVMType(), typedFinalPtrReg, offsetReg))
+
+				valToStore := g.emitArgConversion(b, elemReg, elemType, sl.Elem)
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", sl.Elem.LLVMType(), valToStore, sl.Elem.LLVMType(), destElemPtrReg))
+			}
+
+			newLenReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = add i64 %s, %d\n", newLenReg, oldLenReg, numElems))
+
+			retSliceType := "{ i8*, i64, i64 }"
+			t1 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, retSliceType, finalPtrReg))
+			t2 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, retSliceType, t1, newLenReg))
+			t3 := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, retSliceType, t2, finalCapReg))
+
+			return t3, sl
+		}
+	}
+
+	// []byte(msg) キャスト
+	if slType, ok := call.Function.(*ast.SliceType); ok && len(call.Args) == 1 {
+		elemType := g.semaCtx.ResolveType(slType.Elem)
+		argReg, _ := g.resolveValue(b, call.Args[0])
+
+		resSliceType := &sema.SliceType{Elem: elemType}
+		lenStrReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenStrReg, argReg))
+
+		t1 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), argReg))
+		t2 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, lenStrReg))
+		t3 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, lenStrReg))
+
+		return t3, resSliceType
 	}
 
 	// *T(...) ポインタ型キャスト

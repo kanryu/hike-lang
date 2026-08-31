@@ -2,17 +2,131 @@ package main
 
 import "std/map"
 
-// 外部ランタイム関数
 func printf(format string, ...) int
 
-func main() int {
-    m := make(map[string]int)
-    m["Alice"] = 100
-    m["Bob"] = 200
+// =============================================================================
+// 1. ArrayMap の定義 (固定長配列による MapBehavior 実装)
+// =============================================================================
 
-    if val, ok := m["Alice"]; ok {
-        printf("Alice score: %d\n", val)
+type Pair struct {
+    key  string
+    val  int
+    used bool
+}
+
+type ArrayMap struct {
+    slots [8]Pair
+    count int
+}
+
+// 添字代入 myMap[k] = v に対応
+func (m *ArrayMap) Set(key string, val int) {
+    // 既存キーの更新 (Hikeの == を使うことで null-safe に比較)
+    for i := 0; i < 8; i = i + 1 {
+        if m.slots[i].used && m.slots[i].key == key {
+            m.slots[i].val = val
+            return
+        }
+    }
+    // 空きスロットへ新規追加
+    for i := 0; i < 8; i = i + 1 {
+        if !m.slots[i].used {
+            m.slots[i].key = key
+            m.slots[i].val = val
+            m.slots[i].used = true
+            m.count = m.count + 1
+            return
+        }
+    }
+}
+
+// 添字取得 v, ok := myMap[k] に対応
+func (m *ArrayMap) Get(key string) (int, bool) {
+    for i := 0; i < 8; i = i + 1 {
+        if m.slots[i].used && m.slots[i].key == key {
+            return m.slots[i].val, true
+        }
+    }
+    return 0, false
+}
+
+// delete(myMap, k) に対応
+func (m *ArrayMap) Delete(key string) {
+    for i := 0; i < 8; i = i + 1 {
+        if m.slots[i].used && m.slots[i].key == key {
+            m.slots[i].used = false
+            m.slots[i].key = ""
+            m.slots[i].val = 0
+            m.count = m.count - 1
+            return
+        }
+    }
+}
+
+// len(myMap) に対応
+func (m *ArrayMap) Len() int {
+    return m.count
+}
+
+// =============================================================================
+// 2. 動作検証 (メイン処理: マップ特殊構文を直接使用)
+// =============================================================================
+
+func main() int {
+    printf("=== Testing Custom MapBehavior Protocol in Hike ===\n")
+
+    var myMap ArrayMap
+
+    // 1. myMap[k] = v による挿入 (Set へデシュガー)
+    printf("[1] Inserting via map syntax: myMap[k] = v\n")
+    myMap["CPU"] = 8
+    myMap["RAM"] = 32
+    myMap["GPU"] = 1
+
+    // 2. len(myMap) による要素数取得 (Len へデシュガー)
+    if len(myMap) == 3 {
+        printf("  -> [PASS] Length is 3 (len=%d)\n", len(myMap))
+    } else {
+        printf("  -> [FAIL] Length incorrect: %d\n", len(myMap))
+        return 1
     }
 
+    // 3. val, ok := myMap[k] による検索 (Get へデシュガー)
+    printf("[2] Lookup via map syntax:\n")
+    if val, ok := myMap["RAM"]; ok && val == 32 {
+        printf("  -> [PASS] 'RAM' found with value %d\n", val)
+    } else {
+        printf("  -> [FAIL] 'RAM' lookup failed\n")
+        return 2
+    }
+
+    if _, ok := myMap["SSD"]; !ok {
+        printf("  -> [PASS] Non-existent key 'SSD' correctly returned ok=false\n")
+    } else {
+        printf("  -> [FAIL] 'SSD' unexpectedly found\n")
+        return 3
+    }
+
+    // 4. delete(myMap, "GPU") による削除 (Delete へデシュガー)
+    printf("[3] Deleting 'GPU' via delete(myMap, key)...\n")
+    delete(myMap, "GPU")
+
+    if _, ok := myMap["GPU"]; !ok && len(myMap) == 2 {
+        printf("  -> [PASS] 'GPU' removed, length updated to %d\n", len(myMap))
+    } else {
+        printf("  -> [FAIL] Delete failed\n")
+        return 4
+    }
+
+    // 5. 既存キーの更新
+    myMap["RAM"] = 64
+    if val, ok := myMap["RAM"]; ok && val == 64 && len(myMap) == 2 {
+        printf("  -> [PASS] 'RAM' updated to %d without increasing length\n", val)
+    } else {
+        printf("  -> [FAIL] Update failed\n")
+        return 5
+    }
+
+    printf("=== All MapBehavior Protocol Tests Passed Successfully ===\n")
     return 0
 }
