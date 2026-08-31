@@ -1,0 +1,8 @@
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("Hello from Hike on WebAssembly (Node.js WASI)!\n")
+    return 0
+}

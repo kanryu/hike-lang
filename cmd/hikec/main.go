@@ -15,6 +15,7 @@ import (
 func main() {
 	outputLL := "output.ll"
 	outputHeader := ""
+	targetName := ""
 	verbose := false
 	var sourceFiles []string
 
@@ -35,6 +36,12 @@ func main() {
 		} else if strings.HasPrefix(arg, "-header=") || strings.HasPrefix(arg, "--header=") {
 			parts := strings.SplitN(arg, "=", 2)
 			outputHeader = parts[1]
+		} else if (arg == "-target" || arg == "--target") && i+1 < len(args) {
+			targetName = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
+			parts := strings.SplitN(arg, "=", 2)
+			targetName = parts[1]
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 		} else if strings.HasPrefix(arg, "-") {
@@ -49,7 +56,15 @@ func main() {
 		fmt.Println("Options:")
 		fmt.Println("  -o <path>        Output LLVM IR file path (default: output.ll)")
 		fmt.Println("  -header <path>   Output C/C++ header file path")
+		fmt.Println("  -target <name>   Target platform (windows, linux, darwin, wasm32, wasm64)")
+		fmt.Println("  -g               Generate debug information")
 		fmt.Println("  -v               Enable verbose logging")
+		os.Exit(1)
+	}
+
+	target, err := codegen.ParseTarget(targetName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -65,7 +80,7 @@ func main() {
 	ld := loader.New(rootDir)
 	ld.SetVerbose(verbose)
 
-	// 【修正点】 sourceFiles を Load に渡す
+	// sourceFiles を Load に渡す
 	prog, err := ld.Load(sourceFiles...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Loader error: %v\n", err)
@@ -83,7 +98,7 @@ func main() {
 		srcPath = sourceFiles[0]
 	}
 
-	cg := codegen.New(prog, semaCtx, srcPath, debugInfo)
+	cg := codegen.New(prog, semaCtx, target, srcPath, debugInfo)
 	cg.SetVerbose(verbose)
 	llvmIR := cg.Generate()
 

@@ -38,6 +38,7 @@ type anonFuncMeta struct {
 type CodeGenerator struct {
 	prog           *ast.Program
 	semaCtx        *sema.Context
+	target         *Target       // 追加
 	debugMgr       *DebugManager // 追加
 	currentFunc    string        // 追加
 	output         strings.Builder
@@ -59,10 +60,14 @@ type CodeGenerator struct {
 	verbose        bool
 }
 
-func New(prog *ast.Program, semaCtx *sema.Context, sourcePath string, debugEnabled bool) *CodeGenerator {
+func New(prog *ast.Program, semaCtx *sema.Context, target *Target, sourcePath string, debugEnabled bool) *CodeGenerator {
+	if target == nil {
+		target = DefaultTarget()
+	}
 	return &CodeGenerator{
 		prog:           prog,
 		semaCtx:        semaCtx,
+		target:         target,
 		debugMgr:       NewDebugManager(sourcePath, debugEnabled),
 		symbols:        make(map[string]Symbol),
 		stringLiterals: []StringConst{},
@@ -701,11 +706,12 @@ func (g *CodeGenerator) emitPrologue() {
 	}
 	g.output.WriteString(fmt.Sprintf("; ModuleID = '%s'\n", srcName))
 	g.output.WriteString(fmt.Sprintf("source_filename = \"%s\"\n", srcName))
-	g.output.WriteString("target triple = \"x86_64-w64-windows-gnu\"\n\n")
+	g.output.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", g.target.Triple))
 
-	// LLVM デバッグ用組み込み関数の宣言
+	// デバッグ用組み込み関数
 	g.output.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 
+	// C/WASI 標準ライブラリ宣言
 	g.output.WriteString("declare noalias i8* @malloc(i64)\n")
 	g.output.WriteString("declare noalias i8* @calloc(i64, i64)\n")
 	g.output.WriteString("declare void @free(i8*)\n")
@@ -713,7 +719,7 @@ func (g *CodeGenerator) emitPrologue() {
 	g.output.WriteString("declare i64 @strlen(i8*)\n")
 	g.output.WriteString("declare i8* @memcpy(i8*, i8*, i64)\n")
 	g.output.WriteString("declare i32 @memcmp(i8*, i8*, i64)\n")
-	g.output.WriteString("declare i64 @printf(i8*, ...)\n")
+	g.output.WriteString("declare i64 @printf(i8*, ...)\n\n")
 
 	for _, fn := range g.semaCtx.Functions {
 		if fn.IsExtern {
@@ -1359,6 +1365,34 @@ func (g *CodeGenerator) emitThunk(b *strings.Builder, fnName string) {
 		b.WriteString(fmt.Sprintf("  ret %s %s\n", retType, resReg))
 	}
 	b.WriteString("}\n\n")
+}
+
+// ポインタを i64（Hikeのint）に変換
+func (g *CodeGenerator) emitPtrToInt(b *strings.Builder, ptrReg string, ptrType string) string {
+	if g.target.PtrType == "i32" {
+		p32 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i32\n", p32, ptrType, ptrReg))
+		p64 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = zext i32 %s to i64\n", p64, p32))
+		return p64
+	}
+	pInt := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", pInt, ptrType, ptrReg))
+	return pInt
+}
+
+// i64（Hikeのint）をポインタに変換
+func (g *CodeGenerator) emitIntToPtr(b *strings.Builder, intReg string, targetPtrType string) string {
+	if g.target.PtrType == "i32" {
+		t32 := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i32\n", t32, intReg))
+		pReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = inttoptr i32 %s to %s\n", pReg, t32, targetPtrType))
+		return pReg
+	}
+	pReg := g.nextReg()
+	b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", pReg, intReg, targetPtrType))
+	return pReg
 }
 
 func (g *CodeGenerator) emitAnonFunc(b *strings.Builder, meta anonFuncMeta) {
