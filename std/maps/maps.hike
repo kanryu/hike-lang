@@ -1,4 +1,4 @@
-package map
+package maps
 
 func malloc(size int) *byte
 func free(ptr *byte) void
@@ -31,7 +31,7 @@ type MapIterator[K, V] struct {
     current   *Entry[K, V]
 }
 
-func InitIterator[K, V](m *Map[K, V], buf *byte) int {
+func (m *Map[K, V]) InitIterator(buf *byte) int {
     if buf == nil {
         return 16
     }
@@ -41,7 +41,7 @@ func InitIterator[K, V](m *Map[K, V], buf *byte) int {
     return 0
 }
 
-func Next[K, V](m *Map[K, V], buf *byte) (*K, *V, bool) {
+func (m *Map[K, V]) Next(buf *byte) (*K, *V, bool) {
     if m.buckets == nil || m.length == 0 {
         return nil, nil, false
     }
@@ -89,7 +89,7 @@ func New[K, V](initialCap int) Map[K, V] {
     return m
 }
 
-func Set[K, V](m *Map[K, V], key K, val V) {
+func (m *Map[K, V]) Set(key K, val V) {
     if m.buckets == nil {
         *m = New[K, V](16)
     }
@@ -122,7 +122,7 @@ func Set[K, V](m *Map[K, V], key K, val V) {
     m.length = m.length + 1
 }
 
-func Get[K, V](m *Map[K, V], key K) (V, bool) {
+func (m *Map[K, V]) Get(key K) (V, bool) {
     if m.buckets == nil || m.length == 0 {
         var zero V
         return zero, false
@@ -146,7 +146,7 @@ func Get[K, V](m *Map[K, V], key K) (V, bool) {
     return zero, false
 }
 
-func Delete[K, V](m *Map[K, V], key K) {
+func (m *Map[K, V]) Delete(key K) {
     if m.buckets == nil || m.length == 0 {
         return
     }
@@ -176,7 +176,7 @@ func Delete[K, V](m *Map[K, V], key K) {
     }
 }
 
-func Len[K, V](m *Map[K, V]) int {
+func (m *Map[K, V]) Len() int {
     return m.length
 }
 
@@ -188,7 +188,7 @@ func grow[K, V](m *Map[K, V]) {
     m.buckets = calloc(newNum, 8)
     m.numBuckets = newNum
 
-    for i := 0; i < oldNum; i++ {
+    for i := 0; i < oldNum; i = i + 1 {
         cur := oldBuckets[i]
         for cur != nil {
             nxt := cur.next

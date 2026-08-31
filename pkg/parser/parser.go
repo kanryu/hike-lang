@@ -506,73 +506,72 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 }
 
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
-	if p.curTokenIs(token.IDENT) {
-		ident := p.parseIdentifier()
-
-		// 1. インライン interface { ... } 定義
-		if ident.Value == "interface" && p.peekTokenIs(token.LBRACE) {
-			tok := p.curToken
+	if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface" && p.peekTokenIs(token.LBRACE)) {
+		tok := p.curToken
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken() // '{' へ
+		}
+		it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
+		for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 			p.nextToken()
-			it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
-			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+			if p.curTokenIs(token.SEMICOLON) {
+				continue
+			}
+			methodName := p.parseIdentifier()
+			p.expectPeek(token.LPAREN)
+			paramTypes := []ast.TypeExpr{}
+			if !p.peekTokenIs(token.RPAREN) {
 				p.nextToken()
-				if p.curTokenIs(token.SEMICOLON) {
-					continue
+				for {
+					if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
+						p.nextToken()
+					}
+					paramTypes = append(paramTypes, p.parseTypeExpr())
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						if p.peekTokenIs(token.RPAREN) {
+							break
+						}
+						p.nextToken()
+					} else {
+						break
+					}
 				}
-				methodName := p.parseIdentifier()
-				p.expectPeek(token.LPAREN)
-				paramTypes := []ast.TypeExpr{}
-				if !p.peekTokenIs(token.RPAREN) {
+			}
+			p.expectPeek(token.RPAREN)
+			returnTypes := []ast.TypeExpr{}
+			if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+				if p.peekTokenIs(token.LPAREN) {
+					p.nextToken()
 					p.nextToken()
 					for {
-						if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
-							p.nextToken()
-						}
-						paramTypes = append(paramTypes, p.parseTypeExpr())
+						returnTypes = append(returnTypes, p.parseTypeExpr())
 						if p.peekTokenIs(token.COMMA) {
 							p.nextToken()
-							if p.peekTokenIs(token.RPAREN) {
-								break
-							}
 							p.nextToken()
 						} else {
 							break
 						}
 					}
+					p.expectPeek(token.RPAREN)
+				} else {
+					p.nextToken()
+					returnTypes = append(returnTypes, p.parseTypeExpr())
 				}
-				p.expectPeek(token.RPAREN)
-				returnTypes := []ast.TypeExpr{}
-				if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-					if p.peekTokenIs(token.LPAREN) {
-						p.nextToken()
-						p.nextToken()
-						for {
-							returnTypes = append(returnTypes, p.parseTypeExpr())
-							if p.peekTokenIs(token.COMMA) {
-								p.nextToken()
-								p.nextToken()
-							} else {
-								break
-							}
-						}
-						p.expectPeek(token.RPAREN)
-					} else {
-						p.nextToken()
-						returnTypes = append(returnTypes, p.parseTypeExpr())
-					}
-				}
-				it.Methods = append(it.Methods, &ast.MethodSig{
-					Token:       methodName.Token,
-					Name:        methodName,
-					ParamTypes:  paramTypes,
-					ReturnTypes: returnTypes,
-				})
 			}
-			p.expectPeek(token.RBRACE)
-			return it
+			it.Methods = append(it.Methods, &ast.MethodSig{
+				Token:       methodName.Token,
+				Name:        methodName,
+				ParamTypes:  paramTypes,
+				ReturnTypes: returnTypes,
+			})
 		}
+		p.expectPeek(token.RBRACE)
+		return it
+	} else if p.curTokenIs(token.IDENT) {
+		ident := p.parseIdentifier()
 
-		// 2. パッケージ修飾（例: calc.Vector）
+		// パッケージ修飾（例: calc.Vector）
 		var pkgIdent *ast.Identifier = nil
 		targetIdent := ident
 
@@ -584,7 +583,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			targetIdent = field
 		}
 
-		// 3. ジェネリクス型引数（例: Box[int] や pkg.Pair[int, string]）
+		// ジェネリクス型引数（例: Box[int] や pkg.Pair[int, string]）
 		typeArgs := []ast.TypeExpr{}
 		if p.peekTokenIs(token.LBRACKET) {
 			p.nextToken() // '[' へ
@@ -1420,15 +1419,27 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 }
 
 func (p *Parser) parseGenericStructLiteral(genExpr *ast.GenericInstExpr) ast.Expression {
-	ident, ok := genExpr.Left.(*ast.Identifier)
-	if !ok {
-		return genExpr
+	var namedType *ast.NamedType
+
+	if ident, ok := genExpr.Left.(*ast.Identifier); ok {
+		namedType = &ast.NamedType{
+			Token:    ident.Token,
+			Name:     ident,
+			TypeArgs: genExpr.TypeArgs,
+		}
+	} else if mem, ok := genExpr.Left.(*ast.MemberExpr); ok {
+		if pkgIdent, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			namedType = &ast.NamedType{
+				Token:    pkgIdent.Token,
+				Package:  pkgIdent,
+				Name:     mem.Field,
+				TypeArgs: genExpr.TypeArgs,
+			}
+		}
 	}
 
-	namedType := &ast.NamedType{
-		Token:    ident.Token,
-		Name:     ident,
-		TypeArgs: genExpr.TypeArgs,
+	if namedType == nil {
+		return genExpr
 	}
 
 	p.nextToken() // '{' へ進む
@@ -1457,7 +1468,35 @@ func (p *Parser) parseGenericStructLiteral(genExpr *ast.GenericInstExpr) ast.Exp
 		}
 	}
 	p.expectPeek(token.RBRACE)
-	return &ast.StructLiteral{Token: ident.Token, Type: namedType, Fields: fields}
+	return &ast.StructLiteral{Token: namedType.Token, Type: namedType, Fields: fields}
+}
+
+func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
+	if e == nil {
+		return nil
+	}
+	if te, ok := e.(ast.TypeExpr); ok {
+		return te
+	}
+	if id, ok := e.(*ast.Identifier); ok {
+		return &ast.NamedType{Token: id.Token, Name: id}
+	}
+	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+		base := exprToTypeExpr(pref.Right)
+		if base != nil {
+			return &ast.PointerType{Token: pref.Token, Base: base}
+		}
+	}
+	if mem, ok := e.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			return &ast.NamedType{
+				Token:   pkgId.Token,
+				Package: pkgId,
+				Name:    mem.Field,
+			}
+		}
+	}
+	return nil
 }
 
 func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
@@ -1481,10 +1520,8 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	// 2. 複数型引数: fn[int, string] や Pair[int, string]{...}
 	if p.peekTokenIs(token.COMMA) {
 		args := []ast.TypeExpr{}
-		if tExpr, ok := indexOrLow.(ast.TypeExpr); ok {
-			args = append(args, tExpr)
-		} else if id, ok := indexOrLow.(*ast.Identifier); ok {
-			args = append(args, &ast.NamedType{Token: id.Token, Name: id})
+		if tArg := exprToTypeExpr(indexOrLow); tArg != nil {
+			args = append(args, tArg)
 		}
 		for p.peekTokenIs(token.COMMA) {
 			p.nextToken() // ','
@@ -1517,13 +1554,7 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 
 	// 4. 単一型引数のジェネリック構造体リテラル: Box[int]{Val: 10}
 	if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
-		var typeArg ast.TypeExpr
-		if tExpr, ok := indexOrLow.(ast.TypeExpr); ok {
-			typeArg = tExpr
-		} else if id, ok := indexOrLow.(*ast.Identifier); ok {
-			typeArg = &ast.NamedType{Token: id.Token, Name: id}
-		}
-		if typeArg != nil {
+		if typeArg := exprToTypeExpr(indexOrLow); typeArg != nil {
 			genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
 			return p.parseGenericStructLiteral(genExpr)
 		}

@@ -1,119 +1,54 @@
 package main
 
-import "std/map"
+import "std/maps"
 
 func printf(format string, ...) int
 
-type Pair struct {
-    key  string
-    val  int
-    used bool
-}
-
-type ArrayMap struct {
-    slots [8]Pair
-    count int
-}
-
-type ArrayMapIter struct {
-    cursor int
-}
-
-func (m *ArrayMap) Set(key string, val int) {
-    for i := 0; i < 8; i = i + 1 {
-        if m.slots[i].used && m.slots[i].key == key {
-            m.slots[i].val = val
-            return
-        }
-    }
-    for i := 0; i < 8; i = i + 1 {
-        if !m.slots[i].used {
-            m.slots[i].key = key
-            m.slots[i].val = val
-            m.slots[i].used = true
-            m.count = m.count + 1
-            return
-        }
-    }
-}
-
-func (m *ArrayMap) Get(key string) (int, bool) {
-    for i := 0; i < 8; i = i + 1 {
-        if m.slots[i].used && m.slots[i].key == key {
-            return m.slots[i].val, true
-        }
-    }
-    return 0, false
-}
-
-func (m *ArrayMap) Delete(key string) {
-    for i := 0; i < 8; i = i + 1 {
-        if m.slots[i].used && m.slots[i].key == key {
-            m.slots[i].used = false
-            m.slots[i].key = ""
-            m.slots[i].val = 0
-            m.count = m.count - 1
-            return
-        }
-    }
-}
-
-func (m *ArrayMap) Len() int {
-    return m.count
-}
-
-// Pass 1: buf == nil で必要サイズ (8バイト) を返却
-// Pass 2: buf != nil でスタックポインタをキャストして初期化
-func (m *ArrayMap) InitIterator(buf *byte) int {
-    if buf == nil {
-        return 8
-    }
-    var it *ArrayMapIter = (*ArrayMapIter)(buf)
-    it.cursor = 0
-    return 0
-}
-
-// ゼロコピーで要素ポインタを返却
-func (m *ArrayMap) Next(buf *byte) (*string, *int, bool) {
-    var it *ArrayMapIter = (*ArrayMapIter)(buf)
-    for it.cursor < 8 {
-        i := it.cursor
-        it.cursor = it.cursor + 1
-        if m.slots[i].used {
-            return &m.slots[i].key, &m.slots[i].val, true
-        }
-    }
-    return nil, nil, false
-}
-
 func main() int {
-    printf("=== Testing Custom MapBehavior 2-Pass for-range in Hike ===\n")
+    printf("=== Testing std/maps Generic Map with 2-Pass Iterator ===\n")
 
-    var myMap ArrayMap
+    hmap := maps.New[string, int](8)
 
-    myMap["Alpha"] = 100
-    myMap["Beta"] = 200
-    myMap["Gamma"] = 300
+    hmap["Tokyo"] = 1400
+    hmap["Osaka"] = 880
+    hmap["Nagoya"] = 230
+    hmap["Fukuoka"] = 160
+    hmap["Sapporo"] = 190
 
-    printf("[1] Length of myMap: %d\n", len(myMap))
-
-    // ユーザー定義構造体の for-range 走査
-    printf("[2] Iterating over myMap using for-range:\n")
-    total := 0
-    count := 0
-    for k, v := range myMap {
-        printf("  - %s: %d\n", k, v)
-        total = total + v
-        count = count + 1
-    }
-
-    if count == 3 && total == 600 {
-        printf("  -> [PASS] for-range iterated all 3 elements correctly (total=%d)\n", total)
+    if len(hmap) == 5 {
+        printf("  -> [PASS] Length is 5 (len=%d)\n", len(hmap))
     } else {
-        printf("  -> [FAIL] for-range iteration failed (count=%d, total=%d)\n", count, total)
+        printf("  -> [FAIL] Length incorrect: %d\n", len(hmap))
         return 1
     }
 
-    printf("=== All MapBehavior for-range Tests Passed Successfully ===\n")
+    if val, ok := hmap["Osaka"]; ok && val == 880 {
+        printf("  -> [PASS] 'Osaka' found with population %d\n", val)
+    } else {
+        printf("  -> [FAIL] 'Osaka' lookup failed\n")
+        return 2
+    }
+
+    totalPop := 0
+    visitedCount := 0
+    for city, pop := range hmap {
+        printf("  - %s: %d\n", city, pop)
+        totalPop = totalPop + pop
+        visitedCount = visitedCount + 1
+    }
+
+    if visitedCount == 5 && totalPop == 2860 {
+        printf("  -> [PASS] for-range traversed all 5 entries (total=%d)\n", totalPop)
+    } else {
+        printf("  -> [FAIL] for-range failed\n")
+        return 3
+    }
+
+    delete(hmap, "Nagoya")
+    if _, ok := hmap["Nagoya"]; !ok && len(hmap) == 4 {
+        printf("  -> [PASS] 'Nagoya' deleted, len=%d\n", len(hmap))
+    }
+
+    printf("=== All std/maps Tests Passed Successfully ===\n")
     return 0
 }
