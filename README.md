@@ -368,6 +368,205 @@ int main() {
 
 
 
+### Generic Programming & Generic Data Structures
+
+Hike implements zero-cost, compile-time monomorphized generics. Generic functions and struct definitions are specialized into concrete types during compilation, ensuring zero dynamic dispatch overhead.
+
+#### Generic Functions & Type Parameters
+
+Type parameters are declared inside square brackets `[...]` and can be constrained to concrete types or type unions.
+
+```go
+package main
+
+// Generic function with type union constraints
+func Min[T int | float64](a T, b T) T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// Generic struct
+type Pair[K, V] struct {
+    Key   K
+    Value V
+}
+
+func DemoGenerics() {
+    minInt := Min(10, 20)           // Monomorphized to Min__int
+    minFloat := Min(3.14, 2.71)     // Monomorphized to Min__float64
+
+    p := Pair[string, int]{Key: "hike", Value: 1}
+}
+
+```
+
+---
+
+### The `Map[K, V]` Type, Syntax Sugar & `for-range` Iteration
+
+Hike provides a high-performance, generic hash map (`std/maps`) that supports Go-style expressive syntax sugar for indexing, deletion, size queries, and iterative traversal.
+
+#### 1. Indexing & Subscripting Sugar
+
+* **Lookup (`[]`)**: `val, ok := m[key]` or `val := m[key]`
+* **Assignment (`[] =`)**: `m[key] = value` (inserts or updates)
+* **Built-in Functions**: `len(m)` queries size, and `delete(m, key)` removes elements.
+
+#### 2. Iteration with `for-range`
+
+Maps can be traversed using the standard `for-range` loop. The runtime uses an internal 2-pass iterator allocating state directly on the stack to guarantee zero heap allocations during traversal.
+
+```go
+package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    // 1. Create a generic map instance
+    hmap := maps.New[string, int](8)
+
+    // 2. Insert key-value pairs via indexing syntax sugar
+    hmap["Tokyo"] = 1400
+    hmap["Osaka"] = 880
+    hmap["Nagoya"] = 230
+
+    // 3. Comma-ok idiom lookup
+    if val, ok := hmap["Osaka"]; ok {
+        printf("Osaka population: %d\n", val)
+    }
+
+    // 4. for-range key-value traversal
+    for city, population := range hmap {
+        printf("  - %s: %d\n", city, population)
+    }
+
+    // 5. Deletion & size query
+    delete(hmap, "Nagoya")
+    printf("Remaining entries: %d\n", len(hmap))
+
+    return 0
+}
+
+```
+
+---
+
+### Custom Subscripting & Iteration via the Map Behavior Protocol
+
+Any user-defined struct can unlock map-style indexing syntax sugar (`obj[key]`, `obj[key] = val`, `len(obj)`, `delete(obj, key)`) and `for-range` loop support by implementing the **Map Behavior** protocol.
+
+Hike resolves protocol conformance at compile time and automatically desugars operations into corresponding method calls with zero runtime dispatch cost.
+
+#### Protocol Method Specification
+
+| Feature / Syntax Sugar | Required Receiver Method | Description |
+| --- | --- | --- |
+| `val, ok := obj[k]` | `Get(key K) (V, bool)` | Element retrieval with presence status |
+| `obj[k] = val` | `Set(key K, val V)` | Element insertion / update |
+| `delete(obj, k)` | `Delete(key K)` | Element removal *(optional)* |
+| `len(obj)` | `Len() int` | Size query *(optional)* |
+| `for k, v := range obj` | `InitIterator(buf *byte) int`<br>
+
+<br>`Next(buf *byte) (*K, *V, bool)` | 2-Pass zero-allocation stack iterator |
+
+#### 2-Pass Stack Iterator Mechanics
+
+To eliminate dynamic heap allocations when running `for-range` loops over custom data structures, Hike uses a 2-Pass iterator protocol:
+
+1. **Pass 1 (Size Probe)**: `InitIterator(nil)` is called to determine the byte size required for the iterator state.
+2. **Stack Allocation**: The compiler allocates an aligned byte buffer on the stack frame (`alloca`).
+3. **Pass 2 (Initialization)**: `InitIterator(buf)` initializes the iterator state in place.
+4. **Iteration**: `Next(buf)` is called on each iteration step, returning pointers to the current key/value and a continuation boolean flag.
+
+#### Complete Custom Implementation Example
+
+```go
+package main
+
+import "std/maps"
+
+type Entry[K, V] struct {
+    Key   K
+    Value V
+}
+
+// Custom container with Map Behavior protocol implementation
+type CustomDictionary[K, V] struct {
+    Entries []Entry[K, V]
+}
+
+func (d *CustomDictionary[K, V]) Set(key K, val V) {
+    for i := 0; i < len(d.Entries); i = i + 1 {
+        if d.Entries[i].Key == key {
+            d.Entries[i].Value = val
+            return
+        }
+    }
+    d.Entries = append(d.Entries, Entry[K, V]{Key: key, Value: val})
+}
+
+func (d *CustomDictionary[K, V]) Get(key K) (V, bool) {
+    for i := 0; i < len(d.Entries); i = i + 1 {
+        if d.Entries[i].Key == key {
+            return d.Entries[i].Value, true
+        }
+    }
+    var zero V
+    return zero, false
+}
+
+func (d *CustomDictionary[K, V]) Len() int {
+    return len(d.Entries)
+}
+
+// --- 2-Pass Iterator Implementation ---
+
+type DictIterator struct {
+    Index int
+}
+
+func (d *CustomDictionary[K, V]) InitIterator(buf *byte) int {
+    if buf == nil {
+        return 8 // Size of DictIterator state
+    }
+    it := (*DictIterator)(buf)
+    it.Index = 0
+    return 0
+}
+
+func (d *CustomDictionary[K, V]) Next(buf *byte) (*K, *V, bool) {
+    it := (*DictIterator)(buf)
+    if it.Index >= len(d.Entries) {
+        return nil, nil, false
+    }
+    entry := &d.Entries[it.Index]
+    it.Index = it.Index + 1
+    return &entry.Key, &entry.Value, true
+}
+
+func DemoMapBehavior() {
+    var dict CustomDictionary[string, int]
+
+    // Uses indexing sugar via Map Behavior protocol
+    dict["itemA"] = 100
+    dict["itemB"] = 200
+
+    // Uses for-range traversal via 2-Pass Stack Iterator
+    for k, v := range dict {
+        // Traverses without heap allocations
+    }
+}
+
+```
+
+```
+
+```
+
 ## 💡 Example Walkthrough
 
 ### 1. Write Hike Code (`libcalc.hike`)
