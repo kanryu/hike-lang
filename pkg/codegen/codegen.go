@@ -625,6 +625,17 @@ func (g *CodeGenerator) Generate() string {
 			if len(fnDecl.TypeParams) > 0 {
 				continue
 			}
+			// ジェネリックレシーバを持つメソッドは単相化時に生成するためスキップ
+			if fnDecl.Receiver != nil {
+				if pt, ok := fnDecl.Receiver.Type.(*ast.PointerType); ok {
+					if nt, ok := pt.Base.(*ast.NamedType); ok && len(nt.TypeArgs) > 0 {
+						continue
+					}
+				}
+				if nt, ok := fnDecl.Receiver.Type.(*ast.NamedType); ok && len(nt.TypeArgs) > 0 {
+					continue
+				}
+			}
 			g.emitFuncDecl(&bodyBuilder, fnDecl)
 		}
 	}
@@ -647,7 +658,6 @@ func (g *CodeGenerator) Generate() string {
 
 	g.output.WriteString(bodyBuilder.String())
 
-	// デバッグメタデータの出力
 	if g.debugMgr != nil && g.debugMgr.enabled {
 		g.output.WriteString(g.debugMgr.EmitMetadata())
 	}
@@ -2813,6 +2823,104 @@ func (g *CodeGenerator) emitForStmt(b *strings.Builder, s *ast.ForStmt, currentF
 }
 
 func (g *CodeGenerator) emitForRangeStmt(b *strings.Builder, s *ast.ForRangeStmt, currentFn string) {
+	// =========================================================================
+	// 0. MapBehavior 充足構造体の 2-Pass スタックイテレータ走査
+	// =========================================================================
+	objPtrReg, structType, st, structName := g.resolveStructPtr(b, s.X)
+	if keyType, valType, isMapBehavior := g.semaCtx.CheckMapBehavior(structType); isMapBehavior && st != nil {
+		initTargetName, initFn, finalRecvPtr, hasInit := g.resolveMethodPath(st, structName, objPtrReg, "InitIterator", b)
+		nextTargetName, nextFn, _, hasNext := g.resolveMethodPath(st, structName, objPtrReg, "Next", b)
+
+		if hasInit && hasNext && initFn != nil && nextFn != nil {
+			var keyIdent *ast.Identifier = nil
+			if s.Key != nil {
+				if kId, ok := s.Key.(*ast.Identifier); ok {
+					keyIdent = kId
+				}
+			}
+			var valIdent *ast.Identifier = nil
+			if s.Value != nil {
+				if vId, ok := s.Value.(*ast.Identifier); ok {
+					valIdent = vId
+				}
+			}
+
+			if keyIdent != nil && keyIdent.Value != "_" {
+				if _, exists := g.symbols[keyIdent.Value]; !exists {
+					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", keyIdent.Value, keyType.LLVMType()))
+					g.symbols[keyIdent.Value] = Symbol{Name: keyIdent.Value, LLVMName: "%" + keyIdent.Value, Type: keyType}
+				}
+			}
+			if valIdent != nil && valIdent.Value != "_" {
+				if _, exists := g.symbols[valIdent.Value]; !exists {
+					g.entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", valIdent.Value, valType.LLVMType()))
+					g.symbols[valIdent.Value] = Symbol{Name: valIdent.Value, LLVMName: "%" + valIdent.Value, Type: valType}
+				}
+			}
+
+			// Pass 1: nil を渡してイテレータサイズを取得
+			sizeReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call i64 @%s(%s %s, i8* null)\n",
+				sizeReg, initTargetName, initFn.ParamTypes[0].LLVMType(), finalRecvPtr))
+
+			// Pass 2: 要求されたバイト数をスタック上に動的確保 (alloca)
+			bufReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = alloca i8, i64 %s, align 8\n", bufReg, sizeReg))
+
+			// Pass 3: バッファアドレスを渡して初期化
+			b.WriteString(fmt.Sprintf("  call i64 @%s(%s %s, i8* %s)\n",
+				initTargetName, initFn.ParamTypes[0].LLVMType(), finalRecvPtr, bufReg))
+
+			lblCond := g.nextLabel("mapbeh.cond")
+			lblBody := g.nextLabel("mapbeh.body")
+			lblEnd := g.nextLabel("mapbeh.end")
+
+			g.loopStack = append(g.loopStack, loopContext{breakLabel: lblEnd, continueLabel: lblCond})
+			defer func() {
+				g.loopStack = g.loopStack[:len(g.loopStack)-1]
+			}()
+
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
+
+			// Loop Condition (Next 呼び出し)
+			b.WriteString(fmt.Sprintf("%s:\n", lblCond))
+			tupleType := fmt.Sprintf("{ %s*, %s*, i1 }", keyType.LLVMType(), valType.LLVMType())
+			nextResReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s %s, i8* %s)\n",
+				nextResReg, tupleType, nextTargetName,
+				nextFn.ParamTypes[0].LLVMType(), finalRecvPtr,
+				bufReg))
+
+			okReg := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", okReg, tupleType, nextResReg))
+			b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", okReg, lblBody, lblEnd))
+
+			// Loop Body (ポインタから逆参照ロードして格納)
+			b.WriteString(fmt.Sprintf("%s:\n", lblBody))
+			if keyIdent != nil && keyIdent.Value != "_" {
+				kPtrReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", kPtrReg, tupleType, nextResReg))
+				kValReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", kValReg, keyType.LLVMType(), keyType.LLVMType(), kPtrReg))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", keyType.LLVMType(), kValReg, keyType.LLVMType(), keyIdent.Value))
+			}
+			if valIdent != nil && valIdent.Value != "_" {
+				vPtrReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", vPtrReg, tupleType, nextResReg))
+				vValReg := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", vValReg, valType.LLVMType(), valType.LLVMType(), vPtrReg))
+				b.WriteString(fmt.Sprintf("  store %s %s, %s* %%%s\n", valType.LLVMType(), vValReg, valType.LLVMType(), valIdent.Value))
+			}
+
+			g.emitStatement(b, s.Body, currentFn)
+			b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCond))
+
+			b.WriteString(fmt.Sprintf("%s:\n", lblEnd))
+			return
+		}
+	}
+
+	// 既存の組み込み型（MapType/Slice/Array/String）の走査処理...
 	xReg, xType := g.resolveValue(b, s.X)
 
 	if mp, isMap := xType.(*sema.MapType); isMap {
@@ -3392,11 +3500,32 @@ func (g *CodeGenerator) resolveTypeFromExpr(e ast.Expression) sema.Type {
 	if e == nil {
 		return sema.TypeVoid
 	}
+	if pt, ok := e.(*ast.PointerType); ok {
+		return g.semaCtx.ResolveType(pt)
+	}
 	if te, ok := e.(ast.TypeExpr); ok {
 		return g.semaCtx.ResolveType(te)
 	}
 	if id, ok := e.(*ast.Identifier); ok {
 		return g.semaCtx.ResolveType(&ast.NamedType{Token: id.Token, Name: id})
+	}
+	if gen, ok := e.(*ast.GenericInstExpr); ok {
+		if id, okId := gen.Left.(*ast.Identifier); okId {
+			return g.semaCtx.ResolveType(&ast.NamedType{Token: gen.Token, Name: id, TypeArgs: gen.TypeArgs})
+		}
+	}
+	if idx, ok := e.(*ast.IndexExpr); ok {
+		if id, okId := idx.Left.(*ast.Identifier); okId {
+			if tArg, okT := idx.Index.(ast.TypeExpr); okT {
+				return g.semaCtx.ResolveType(&ast.NamedType{Token: idx.Token, Name: id, TypeArgs: []ast.TypeExpr{tArg}})
+			}
+		}
+	}
+	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+		baseT := g.resolveTypeFromExpr(pref.Right)
+		if baseT != nil && baseT != sema.TypeVoid {
+			return &sema.PointerType{Base: baseT}
+		}
 	}
 	return sema.TypeVoid
 }
@@ -4435,34 +4564,6 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 			return argReg, sema.TypeString
 		}
 
-		// byte(val) キャスト
-		if fnIdent.Value == "byte" && len(call.Args) == 1 {
-			argReg, argType := g.resolveValue(b, call.Args[0])
-			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeByte)
-			return convReg, sema.TypeByte
-		}
-
-		// float64(x) / float(x) キャスト
-		if (fnIdent.Value == "float64" || fnIdent.Value == "float") && len(call.Args) == 1 {
-			argReg, argType := g.resolveValue(b, call.Args[0])
-			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat64)
-			return convReg, sema.TypeFloat64
-		}
-
-		// float32(x) キャスト
-		if fnIdent.Value == "float32" && len(call.Args) == 1 {
-			argReg, argType := g.resolveValue(b, call.Args[0])
-			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeFloat32)
-			return convReg, sema.TypeFloat32
-		}
-
-		// int(x) キャスト
-		if fnIdent.Value == "int" && len(call.Args) == 1 {
-			argReg, argType := g.resolveValue(b, call.Args[0])
-			convReg := g.emitArgConversion(b, argReg, argType, sema.TypeInt)
-			return convReg, sema.TypeInt
-		}
-
 		// append(slice, elems...)
 		if fnIdent.Value == "append" && call.HasEllipsis && len(call.Args) == 2 {
 			slice1Reg, slice1Type := g.resolveValue(b, call.Args[0])
@@ -4700,81 +4801,16 @@ func (g *CodeGenerator) emitCallInternal(b *strings.Builder, call *ast.CallExpr)
 		}
 	}
 
-	// []byte(msg) キャスト
-	if slType, ok := call.Function.(*ast.SliceType); ok && len(call.Args) == 1 {
-		elemType := g.semaCtx.ResolveType(slType.Elem)
-		argReg, _ := g.resolveValue(b, call.Args[0])
-
-		resSliceType := &sema.SliceType{Elem: elemType}
-		lenStrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = call i64 @strlen(i8* %s)\n", lenStrReg, argReg))
-
-		t1 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, resSliceType.LLVMType(), argReg))
-		t2 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 1\n", t2, resSliceType.LLVMType(), t1, lenStrReg))
-		t3 := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i64 %s, 2\n", t3, resSliceType.LLVMType(), t2, lenStrReg))
-
-		return t3, resSliceType
-	}
-
-	// *T(...) ポインタ型キャスト
-	if pref, ok := call.Function.(*ast.PrefixExpr); ok && pref.Operator == "*" {
-		var typeName string
-		var isSlice bool
-		var sliceElemType sema.Type
-
-		if ident, okId := pref.Right.(*ast.Identifier); okId {
-			typeName = ident.Value
-		} else if mem, okMem := pref.Right.(*ast.MemberExpr); okMem {
-			typeName = mem.Field.Value
-		} else if sl, okSl := pref.Right.(*ast.SliceType); okSl {
-			isSlice = true
-			sliceElemType = g.semaCtx.ResolveType(sl.Elem)
-		}
-
-		if isSlice || typeName != "" {
-			argReg, argType := g.resolveValue(b, call.Args[0])
-			srcTypeStr := "i8*"
-			if argType != nil && argType.LLVMType() != "" {
-				srcTypeStr = argType.LLVMType()
-			}
-
-			var targetType sema.Type
-			var targetTypeStr string
-			if isSlice {
-				sliceT := &sema.SliceType{Elem: sliceElemType}
-				targetType = &sema.PointerType{Base: sliceT}
-				targetTypeStr = "{ i8*, i64, i64 }*"
-			} else if typeName == "byte" || typeName == "string" {
-				targetType = &sema.PointerType{Base: sema.TypeByte}
-				targetTypeStr = "i8*"
-			} else if typeName == "int" {
-				targetType = &sema.PointerType{Base: sema.TypeInt}
-				targetTypeStr = "i64*"
-			} else {
-				st, structName := g.findStructByName(typeName)
-				if st != nil {
-					targetType = &sema.PointerType{Base: st}
-					targetTypeStr = fmt.Sprintf("%%struct.%s*", structName)
-				} else {
-					targetType = &sema.PointerType{Base: &sema.BasicType{Name: typeName, ByteSize: 8, LLVM: "%struct." + typeName}}
-					targetTypeStr = fmt.Sprintf("%%struct.%s*", typeName)
-				}
-			}
-
-			if targetType != nil {
-				if srcTypeStr == targetTypeStr {
-					return argReg, targetType
-				}
-				castReg := g.nextReg()
-				if !strings.HasSuffix(srcTypeStr, "*") {
-					b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", castReg, srcTypeStr, argReg, targetTypeStr))
-				} else {
-					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castReg, srcTypeStr, argReg, targetTypeStr))
-				}
-				return castReg, targetType
+	// =========================================================================
+	// 1.5 統一型キャスト / ポインタ変換: Type(x), (*Type)(x), *Type(x)
+	// =========================================================================
+	if len(call.Args) == 1 {
+		targetType := g.resolveTypeFromExpr(call.Function)
+		if targetType != nil && targetType != sema.TypeVoid {
+			if _, isFunc := targetType.(*sema.FuncType); !isFunc {
+				argReg, argType := g.resolveValue(b, call.Args[0])
+				convReg := g.emitArgConversion(b, argReg, argType, targetType)
+				return convReg, targetType
 			}
 		}
 	}

@@ -4,10 +4,6 @@ import "std/map"
 
 func printf(format string, ...) int
 
-// =============================================================================
-// 1. ArrayMap の定義 (固定長配列による MapBehavior 実装)
-// =============================================================================
-
 type Pair struct {
     key  string
     val  int
@@ -19,16 +15,17 @@ type ArrayMap struct {
     count int
 }
 
-// 添字代入 myMap[k] = v に対応
+type ArrayMapIter struct {
+    cursor int
+}
+
 func (m *ArrayMap) Set(key string, val int) {
-    // 既存キーの更新 (Hikeの == を使うことで null-safe に比較)
     for i := 0; i < 8; i = i + 1 {
         if m.slots[i].used && m.slots[i].key == key {
             m.slots[i].val = val
             return
         }
     }
-    // 空きスロットへ新規追加
     for i := 0; i < 8; i = i + 1 {
         if !m.slots[i].used {
             m.slots[i].key = key
@@ -40,7 +37,6 @@ func (m *ArrayMap) Set(key string, val int) {
     }
 }
 
-// 添字取得 v, ok := myMap[k] に対応
 func (m *ArrayMap) Get(key string) (int, bool) {
     for i := 0; i < 8; i = i + 1 {
         if m.slots[i].used && m.slots[i].key == key {
@@ -50,7 +46,6 @@ func (m *ArrayMap) Get(key string) (int, bool) {
     return 0, false
 }
 
-// delete(myMap, k) に対応
 func (m *ArrayMap) Delete(key string) {
     for i := 0; i < 8; i = i + 1 {
         if m.slots[i].used && m.slots[i].key == key {
@@ -63,70 +58,62 @@ func (m *ArrayMap) Delete(key string) {
     }
 }
 
-// len(myMap) に対応
 func (m *ArrayMap) Len() int {
     return m.count
 }
 
-// =============================================================================
-// 2. 動作検証 (メイン処理: マップ特殊構文を直接使用)
-// =============================================================================
+// Pass 1: buf == nil で必要サイズ (8バイト) を返却
+// Pass 2: buf != nil でスタックポインタをキャストして初期化
+func (m *ArrayMap) InitIterator(buf *byte) int {
+    if buf == nil {
+        return 8
+    }
+    var it *ArrayMapIter = (*ArrayMapIter)(buf)
+    it.cursor = 0
+    return 0
+}
+
+// ゼロコピーで要素ポインタを返却
+func (m *ArrayMap) Next(buf *byte) (*string, *int, bool) {
+    var it *ArrayMapIter = (*ArrayMapIter)(buf)
+    for it.cursor < 8 {
+        i := it.cursor
+        it.cursor = it.cursor + 1
+        if m.slots[i].used {
+            return &m.slots[i].key, &m.slots[i].val, true
+        }
+    }
+    return nil, nil, false
+}
 
 func main() int {
-    printf("=== Testing Custom MapBehavior Protocol in Hike ===\n")
+    printf("=== Testing Custom MapBehavior 2-Pass for-range in Hike ===\n")
 
     var myMap ArrayMap
 
-    // 1. myMap[k] = v による挿入 (Set へデシュガー)
-    printf("[1] Inserting via map syntax: myMap[k] = v\n")
-    myMap["CPU"] = 8
-    myMap["RAM"] = 32
-    myMap["GPU"] = 1
+    myMap["Alpha"] = 100
+    myMap["Beta"] = 200
+    myMap["Gamma"] = 300
 
-    // 2. len(myMap) による要素数取得 (Len へデシュガー)
-    if len(myMap) == 3 {
-        printf("  -> [PASS] Length is 3 (len=%d)\n", len(myMap))
+    printf("[1] Length of myMap: %d\n", len(myMap))
+
+    // ユーザー定義構造体の for-range 走査
+    printf("[2] Iterating over myMap using for-range:\n")
+    total := 0
+    count := 0
+    for k, v := range myMap {
+        printf("  - %s: %d\n", k, v)
+        total = total + v
+        count = count + 1
+    }
+
+    if count == 3 && total == 600 {
+        printf("  -> [PASS] for-range iterated all 3 elements correctly (total=%d)\n", total)
     } else {
-        printf("  -> [FAIL] Length incorrect: %d\n", len(myMap))
+        printf("  -> [FAIL] for-range iteration failed (count=%d, total=%d)\n", count, total)
         return 1
     }
 
-    // 3. val, ok := myMap[k] による検索 (Get へデシュガー)
-    printf("[2] Lookup via map syntax:\n")
-    if val, ok := myMap["RAM"]; ok && val == 32 {
-        printf("  -> [PASS] 'RAM' found with value %d\n", val)
-    } else {
-        printf("  -> [FAIL] 'RAM' lookup failed\n")
-        return 2
-    }
-
-    if _, ok := myMap["SSD"]; !ok {
-        printf("  -> [PASS] Non-existent key 'SSD' correctly returned ok=false\n")
-    } else {
-        printf("  -> [FAIL] 'SSD' unexpectedly found\n")
-        return 3
-    }
-
-    // 4. delete(myMap, "GPU") による削除 (Delete へデシュガー)
-    printf("[3] Deleting 'GPU' via delete(myMap, key)...\n")
-    delete(myMap, "GPU")
-
-    if _, ok := myMap["GPU"]; !ok && len(myMap) == 2 {
-        printf("  -> [PASS] 'GPU' removed, length updated to %d\n", len(myMap))
-    } else {
-        printf("  -> [FAIL] Delete failed\n")
-        return 4
-    }
-
-    // 5. 既存キーの更新
-    myMap["RAM"] = 64
-    if val, ok := myMap["RAM"]; ok && val == 64 && len(myMap) == 2 {
-        printf("  -> [PASS] 'RAM' updated to %d without increasing length\n", val)
-    } else {
-        printf("  -> [FAIL] Update failed\n")
-        return 5
-    }
-
-    printf("=== All MapBehavior Protocol Tests Passed Successfully ===\n")
+    printf("=== All MapBehavior for-range Tests Passed Successfully ===\n")
     return 0
 }

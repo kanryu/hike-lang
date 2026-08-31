@@ -778,7 +778,6 @@ func (c *Context) CheckMapBehavior(t Type) (Type, Type, bool) {
 		return nil, nil, false
 	}
 
-	// 1. 各種メソッドの探索 (レシーバ型: T または *T)
 	setFn := c.lookupMethod(typeName, "Set")
 	getFn := c.lookupMethod(typeName, "Get")
 	delFn := c.lookupMethod(typeName, "Delete")
@@ -788,43 +787,33 @@ func (c *Context) CheckMapBehavior(t Type) (Type, Type, bool) {
 		return nil, nil, false
 	}
 
-	// 2. Len() int の検証
-	// レシーバを除いて引数0、戻り値が int 1つ
 	paramOffset := 0
 	if setFn.Receiver != nil {
 		paramOffset = 1
 	}
 
+	// 1. Len() int
 	if len(lenFn.ParamTypes)-paramOffset != 0 || len(lenFn.ReturnTypes) != 1 || lenFn.ReturnTypes[0].TypeName() != "int" {
 		return nil, nil, false
 	}
 
-	// 3. Set(key K, val V) の検証
+	// 2. Set(key K, val V)
 	if len(setFn.ParamTypes)-paramOffset != 2 {
 		return nil, nil, false
 	}
 	keyType := setFn.ParamTypes[paramOffset]
 	valType := setFn.ParamTypes[paramOffset+1]
 
-	// 4. Get(key K) (V, bool) の検証
-	if len(getFn.ParamTypes)-paramOffset != 1 {
+	// 3. Get(key K) (V, bool)
+	if len(getFn.ParamTypes)-paramOffset != 1 || getFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
 		return nil, nil, false
 	}
-	if getFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
-		return nil, nil, false
-	}
-	if len(getFn.ReturnTypes) != 2 {
-		return nil, nil, false
-	}
-	if getFn.ReturnTypes[0].TypeName() != valType.TypeName() || getFn.ReturnTypes[1].TypeName() != "bool" {
+	if len(getFn.ReturnTypes) != 2 || getFn.ReturnTypes[0].TypeName() != valType.TypeName() || getFn.ReturnTypes[1].TypeName() != "bool" {
 		return nil, nil, false
 	}
 
-	// 5. Delete(key K) の検証
-	if len(delFn.ParamTypes)-paramOffset != 1 {
-		return nil, nil, false
-	}
-	if delFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
+	// 4. Delete(key K)
+	if len(delFn.ParamTypes)-paramOffset != 1 || delFn.ParamTypes[paramOffset].TypeName() != keyType.TypeName() {
 		return nil, nil, false
 	}
 

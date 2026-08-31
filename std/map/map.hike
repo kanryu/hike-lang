@@ -4,22 +4,14 @@ func malloc(size int) *byte
 func free(ptr *byte) void
 func calloc(num int, size int) *byte
 
-// =============================================================================
-// MapBehavior インターフェース定義
-// =============================================================================
-
-// MapBehavior はマップ特殊構文（m[k] = v、v, ok := m[k]、delete(m, k)、len(m)）を
-// カスタム構造体で利用可能にするためのプロトコルインターフェースです。
 type MapBehavior[K, V] interface {
     Set(key K, val V) void
     Get(key K) (V, bool)
     Delete(key K) void
     Len() int
+    InitIterator(buf *byte) int
+    Next(buf *byte) (*K, *V, bool)
 }
-
-// =============================================================================
-// 標準ハッシュテーブル実装 (Map[K, V])
-// =============================================================================
 
 type Entry[K, V] struct {
     hash int
@@ -34,7 +26,50 @@ type Map[K, V] struct {
     length     int
 }
 
-// ハッシュ計算（文字列/ポインタ/整数に対応）
+type MapIterator[K, V] struct {
+    bucketIdx int
+    current   *Entry[K, V]
+}
+
+func InitIterator[K, V](m *Map[K, V], buf *byte) int {
+    if buf == nil {
+        return 16
+    }
+    var it *MapIterator[K, V] = (*MapIterator[K, V])(buf)
+    it.bucketIdx = 0
+    it.current = nil
+    return 0
+}
+
+func Next[K, V](m *Map[K, V], buf *byte) (*K, *V, bool) {
+    if m.buckets == nil || m.length == 0 {
+        return nil, nil, false
+    }
+
+    var it *MapIterator[K, V] = (*MapIterator[K, V])(buf)
+
+    if it.current != nil && it.current.next != nil {
+        it.current = it.current.next
+        return &it.current.key, &it.current.val, true
+    }
+
+    if it.current != nil {
+        it.bucketIdx = it.bucketIdx + 1
+        it.current = nil
+    }
+
+    for it.bucketIdx < m.numBuckets {
+        entry := m.buckets[it.bucketIdx]
+        if entry != nil {
+            it.current = entry
+            return &entry.key, &entry.val, true
+        }
+        it.bucketIdx = it.bucketIdx + 1
+    }
+
+    return nil, nil, false
+}
+
 func hashKey[K](key K) int {
     return int(key)
 }
