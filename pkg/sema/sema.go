@@ -170,8 +170,8 @@ type Context struct {
 	Constants      map[string]int64
 	FloatConstants map[string]float64
 	Aliases        map[string]Type
-	GenericTypes   map[string]*ast.TypeDecl // 追加: 構造体テンプレート
-	GenericFuncs   map[string]*ast.FuncDecl // 追加: 関数テンプレート
+	GenericTypes   map[string]*ast.TypeDecl
+	GenericFuncs   map[string]*ast.FuncDecl
 	typeIDs        map[string]int64
 	nextTypeID     int64
 }
@@ -185,12 +185,11 @@ func NewContext() *Context {
 		Constants:      make(map[string]int64),
 		FloatConstants: make(map[string]float64),
 		Aliases:        make(map[string]Type),
-		GenericTypes:   make(map[string]*ast.TypeDecl), // 追加
-		GenericFuncs:   make(map[string]*ast.FuncDecl), // 追加
+		GenericTypes:   make(map[string]*ast.TypeDecl),
+		GenericFuncs:   make(map[string]*ast.FuncDecl),
 		typeIDs:        make(map[string]int64),
 		nextTypeID:     1,
 	}
-	// ... (以降の初期化は既存のまま)
 
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2
@@ -237,7 +236,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			name = t.Package.Value + "_" + t.Name.Value
 		}
 
-		// ジェネリック型引数の適用 (例: Box[int], Pair[string, int])
+		// ジェネリック型引数の適用 (例: Vector[int], Pair[string, int])
 		if len(t.TypeArgs) > 0 {
 			baseName := t.Name.Value
 			genDecl, exists := c.GenericTypes[baseName]
@@ -263,7 +262,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 					c.Structs[specializedName] = newSt
 
 					for _, f := range stType.Fields {
-						fType := c.resolveTypeWithSubst(f.Type, typeMap)
+						fType := c.ResolveTypeWithSubst(f.Type, typeMap)
 						newSt.Fields = append(newSt.Fields, Field{
 							Name:       f.Name.Value,
 							Type:       fType,
@@ -315,6 +314,8 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return TypeFloat64
 		case "string":
 			return TypeString
+		case "void":
+			return TypeVoid
 		case "any":
 			return &InterfaceType{Name: "any"}
 		case "error":
@@ -363,6 +364,71 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		return fnType
 	}
 	return TypeVoid
+}
+
+// 型パラメータの置換マップ（subst）を適用して型を再帰的に解決する
+func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Type {
+	if t == nil {
+		return TypeVoid
+	}
+	switch node := t.(type) {
+	case *ast.NamedType:
+		if node.Package == nil && len(node.TypeArgs) == 0 {
+			if replacement, ok := subst[node.Name.Value]; ok {
+				return replacement
+			}
+		}
+
+		// 型引数自身が型パラメータを含む場合（例: Vector[T] で T が subst に存在する場合）
+		if len(node.TypeArgs) > 0 {
+			baseName := node.Name.Value
+			genDecl, exists := c.GenericTypes[baseName]
+			if exists {
+				argNames := []string{}
+				typeMap := make(map[string]Type)
+				for i, arg := range node.TypeArgs {
+					resolvedArg := c.ResolveTypeWithSubst(arg, subst)
+					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
+					if i < len(genDecl.TypeParams) {
+						typeMap[genDecl.TypeParams[i].Name.Value] = resolvedArg
+					}
+				}
+
+				specializedName := fmt.Sprintf("%s__%s", baseName, strings.Join(argNames, "_"))
+				if st, ok := c.Structs[specializedName]; ok {
+					return st
+				}
+
+				if stType, ok := genDecl.Type.(*ast.StructType); ok {
+					newSt := &StructType{Name: specializedName, Fields: []Field{}}
+					c.Structs[specializedName] = newSt
+
+					for _, f := range stType.Fields {
+						fType := c.ResolveTypeWithSubst(f.Type, typeMap)
+						newSt.Fields = append(newSt.Fields, Field{
+							Name:       f.Name.Value,
+							Type:       fType,
+							IsEmbedded: f.IsEmbedded,
+						})
+					}
+					return newSt
+				}
+			}
+		}
+		return c.ResolveType(node)
+	case *ast.PointerType:
+		return &PointerType{Base: c.ResolveTypeWithSubst(node.Base, subst)}
+	case *ast.SliceType:
+		return &SliceType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+	case *ast.ArrayType:
+		return &ArrayType{Len: int(node.Len), Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+	case *ast.MapType:
+		return &MapType{
+			Key:   c.ResolveTypeWithSubst(node.Key, subst),
+			Value: c.ResolveTypeWithSubst(node.Value, subst),
+		}
+	}
+	return c.ResolveType(t)
 }
 
 func Analyze(prog *ast.Program) (*Context, error) {
@@ -494,31 +560,4 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	}
 
 	return ctx, nil
-}
-
-func (c *Context) resolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Type {
-	if t == nil {
-		return TypeVoid
-	}
-	switch node := t.(type) {
-	case *ast.NamedType:
-		if node.Package == nil && len(node.TypeArgs) == 0 {
-			if replacement, ok := subst[node.Name.Value]; ok {
-				return replacement
-			}
-		}
-		return c.ResolveType(node)
-	case *ast.PointerType:
-		return &PointerType{Base: c.resolveTypeWithSubst(node.Base, subst)}
-	case *ast.SliceType:
-		return &SliceType{Elem: c.resolveTypeWithSubst(node.Elem, subst)}
-	case *ast.ArrayType:
-		return &ArrayType{Len: int(node.Len), Elem: c.resolveTypeWithSubst(node.Elem, subst)}
-	case *ast.MapType:
-		return &MapType{
-			Key:   c.resolveTypeWithSubst(node.Key, subst),
-			Value: c.resolveTypeWithSubst(node.Value, subst),
-		}
-	}
-	return c.ResolveType(t)
 }

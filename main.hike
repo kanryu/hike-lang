@@ -1,93 +1,235 @@
 package main
 
-import (
-	"std/fmt"
-)
+// C標準ランタイム関数の外部宣言
+func printf(format string, ...) int
+func malloc(size int) *byte
+func free(ptr *byte) void
+func memcpy(dst *byte, src *byte, size int) *byte
 
-func assert(cond bool, testNum int, testName *byte) {
-	if cond {
-		fmt.PrintStr("[PASS #")
-		fmt.PrintInt(testNum)
-		fmt.PrintStr("] ")
-		fmt.PrintLn(testName)
-	} else {
-		fmt.PrintStr("[FAIL #")
-		fmt.PrintInt(testNum)
-		fmt.PrintStr("] ")
-		fmt.PrintLn(testName)
-	}
+// =============================================================================
+// 1. ジェネリック動的配列 (Vector[T])
+// =============================================================================
+
+type Vector[T] struct {
+    data *T
+    len  int
+    cap  int
 }
 
-// ==========================================
-// 1. ジェネリック関数 (関数テンプレート)
-// ==========================================
-func Min[T](a T, b T) T {
-	if a < b {
-		return a
-	}
-	return b
+// Vectorの初期化
+func NewVector[T](initialCap int) Vector[T] {
+    if initialCap <= 0 {
+        initialCap = 4
+    }
+    elemSize := 8 // 64-bit (ポインタ / int / float64)
+    
+    rawPtr := malloc(initialCap * elemSize)
+    var v Vector[T]
+    v.data = rawPtr
+    v.len = 0
+    v.cap = initialCap
+    return v
 }
 
-func Identity[T](val T) T {
-	return val
+// 要素の末尾追加
+func Vector_Push[T](v *Vector[T], elem T) {
+    if v.len >= v.cap {
+        newCap := v.cap * 2
+        elemSize := 8
+        newPtr := malloc(newCap * elemSize)
+        
+        memcpy(newPtr, v.data, v.len * elemSize)
+        free(v.data)
+        
+        v.data = newPtr
+        v.cap = newCap
+    }
+    
+    v.data[v.len] = elem
+    v.len = v.len + 1
 }
 
-// ==========================================
-// 2. 単一型パラメータを持つジェネリック構造体
-// ==========================================
-type Box[T] struct {
-	Value T
+// 要素の取得
+func Vector_Get[T](v *Vector[T], index int) T {
+    return v.data[index]
 }
 
-// ==========================================
-// 3. 複数型パラメータを持つジェネリック構造体
-// ==========================================
-type Pair[K, V] struct {
-	Key   K
-	Val   V
+// 要素数の取得
+func Vector_Len[T](v *Vector[T]) int {
+    return v.len
+}
+
+// メモリ解放
+func Vector_Free[T](v *Vector[T]) {
+    if v.data != nil {
+        free(v.data)
+        v.data = nil
+        v.len = 0
+        v.cap = 0
+    }
+}
+
+// =============================================================================
+// 2. ジェネリックスタック (Stack[T])
+// =============================================================================
+
+type Stack[T] struct {
+    data *T
+    len  int
+    cap  int
+}
+
+func NewStack[T]() Stack[T] {
+    var s Stack[T]
+    s.data = malloc(32) // 4要素分
+    s.len = 0
+    s.cap = 4
+    return s
+}
+
+func Stack_Push[T](s *Stack[T], elem T) {
+    if s.len >= s.cap {
+        newCap := s.cap * 2
+        newPtr := malloc(newCap * 8)
+        memcpy(newPtr, s.data, s.len * 8)
+        free(s.data)
+        s.data = newPtr
+        s.cap = newCap
+    }
+    s.data[s.len] = elem
+    s.len = s.len + 1
+}
+
+func Stack_Pop[T](s *Stack[T]) T {
+    if s.len == 0 {
+        return 0
+    }
+    s.len = s.len - 1
+    return s.data[s.len]
+}
+
+func Stack_IsEmpty[T](s *Stack[T]) bool {
+    return s.len == 0
+}
+
+func Stack_Free[T](s *Stack[T]) {
+    if s.data != nil {
+        free(s.data)
+        s.data = nil
+        s.len = 0
+        s.cap = 0
+    }
+}
+
+// =============================================================================
+// 3. テスト実行
+// =============================================================================
+
+type User struct {
+    id   int
+    name string
 }
 
 func main() int {
-	fmt.PrintLn("=== Running Generics (Monomorphization) Comprehensive Tests ===")
-	testCount := 0
+    printf("=== Running Hike Standard Containers & Generics Tests ===\n")
 
-	// 1. ジェネリック関数 (明示的な型指定)
-	minInt := Min[int](10, 20)
-	testCount++
-	assert(minInt == 10, testCount, "Generic func Min[int](10, 20) == 10")
+    // -------------------------------------------------------------------------
+    // Test 1: Vector[int]
+    // -------------------------------------------------------------------------
+    vInt := NewVector[int](2)
+    Vector_Push[int](&vInt, 10)
+    Vector_Push[int](&vInt, 20)
+    Vector_Push[int](&vInt, 30) // 自動拡張
+    Vector_Push[int](&vInt, 40)
+    Vector_Push[int](&vInt, 50)
 
-	minFloat := Min[float64](3.14, 1.59)
-	testCount++
-	assert(minFloat == 1.59, testCount, "Generic func Min[float64](3.14, 1.59) == 1.59")
+    if Vector_Len[int](&vInt) == 5 && Vector_Get[int](&vInt, 2) == 30 && Vector_Get[int](&vInt, 4) == 50 {
+        printf("[PASS #1] Vector[int] dynamic resizing & indexing (len=%d, cap=%d)\n", vInt.len, vInt.cap)
+    } else {
+        printf("[FAIL #1] Vector[int] failed\n")
+        return 1
+    }
 
-	// 2. ジェネリック関数 (引数からの型推論)
-	inferredStr := Identity("Hike Generics")
-	testCount++
-	assert(inferredStr != nil, testCount, "Generic func Identity with type inference (string)")
+    // -------------------------------------------------------------------------
+    // Test 2: Vector[string]
+    // -------------------------------------------------------------------------
+    vStr := NewVector[string](2)
+    Vector_Push[string](&vStr, "Hike")
+    Vector_Push[string](&vStr, "LLVM")
+    Vector_Push[string](&vStr, "WebAssembly")
 
-	inferredInt := Identity(999)
-	testCount++
-	assert(inferredInt == 999, testCount, "Generic func Identity with type inference (int)")
+    if Vector_Get[string](&vStr, 0) == "Hike" && Vector_Get[string](&vStr, 2) == "WebAssembly" {
+        printf("[PASS #2] Vector[string] elements: [%s, %s, %s]\n",
+            Vector_Get[string](&vStr, 0),
+            Vector_Get[string](&vStr, 1),
+            Vector_Get[string](&vStr, 2))
+    } else {
+        printf("[FAIL #2] Vector[string] failed\n")
+        return 2
+    }
 
-	// 3. 単一型パラメータのジェネリック構造体
-	intBox := Box[int]{Value: 42}
-	testCount++
-	assert(intBox.Value == 42, testCount, "Generic struct Box[int].Value == 42")
+    // -------------------------------------------------------------------------
+    // Test 3: Vector[User]
+    // -------------------------------------------------------------------------
+    vUser := NewVector[User](2)
+    var u1 User
+    u1.id = 101
+    u1.name = "Alice"
+    var u2 User
+    u2.id = 102
+    u2.name = "Bob"
 
-	strBox := Box[string]{Value: "Packed"}
-	testCount++
-	assert(strBox.Value != nil, testCount, "Generic struct Box[string].Value == 'Packed'")
+    Vector_Push[User](&vUser, u1)
+    Vector_Push[User](&vUser, u2)
 
-	// 4. 複数型パラメータのジェネリック構造体 (Pair[string, int])
-	pair := Pair[string, int]{Key: "UserID", Val: 1001}
-	testCount++
-	assert(pair.Val == 1001, testCount, "Generic struct Pair[string, int]: Val == 1001")
+    resU2 := Vector_Get[User](&vUser, 1)
+    if resU2.id == 102 && resU2.name == "Bob" {
+        printf("[PASS #3] Vector[User] struct container (id=%d, name=%s)\n", resU2.id, resU2.name)
+    } else {
+        printf("[FAIL #3] Vector[User] failed\n")
+        return 3
+    }
 
-	// 5. 複数型パラメータのジェネリック構造体 (Pair[int, float64])
-	numPair := Pair[int, float64]{Key: 1, Val: 99.5}
-	testCount++
-	assert(numPair.Key == 1 && numPair.Val == 99.5, testCount, "Generic struct Pair[int, float64]: (1, 99.5)")
+    // -------------------------------------------------------------------------
+    // Test 4: Stack[int]
+    // -------------------------------------------------------------------------
+    stack := NewStack[int]()
+    Stack_Push[int](&stack, 100)
+    Stack_Push[int](&stack, 200)
+    Stack_Push[int](&stack, 300)
 
-	fmt.PrintLn("=== All Generics Tests Passed ===")
-	return testCount
+    val1 := Stack_Pop[int](&stack) // 300
+    val2 := Stack_Pop[int](&stack) // 200
+
+    if val1 == 300 && val2 == 200 && !Stack_IsEmpty[int](&stack) {
+        printf("[PASS #4] Stack[int] LIFO operations (popped: %d, %d)\n", val1, val2)
+    } else {
+        printf("[FAIL #4] Stack[int] failed\n")
+        return 4
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 5: Built-in Map[string]int
+    // -------------------------------------------------------------------------
+    mapScores := make(map[string]int)
+    mapScores["Alice"] = 95
+    mapScores["Bob"] = 88
+    mapScores["Charlie"] = 72
+
+    if mapScores["Alice"] == 95 && mapScores["Bob"] == 88 && len(mapScores) == 3 {
+        printf("[PASS #5] Built-in Map[string]int lookup (Alice=%d, Bob=%d, len=%d)\n",
+            mapScores["Alice"], mapScores["Bob"], len(mapScores))
+    } else {
+        printf("[FAIL #5] Built-in Map failed\n")
+        return 5
+    }
+
+    // メモリのクリーンアップ
+    Vector_Free[int](&vInt)
+    Vector_Free[string](&vStr)
+    Vector_Free[User](&vUser)
+    Stack_Free[int](&stack)
+
+    printf("=== All Container & Generics Tests Passed Successfully ===\n")
+    return 0
 }

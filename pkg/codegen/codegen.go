@@ -1737,6 +1737,10 @@ func (g *CodeGenerator) cloneFuncDecl(fn *ast.FuncDecl, newName string, typeMap 
 	for _, rt := range fn.ReturnTypes {
 		newReturns = append(newReturns, substituteAstType(rt, typeMap))
 	}
+	var newBody *ast.BlockStmt = nil
+	if fn.Body != nil {
+		newBody = substituteAstBlock(fn.Body, typeMap)
+	}
 	return &ast.FuncDecl{
 		Token:       fn.Token,
 		Receiver:    fn.Receiver,
@@ -1745,7 +1749,7 @@ func (g *CodeGenerator) cloneFuncDecl(fn *ast.FuncDecl, newName string, typeMap 
 		Params:      newParams,
 		IsVariadic:  fn.IsVariadic,
 		ReturnTypes: newReturns,
-		Body:        fn.Body,
+		Body:        newBody,
 	}
 }
 
@@ -1779,6 +1783,263 @@ func substituteAstType(t ast.TypeExpr, typeMap map[string]ast.TypeExpr) ast.Type
 		}
 	}
 	return t
+}
+
+func substituteAstBlock(b *ast.BlockStmt, typeMap map[string]ast.TypeExpr) *ast.BlockStmt {
+	if b == nil {
+		return nil
+	}
+	newStmts := make([]ast.Statement, len(b.Statements))
+	for i, s := range b.Statements {
+		newStmts[i] = substituteAstStmt(s, typeMap)
+	}
+	return &ast.BlockStmt{Token: b.Token, Statements: newStmts}
+}
+
+func substituteAstStmt(s ast.Statement, typeMap map[string]ast.TypeExpr) ast.Statement {
+	if s == nil {
+		return nil
+	}
+	switch st := s.(type) {
+	case *ast.VarDecl:
+		return &ast.VarDecl{
+			Token: st.Token,
+			Name:  st.Name,
+			Type:  substituteAstType(st.Type, typeMap),
+			Value: substituteAstExpr(st.Value, typeMap),
+		}
+	case *ast.AssignStmt:
+		newLeft := make([]ast.Expression, len(st.Left))
+		for i, l := range st.Left {
+			newLeft[i] = substituteAstExpr(l, typeMap)
+		}
+		newRight := make([]ast.Expression, len(st.Right))
+		for i, r := range st.Right {
+			newRight[i] = substituteAstExpr(r, typeMap)
+		}
+		return &ast.AssignStmt{
+			Token: st.Token,
+			Left:  newLeft,
+			Right: newRight,
+			Type:  substituteAstType(st.Type, typeMap),
+		}
+	case *ast.ExprStmt:
+		return &ast.ExprStmt{Token: st.Token, Expr: substituteAstExpr(st.Expr, typeMap)}
+	case *ast.BlockStmt:
+		return substituteAstBlock(st, typeMap)
+	case *ast.IfStmt:
+		return &ast.IfStmt{
+			Token:       st.Token,
+			Init:        substituteAstStmt(st.Init, typeMap),
+			Condition:   substituteAstExpr(st.Condition, typeMap),
+			Consequence: substituteAstBlock(st.Consequence, typeMap),
+			Alternative: substituteAstStmt(st.Alternative, typeMap),
+		}
+	case *ast.ForStmt:
+		return &ast.ForStmt{
+			Token: st.Token,
+			Init:  substituteAstStmt(st.Init, typeMap),
+			Cond:  substituteAstExpr(st.Cond, typeMap),
+			Post:  substituteAstStmt(st.Post, typeMap),
+			Body:  substituteAstBlock(st.Body, typeMap),
+		}
+	case *ast.ForRangeStmt:
+		return &ast.ForRangeStmt{
+			Token: st.Token,
+			Key:   substituteAstExpr(st.Key, typeMap),
+			Value: substituteAstExpr(st.Value, typeMap),
+			X:     substituteAstExpr(st.X, typeMap),
+			Body:  substituteAstBlock(st.Body, typeMap),
+		}
+	case *ast.SwitchStmt:
+		newCases := make([]*ast.CaseClause, len(st.Cases))
+		for i, cc := range st.Cases {
+			newVals := make([]ast.Expression, len(cc.Values))
+			for j, v := range cc.Values {
+				newVals[j] = substituteAstExpr(v, typeMap)
+			}
+			newBody := make([]ast.Statement, len(cc.Body))
+			for j, bs := range cc.Body {
+				newBody[j] = substituteAstStmt(bs, typeMap)
+			}
+			newCases[i] = &ast.CaseClause{
+				Token:  cc.Token,
+				Values: newVals,
+				Body:   newBody,
+			}
+		}
+		return &ast.SwitchStmt{
+			Token: st.Token,
+			Init:  substituteAstStmt(st.Init, typeMap),
+			Value: substituteAstExpr(st.Value, typeMap),
+			Cases: newCases,
+		}
+	case *ast.TypeSwitchStmt:
+		newCases := make([]*ast.TypeCaseClause, len(st.Cases))
+		for i, cc := range st.Cases {
+			newTypes := make([]ast.TypeExpr, len(cc.Types))
+			for j, t := range cc.Types {
+				newTypes[j] = substituteAstType(t, typeMap)
+			}
+			newBody := make([]ast.Statement, len(cc.Body))
+			for j, bs := range cc.Body {
+				newBody[j] = substituteAstStmt(bs, typeMap)
+			}
+			newCases[i] = &ast.TypeCaseClause{
+				Token: cc.Token,
+				Types: newTypes,
+				Body:  newBody,
+			}
+		}
+		return &ast.TypeSwitchStmt{
+			Token:    st.Token,
+			Init:     substituteAstStmt(st.Init, typeMap),
+			Variable: st.Variable,
+			Expr:     substituteAstExpr(st.Expr, typeMap),
+			Cases:    newCases,
+		}
+	case *ast.ReturnStmt:
+		newVals := make([]ast.Expression, len(st.Values))
+		for i, v := range st.Values {
+			newVals[i] = substituteAstExpr(v, typeMap)
+		}
+		return &ast.ReturnStmt{Token: st.Token, Values: newVals}
+	case *ast.DeferStmt:
+		var newCall *ast.CallExpr
+		if st.Call != nil {
+			if call, ok := substituteAstExpr(st.Call, typeMap).(*ast.CallExpr); ok {
+				newCall = call
+			}
+		}
+		return &ast.DeferStmt{Token: st.Token, Call: newCall}
+	}
+	return s
+}
+
+func substituteAstExpr(e ast.Expression, typeMap map[string]ast.TypeExpr) ast.Expression {
+	if e == nil {
+		return nil
+	}
+	if te, ok := e.(ast.TypeExpr); ok {
+		if substituted := substituteAstType(te, typeMap); substituted != nil {
+			if expr, ok := substituted.(ast.Expression); ok {
+				return expr
+			}
+		}
+	}
+	switch node := e.(type) {
+	case *ast.BinaryExpr:
+		return &ast.BinaryExpr{
+			Token:    node.Token,
+			Left:     substituteAstExpr(node.Left, typeMap),
+			Operator: node.Operator,
+			Right:    substituteAstExpr(node.Right, typeMap),
+		}
+	case *ast.PrefixExpr:
+		return &ast.PrefixExpr{
+			Token:    node.Token,
+			Operator: node.Operator,
+			Right:    substituteAstExpr(node.Right, typeMap),
+		}
+	case *ast.CallExpr:
+		newArgs := make([]ast.Expression, len(node.Args))
+		for i, arg := range node.Args {
+			newArgs[i] = substituteAstExpr(arg, typeMap)
+		}
+		return &ast.CallExpr{
+			Token:       node.Token,
+			Function:    substituteAstExpr(node.Function, typeMap),
+			Args:        newArgs,
+			HasEllipsis: node.HasEllipsis,
+		}
+	case *ast.MemberExpr:
+		return &ast.MemberExpr{
+			Token:  node.Token,
+			Object: substituteAstExpr(node.Object, typeMap),
+			Field:  node.Field,
+		}
+	case *ast.IndexExpr:
+		return &ast.IndexExpr{
+			Token: node.Token,
+			Left:  substituteAstExpr(node.Left, typeMap),
+			Index: substituteAstExpr(node.Index, typeMap),
+		}
+	case *ast.GenericInstExpr:
+		newArgs := make([]ast.TypeExpr, len(node.TypeArgs))
+		for i, arg := range node.TypeArgs {
+			newArgs[i] = substituteAstType(arg, typeMap)
+		}
+		return &ast.GenericInstExpr{
+			Token:    node.Token,
+			Left:     substituteAstExpr(node.Left, typeMap),
+			TypeArgs: newArgs,
+		}
+	case *ast.SliceExpr:
+		return &ast.SliceExpr{
+			Token: node.Token,
+			Left:  substituteAstExpr(node.Left, typeMap),
+			Low:   substituteAstExpr(node.Low, typeMap),
+			High:  substituteAstExpr(node.High, typeMap),
+		}
+	case *ast.TypeAssertExpr:
+		return &ast.TypeAssertExpr{
+			Token:  node.Token,
+			Expr:   substituteAstExpr(node.Expr, typeMap),
+			Target: substituteAstType(node.Target, typeMap),
+		}
+	case *ast.StructLiteral:
+		newType := node.Type
+		if substituted := substituteAstType(node.Type, typeMap); substituted != nil {
+			if named, ok := substituted.(*ast.NamedType); ok {
+				newType = named
+			}
+		}
+		newFields := make([]*ast.StructFieldValue, len(node.Fields))
+		for i, f := range node.Fields {
+			newFields[i] = &ast.StructFieldValue{
+				Name:  f.Name,
+				Value: substituteAstExpr(f.Value, typeMap),
+			}
+		}
+		return &ast.StructLiteral{
+			Token:  node.Token,
+			Type:   newType,
+			Fields: newFields,
+		}
+	case *ast.ArrayLiteral:
+		newElems := make([]ast.Expression, len(node.Elements))
+		for i, el := range node.Elements {
+			newElems[i] = substituteAstExpr(el, typeMap)
+		}
+		newType := node.Type
+		if substituted := substituteAstType(node.Type, typeMap); substituted != nil {
+			if at, ok := substituted.(*ast.ArrayType); ok {
+				newType = at
+			}
+		}
+		return &ast.ArrayLiteral{
+			Token:    node.Token,
+			Type:     newType,
+			Elements: newElems,
+		}
+	case *ast.SliceLiteral:
+		newElems := make([]ast.Expression, len(node.Elements))
+		for i, el := range node.Elements {
+			newElems[i] = substituteAstExpr(el, typeMap)
+		}
+		newType := node.Type
+		if substituted := substituteAstType(node.Type, typeMap); substituted != nil {
+			if st, ok := substituted.(*ast.SliceType); ok {
+				newType = st
+			}
+		}
+		return &ast.SliceLiteral{
+			Token:    node.Token,
+			Type:     newType,
+			Elements: newElems,
+		}
+	}
+	return e
 }
 
 func (g *CodeGenerator) emitStatement(b *strings.Builder, s ast.Statement, currentFn string) {
@@ -2013,7 +2274,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 		isCompound := (op == "+=" || op == "-=" || op == "*=" || op == "/=" ||
 			op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=")
 
-		// (A) インデックス代入: m[k] = v, arr[i] = v, slice[i] = v
+		// (A) インデックス代入: m[k] = v, arr[i] = v, slice[i] = v, ptr[i] = v
 		if lhsIndex, isLhsIndex := s.Left[0].(*ast.IndexExpr); isLhsIndex {
 			baseReg, baseType := g.resolveValue(b, lhsIndex.Left)
 
@@ -2098,35 +2359,34 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", calcReg, opInst, arr.Elem.LLVMType(), oldValReg, valReg))
 					finalValReg = calcReg
 				} else {
-					if valType != nil && valType.LLVMType() != arr.Elem.LLVMType() {
-						convReg := g.nextReg()
-						if arr.Elem.LLVMType() == "i8" && valType.LLVMType() == "i64" {
-							b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, valReg))
-							finalValReg = convReg
-						} else if arr.Elem.LLVMType() == "i64" && valType.LLVMType() == "i8" {
-							b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, valReg))
-							finalValReg = convReg
-						}
-					}
+					finalValReg = g.emitArgConversion(b, valReg, valType, arr.Elem)
 				}
 				b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", arr.Elem.LLVMType(), finalValReg, arr.Elem.LLVMType(), gepReg, dTag))
 				return
 			}
 
-			// --- スライス要素代入: slice[i] = v ---
-			var dataPtrReg string
+			// --- スライス / ポインタ要素代入: slice[i] = v, ptr[i] = v ---
+			var typedPtrReg string
 			var elemType sema.Type = sema.TypeByte
 
 			if sl, isSlice := baseType.(*sema.SliceType); isSlice {
 				elemType = sl.Elem
-				dataPtrReg = g.nextReg()
-				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtrReg, sl.LLVMType(), baseReg))
+				rawPtr := g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtr, sl.LLVMType(), baseReg))
+				typedPtrReg = g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, rawPtr, elemType.LLVMType()))
+			} else if ptr, isPtr := baseType.(*sema.PointerType); isPtr {
+				elemType = ptr.Base
+				if baseType.LLVMType() == elemType.LLVMType()+"*" {
+					typedPtrReg = baseReg
+				} else {
+					typedPtrReg = g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s*\n", typedPtrReg, baseType.LLVMType(), baseReg, elemType.LLVMType()))
+				}
 			} else {
-				dataPtrReg = baseReg
+				typedPtrReg = g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, baseReg, elemType.LLVMType()))
 			}
-
-			typedPtrReg := g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, dataPtrReg, elemType.LLVMType()))
 
 			gepReg := g.nextReg()
 			b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", gepReg, elemType.LLVMType(), elemType.LLVMType(), typedPtrReg, idxReg))
@@ -2160,19 +2420,7 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", calcReg, opInst, elemType.LLVMType(), oldValReg, valReg))
 				finalValReg = calcReg
 			} else {
-				if valType != nil && valType.LLVMType() != elemType.LLVMType() {
-					convReg := g.nextReg()
-					if elemType.LLVMType() == "i8" && valType.LLVMType() == "i64" {
-						b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to i8\n", convReg, valReg))
-						finalValReg = convReg
-					} else if elemType.LLVMType() == "i64" && valType.LLVMType() == "i8" {
-						b.WriteString(fmt.Sprintf("  %s = zext i8 %s to i64\n", convReg, valReg))
-						finalValReg = convReg
-					} else if strings.HasSuffix(elemType.LLVMType(), "*") && strings.HasSuffix(valType.LLVMType(), "*") {
-						b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", convReg, valType.LLVMType(), valReg, elemType.LLVMType()))
-						finalValReg = convReg
-					}
-				}
+				finalValReg = g.emitArgConversion(b, valReg, valType, elemType)
 			}
 
 			b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", elemType.LLVMType(), finalValReg, elemType.LLVMType(), gepReg, dTag))
@@ -3472,19 +3720,27 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			return loadReg, arr.Elem
 		}
 
-		var dataPtrReg string
+		var typedPtrReg string
 		var elemType sema.Type = sema.TypeByte
 
 		if sl, isSlice := baseType.(*sema.SliceType); isSlice {
 			elemType = sl.Elem
-			dataPtrReg = g.nextReg()
-			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtrReg, sl.LLVMType(), baseReg))
+			rawPtr := g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", rawPtr, sl.LLVMType(), baseReg))
+			typedPtrReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, rawPtr, elemType.LLVMType()))
+		} else if ptr, isPtr := baseType.(*sema.PointerType); isPtr {
+			elemType = ptr.Base
+			if baseType.LLVMType() == elemType.LLVMType()+"*" {
+				typedPtrReg = baseReg
+			} else {
+				typedPtrReg = g.nextReg()
+				b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s*\n", typedPtrReg, baseType.LLVMType(), baseReg, elemType.LLVMType()))
+			}
 		} else {
-			dataPtrReg = baseReg
+			typedPtrReg = g.nextReg()
+			b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, baseReg, elemType.LLVMType()))
 		}
-
-		typedPtrReg := g.nextReg()
-		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtrReg, dataPtrReg, elemType.LLVMType()))
 
 		gepReg := g.nextReg()
 		b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s* %s, i64 %s\n", gepReg, elemType.LLVMType(), elemType.LLVMType(), typedPtrReg, idxReg))
