@@ -1,0 +1,15 @@
+# Hike Language Config Example
+title = "Hike Engine Configuration"
+version = 2
+debug_mode = true
+supported_targets = ["x86_64-windows", "x86_64-linux", "aarch64-darwin"]
+
+[server]
+host = "127.0.0.1"
+port = 9000
+timeout = 30.5
+enable_ssl = false
+
+[database]
+name = "hike_db"
+max_connections = 64

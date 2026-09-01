@@ -1,0 +1,119 @@
+package main
+
+import (
+    "std/toml"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("=== Testing std/toml File Read/Write and Parsing ===\n\n")
+
+    // 1. TOMLファイルの読み込み
+    tomlPath := "examples/toml/config.toml"
+    content := toml.ReadFile(tomlPath)
+    if len(content) == 0 {
+        printf("  -> [FAIL] Failed to read %s\n", tomlPath)
+        return 1
+    }
+    printf("1. Successfully read '%s' (%d bytes)\n", tomlPath, len(content))
+
+    // 2. パース
+    doc := toml.Parse(content)
+    if doc == nil {
+        printf("  -> [FAIL] TOML parsing failed\n")
+        return 1
+    }
+    printf("2. TOML successfully parsed into DOM tree\n")
+
+    // 3. ルートフィールドの取得
+    title := doc.Get("title")
+    ver := doc.Get("version")
+    debug := doc.Get("debug_mode")
+    targets := doc.Get("supported_targets")
+
+    if title != nil {
+        printf("   - Title      : %s\n", title.AsString())
+    }
+    if ver != nil {
+        printf("   - Version    : %d\n", ver.AsInt())
+    }
+    if debug != nil {
+        printf("   - Debug Mode : %d\n", debug.AsBool())
+    }
+
+    if targets != nil {
+        printf("   - Targets (%d items): ", len(targets.ArrVal))
+        for i := 0; i < len(targets.ArrVal); i = i + 1 {
+            target := targets.At(i)
+            printf("[%s] ", target.AsString())
+        }
+        printf("\n")
+    }
+
+    // 4. セクション（テーブル）の取得
+    server := doc.Get("server")
+    if server != nil {
+        host := server.Get("host")
+        port := server.Get("port")
+        timeout := server.Get("timeout")
+        ssl := server.Get("enable_ssl")
+
+        printf("\n   [server] section:\n")
+        if host != nil {
+            printf("     - host       : %s\n", host.AsString())
+        }
+        if port != nil {
+            printf("     - port       : %d\n", port.AsInt())
+        }
+        if timeout != nil {
+            printf("     - timeout    : %.1f\n", timeout.AsFloat())
+        }
+        if ssl != nil {
+            printf("     - enable_ssl : %d\n", ssl.AsBool())
+        }
+    }
+
+    // 5. ドキュメントの変更
+    printf("\n3. Mutating TOML Document...\n")
+    doc.Set("environment", toml.NewString("production"))
+
+    if server != nil {
+        server.Set("port", toml.NewInt(443))
+        server.Set("enable_ssl", toml.NewBool(true))
+    }
+
+    metrics := toml.NewTable()
+    metrics.Set("enabled", toml.NewBool(true))
+    metrics.Set("interval_sec", toml.NewInt(10))
+    doc.Set("metrics", metrics)
+
+    // 6. シリアライズ
+    outStr := toml.Stringify(doc)
+    printf("4. Serialized TOML:\n%s\n", outStr)
+
+    // 7. ファイル書き込み
+    outPath := "examples/toml/output.toml"
+    ok := toml.WriteFile(outPath, outStr)
+    if ok {
+        printf("5. Successfully saved modified TOML to '%s'\n", outPath)
+    } else {
+        printf("  -> [FAIL] Failed to write to '%s'\n", outPath)
+        return 1
+    }
+
+    // 8. 再読み込み・再検証
+    reloaded := toml.ReadFile(outPath)
+    reDoc := toml.Parse(reloaded)
+    if reDoc != nil {
+        reEnv := reDoc.Get("environment")
+        reServer := reDoc.Get("server")
+        if reEnv != nil && reServer != nil {
+            printf("6. Verified reloaded TOML: environment = '%s', server.port = %d\n",
+                reEnv.AsString(), reServer.Get("port").AsInt())
+            printf("\n=== All TOML Tests Passed Successfully ===\n")
+        }
+    }
+
+    return 0
+}

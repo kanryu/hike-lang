@@ -1,0 +1,478 @@
+package toml
+
+// C-ABI 標準ライブラリ宣言
+func fopen(filename string, mode string) *byte
+func fclose(fp *byte) int
+func fseek(fp *byte, offset int, whence int) int
+func ftell(fp *byte) int
+func fread(buffer *byte, size int, count int, fp *byte) int
+func fwrite(buffer *byte, size int, count int, fp *byte) int
+func malloc(size int) *byte
+func free(ptr *byte)
+func strlen(s string) int
+func sprintf(buf *byte, format string, ...) int
+func atoi(s string) int
+func atof(s string) float64
+
+// TOML データ型定数
+const (
+    TypeNone   int = 0
+    TypeBool   int = 1
+    TypeInt    int = 2
+    TypeFloat  int = 3
+    TypeString int = 4
+    TypeArray  int = 5
+    TypeTable  int = 6
+)
+
+// TOML ノード構造体
+type Value struct {
+    Type      int
+    BoolVal   bool
+    IntVal    int
+    FloatVal  float64
+    StrVal    string
+    ArrVal    []*Value
+    TableKeys []string
+    TableVals []*Value
+}
+
+// -------------------------------------------------------------
+// ファクトリ関数
+// -------------------------------------------------------------
+
+func NewTable() *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeTable
+    v.TableKeys = make([]string, 0, 8)
+    v.TableVals = make([]*Value, 0, 8)
+    return v
+}
+
+func NewString(s string) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeString
+    v.StrVal = s
+    return v
+}
+
+func NewInt(n int) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeInt
+    v.IntVal = n
+    return v
+}
+
+func NewFloat(f float64) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeFloat
+    v.FloatVal = f
+    return v
+}
+
+func NewBool(b bool) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeBool
+    v.BoolVal = b
+    return v
+}
+
+func NewArray() *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeArray
+    v.ArrVal = make([]*Value, 0, 8)
+    return v
+}
+
+// -------------------------------------------------------------
+// 操作メソッド
+// -------------------------------------------------------------
+
+func (v *Value) Set(key string, val *Value) {
+    if v.Type != TypeTable {
+        return
+    }
+    for i := 0; i < len(v.TableKeys); i = i + 1 {
+        if v.TableKeys[i] == key {
+            v.TableVals[i] = val
+            return
+        }
+    }
+    v.TableKeys = append(v.TableKeys, key)
+    v.TableVals = append(v.TableVals, val)
+}
+
+func (v *Value) Get(key string) *Value {
+    if v.Type != TypeTable {
+        return nil
+    }
+    for i := 0; i < len(v.TableKeys); i = i + 1 {
+        if v.TableKeys[i] == key {
+            return v.TableVals[i]
+        }
+    }
+    return nil
+}
+
+func (v *Value) Append(elem *Value) {
+    if v.Type != TypeArray {
+        return
+    }
+    v.ArrVal = append(v.ArrVal, elem)
+}
+
+func (v *Value) At(idx int) *Value {
+    if v.Type != TypeArray || idx < 0 || idx >= len(v.ArrVal) {
+        return nil
+    }
+    return v.ArrVal[idx]
+}
+
+func (v *Value) AsString() string {
+    return v.StrVal
+}
+
+func (v *Value) AsInt() int {
+    if v.Type == TypeInt {
+        return v.IntVal
+    }
+    if v.Type == TypeFloat {
+        return int(v.FloatVal)
+    }
+    return 0
+}
+
+func (v *Value) AsFloat() float64 {
+    if v.Type == TypeFloat {
+        return v.FloatVal
+    }
+    if v.Type == TypeInt {
+        return float64(v.IntVal)
+    }
+    return 0.0
+}
+
+func (v *Value) AsBool() bool {
+    return v.BoolVal
+}
+
+// -------------------------------------------------------------
+// TOML パーサー実装
+// -------------------------------------------------------------
+
+type Parser struct {
+    src string
+    pos int
+    len int
+}
+
+func (p *Parser) skipInlineWhitespace() {
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if ch == 32 || ch == 9 { // ' ', '\t'
+            p.pos = p.pos + 1
+        } else {
+            break
+        }
+    }
+}
+
+func (p *Parser) skipWhitespaceAndComments() {
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 {
+            p.pos = p.pos + 1
+        } else if ch == 35 { // '#' コメント
+            for p.pos < p.len && p.src[p.pos] != 10 {
+                p.pos = p.pos + 1
+            }
+        } else {
+            break
+        }
+    }
+}
+
+func (p *Parser) parseKey() string {
+    p.skipInlineWhitespace()
+    if p.pos >= p.len {
+        return ""
+    }
+    if p.src[p.pos] == 34 { // '"'
+        p.pos = p.pos + 1
+        start := p.pos
+        for p.pos < p.len && p.src[p.pos] != 34 {
+            p.pos = p.pos + 1
+        }
+        s := p.src[start:p.pos]
+        if p.pos < p.len {
+            p.pos = p.pos + 1
+        }
+        return s
+    }
+
+    start := p.pos
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) || (ch >= 48 && ch <= 57) || ch == 95 || ch == 45 || ch == 46 {
+            p.pos = p.pos + 1
+        } else {
+            break
+        }
+    }
+    return p.src[start:p.pos]
+}
+
+func (p *Parser) parseString() string {
+    p.pos = p.pos + 1 // skip opening '"'
+    start := p.pos
+    for p.pos < p.len && p.src[p.pos] != 34 {
+        if p.src[p.pos] == 92 && p.pos+1 < p.len {
+            p.pos = p.pos + 2
+        } else {
+            p.pos = p.pos + 1
+        }
+    }
+    s := p.src[start:p.pos]
+    if p.pos < p.len {
+        p.pos = p.pos + 1 // skip closing '"'
+    }
+    return s
+}
+
+func (p *Parser) parseNumber() *Value {
+    start := p.pos
+    isFloat := false
+    if p.src[p.pos] == 45 || p.src[p.pos] == 43 { // '-', '+'
+        p.pos = p.pos + 1
+    }
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if ch >= 48 && ch <= 57 {
+            p.pos = p.pos + 1
+        } else if ch == 46 { // '.'
+            isFloat = true
+            p.pos = p.pos + 1
+        } else {
+            break
+        }
+    }
+    raw := p.src[start:p.pos]
+    if isFloat {
+        return NewFloat(atof(raw))
+    }
+    return NewInt(atoi(raw))
+}
+
+func (p *Parser) parseArray() *Value {
+    arr := NewArray()
+    p.pos = p.pos + 1 // skip '['
+    p.skipWhitespaceAndComments()
+
+    if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+        p.pos = p.pos + 1
+        return arr
+    }
+
+    for p.pos < p.len {
+        elem := p.parseValue()
+        if elem != nil {
+            arr.Append(elem)
+        }
+        p.skipWhitespaceAndComments()
+        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+            p.pos = p.pos + 1
+            p.skipWhitespaceAndComments()
+        } else if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+            p.pos = p.pos + 1
+            break
+        } else {
+            break
+        }
+    }
+    return arr
+}
+
+func (p *Parser) parseValue() *Value {
+    p.skipInlineWhitespace()
+    if p.pos >= p.len {
+        return nil
+    }
+
+    ch := p.src[p.pos]
+    if ch == 34 { // '"'
+        return NewString(p.parseString())
+    }
+    if ch == 91 { // '['
+        return p.parseArray()
+    }
+    if (ch >= 48 && ch <= 57) || ch == 45 || ch == 43 { // 0-9, '-', '+'
+        return p.parseNumber()
+    }
+    if ch == 116 { // 't' (true)
+        p.pos = p.pos + 4
+        return NewBool(true)
+    }
+    if ch == 102 { // 'f' (false)
+        p.pos = p.pos + 5
+        return NewBool(false)
+    }
+    return nil
+}
+
+func Parse(tomlStr string) *Value {
+    root := NewTable()
+    currentTable := root
+
+    p := Parser{
+        src: tomlStr,
+        pos: 0,
+        len: len(tomlStr),
+    }
+
+    for p.pos < p.len {
+        p.skipWhitespaceAndComments()
+        if p.pos >= p.len {
+            break
+        }
+
+        ch := p.src[p.pos]
+        if ch == 91 { // '[' テーブルヘッダ
+            p.pos = p.pos + 1 // skip '['
+            tableName := p.parseKey()
+            p.skipInlineWhitespace()
+            if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+                p.pos = p.pos + 1
+            }
+
+            subTable := root.Get(tableName)
+            if subTable == nil || subTable.Type != TypeTable {
+                subTable = NewTable()
+                root.Set(tableName, subTable)
+            }
+            currentTable = subTable
+        } else {
+            key := p.parseKey()
+            p.skipInlineWhitespace()
+            if p.pos < p.len && p.src[p.pos] == 61 { // '='
+                p.pos = p.pos + 1 // skip '='
+                val := p.parseValue()
+                if val != nil {
+                    currentTable.Set(key, val)
+                }
+            }
+        }
+
+        for p.pos < p.len && p.src[p.pos] != 10 && p.src[p.pos] != 13 {
+            if p.src[p.pos] == 35 { // 行末コメント
+                break
+            }
+            p.pos = p.pos + 1
+        }
+    }
+
+    return root
+}
+
+// -------------------------------------------------------------
+// TOML シリアライザー実装
+// -------------------------------------------------------------
+
+func formatValue(v *Value) string {
+    if v == nil {
+        return "\"\""
+    }
+    if v.Type == TypeString {
+        return "\"" + v.StrVal + "\""
+    }
+    if v.Type == TypeInt {
+        buf := malloc(32)
+        sprintf(buf, "%d", v.IntVal)
+        return string(buf)
+    }
+    if v.Type == TypeFloat {
+        buf := malloc(32)
+        sprintf(buf, "%f", v.FloatVal)
+        return string(buf)
+    }
+    if v.Type == TypeBool {
+        if v.BoolVal {
+            return "true"
+        }
+        return "false"
+    }
+    if v.Type == TypeArray {
+        res := "["
+        for i := 0; i < len(v.ArrVal); i = i + 1 {
+            if i > 0 {
+                res = res + ", "
+            }
+            res = res + formatValue(v.ArrVal[i])
+        }
+        return res + "]"
+    }
+    return "\"\""
+}
+
+func Stringify(root *Value) string {
+    if root == nil || root.Type != TypeTable {
+        return ""
+    }
+
+    out := ""
+
+    // 1. ルートのキー・バリューを出力
+    for i := 0; i < len(root.TableKeys); i = i + 1 {
+        val := root.TableVals[i]
+        if val.Type != TypeTable {
+            out = out + root.TableKeys[i] + " = " + formatValue(val) + "\n"
+        }
+    }
+
+    // 2. 各セクション（テーブル）を出力
+    for i := 0; i < len(root.TableKeys); i = i + 1 {
+        val := root.TableVals[i]
+        if val.Type == TypeTable {
+            out = out + "\n[" + root.TableKeys[i] + "]\n"
+            for j := 0; j < len(val.TableKeys); j = j + 1 {
+                subVal := val.TableVals[j]
+                if subVal.Type != TypeTable {
+                    out = out + val.TableKeys[j] + " = " + formatValue(subVal) + "\n"
+                }
+            }
+        }
+    }
+
+    return out
+}
+
+// -------------------------------------------------------------
+// ファイル I/O ヘルパー
+// -------------------------------------------------------------
+
+func ReadFile(filename string) string {
+    fp := fopen(filename, "rb")
+    if fp == nil {
+        return ""
+    }
+    fseek(fp, 0, 2)
+    size := ftell(fp)
+    fseek(fp, 0, 0)
+
+    buf := malloc(size + 1)
+    fread(buf, 1, size, fp)
+    fclose(fp)
+
+    buf[size] = 0
+    return string(buf)
+}
+
+func WriteFile(filename string, content string) bool {
+    fp := fopen(filename, "wb")
+    if fp == nil {
+        return false
+    }
+    size := len(content)
+    wrote := fwrite((*byte)(content), 1, size, fp)
+    fclose(fp)
+    return wrote == size
+}
