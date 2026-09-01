@@ -1,15 +1,14 @@
 package main
 
 import (
-    "std/toml"
+    "std/encoding/toml"
 )
 
 func printf(format string, ...) int
 
 func main() int {
-    printf("=== Testing std/toml File Read/Write and Parsing ===\n\n")
+    printf("=== Testing std/encoding/toml File Read/Write and Parsing ===\n\n")
 
-    // 1. TOMLファイルの読み込み
     tomlPath := "examples/toml/config.toml"
     content := toml.ReadFile(tomlPath)
     if len(content) == 0 {
@@ -18,7 +17,6 @@ func main() int {
     }
     printf("1. Successfully read '%s' (%d bytes)\n", tomlPath, len(content))
 
-    // 2. パース
     doc := toml.Parse(content)
     if doc == nil {
         printf("  -> [FAIL] TOML parsing failed\n")
@@ -26,7 +24,6 @@ func main() int {
     }
     printf("2. TOML successfully parsed into DOM tree\n")
 
-    // 3. ルートフィールドの取得
     title := doc.Get("title")
     ver := doc.Get("version")
     debug := doc.Get("debug_mode")
@@ -51,7 +48,6 @@ func main() int {
         printf("\n")
     }
 
-    // 4. セクション（テーブル）の取得
     server := doc.Get("server")
     if server != nil {
         host := server.Get("host")
@@ -74,7 +70,6 @@ func main() int {
         }
     }
 
-    // 5. ドキュメントの変更
     printf("\n3. Mutating TOML Document...\n")
     doc.Set("environment", toml.NewString("production"))
 
@@ -88,11 +83,9 @@ func main() int {
     metrics.Set("interval_sec", toml.NewInt(10))
     doc.Set("metrics", metrics)
 
-    // 6. シリアライズ
     outStr := toml.Stringify(doc)
     printf("4. Serialized TOML:\n%s\n", outStr)
 
-    // 7. ファイル書き込み
     outPath := "examples/toml/output.toml"
     ok := toml.WriteFile(outPath, outStr)
     if ok {
@@ -102,7 +95,6 @@ func main() int {
         return 1
     }
 
-    // 8. 再読み込み・再検証
     reloaded := toml.ReadFile(outPath)
     reDoc := toml.Parse(reloaded)
     if reDoc != nil {

@@ -1,0 +1,19 @@
+title = "Hike Engine Configuration"
+version = 2
+debug_mode = true
+supported_targets = ["x86_64-windows", "x86_64-linux", "aarch64-darwin"]
+environment = "production"
+
+[server]
+host = "127.0.0.1"
+port = 443
+timeout = 30.500000
+enable_ssl = true
+
+[database]
+name = "hike_db"
+max_connections = 64
+
+[metrics]
+enabled = true
+interval_sec = 10

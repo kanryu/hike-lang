@@ -154,7 +154,7 @@ type Parser struct {
 func (p *Parser) skipWhitespace() {
     for p.pos < p.len {
         ch := p.src[p.pos]
-        if ch == 32 || ch == 9 || ch == 10 || ch == 13 { // ' ', '\t', '\n', '\r'
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 {
             p.pos = p.pos + 1
         } else {
             break
@@ -163,10 +163,10 @@ func (p *Parser) skipWhitespace() {
 }
 
 func (p *Parser) parseString() string {
-    p.pos = p.pos + 1 // skip '"'
+    p.pos = p.pos + 1
     start := p.pos
-    for p.pos < p.len && p.src[p.pos] != 34 { // until next '"'
-        if p.src[p.pos] == 92 && p.pos+1 < p.len { // escape '\'
+    for p.pos < p.len && p.src[p.pos] != 34 {
+        if p.src[p.pos] == 92 && p.pos+1 < p.len {
             p.pos = p.pos + 2
         } else {
             p.pos = p.pos + 1
@@ -174,19 +174,19 @@ func (p *Parser) parseString() string {
     }
     s := p.src[start:p.pos]
     if p.pos < p.len {
-        p.pos = p.pos + 1 // consume closing '"'
+        p.pos = p.pos + 1
     }
     return s
 }
 
 func (p *Parser) parseNumber() *Value {
     start := p.pos
-    if p.src[p.pos] == 45 { // '-'
+    if p.src[p.pos] == 45 {
         p.pos = p.pos + 1
     }
     for p.pos < p.len {
         ch := p.src[p.pos]
-        if (ch >= 48 && ch <= 57) || ch == 46 { // 0-9 or '.'
+        if (ch >= 48 && ch <= 57) || ch == 46 {
             p.pos = p.pos + 1
         } else {
             break
@@ -199,10 +199,10 @@ func (p *Parser) parseNumber() *Value {
 
 func (p *Parser) parseArray() *Value {
     arr := NewArray()
-    p.pos = p.pos + 1 // skip '['
+    p.pos = p.pos + 1
     p.skipWhitespace()
 
-    if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+    if p.pos < p.len && p.src[p.pos] == 93 {
         p.pos = p.pos + 1
         return arr
     }
@@ -213,10 +213,10 @@ func (p *Parser) parseArray() *Value {
             arr.Append(elem)
         }
         p.skipWhitespace()
-        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+        if p.pos < p.len && p.src[p.pos] == 44 {
             p.pos = p.pos + 1
             p.skipWhitespace()
-        } else if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+        } else if p.pos < p.len && p.src[p.pos] == 93 {
             p.pos = p.pos + 1
             break
         } else {
@@ -228,23 +228,23 @@ func (p *Parser) parseArray() *Value {
 
 func (p *Parser) parseObject() *Value {
     obj := NewObject()
-    p.pos = p.pos + 1 // skip '{'
+    p.pos = p.pos + 1
     p.skipWhitespace()
 
-    if p.pos < p.len && p.src[p.pos] == 125 { // '}'
+    if p.pos < p.len && p.src[p.pos] == 125 {
         p.pos = p.pos + 1
         return obj
     }
 
     for p.pos < p.len {
         p.skipWhitespace()
-        if p.src[p.pos] != 34 { // '"'
+        if p.src[p.pos] != 34 {
             break
         }
         key := p.parseString()
         p.skipWhitespace()
 
-        if p.pos < p.len && p.src[p.pos] == 58 { // ':'
+        if p.pos < p.len && p.src[p.pos] == 58 {
             p.pos = p.pos + 1
         }
 
@@ -252,10 +252,10 @@ func (p *Parser) parseObject() *Value {
         obj.Set(key, val)
 
         p.skipWhitespace()
-        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+        if p.pos < p.len && p.src[p.pos] == 44 {
             p.pos = p.pos + 1
             p.skipWhitespace()
-        } else if p.pos < p.len && p.src[p.pos] == 125 { // '}'
+        } else if p.pos < p.len && p.src[p.pos] == 125 {
             p.pos = p.pos + 1
             break
         } else {
@@ -272,21 +272,21 @@ func (p *Parser) parseValue() *Value {
     }
 
     ch := p.src[p.pos]
-    if ch == 123 { // '{'
+    if ch == 123 {
         return p.parseObject()
-    } else if ch == 91 { // '['
+    } else if ch == 91 {
         return p.parseArray()
-    } else if ch == 34 { // '"'
+    } else if ch == 34 {
         return NewString(p.parseString())
-    } else if (ch >= 48 && ch <= 57) || ch == 45 { // 0-9 or '-'
+    } else if (ch >= 48 && ch <= 57) || ch == 45 {
         return p.parseNumber()
-    } else if ch == 116 { // 't' (true)
+    } else if ch == 116 {
         p.pos = p.pos + 4
         return NewBool(true)
-    } else if ch == 102 { // 'f' (false)
+    } else if ch == 102 {
         p.pos = p.pos + 5
         return NewBool(false)
-    } else if ch == 110 { // 'n' (null)
+    } else if ch == 110 {
         p.pos = p.pos + 4
         return NewNull()
     }
@@ -360,9 +360,9 @@ func ReadFile(filename string) string {
     if fp == nil {
         return ""
     }
-    fseek(fp, 0, 2) // SEEK_END
+    fseek(fp, 0, 2)
     size := ftell(fp)
-    fseek(fp, 0, 0) // SEEK_SET
+    fseek(fp, 0, 0)
 
     buf := malloc(size + 1)
     fread(buf, 1, size, fp)

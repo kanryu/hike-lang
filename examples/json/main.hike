@@ -1,15 +1,14 @@
 package main
 
 import (
-    "std/json"
+    "std/encoding/json"
 )
 
 func printf(format string, ...) int
 
 func main() int {
-    printf("=== Testing std/json File Read/Write and Parsing ===\n\n")
+    printf("=== Testing std/encoding/json File Read/Write and Parsing ===\n\n")
 
-    // 1. JSONファイルの読み込み
     jsonPath := "examples/json/data.json"
     content := json.ReadFile(jsonPath)
     if len(content) == 0 {
@@ -18,7 +17,6 @@ func main() int {
     }
     printf("1. Successfully read '%s' (%d bytes)\n", jsonPath, len(content))
 
-    // 2. パース
     doc := json.Parse(content)
     if doc == nil {
         printf("  -> [FAIL] JSON parsing failed\n")
@@ -26,7 +24,6 @@ func main() int {
     }
     printf("2. JSON successfully parsed into DOM tree\n")
 
-    // 3. フィールドの取得と表示
     nameVal := doc.Get("name")
     verVal := doc.Get("version")
     fastVal := doc.Get("is_fast")
@@ -60,7 +57,6 @@ func main() int {
         }
     }
 
-    // 4. 新しいノードの追加と変更
     printf("\n3. Mutating JSON Document...\n")
     doc.Set("modified_by", json.NewString("hikec-runtime"))
     doc.Set("build_number", json.NewNumber(4200.0))
@@ -69,11 +65,9 @@ func main() int {
     newStats.Set("active_threads", json.NewNumber(8.0))
     doc.Set("runtime_stats", newStats)
 
-    // 5. 文字列化 (Stringify)
     outStr := json.Stringify(doc)
     printf("4. Serialized JSON:\n   %s\n\n", outStr)
 
-    // 6. 変更結果のファイル保存
     outPath := "examples/json/output.json"
     ok := json.WriteFile(outPath, outStr)
     if ok {
@@ -83,7 +77,6 @@ func main() int {
         return 1
     }
 
-    // 7. 保存したファイルの再検証
     reloaded := json.ReadFile(outPath)
     reDoc := json.Parse(reloaded)
     if reDoc != nil && reDoc.Get("modified_by") != nil {

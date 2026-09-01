@@ -169,7 +169,7 @@ type Parser struct {
 func (p *Parser) skipInlineWhitespace() {
     for p.pos < p.len {
         ch := p.src[p.pos]
-        if ch == 32 || ch == 9 { // ' ', '\t'
+        if ch == 32 || ch == 9 {
             p.pos = p.pos + 1
         } else {
             break
@@ -182,7 +182,7 @@ func (p *Parser) skipWhitespaceAndComments() {
         ch := p.src[p.pos]
         if ch == 32 || ch == 9 || ch == 10 || ch == 13 {
             p.pos = p.pos + 1
-        } else if ch == 35 { // '#' コメント
+        } else if ch == 35 {
             for p.pos < p.len && p.src[p.pos] != 10 {
                 p.pos = p.pos + 1
             }
@@ -197,7 +197,7 @@ func (p *Parser) parseKey() string {
     if p.pos >= p.len {
         return ""
     }
-    if p.src[p.pos] == 34 { // '"'
+    if p.src[p.pos] == 34 {
         p.pos = p.pos + 1
         start := p.pos
         for p.pos < p.len && p.src[p.pos] != 34 {
@@ -223,7 +223,7 @@ func (p *Parser) parseKey() string {
 }
 
 func (p *Parser) parseString() string {
-    p.pos = p.pos + 1 // skip opening '"'
+    p.pos = p.pos + 1
     start := p.pos
     for p.pos < p.len && p.src[p.pos] != 34 {
         if p.src[p.pos] == 92 && p.pos+1 < p.len {
@@ -234,7 +234,7 @@ func (p *Parser) parseString() string {
     }
     s := p.src[start:p.pos]
     if p.pos < p.len {
-        p.pos = p.pos + 1 // skip closing '"'
+        p.pos = p.pos + 1
     }
     return s
 }
@@ -242,14 +242,14 @@ func (p *Parser) parseString() string {
 func (p *Parser) parseNumber() *Value {
     start := p.pos
     isFloat := false
-    if p.src[p.pos] == 45 || p.src[p.pos] == 43 { // '-', '+'
+    if p.src[p.pos] == 45 || p.src[p.pos] == 43 {
         p.pos = p.pos + 1
     }
     for p.pos < p.len {
         ch := p.src[p.pos]
         if ch >= 48 && ch <= 57 {
             p.pos = p.pos + 1
-        } else if ch == 46 { // '.'
+        } else if ch == 46 {
             isFloat = true
             p.pos = p.pos + 1
         } else {
@@ -265,10 +265,10 @@ func (p *Parser) parseNumber() *Value {
 
 func (p *Parser) parseArray() *Value {
     arr := NewArray()
-    p.pos = p.pos + 1 // skip '['
+    p.pos = p.pos + 1
     p.skipWhitespaceAndComments()
 
-    if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+    if p.pos < p.len && p.src[p.pos] == 93 {
         p.pos = p.pos + 1
         return arr
     }
@@ -279,10 +279,10 @@ func (p *Parser) parseArray() *Value {
             arr.Append(elem)
         }
         p.skipWhitespaceAndComments()
-        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+        if p.pos < p.len && p.src[p.pos] == 44 {
             p.pos = p.pos + 1
             p.skipWhitespaceAndComments()
-        } else if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+        } else if p.pos < p.len && p.src[p.pos] == 93 {
             p.pos = p.pos + 1
             break
         } else {
@@ -299,20 +299,20 @@ func (p *Parser) parseValue() *Value {
     }
 
     ch := p.src[p.pos]
-    if ch == 34 { // '"'
+    if ch == 34 {
         return NewString(p.parseString())
     }
-    if ch == 91 { // '['
+    if ch == 91 {
         return p.parseArray()
     }
-    if (ch >= 48 && ch <= 57) || ch == 45 || ch == 43 { // 0-9, '-', '+'
+    if (ch >= 48 && ch <= 57) || ch == 45 || ch == 43 {
         return p.parseNumber()
     }
-    if ch == 116 { // 't' (true)
+    if ch == 116 {
         p.pos = p.pos + 4
         return NewBool(true)
     }
-    if ch == 102 { // 'f' (false)
+    if ch == 102 {
         p.pos = p.pos + 5
         return NewBool(false)
     }
@@ -336,11 +336,11 @@ func Parse(tomlStr string) *Value {
         }
 
         ch := p.src[p.pos]
-        if ch == 91 { // '[' テーブルヘッダ
-            p.pos = p.pos + 1 // skip '['
+        if ch == 91 {
+            p.pos = p.pos + 1
             tableName := p.parseKey()
             p.skipInlineWhitespace()
-            if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+            if p.pos < p.len && p.src[p.pos] == 93 {
                 p.pos = p.pos + 1
             }
 
@@ -353,8 +353,8 @@ func Parse(tomlStr string) *Value {
         } else {
             key := p.parseKey()
             p.skipInlineWhitespace()
-            if p.pos < p.len && p.src[p.pos] == 61 { // '='
-                p.pos = p.pos + 1 // skip '='
+            if p.pos < p.len && p.src[p.pos] == 61 {
+                p.pos = p.pos + 1
                 val := p.parseValue()
                 if val != nil {
                     currentTable.Set(key, val)
@@ -363,7 +363,7 @@ func Parse(tomlStr string) *Value {
         }
 
         for p.pos < p.len && p.src[p.pos] != 10 && p.src[p.pos] != 13 {
-            if p.src[p.pos] == 35 { // 行末コメント
+            if p.src[p.pos] == 35 {
                 break
             }
             p.pos = p.pos + 1
@@ -420,7 +420,7 @@ func Stringify(root *Value) string {
 
     out := ""
 
-    // 1. ルートのキー・バリューを出力
+    // 1. ルートのキー・バリュー
     for i := 0; i < len(root.TableKeys); i = i + 1 {
         val := root.TableVals[i]
         if val.Type != TypeTable {
@@ -428,7 +428,7 @@ func Stringify(root *Value) string {
         }
     }
 
-    // 2. 各セクション（テーブル）を出力
+    // 2. 各セクション（テーブル）
     for i := 0; i < len(root.TableKeys); i = i + 1 {
         val := root.TableVals[i]
         if val.Type == TypeTable {
