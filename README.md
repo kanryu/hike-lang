@@ -675,6 +675,164 @@ $$\text{FuncValue} \implies \{ \text{i8* fn\_ptr},\, \text{i8* env\_ptr} \}$$
 
 During a call, the runtime extracts `fn_ptr` and passes `env_ptr` as an implicit first argument (`i8* %__env`), allowing function pointers and stateful closures to share a unified ABI with zero dynamic dispatch penalty.
 
+## Module Management (`hike.mod`)
+
+Hike manages modules and package resolution via `hike.mod` located in the root directory of your project.
+
+### Basic Structure
+
+```text
+module my-project
+
+hike 0.1.0
+
+```
+
+### Path Replacement (`replace`)
+
+Use the `replace` directive to map module import paths to local directories or relative paths (useful for developing standard libraries or multi-package workspaces):
+
+```text
+module example-app
+
+hike 0.1.0
+
+# Map std/encoding/json to a local path
+replace std/encoding/json => ../../std/encoding/json
+
+```
+
+---
+
+## Working with JSON (`std/encoding/json`)
+
+The standard library `std/encoding/json` provides DOM parsing, data traversal, tree mutation, serialization, and file I/O operations.
+
+### Project Layout
+
+```text
+my-json-app/
+├── hike.mod
+├── data.json
+└── main.hike
+
+```
+
+### `hike.mod`
+
+```text
+module my-json-app
+
+hike 0.1.0
+
+replace std/encoding/json => ../../std/encoding/json
+
+```
+
+### Input Data (`data.json`)
+
+```json
+{
+  "name": "Hike Language",
+  "version": 1,
+  "is_fast": true,
+  "tags": ["systems", "llvm", "native"],
+  "stats": {
+    "stars": 1280,
+    "ratio": 99.5
+  }
+}
+
+```
+
+### Source Code (`main.hike`)
+
+```go
+package main
+
+import (
+    "std/encoding/json"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("=== JSON Read/Write Example ===\n\n")
+
+    // 1. Read JSON file content
+    jsonPath := "data.json"
+    content := json.ReadFile(jsonPath)
+    if len(content) == 0 {
+        printf("Failed to read: %s\n", jsonPath)
+        return 1
+    }
+    printf("1. Read %d bytes from '%s'\n", len(content), jsonPath)
+
+    // 2. Parse JSON into DOM tree
+    doc := json.Parse(content)
+    if doc == nil {
+        printf("Failed to parse JSON\n")
+        return 1
+    }
+
+    // 3. Access DOM fields
+    nameVal := doc.Get("name")
+    verVal := doc.Get("version")
+    fastVal := doc.Get("is_fast")
+    tagsVal := doc.Get("tags")
+
+    if nameVal != nil {
+        printf("   - Name    : %s\n", nameVal.AsString())
+    }
+    if verVal != nil {
+        printf("   - Version : %d\n", verVal.AsInt())
+    }
+    if fastVal != nil {
+        printf("   - Is Fast : %d\n", fastVal.AsBool())
+    }
+    if tagsVal != nil {
+        printf("   - Tags    : ")
+        for i := 0; i < len(tagsVal.ArrVal); i = i + 1 {
+            tag := tagsVal.At(i)
+            printf("[%s] ", tag.AsString())
+        }
+        printf("\n")
+    }
+
+    // 4. Mutate and add new nodes
+    printf("\n2. Modifying JSON DOM...\n")
+    doc.Set("modified_by", json.NewString("hikec-runtime"))
+    doc.Set("build_number", json.NewNumber(4200.0))
+
+    newStats := json.NewObject()
+    newStats.Set("active_threads", json.NewNumber(8.0))
+    doc.Set("runtime_stats", newStats)
+
+    // 5. Serialize DOM tree back to string
+    outStr := json.Stringify(doc)
+    printf("3. Serialized Output:\n   %s\n\n", outStr)
+
+    // 6. Save serialized JSON to a new file
+    outPath := "output.json"
+    if json.WriteFile(outPath, outStr) {
+        printf("4. Successfully saved to '%s'\n", outPath)
+    } else {
+        printf("Failed to write to '%s'\n", outPath)
+        return 1
+    }
+
+    return 0
+}
+
+```
+
+### Running the Example
+
+```powershell
+go run ./cmd/hikec run main.hike
+
+```
+
 ## 💡 Example Walkthrough
 
 ### 1. Write Hike Code (`libcalc.hike`)
