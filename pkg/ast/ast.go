@@ -498,6 +498,7 @@ func (tae *TypeAssertExpr) TokenLiteral() string { return tae.Token.Literal }
 type FuncType struct {
 	Token       token.Token
 	ParamTypes  []TypeExpr
+	IsVariadic  bool // 追加: 可変長引数フラグ
 	ReturnTypes []TypeExpr
 }
 
@@ -509,6 +510,7 @@ func (ft *FuncType) TokenLiteral() string { return ft.Token.Literal }
 type FuncLit struct {
 	Token       token.Token
 	Params      []*ParamDecl
+	IsVariadic  bool // 追加: 可変長引数フラグ
 	ReturnTypes []TypeExpr
 	Body        *BlockStmt
 }

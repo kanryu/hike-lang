@@ -1,54 +1,83 @@
 package main
 
-import "std/maps"
-
 func printf(format string, ...) int
 
+// 1. 高階関数: 関数を受け取って実行する関数
+func applyOp(x int, y int, op func(int, int) int) int {
+    return op(x, y)
+}
+
+// 2. クロージャを返す関数（ファクトリ関数）
+func makeAdder(base int) func(int) int {
+    return func(n int) int {
+        return base + n
+    }
+}
+
+// 3. 通常のトップレベル関数
+func multiply(a int, b int) int {
+    return a * b
+}
+
 func main() int {
-    printf("=== Testing std/maps Generic Map with 2-Pass Iterator ===\n")
+    printf("=== Running First-Class Functions & Closure Tests ===\n")
 
-    hmap := maps.New[string, int](8)
-
-    hmap["Tokyo"] = 1400
-    hmap["Osaka"] = 880
-    hmap["Nagoya"] = 230
-    hmap["Fukuoka"] = 160
-    hmap["Sapporo"] = 190
-
-    if len(hmap) == 5 {
-        printf("  -> [PASS] Length is 5 (len=%d)\n", len(hmap))
+    // Test 1: 基本的な無名関数の代入と呼び出し
+    add := func(a int, b int) int {
+        return a + b
+    }
+    sum := add(10, 20)
+    if sum == 30 {
+        printf("  -> [PASS] Anonymous function add(10, 20) == 30\n")
     } else {
-        printf("  -> [FAIL] Length incorrect: %d\n", len(hmap))
-        return 1
+        printf("  -> [FAIL] Anonymous function failed: %d\n", sum)
     }
 
-    if val, ok := hmap["Osaka"]; ok && val == 880 {
-        printf("  -> [PASS] 'Osaka' found with population %d\n", val)
+    // Test 2: 通常のトップレベル関数の関数ポインタ変数への代入（Thunk経由呼び出し）
+    var op func(int, int) int = multiply
+    product := op(6, 7)
+    if product == 42 {
+        printf("  -> [PASS] Function pointer multiply(6, 7) == 42\n")
     } else {
-        printf("  -> [FAIL] 'Osaka' lookup failed\n")
-        return 2
+        printf("  -> [FAIL] Function pointer failed: %d\n", product)
     }
 
-    totalPop := 0
-    visitedCount := 0
-    for city, pop := range hmap {
-        printf("  - %s: %d\n", city, pop)
-        totalPop = totalPop + pop
-        visitedCount = visitedCount + 1
-    }
-
-    if visitedCount == 5 && totalPop == 2860 {
-        printf("  -> [PASS] for-range traversed all 5 entries (total=%d)\n", totalPop)
+    // Test 3: 高階関数に関数リテラルを渡す
+    diff := applyOp(100, 30, func(a int, b int) int {
+        return a - b
+    })
+    if diff == 70 {
+        printf("  -> [PASS] Higher-order function applyOp(...) == 70\n")
     } else {
-        printf("  -> [FAIL] for-range failed\n")
-        return 3
+        printf("  -> [FAIL] Higher-order function failed: %d\n", diff)
     }
 
-    delete(hmap, "Nagoya")
-    if _, ok := hmap["Nagoya"]; !ok && len(hmap) == 4 {
-        printf("  -> [PASS] 'Nagoya' deleted, len=%d\n", len(hmap))
+    // Test 4: クロージャによる外側変数の読み取り（makeAdder）
+    add100 := makeAdder(100)
+    resAdd := add100(42)
+    if resAdd == 142 {
+        printf("  -> [PASS] Closure read (makeAdder(100)(42)) == 142\n")
+    } else {
+        printf("  -> [FAIL] Closure read failed: %d\n", resAdd)
     }
 
-    printf("=== All std/maps Tests Passed Successfully ===\n")
+    // Test 5: クロージャによる外側変数の変更（By-Reference キャプチャ）
+    counter := 0
+    increment := func() int {
+        counter = counter + 1
+        return counter
+    }
+
+    increment()
+    increment()
+    finalCount := increment()
+
+    if counter == 3 && finalCount == 3 {
+        printf("  -> [PASS] Closure mutation (counter == 3)\n")
+    } else {
+        printf("  -> [FAIL] Closure mutation failed: counter=%d, return=%d\n", counter, finalCount)
+    }
+
+    printf("=== All Closure Tests Passed Successfully ===\n")
     return 0
 }

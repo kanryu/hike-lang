@@ -60,7 +60,8 @@ type CodeGenerator struct {
 	loopStack        []loopContext
 	entryAllocas     *strings.Builder
 	emittedFuncs     map[string]bool
-	specializedQueue []*sema.FuncType // 出力待ちの特殊化関数ワークリスト
+	specializedQueue []*sema.FuncType
+	escapedVars      map[string]bool // 追加: ヒープ昇格対象の変数集合
 	verbose          bool
 }
 
@@ -69,22 +70,23 @@ func New(prog *ast.Program, semaCtx *sema.Context, target *Target, sourcePath st
 		target = DefaultTarget()
 	}
 	return &CodeGenerator{
-		prog:           prog,
-		semaCtx:        semaCtx,
-		target:         target,
-		debugMgr:       NewDebugManager(sourcePath, debugEnabled),
-		symbols:        make(map[string]Symbol),
-		stringLiterals: []StringConst{},
-		loopStack:      []loopContext{},
-		deferStack:     []*ast.CallExpr{},
-		anonFuncs:      []anonFuncMeta{},
-		envStructDefs:  []string{},
-		itabDefs:       []string{},
-		generatedItabs: make(map[string]string),
-		thunkList:      []string{},
-		emittedThunks:  make(map[string]bool),
-		emittedFuncs:   make(map[string]bool),
-		verbose:        false,
+		prog:             prog,
+		semaCtx:          semaCtx,
+		target:           target,
+		debugMgr:         NewDebugManager(sourcePath, debugEnabled),
+		symbols:          make(map[string]Symbol),
+		stringLiterals:   []StringConst{},
+		loopStack:        []loopContext{},
+		deferStack:       []*ast.CallExpr{},
+		anonFuncs:        []anonFuncMeta{},
+		envStructDefs:    []string{},
+		itabDefs:         []string{},
+		generatedItabs:   make(map[string]string),
+		thunkList:        []string{},
+		emittedThunks:    make(map[string]bool),
+		emittedFuncs:     make(map[string]bool),
+		specializedQueue: []*sema.FuncType{}, // 追加
+		verbose:          false,
 	}
 }
 
@@ -1205,11 +1207,10 @@ func (g *CodeGenerator) scanCaptures(fl *ast.FuncLit) []string {
 						if _, isFn := g.semaCtx.Functions[name]; !isFn {
 							if name != "true" && name != "false" && name != "nil" &&
 								name != "len" && name != "cap" && name != "append" &&
-								name != "int" && name != "byte" && name != "string" && name != "bool" {
-								if _, isOuter := g.symbols[name]; isOuter {
-									seen[name] = true
-									captured = append(captured, name)
-								}
+								name != "int" && name != "byte" && name != "string" && name != "bool" &&
+								name != "float32" && name != "float64" && name != "void" && name != "any" && name != "error" {
+								seen[name] = true
+								captured = append(captured, name)
 							}
 						}
 					}
@@ -1247,6 +1248,12 @@ func (g *CodeGenerator) scanCaptures(fl *ast.FuncLit) []string {
 		case *ast.StructLiteral:
 			for _, sf := range node.Fields {
 				walkExpr(sf.Value)
+			}
+		case *ast.FuncLit:
+			if node.Body != nil {
+				for _, s := range node.Body.Statements {
+					walkStmt(s)
+				}
 			}
 		}
 	}
@@ -1421,6 +1428,7 @@ func (g *CodeGenerator) emitIntToPtr(b *strings.Builder, intReg string, targetPt
 
 func (g *CodeGenerator) emitAnonFunc(b *strings.Builder, meta anonFuncMeta) {
 	g.symbols = make(map[string]Symbol)
+	g.escapedVars = g.collectCapturedVars(meta.Decl.Body)
 	oldDeferStack := g.deferStack
 	g.deferStack = []*ast.CallExpr{}
 	defer func() {
@@ -1468,12 +1476,30 @@ func (g *CodeGenerator) emitAnonFunc(b *strings.Builder, meta anonFuncMeta) {
 
 	for _, p := range meta.Decl.Params {
 		pType := g.semaCtx.ResolveType(p.Type)
-		entryAllocas.WriteString(fmt.Sprintf("  %%%s = alloca %s\n", p.Name.Value, pType.LLVMType()))
-		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %%%s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), p.Name.Value))
-		g.symbols[p.Name.Value] = Symbol{
-			Name:     p.Name.Value,
-			LLVMName: "%" + p.Name.Value,
-			Type:     pType,
+		if g.escapedVars[p.Name.Value] {
+			size := pType.Size()
+			if size <= 0 {
+				size = 8
+			}
+			mallocReg := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+			typedPtr := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, pType.LLVMType()))
+			bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), typedPtr))
+			g.symbols[p.Name.Value] = Symbol{
+				Name:     p.Name.Value,
+				LLVMName: typedPtr,
+				Type:     pType,
+			}
+		} else {
+			llvmReg := g.llvmVarName(p.Name.Value)
+			entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, pType.LLVMType()))
+			bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), llvmReg))
+			g.symbols[p.Name.Value] = Symbol{
+				Name:     p.Name.Value,
+				LLVMName: llvmReg,
+				Type:     pType,
+			}
 		}
 	}
 
@@ -1514,6 +1540,7 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	}
 
 	g.symbols = make(map[string]Symbol)
+	g.escapedVars = g.collectCapturedVars(fn.Body)
 	oldDeferStack := g.deferStack
 	g.deferStack = []*ast.CallExpr{}
 	defer func() {
@@ -1523,7 +1550,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	funcMangledName := fn.Name.Value
 	var recvType sema.Type = nil
 
-	// 非特殊化の通常メソッドに対する名前解決（特殊化関数は Receiver == nil かつ Name に __ を含む）
 	if fn.Receiver != nil {
 		recvTypeName := ""
 		if named, ok := fn.Receiver.Type.(*ast.NamedType); ok {
@@ -1654,20 +1680,37 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 			pType = g.semaCtx.ResolveType(p.Type)
 		}
 
-		llvmReg := g.llvmVarName(p.Name.Value)
-		entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, pType.LLVMType()))
-		if g.debugMgr != nil && g.debugMgr.enabled {
-			varID, locID := g.debugMgr.RegisterLocalVariable(p.Name.Value, p.Token.Line, p.Token.Col, pType, true, i+1)
-			if varID > 0 {
-				entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-					pType.LLVMType(), llvmReg, varID, locID))
+		if g.escapedVars[p.Name.Value] {
+			size := pType.Size()
+			if size <= 0 {
+				size = 8
 			}
-		}
-		bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), llvmReg))
-		g.symbols[p.Name.Value] = Symbol{
-			Name:     p.Name.Value,
-			LLVMName: llvmReg,
-			Type:     pType,
+			mallocReg := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+			typedPtr := g.nextReg()
+			bodyBuilder.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, pType.LLVMType()))
+			bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), typedPtr))
+			g.symbols[p.Name.Value] = Symbol{
+				Name:     p.Name.Value,
+				LLVMName: typedPtr,
+				Type:     pType,
+			}
+		} else {
+			llvmReg := g.llvmVarName(p.Name.Value)
+			entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, pType.LLVMType()))
+			if g.debugMgr != nil && g.debugMgr.enabled {
+				varID, locID := g.debugMgr.RegisterLocalVariable(p.Name.Value, p.Token.Line, p.Token.Col, pType, true, i+1)
+				if varID > 0 {
+					entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+						pType.LLVMType(), llvmReg, varID, locID))
+				}
+			}
+			bodyBuilder.WriteString(fmt.Sprintf("  store %s %%%s_arg, %s* %s\n", pType.LLVMType(), p.Name.Value, pType.LLVMType(), llvmReg))
+			g.symbols[p.Name.Value] = Symbol{
+				Name:     p.Name.Value,
+				LLVMName: llvmReg,
+				Type:     pType,
+			}
 		}
 	}
 
@@ -1723,7 +1766,6 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 		bodyBuilder.WriteString(fmt.Sprintf("  ret %s zeroinitializer\n", retType))
 	}
 
-	// 特殊化された関数の場合は IR 内にトレース用コメントを挿入
 	if strings.Contains(funcMangledName, "__") {
 		b.WriteString(fmt.Sprintf("; [SPECIALIZATION] Function: @%s\n", funcMangledName))
 	}
@@ -1732,6 +1774,148 @@ func (g *CodeGenerator) emitFuncDecl(b *strings.Builder, fn *ast.FuncDecl) {
 	b.WriteString(entryAllocas.String())
 	b.WriteString(bodyBuilder.String())
 	b.WriteString("}\n\n")
+}
+
+func (g *CodeGenerator) collectCapturedVars(body *ast.BlockStmt) map[string]bool {
+	capturedSet := make(map[string]bool)
+	if body == nil {
+		return capturedSet
+	}
+	var walkStmt func(s ast.Statement)
+	var walkExpr func(e ast.Expression)
+
+	walkExpr = func(e ast.Expression) {
+		if e == nil {
+			return
+		}
+		switch node := e.(type) {
+		case *ast.FuncLit:
+			caps := g.scanCaptures(node)
+			for _, c := range caps {
+				capturedSet[c] = true
+			}
+			if node.Body != nil {
+				for _, s := range node.Body.Statements {
+					walkStmt(s)
+				}
+			}
+		case *ast.BinaryExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Right)
+		case *ast.PrefixExpr:
+			walkExpr(node.Right)
+		case *ast.CallExpr:
+			walkExpr(node.Function)
+			for _, arg := range node.Args {
+				walkExpr(arg)
+			}
+		case *ast.MemberExpr:
+			walkExpr(node.Object)
+		case *ast.IndexExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Index)
+		case *ast.SliceExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Low)
+			walkExpr(node.High)
+		case *ast.TypeAssertExpr:
+			walkExpr(node.Expr)
+		case *ast.ArrayLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.SliceLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.StructLiteral:
+			for _, sf := range node.Fields {
+				walkExpr(sf.Value)
+			}
+		}
+	}
+
+	walkStmt = func(s ast.Statement) {
+		if s == nil {
+			return
+		}
+		switch st := s.(type) {
+		case *ast.BlockStmt:
+			for _, inner := range st.Statements {
+				walkStmt(inner)
+			}
+		case *ast.ExprStmt:
+			walkExpr(st.Expr)
+		case *ast.ReturnStmt:
+			for _, v := range st.Values {
+				walkExpr(v)
+			}
+		case *ast.DeferStmt:
+			if st.Call != nil {
+				walkExpr(st.Call)
+			}
+		case *ast.AssignStmt:
+			for _, l := range st.Left {
+				walkExpr(l)
+			}
+			for _, r := range st.Right {
+				walkExpr(r)
+			}
+		case *ast.VarDecl:
+			if st.Value != nil {
+				walkExpr(st.Value)
+			}
+		case *ast.IfStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Condition)
+			walkStmt(st.Consequence)
+			if st.Alternative != nil {
+				walkStmt(st.Alternative)
+			}
+		case *ast.ForStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Cond)
+			if st.Post != nil {
+				walkStmt(st.Post)
+			}
+			walkStmt(st.Body)
+		case *ast.ForRangeStmt:
+			walkExpr(st.X)
+			walkStmt(st.Body)
+		case *ast.SwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Value)
+			for _, cc := range st.Cases {
+				for _, v := range cc.Values {
+					walkExpr(v)
+				}
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Expr)
+			for _, cc := range st.Cases {
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		}
+	}
+
+	for _, s := range body.Statements {
+		walkStmt(s)
+	}
+	return capturedSet
 }
 
 func (g *CodeGenerator) findGenericTemplate(name string) *ast.FuncDecl {
@@ -1944,6 +2128,22 @@ func (g *CodeGenerator) substituteAstType(t ast.TypeExpr, typeMap map[string]ast
 			}
 		}
 
+		// 4. 型引数を持つジェネリック型は特殊化構造体名に正規化
+		if len(newArgs) > 0 {
+			resolvedType := g.semaCtx.ResolveType(&ast.NamedType{
+				Token:    node.Token,
+				Package:  node.Package,
+				Name:     node.Name,
+				TypeArgs: newArgs,
+			})
+			if resolvedType != nil && resolvedType != sema.TypeVoid {
+				return &ast.NamedType{
+					Token: node.Token,
+					Name:  &ast.Identifier{Token: node.Token, Value: resolvedType.TypeName()},
+				}
+			}
+		}
+
 		return &ast.NamedType{
 			Token:    node.Token,
 			Package:  node.Package,
@@ -1962,6 +2162,20 @@ func (g *CodeGenerator) substituteAstType(t ast.TypeExpr, typeMap map[string]ast
 			Token: node.Token,
 			Key:   g.substituteAstType(node.Key, typeMap, orderedTypeArgs),
 			Value: g.substituteAstType(node.Value, typeMap, orderedTypeArgs),
+		}
+	case *ast.FuncType:
+		newParams := make([]ast.TypeExpr, len(node.ParamTypes))
+		for i, pt := range node.ParamTypes {
+			newParams[i] = g.substituteAstType(pt, typeMap, orderedTypeArgs)
+		}
+		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
+		for i, rt := range node.ReturnTypes {
+			newReturns[i] = g.substituteAstType(rt, typeMap, orderedTypeArgs)
+		}
+		return &ast.FuncType{
+			Token:       node.Token,
+			ParamTypes:  newParams,
+			ReturnTypes: newReturns,
 		}
 	}
 	return t
@@ -2220,6 +2434,29 @@ func (g *CodeGenerator) substituteAstExpr(e ast.Expression, typeMap map[string]a
 			Type:     newType,
 			Elements: newElems,
 		}
+	case *ast.FuncLit:
+		newParams := make([]*ast.ParamDecl, len(node.Params))
+		for i, p := range node.Params {
+			newParams[i] = &ast.ParamDecl{
+				Token: p.Token,
+				Name:  p.Name,
+				Type:  g.substituteAstType(p.Type, typeMap, orderedTypeArgs),
+			}
+		}
+		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
+		for i, rt := range node.ReturnTypes {
+			newReturns[i] = g.substituteAstType(rt, typeMap, orderedTypeArgs)
+		}
+		var newBody *ast.BlockStmt = nil
+		if node.Body != nil {
+			newBody = g.substituteAstBlock(node.Body, typeMap, orderedTypeArgs)
+		}
+		return &ast.FuncLit{
+			Token:       node.Token,
+			Params:      newParams,
+			ReturnTypes: newReturns,
+			Body:        newBody,
+		}
 	}
 	return e
 }
@@ -2279,7 +2516,6 @@ func (g *CodeGenerator) llvmVarName(name string) string {
 func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 	name := s.Name.Value
 	dTag := g.dbg(s.Token.Line, s.Token.Col)
-	llvmReg := g.llvmVarName(name)
 
 	var valReg string
 	var valType sema.Type
@@ -2300,12 +2536,26 @@ func (g *CodeGenerator) emitVarDecl(b *strings.Builder, s *ast.VarDecl) {
 		targetType = sema.TypeInt
 	}
 
-	g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetType.LLVMType()))
-	if g.debugMgr != nil && g.debugMgr.enabled {
-		varID, locID := g.debugMgr.RegisterLocalVariable(name, s.Token.Line, s.Token.Col, targetType, false, 0)
-		if varID > 0 {
-			g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-				targetType.LLVMType(), llvmReg, varID, locID))
+	var llvmReg string
+	if g.escapedVars[name] {
+		size := targetType.Size()
+		if size <= 0 {
+			size = 8
+		}
+		mallocReg := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+		typedPtr := g.nextReg()
+		b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, targetType.LLVMType()))
+		llvmReg = typedPtr
+	} else {
+		llvmReg = g.llvmVarName(name)
+		g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetType.LLVMType()))
+		if g.debugMgr != nil && g.debugMgr.enabled {
+			varID, locID := g.debugMgr.RegisterLocalVariable(name, s.Token.Line, s.Token.Col, targetType, false, 0)
+			if varID > 0 {
+				g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+					targetType.LLVMType(), llvmReg, varID, locID))
+			}
 		}
 	}
 	g.symbols[name] = Symbol{Name: name, LLVMName: llvmReg, Type: targetType}
@@ -2473,20 +2723,58 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					b.WriteString(fmt.Sprintf("  %s = extractvalue { %s, i1 } %s, 1\n", okReg, targetFn.ReturnTypes[0].LLVMType(), tupleReg))
 
 					if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
-						llvmReg := g.llvmVarName(vIdent.Value)
 						if _, exists := g.symbols[vIdent.Value]; !exists {
-							g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetFn.ReturnTypes[0].LLVMType()))
+							var llvmReg string
+							if g.escapedVars[vIdent.Value] {
+								size := targetFn.ReturnTypes[0].Size()
+								if size <= 0 {
+									size = 8
+								}
+								mallocReg := g.nextReg()
+								b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+								typedPtr := g.nextReg()
+								b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, targetFn.ReturnTypes[0].LLVMType()))
+								llvmReg = typedPtr
+							} else {
+								llvmReg = g.llvmVarName(vIdent.Value)
+								g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetFn.ReturnTypes[0].LLVMType()))
+								if g.debugMgr != nil && g.debugMgr.enabled {
+									varID, locID := g.debugMgr.RegisterLocalVariable(vIdent.Value, s.Token.Line, s.Token.Col, targetFn.ReturnTypes[0], false, 0)
+									if varID > 0 {
+										g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+											targetFn.ReturnTypes[0].LLVMType(), llvmReg, varID, locID))
+									}
+								}
+							}
 							g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: llvmReg, Type: targetFn.ReturnTypes[0]}
 						}
-						b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", targetFn.ReturnTypes[0].LLVMType(), valReg, targetFn.ReturnTypes[0].LLVMType(), llvmReg))
+						sym := g.symbols[vIdent.Value]
+						b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", targetFn.ReturnTypes[0].LLVMType(), valReg, targetFn.ReturnTypes[0].LLVMType(), sym.LLVMName))
 					}
 					if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
-						llvmReg := g.llvmVarName(okIdent.Value)
 						if _, exists := g.symbols[okIdent.Value]; !exists {
-							g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i1\n", llvmReg))
+							var llvmReg string
+							if g.escapedVars[okIdent.Value] {
+								mallocReg := g.nextReg()
+								b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 1)\n", mallocReg))
+								typedPtr := g.nextReg()
+								b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i1*\n", typedPtr, mallocReg))
+								llvmReg = typedPtr
+							} else {
+								llvmReg = g.llvmVarName(okIdent.Value)
+								g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i1\n", llvmReg))
+								if g.debugMgr != nil && g.debugMgr.enabled {
+									varID, locID := g.debugMgr.RegisterLocalVariable(okIdent.Value, s.Token.Line, s.Token.Col, sema.TypeBool, false, 0)
+									if varID > 0 {
+										g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata i1* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+											llvmReg, varID, locID))
+									}
+								}
+							}
 							g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: llvmReg, Type: sema.TypeBool}
 						}
-						b.WriteString(fmt.Sprintf("  store i1 %s, i1* %s\n", okReg, llvmReg))
+						sym := g.symbols[okIdent.Value]
+						b.WriteString(fmt.Sprintf("  store i1 %s, i1* %s\n", okReg, sym.LLVMName))
 					}
 					return
 				}
@@ -2534,34 +2822,58 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				}
 
 				if vIdent, ok := s.Left[0].(*ast.Identifier); ok && vIdent.Value != "_" {
-					llvmReg := g.llvmVarName(vIdent.Value)
 					if _, exists := g.symbols[vIdent.Value]; !exists {
-						g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, mp.Value.LLVMType()))
-						if g.debugMgr != nil && g.debugMgr.enabled {
-							varID, locID := g.debugMgr.RegisterLocalVariable(vIdent.Value, s.Token.Line, s.Token.Col, mp.Value, false, 0)
-							if varID > 0 {
-								g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-									mp.Value.LLVMType(), llvmReg, varID, locID))
+						var llvmReg string
+						if g.escapedVars[vIdent.Value] {
+							size := mp.Value.Size()
+							if size <= 0 {
+								size = 8
+							}
+							mallocReg := g.nextReg()
+							b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+							typedPtr := g.nextReg()
+							b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, mp.Value.LLVMType()))
+							llvmReg = typedPtr
+						} else {
+							llvmReg = g.llvmVarName(vIdent.Value)
+							g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, mp.Value.LLVMType()))
+							if g.debugMgr != nil && g.debugMgr.enabled {
+								varID, locID := g.debugMgr.RegisterLocalVariable(vIdent.Value, s.Token.Line, s.Token.Col, mp.Value, false, 0)
+								if varID > 0 {
+									g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+										mp.Value.LLVMType(), llvmReg, varID, locID))
+								}
 							}
 						}
 						g.symbols[vIdent.Value] = Symbol{Name: vIdent.Value, LLVMName: llvmReg, Type: mp.Value}
 					}
-					b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), llvmReg, dTag))
+					sym := g.symbols[vIdent.Value]
+					b.WriteString(fmt.Sprintf("  store %s %s, %s* %s%s\n", mp.Value.LLVMType(), finalValReg, mp.Value.LLVMType(), sym.LLVMName, dTag))
 				}
 				if okIdent, ok := s.Left[1].(*ast.Identifier); ok && okIdent.Value != "_" {
-					llvmReg := g.llvmVarName(okIdent.Value)
 					if _, exists := g.symbols[okIdent.Value]; !exists {
-						g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i1\n", llvmReg))
-						if g.debugMgr != nil && g.debugMgr.enabled {
-							varID, locID := g.debugMgr.RegisterLocalVariable(okIdent.Value, s.Token.Line, s.Token.Col, sema.TypeBool, false, 0)
-							if varID > 0 {
-								g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata i1* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-									llvmReg, varID, locID))
+						var llvmReg string
+						if g.escapedVars[okIdent.Value] {
+							mallocReg := g.nextReg()
+							b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 1)\n", mallocReg))
+							typedPtr := g.nextReg()
+							b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i1*\n", typedPtr, mallocReg))
+							llvmReg = typedPtr
+						} else {
+							llvmReg = g.llvmVarName(okIdent.Value)
+							g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca i1\n", llvmReg))
+							if g.debugMgr != nil && g.debugMgr.enabled {
+								varID, locID := g.debugMgr.RegisterLocalVariable(okIdent.Value, s.Token.Line, s.Token.Col, sema.TypeBool, false, 0)
+								if varID > 0 {
+									g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata i1* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+										llvmReg, varID, locID))
+								}
 							}
 						}
 						g.symbols[okIdent.Value] = Symbol{Name: okIdent.Value, LLVMName: llvmReg, Type: sema.TypeBool}
 					}
-					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %s%s\n", okReg, llvmReg, dTag))
+					sym := g.symbols[okIdent.Value]
+					b.WriteString(fmt.Sprintf("  store i1 %s, i1* %s%s\n", okReg, sym.LLVMName, dTag))
 				}
 				return
 			}
@@ -2588,14 +2900,27 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 					elemType = tupleElemTypes[i]
 				}
 
-				llvmReg := g.llvmVarName(lhsIdent.Value)
 				if _, exists := g.symbols[lhsIdent.Value]; !exists {
-					g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, elemType.LLVMType()))
-					if g.debugMgr != nil && g.debugMgr.enabled {
-						varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, elemType, false, 0)
-						if varID > 0 {
-							g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-								elemType.LLVMType(), llvmReg, varID, locID))
+					var llvmReg string
+					if g.escapedVars[lhsIdent.Value] {
+						size := elemType.Size()
+						if size <= 0 {
+							size = 8
+						}
+						mallocReg := g.nextReg()
+						b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+						typedPtr := g.nextReg()
+						b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, elemType.LLVMType()))
+						llvmReg = typedPtr
+					} else {
+						llvmReg = g.llvmVarName(lhsIdent.Value)
+						g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, elemType.LLVMType()))
+						if g.debugMgr != nil && g.debugMgr.enabled {
+							varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, elemType, false, 0)
+							if varID > 0 {
+								g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+									elemType.LLVMType(), llvmReg, varID, locID))
+							}
 						}
 					}
 					g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: llvmReg, Type: elemType}
@@ -2879,14 +3204,27 @@ func (g *CodeGenerator) emitAssignStmt(b *strings.Builder, s *ast.AssignStmt) {
 				}
 			}
 
-			llvmReg := g.llvmVarName(lhsIdent.Value)
 			if _, exists := g.symbols[lhsIdent.Value]; !exists {
-				g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetType.LLVMType()))
-				if g.debugMgr != nil && g.debugMgr.enabled {
-					varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, targetType, false, 0)
-					if varID > 0 {
-						g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
-							targetType.LLVMType(), llvmReg, varID, locID))
+				var llvmReg string
+				if g.escapedVars[lhsIdent.Value] {
+					size := targetType.Size()
+					if size <= 0 {
+						size = 8
+					}
+					mallocReg := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %d)\n", mallocReg, size))
+					typedPtr := g.nextReg()
+					b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, mallocReg, targetType.LLVMType()))
+					llvmReg = typedPtr
+				} else {
+					llvmReg = g.llvmVarName(lhsIdent.Value)
+					g.entryAllocas.WriteString(fmt.Sprintf("  %s = alloca %s\n", llvmReg, targetType.LLVMType()))
+					if g.debugMgr != nil && g.debugMgr.enabled {
+						varID, locID := g.debugMgr.RegisterLocalVariable(lhsIdent.Value, s.Token.Line, s.Token.Col, targetType, false, 0)
+						if varID > 0 {
+							g.entryAllocas.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s* %s, metadata !%d, metadata !DIExpression()), !dbg !%d\n",
+								targetType.LLVMType(), llvmReg, varID, locID))
+						}
 					}
 				}
 				g.symbols[lhsIdent.Value] = Symbol{Name: lhsIdent.Value, LLVMName: llvmReg, Type: targetType}
@@ -3761,6 +4099,8 @@ func (g *CodeGenerator) resolveTypeFromExpr(e ast.Expression) sema.Type {
 		return g.semaCtx.ResolveType(node)
 	case *ast.NamedType:
 		return g.semaCtx.ResolveType(node)
+	case *ast.FuncType:
+		return g.semaCtx.ResolveType(node)
 	case *ast.Identifier:
 		// 1. 組み込み基本型
 		switch node.Value {
@@ -3954,9 +4294,10 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 		}
 
 		fnType := &sema.FuncType{
-			Name:        fnName,
-			ParamTypes:  []sema.Type{},
-			ReturnTypes: []sema.Type{},
+			Name:            fnName,
+			ParamTypes:      []sema.Type{},
+			ReturnTypes:     []sema.Type{},
+			Specializations: make(map[string]*sema.FuncType),
 		}
 		for _, p := range e.Params {
 			fnType.ParamTypes = append(fnType.ParamTypes, g.semaCtx.ResolveType(p.Type))
@@ -4338,13 +4679,26 @@ func (g *CodeGenerator) resolveValue(b *strings.Builder, expr ast.Expression) (s
 			targetFnName, targetFn, finalRecvPtr, found := g.resolveMethodPath(st, structName, objPtrReg, "Get", b)
 			if found && targetFn != nil {
 				keyReg, keyType := g.resolveValue(b, e.Index)
-				keyConv := g.emitArgConversion(b, keyReg, keyType, targetFn.ParamTypes[1])
+				keyIdx := 1
+				if !targetFn.IsMethod && len(targetFn.ParamTypes) == 1 {
+					keyIdx = 0
+				}
+				var paramKeyType sema.Type = keyType
+				if len(targetFn.ParamTypes) > keyIdx {
+					paramKeyType = targetFn.ParamTypes[keyIdx]
+				}
+				keyConv := g.emitArgConversion(b, keyReg, keyType, paramKeyType)
+
+				recvTypeStr := fmt.Sprintf("%%struct.%s*", structName)
+				if targetFn.IsMethod && len(targetFn.ParamTypes) > 0 {
+					recvTypeStr = targetFn.ParamTypes[0].LLVMType()
+				}
 
 				tupleReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = call { %s, i1 } @%s(%s %s, %s %s)\n",
 					tupleReg, targetFn.ReturnTypes[0].LLVMType(), targetFnName,
-					targetFn.ParamTypes[0].LLVMType(), finalRecvPtr,
-					targetFn.ParamTypes[1].LLVMType(), keyConv))
+					recvTypeStr, finalRecvPtr,
+					paramKeyType.LLVMType(), keyConv))
 
 				valReg := g.nextReg()
 				b.WriteString(fmt.Sprintf("  %s = extractvalue { %s, i1 } %s, 0\n", valReg, targetFn.ReturnTypes[0].LLVMType(), tupleReg))

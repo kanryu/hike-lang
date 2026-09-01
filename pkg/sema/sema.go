@@ -675,6 +675,19 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 		}
 
 		return c.ResolveType(node)
+	case *ast.FuncType:
+		fnType := &FuncType{
+			ParamTypes:      []Type{},
+			ReturnTypes:     []Type{},
+			Specializations: make(map[string]*FuncType),
+		}
+		for _, pt := range node.ParamTypes {
+			fnType.ParamTypes = append(fnType.ParamTypes, c.ResolveTypeWithSubst(pt, subst))
+		}
+		for _, rt := range node.ReturnTypes {
+			fnType.ReturnTypes = append(fnType.ReturnTypes, c.ResolveTypeWithSubst(rt, subst))
+		}
+		return fnType
 	case *ast.PointerType:
 		return &PointerType{Base: c.ResolveTypeWithSubst(node.Base, subst)}
 	case *ast.SliceType:
@@ -1081,6 +1094,18 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		if ar, ok := t.(*ast.ArrayType); ok {
 			return checkType(ar.Elem)
 		}
+		if ft, ok := t.(*ast.FuncType); ok {
+			for _, pt := range ft.ParamTypes {
+				if err := checkType(pt); err != nil {
+					return err
+				}
+			}
+			for _, rt := range ft.ReturnTypes {
+				if err := checkType(rt); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 
@@ -1092,6 +1117,22 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return checkType(te)
 		}
 		switch n := e.(type) {
+		case *ast.FuncLit:
+			for _, p := range n.Params {
+				if err := checkType(p.Type); err != nil {
+					return err
+				}
+			}
+			for _, rt := range n.ReturnTypes {
+				if err := checkType(rt); err != nil {
+					return err
+				}
+			}
+			if n.Body != nil {
+				return checkStmt(n.Body)
+			}
+			return nil
+
 		case *ast.CallExpr:
 			if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "make" || id.Value == "delete") {
 				if len(n.Args) > 0 {

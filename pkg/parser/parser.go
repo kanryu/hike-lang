@@ -627,12 +627,24 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		}
 	} else if p.curTokenIs(token.FUNC) {
 		tok := p.curToken
-		p.nextToken()
+		if !p.expectPeek(token.LPAREN) {
+			return nil
+		}
+
 		paramTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.RPAREN) {
 			p.nextToken()
 			for {
-				paramTypes = append(paramTypes, p.parseTypeExpr())
+				firstType := p.parseTypeExpr()
+				// "x int" のように識別子が先行していた場合は後続の型を採用
+				if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.LBRACKET) || p.peekTokenIs(token.MAP) || p.peekTokenIs(token.FUNC) {
+					p.nextToken()
+					actualType := p.parseTypeExpr()
+					paramTypes = append(paramTypes, actualType)
+				} else {
+					paramTypes = append(paramTypes, firstType)
+				}
+
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()
 					if p.peekTokenIs(token.RPAREN) {
@@ -645,6 +657,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			}
 		}
 		p.expectPeek(token.RPAREN)
+
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.EOF) {
 			if p.peekTokenIs(token.LPAREN) {
@@ -1183,7 +1196,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	case token.FUNC:
 		tok := p.curToken
-		p.nextToken()
+		if !p.expectPeek(token.LPAREN) {
+			return nil
+		}
+
 		params := []*ast.ParamDecl{}
 		if !p.peekTokenIs(token.RPAREN) {
 			p.nextToken()
@@ -1204,6 +1220,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			}
 		}
 		p.expectPeek(token.RPAREN)
+
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
 			if p.peekTokenIs(token.LPAREN) {
@@ -1224,6 +1241,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 				returnTypes = append(returnTypes, p.parseTypeExpr())
 			}
 		}
+
 		if !p.expectPeek(token.LBRACE) {
 			return nil
 		}
@@ -1494,6 +1512,17 @@ func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
 				Package: pkgId,
 				Name:    mem.Field,
 			}
+		}
+	}
+	if fl, ok := e.(*ast.FuncLit); ok {
+		pts := make([]ast.TypeExpr, len(fl.Params))
+		for i, p := range fl.Params {
+			pts[i] = p.Type
+		}
+		return &ast.FuncType{
+			Token:       fl.Token,
+			ParamTypes:  pts,
+			ReturnTypes: fl.ReturnTypes,
 		}
 	}
 	return nil
