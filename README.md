@@ -562,10 +562,118 @@ func DemoMapBehavior() {
 }
 
 ```
+### First-Class Functions, Anonymous Functions & Closures
+
+Hike treats functions as first-class citizens. Functions can be assigned to variables, passed as arguments to higher-order functions, returned from factory functions, and defined inline as anonymous functions or closures.
+
+---
+
+#### 1. Function Types & Function Pointers
+
+Function types are defined using the `func(paramTypes...) (returnTypes...)` signature. Top-level functions can be referenced and assigned directly to function variables. Hike automatically wraps top-level function pointers in zero-overhead dispatch thunks.
+
+```go
+package main
+
+func multiply(a int, b int) int {
+    return a * b
+}
+
+func main() int {
+    // 1. Assign a top-level function to a variable
+    var op func(int, int) int = multiply
+
+    // 2. Call via function pointer
+    result := op(6, 7) // => 42
+    return 0
+}
 
 ```
 
+---
+
+#### 2. Anonymous Functions (Function Literals) & Higher-Order Functions
+
+Anonymous functions can be declared inline within expressions. They can be invoked immediately or passed as callback arguments to higher-order functions.
+
+```go
+package main
+
+// Higher-order function receiving a function parameter
+func applyOp(x int, y int, op func(int, int) int) int {
+    return op(x, y)
+}
+
+func main() int {
+    // 1. Anonymous function assignment
+    add := func(a int, b int) int {
+        return a + b
+    }
+    sum := add(10, 20) // => 30
+
+    // 2. Passing inline function literals directly
+    diff := applyOp(100, 30, func(a int, b int) int {
+        return a - b
+    }) // => 70
+
+    return 0
+}
+
 ```
+
+---
+
+#### 3. Closures & Reference Capturing (Automatic Heap Promotion)
+
+When an anonymous function references variables from its enclosing lexical scope, Hike creates a **closure**.
+
+* **By-Reference Capture & Mutation**: Variables captured by closures maintain full reference semantics. Modifications made inside the closure reflect in the outer scope, and multiple closures capturing the same variable share the updated state.
+* **Automatic Heap Promotion (Escape Analysis)**: Variables that escape their stack lifetime (such as when returning a closure from a factory function) are automatically promoted to the heap (`malloc`), preventing use-after-return and dangling stack pointer bugs.
+
+```go
+package main
+
+// Factory function returning a closure over an escaped parameter
+func makeAdder(base int) func(int) int {
+    return func(n int) int {
+        return base + n // 'base' is promoted to heap and survives makeAdder's return
+    }
+}
+
+func main() int {
+    // 1. Escaped closure invocation
+    add100 := makeAdder(100)
+    result := add100(42) // => 142
+
+    // 2. Mutable state capturing across calls
+    counter := 0
+    increment := func() int {
+        counter = counter + 1 // Mutates outer variable directly
+        return counter
+    }
+
+    increment()
+    increment()
+    finalCount := increment() // counter == 3, finalCount == 3
+
+    return 0
+}
+
+```
+
+---
+
+#### 4. Low-Level Fat Pointer Representation
+
+Under the hood, every Hike function value is compiled into an LLVM IR fat pointer:
+
+$$\text{FuncValue} \implies \{ \text{i8* fn\_ptr},\, \text{i8* env\_ptr} \}$$
+
+* **Top-Level Functions**: `{ i8* @__thunk_fn, i8* null }`
+* **Stateless Anonymous Functions**: `{ i8* @__anon_fn, i8* null }`
+* **Closures with Captured Environment**: `{ i8* @__anon_fn, i8* %heap_env }`
+
+During a call, the runtime extracts `fn_ptr` and passes `env_ptr` as an implicit first argument (`i8* %__env`), allowing function pointers and stateful closures to share a unified ABI with zero dynamic dispatch penalty.
 
 ## 💡 Example Walkthrough
 
