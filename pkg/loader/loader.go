@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,16 +12,90 @@ import (
 	"hikec-go/pkg/parser"
 )
 
+type ModuleInfo struct {
+	Name     string
+	RootDir  string
+	Replaces map[string]string
+}
+
 type Loader struct {
 	rootDir      string
+	moduleInfo   *ModuleInfo
 	visitedFiles map[string]bool
 	visitedPkgs  map[string]bool
 	verbose      bool
 }
 
+func findModuleRoot(startDir string) string {
+	absDir, err := filepath.Abs(startDir)
+	if err != nil {
+		cwd, _ := os.Getwd()
+		return cwd
+	}
+
+	cur := absDir
+	for {
+		modFile := filepath.Join(cur, "hike.mod")
+		if fi, err := os.Stat(modFile); err == nil && !fi.IsDir() {
+			return cur
+		}
+
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func readModuleInfo(startDir string) *ModuleInfo {
+	rootDir := findModuleRoot(startDir)
+	modFile := filepath.Join(rootDir, "hike.mod")
+	modName := filepath.Base(rootDir)
+	replaces := make(map[string]string)
+
+	if f, err := os.Open(modFile); err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "module ") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					modName = fields[1]
+				}
+			} else if strings.HasPrefix(line, "replace ") {
+				// replace std/json => ../../std/json
+				fields := strings.Fields(line)
+				if len(fields) >= 4 && fields[2] == "=>" {
+					replaces[fields[1]] = fields[3]
+				} else if len(fields) >= 3 {
+					replaces[fields[1]] = fields[2]
+				}
+			}
+		}
+	}
+
+	return &ModuleInfo{
+		Name:     modName,
+		RootDir:  rootDir,
+		Replaces: replaces,
+	}
+}
+
 func New(rootDir string) *Loader {
+	modInfo := readModuleInfo(rootDir)
+	effectiveRoot := rootDir
+	if effectiveRoot == "" || effectiveRoot == "." {
+		effectiveRoot = modInfo.RootDir
+	}
+
 	return &Loader{
-		rootDir:      rootDir,
+		rootDir:      effectiveRoot,
+		moduleInfo:   modInfo,
 		visitedFiles: make(map[string]bool),
 		visitedPkgs:  make(map[string]bool),
 		verbose:      false,
@@ -54,6 +129,11 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 			return nil, err
 		}
 
+		if l.moduleInfo == nil || l.moduleInfo.RootDir == "" {
+			l.moduleInfo = readModuleInfo(filepath.Dir(absPath))
+			l.rootDir = l.moduleInfo.RootDir
+		}
+
 		fi, err := os.Stat(absPath)
 		if err != nil {
 			return nil, err
@@ -67,7 +147,6 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 			fileQueue = append(fileQueue, files...)
 		} else {
 			fileQueue = append(fileQueue, absPath)
-			// 単一ファイルが指定された場合、同ディレクトリ内の同一パッケージファイルも探索対象に加える
 			dirFiles, _ := l.findHikeFilesInDir(filepath.Dir(absPath))
 			for _, df := range dirFiles {
 				if df != absPath {
@@ -155,15 +234,55 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 }
 
 func (l *Loader) resolveImportDir(importPath string, currentFileDir string) string {
+	// 1. 相対パス指定 (./ または ../)
 	if strings.HasPrefix(importPath, "./") || strings.HasPrefix(importPath, "../") {
 		return filepath.Clean(filepath.Join(currentFileDir, importPath))
 	}
 
-	candidateRoot := filepath.Join(l.rootDir, importPath)
-	if fi, err := os.Stat(candidateRoot); err == nil && fi.IsDir() {
-		return candidateRoot
+	// 2. hike.mod の replace ディレクティブ判定
+	if l.moduleInfo != nil && l.moduleInfo.Replaces != nil {
+		for fromMod, targetRel := range l.moduleInfo.Replaces {
+			if importPath == fromMod || strings.HasPrefix(importPath, fromMod+"/") {
+				relSub := strings.TrimPrefix(importPath, fromMod)
+				relSub = strings.TrimPrefix(relSub, "/")
+				targetPath := filepath.Clean(filepath.Join(l.moduleInfo.RootDir, targetRel, relSub))
+				if fi, err := os.Stat(targetPath); err == nil && fi.IsDir() {
+					return targetPath
+				}
+			}
+		}
 	}
 
+	cleanPath := importPath
+	if l.moduleInfo != nil && l.moduleInfo.Name != "" && strings.HasPrefix(cleanPath, l.moduleInfo.Name+"/") {
+		cleanPath = strings.TrimPrefix(cleanPath, l.moduleInfo.Name+"/")
+	}
+
+	// 3. モジュールルート直下探索
+	if l.moduleInfo != nil && l.moduleInfo.RootDir != "" {
+		candidateMod := filepath.Join(l.moduleInfo.RootDir, cleanPath)
+		if fi, err := os.Stat(candidateMod); err == nil && fi.IsDir() {
+			return candidateMod
+		}
+	}
+
+	// 4. Loader rootDir 探索
+	if l.rootDir != "" {
+		candidateRoot := filepath.Join(l.rootDir, cleanPath)
+		if fi, err := os.Stat(candidateRoot); err == nil && fi.IsDir() {
+			return candidateRoot
+		}
+	}
+
+	// 5. コンパイラ隣接探索
+	if exePath, err := os.Executable(); err == nil {
+		exeStdCandidate := filepath.Join(filepath.Dir(exePath), "..", cleanPath)
+		if fi, err := os.Stat(exeStdCandidate); err == nil && fi.IsDir() {
+			return exeStdCandidate
+		}
+	}
+
+	// 6. カレントファイルディレクトリ探索
 	candidateCurr := filepath.Join(currentFileDir, importPath)
 	if fi, err := os.Stat(candidateCurr); err == nil && fi.IsDir() {
 		return candidateCurr
@@ -183,7 +302,6 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		case *ast.TypeDecl:
 			localTypes[node.Name.Value] = true
 		case *ast.FuncDecl:
-			// 実体のある関数のみをマングル対象とし、外部C関数（Body == nil）は除外する
 			if node.Receiver == nil && node.Body != nil {
 				localFuncs[node.Name.Value] = true
 			}
@@ -257,7 +375,13 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		}
 		switch node := e.(type) {
 		case *ast.Identifier:
-			if localFuncs[node.Value] || localGlobals[node.Value] || localConsts[node.Value] {
+			// 組み込み基本型およびキーワードはリライトしない
+			switch node.Value {
+			case "int", "byte", "bool", "float32", "float64", "float", "string", "void", "any", "error",
+				"true", "false", "nil", "make", "len", "cap", "append", "delete":
+				return node
+			}
+			if localFuncs[node.Value] || localGlobals[node.Value] || localConsts[node.Value] || localTypes[node.Value] {
 				return &ast.Identifier{Token: node.Token, Value: pkgName + "_" + node.Value}
 			}
 			return node

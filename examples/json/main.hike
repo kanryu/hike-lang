@@ -1,0 +1,95 @@
+package main
+
+import (
+    "std/json"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("=== Testing std/json File Read/Write and Parsing ===\n\n")
+
+    // 1. JSONファイルの読み込み
+    jsonPath := "examples/json/data.json"
+    content := json.ReadFile(jsonPath)
+    if len(content) == 0 {
+        printf("  -> [FAIL] Failed to read %s\n", jsonPath)
+        return 1
+    }
+    printf("1. Successfully read '%s' (%d bytes)\n", jsonPath, len(content))
+
+    // 2. パース
+    doc := json.Parse(content)
+    if doc == nil {
+        printf("  -> [FAIL] JSON parsing failed\n")
+        return 1
+    }
+    printf("2. JSON successfully parsed into DOM tree\n")
+
+    // 3. フィールドの取得と表示
+    nameVal := doc.Get("name")
+    verVal := doc.Get("version")
+    fastVal := doc.Get("is_fast")
+    tagsVal := doc.Get("tags")
+    statsVal := doc.Get("stats")
+
+    if nameVal != nil {
+        printf("   - Name    : %s\n", nameVal.AsString())
+    }
+    if verVal != nil {
+        printf("   - Version : %d\n", verVal.AsInt())
+    }
+    if fastVal != nil {
+        printf("   - Is Fast : %d\n", fastVal.AsBool())
+    }
+
+    if tagsVal != nil {
+        printf("   - Tags (%d items): ", len(tagsVal.ArrVal))
+        for i := 0; i < len(tagsVal.ArrVal); i = i + 1 {
+            tag := tagsVal.At(i)
+            printf("[%s] ", tag.AsString())
+        }
+        printf("\n")
+    }
+
+    if statsVal != nil {
+        stars := statsVal.Get("stars")
+        ratio := statsVal.Get("ratio")
+        if stars != nil && ratio != nil {
+            printf("   - Stats   : Stars=%d, Ratio=%.1f\n", stars.AsInt(), ratio.AsFloat())
+        }
+    }
+
+    // 4. 新しいノードの追加と変更
+    printf("\n3. Mutating JSON Document...\n")
+    doc.Set("modified_by", json.NewString("hikec-runtime"))
+    doc.Set("build_number", json.NewNumber(4200.0))
+
+    newStats := json.NewObject()
+    newStats.Set("active_threads", json.NewNumber(8.0))
+    doc.Set("runtime_stats", newStats)
+
+    // 5. 文字列化 (Stringify)
+    outStr := json.Stringify(doc)
+    printf("4. Serialized JSON:\n   %s\n\n", outStr)
+
+    // 6. 変更結果のファイル保存
+    outPath := "examples/json/output.json"
+    ok := json.WriteFile(outPath, outStr)
+    if ok {
+        printf("5. Successfully saved modified JSON to '%s'\n", outPath)
+    } else {
+        printf("  -> [FAIL] Failed to write to '%s'\n", outPath)
+        return 1
+    }
+
+    // 7. 保存したファイルの再検証
+    reloaded := json.ReadFile(outPath)
+    reDoc := json.Parse(reloaded)
+    if reDoc != nil && reDoc.Get("modified_by") != nil {
+        printf("6. Verified re-loaded JSON: modified_by = '%s'\n", reDoc.Get("modified_by").AsString())
+        printf("\n=== All JSON Tests Passed Successfully ===\n")
+    }
+
+    return 0
+}

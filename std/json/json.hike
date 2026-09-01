@@ -1,0 +1,384 @@
+package json
+
+// C-ABI 標準ライブラリ宣言
+func fopen(filename string, mode string) *byte
+func fclose(fp *byte) int
+func fseek(fp *byte, offset int, whence int) int
+func ftell(fp *byte) int
+func fread(buffer *byte, size int, count int, fp *byte) int
+func fwrite(buffer *byte, size int, count int, fp *byte) int
+func malloc(size int) *byte
+func free(ptr *byte)
+func strlen(s string) int
+func sprintf(buf *byte, format string, ...) int
+func atoi(s string) int
+func atof(s string) float64
+
+// JSON 型定義定数
+const (
+    TypeNull   int = 0
+    TypeBool   int = 1
+    TypeNumber int = 2
+    TypeString int = 3
+    TypeArray  int = 4
+    TypeObject int = 5
+)
+
+// JSON ノード構造体
+type Value struct {
+    Type      int
+    BoolVal   bool
+    NumVal    float64
+    StrVal    string
+    ArrVal    []*Value
+    ObjKeys   []string
+    ObjVals   []*Value
+}
+
+// -------------------------------------------------------------
+// ファクトリ関数
+// -------------------------------------------------------------
+
+func NewNull() *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeNull
+    return v
+}
+
+func NewBool(b bool) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeBool
+    v.BoolVal = b
+    return v
+}
+
+func NewNumber(n float64) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeNumber
+    v.NumVal = n
+    return v
+}
+
+func NewString(s string) *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeString
+    v.StrVal = s
+    return v
+}
+
+func NewArray() *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeArray
+    v.ArrVal = make([]*Value, 0, 8)
+    return v
+}
+
+func NewObject() *Value {
+    v := (*Value)(malloc(128))
+    v.Type = TypeObject
+    v.ObjKeys = make([]string, 0, 8)
+    v.ObjVals = make([]*Value, 0, 8)
+    return v
+}
+
+// -------------------------------------------------------------
+// オブジェクト / 配列 操作メソッド
+// -------------------------------------------------------------
+
+func (v *Value) Set(key string, val *Value) {
+    if v.Type != TypeObject {
+        return
+    }
+    for i := 0; i < len(v.ObjKeys); i = i + 1 {
+        if v.ObjKeys[i] == key {
+            v.ObjVals[i] = val
+            return
+        }
+    }
+    v.ObjKeys = append(v.ObjKeys, key)
+    v.ObjVals = append(v.ObjVals, val)
+}
+
+func (v *Value) Get(key string) *Value {
+    if v.Type != TypeObject {
+        return nil
+    }
+    for i := 0; i < len(v.ObjKeys); i = i + 1 {
+        if v.ObjKeys[i] == key {
+            return v.ObjVals[i]
+        }
+    }
+    return nil
+}
+
+func (v *Value) Append(elem *Value) {
+    if v.Type != TypeArray {
+        return
+    }
+    v.ArrVal = append(v.ArrVal, elem)
+}
+
+func (v *Value) At(idx int) *Value {
+    if v.Type != TypeArray || idx < 0 || idx >= len(v.ArrVal) {
+        return nil
+    }
+    return v.ArrVal[idx]
+}
+
+func (v *Value) AsInt() int {
+    return int(v.NumVal)
+}
+
+func (v *Value) AsFloat() float64 {
+    return v.NumVal
+}
+
+func (v *Value) AsString() string {
+    return v.StrVal
+}
+
+func (v *Value) AsBool() bool {
+    return v.BoolVal
+}
+
+// -------------------------------------------------------------
+// JSON パーサー実装
+// -------------------------------------------------------------
+
+type Parser struct {
+    src string
+    pos int
+    len int
+}
+
+func (p *Parser) skipWhitespace() {
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 { // ' ', '\t', '\n', '\r'
+            p.pos = p.pos + 1
+        } else {
+            break
+        }
+    }
+}
+
+func (p *Parser) parseString() string {
+    p.pos = p.pos + 1 // skip '"'
+    start := p.pos
+    for p.pos < p.len && p.src[p.pos] != 34 { // until next '"'
+        if p.src[p.pos] == 92 && p.pos+1 < p.len { // escape '\'
+            p.pos = p.pos + 2
+        } else {
+            p.pos = p.pos + 1
+        }
+    }
+    s := p.src[start:p.pos]
+    if p.pos < p.len {
+        p.pos = p.pos + 1 // consume closing '"'
+    }
+    return s
+}
+
+func (p *Parser) parseNumber() *Value {
+    start := p.pos
+    if p.src[p.pos] == 45 { // '-'
+        p.pos = p.pos + 1
+    }
+    for p.pos < p.len {
+        ch := p.src[p.pos]
+        if (ch >= 48 && ch <= 57) || ch == 46 { // 0-9 or '.'
+            p.pos = p.pos + 1
+        } else {
+            break
+        }
+    }
+    numStr := p.src[start:p.pos]
+    val := atof(numStr)
+    return NewNumber(val)
+}
+
+func (p *Parser) parseArray() *Value {
+    arr := NewArray()
+    p.pos = p.pos + 1 // skip '['
+    p.skipWhitespace()
+
+    if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+        p.pos = p.pos + 1
+        return arr
+    }
+
+    for p.pos < p.len {
+        elem := p.parseValue()
+        if elem != nil {
+            arr.Append(elem)
+        }
+        p.skipWhitespace()
+        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+            p.pos = p.pos + 1
+            p.skipWhitespace()
+        } else if p.pos < p.len && p.src[p.pos] == 93 { // ']'
+            p.pos = p.pos + 1
+            break
+        } else {
+            break
+        }
+    }
+    return arr
+}
+
+func (p *Parser) parseObject() *Value {
+    obj := NewObject()
+    p.pos = p.pos + 1 // skip '{'
+    p.skipWhitespace()
+
+    if p.pos < p.len && p.src[p.pos] == 125 { // '}'
+        p.pos = p.pos + 1
+        return obj
+    }
+
+    for p.pos < p.len {
+        p.skipWhitespace()
+        if p.src[p.pos] != 34 { // '"'
+            break
+        }
+        key := p.parseString()
+        p.skipWhitespace()
+
+        if p.pos < p.len && p.src[p.pos] == 58 { // ':'
+            p.pos = p.pos + 1
+        }
+
+        val := p.parseValue()
+        obj.Set(key, val)
+
+        p.skipWhitespace()
+        if p.pos < p.len && p.src[p.pos] == 44 { // ','
+            p.pos = p.pos + 1
+            p.skipWhitespace()
+        } else if p.pos < p.len && p.src[p.pos] == 125 { // '}'
+            p.pos = p.pos + 1
+            break
+        } else {
+            break
+        }
+    }
+    return obj
+}
+
+func (p *Parser) parseValue() *Value {
+    p.skipWhitespace()
+    if p.pos >= p.len {
+        return nil
+    }
+
+    ch := p.src[p.pos]
+    if ch == 123 { // '{'
+        return p.parseObject()
+    } else if ch == 91 { // '['
+        return p.parseArray()
+    } else if ch == 34 { // '"'
+        return NewString(p.parseString())
+    } else if (ch >= 48 && ch <= 57) || ch == 45 { // 0-9 or '-'
+        return p.parseNumber()
+    } else if ch == 116 { // 't' (true)
+        p.pos = p.pos + 4
+        return NewBool(true)
+    } else if ch == 102 { // 'f' (false)
+        p.pos = p.pos + 5
+        return NewBool(false)
+    } else if ch == 110 { // 'n' (null)
+        p.pos = p.pos + 4
+        return NewNull()
+    }
+    return nil
+}
+
+func Parse(jsonStr string) *Value {
+    p := Parser{
+        src: jsonStr,
+        pos: 0,
+        len: len(jsonStr),
+    }
+    return p.parseValue()
+}
+
+// -------------------------------------------------------------
+// JSON シリアライザー実装
+// -------------------------------------------------------------
+
+func Stringify(v *Value) string {
+    if v == nil || v.Type == TypeNull {
+        return "null"
+    }
+    if v.Type == TypeBool {
+        if v.BoolVal {
+            return "true"
+        }
+        return "false"
+    }
+    if v.Type == TypeNumber {
+        buf := malloc(64)
+        if v.NumVal == float64(int(v.NumVal)) {
+            sprintf(buf, "%d", int(v.NumVal))
+        } else {
+            sprintf(buf, "%f", v.NumVal)
+        }
+        return string(buf)
+    }
+    if v.Type == TypeString {
+        return "\"" + v.StrVal + "\""
+    }
+    if v.Type == TypeArray {
+        res := "["
+        for i := 0; i < len(v.ArrVal); i = i + 1 {
+            if i > 0 {
+                res = res + ", "
+            }
+            res = res + Stringify(v.ArrVal[i])
+        }
+        return res + "]"
+    }
+    if v.Type == TypeObject {
+        res := "{"
+        for i := 0; i < len(v.ObjKeys); i = i + 1 {
+            if i > 0 {
+                res = res + ", "
+            }
+            res = res + "\"" + v.ObjKeys[i] + "\": " + Stringify(v.ObjVals[i])
+        }
+        return res + "}"
+    }
+    return "null"
+}
+
+// -------------------------------------------------------------
+// ファイル I/O ヘルパー
+// -------------------------------------------------------------
+
+func ReadFile(filename string) string {
+    fp := fopen(filename, "rb")
+    if fp == nil {
+        return ""
+    }
+    fseek(fp, 0, 2) // SEEK_END
+    size := ftell(fp)
+    fseek(fp, 0, 0) // SEEK_SET
+
+    buf := malloc(size + 1)
+    fread(buf, 1, size, fp)
+    fclose(fp)
+
+    buf[size] = 0
+    return string(buf)
+}
+
+func WriteFile(filename string, content string) bool {
+    fp := fopen(filename, "wb")
+    if fp == nil {
+        return false
+    }
+    size := len(content)
+    wrote := fwrite((*byte)(content), 1, size, fp)
+    fclose(fp)
+    return wrote == size
+}

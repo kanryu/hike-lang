@@ -352,9 +352,19 @@ func (p *Parser) parseConstDecl() []ast.Decl {
 		var lastExpr ast.Expression = nil
 
 		for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+			if p.curTokenIs(token.SEMICOLON) {
+				p.nextToken()
+				continue
+			}
 			if p.curTokenIs(token.IDENT) {
 				name := p.parseIdentifier()
 				var valExpr ast.Expression = nil
+
+				// 型注釈 (例: TypeNull int = 0) がある場合は型式として消費
+				if !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
+					p.nextToken()
+					_ = p.parseTypeExpr()
+				}
 
 				if p.peekTokenIs(token.ASSIGN) {
 					p.nextToken()
@@ -381,6 +391,12 @@ func (p *Parser) parseConstDecl() []ast.Decl {
 	} else {
 		name := p.parseIdentifier()
 		var valExpr ast.Expression = nil
+
+		if !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
+			p.nextToken()
+			_ = p.parseTypeExpr()
+		}
+
 		if p.peekTokenIs(token.ASSIGN) {
 			p.nextToken()
 			p.nextToken()

@@ -1,0 +1,10 @@
+{
+  "name": "Hike Language",
+  "version": 1,
+  "is_fast": true,
+  "tags": ["systems", "llvm", "native"],
+  "stats": {
+    "stars": 1280,
+    "ratio": 99.5
+  }
+}
