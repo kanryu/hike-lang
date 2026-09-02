@@ -1,7 +1,7 @@
 
 # Hike (`hike-lang`)
 
-A systems programming language with Go-like syntax that compiles to LLVM IR, generating C-ABI compliant shared libraries, standalone executables, and C/C++ headers[cite: 3].
+A systems programming language with Go-like syntax that compiles to LLVM IR, generating C-ABI compliant shared libraries, standalone executables, and C/C++ headers.
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![LLVM/Clang](https://img.shields.io/badge/Backend-LLVM%2FClang-blue?style=flat&logo=llvm)](https://llvm.org)
@@ -17,24 +17,24 @@ A systems programming language with Go-like syntax that compiles to LLVM IR, gen
 
 ## Overview
 
-Hike is an experimental language designed to combine Go-style syntax and ergonomics with direct C-ABI compatibility and no garbage collection[cite: 3].
+Hike is an experimental language designed to combine Go-style syntax and ergonomics with direct C-ABI compatibility and no garbage collection.
 
-Rather than generating machine code or object files directly, the Hike compiler (`hikec`) acts strictly as a frontend that compiles source code into clean LLVM IR (`.ll`)[cite: 3]. Platform-specific binary formatting (PE/COFF, ELF), optimization passes (`-O3`), and linking are delegated entirely to Clang and LLVM[cite: 3].
+Rather than generating machine code or object files directly, the Hike compiler (`hikec`) acts strictly as a frontend that compiles source code into clean LLVM IR (`.ll`). Platform-specific binary formatting (PE/COFF, ELF), optimization passes (`-O3`), and linking are delegated entirely to Clang and LLVM.
 
-The compiler can output standalone executables, C-compatible shared libraries (`.dll` / `.so`), or WebAssembly modules (`.wasm`)[cite: 3]. When exporting library functions, `hikec` can automatically generate corresponding C/C++ header files (`.h`)[cite: 3].
+The compiler can output standalone executables, C-compatible shared libraries (`.dll` / `.so`), or WebAssembly modules (`.wasm`). When exporting library functions, `hikec` can automatically generate corresponding C/C++ header files (`.h`).
 
 ---
 
 ## Features
 
-* **Go-Style Syntax**: Supports type inference (`:=`), multiple return values, structs, and slice views[cite: 3].
-* **No Runtime Garbage Collector**: No GC pauses and no background scheduler[cite: 3]. Memory layout follows standard C conventions[cite: 3].
-* **Monomorphized Generics**: Generic functions and structs are specialized at compile time[cite: 3].
-* **C-ABI Export & Header Generation**: Top-level functions using POD types or pointers export cleanly to C-ABI, with matching `.h` headers emitted on demand[cite: 3].
-* **Stack-Based Iteration**: Map and container iteration protocols allocate state on the stack (`alloca`) rather than requiring dynamic heap allocation[cite: 3].
-* **Closures with Escape Analysis**: Supports anonymous functions and closures[cite: 3]. Variables that outlive their scope are promoted to the heap, represented via a 2-word fat pointer `{fn_ptr, env_ptr}`[cite: 3].
-* **Delegated Toolchain Pipeline**: Emits LLVM IR, allowing users to pass standard Clang/LLVM linker flags, link native `.rc` resources, or run LTO directly[cite: 3].
-* **Standalone WebAssembly Target**: Compiles to `wasm32-unknown-unknown` via Clang `-nostdlib` without requiring third-party WASI toolchains[cite: 3].
+* **Go-Style Syntax**: Supports type inference (`:=`), multiple return values, structs, and slice views.
+* **No Runtime Garbage Collector**: No GC pauses and no background scheduler. Memory layout follows standard C conventions.
+* **Monomorphized Generics**: Generic functions and structs are specialized at compile time.
+* **C-ABI Export & Header Generation**: Top-level functions using POD types or pointers export cleanly to C-ABI, with matching `.h` headers emitted on demand.
+* **Stack-Based Iteration**: Map and container iteration protocols allocate state on the stack (`alloca`) rather than requiring dynamic heap allocation.
+* **Closures with Escape Analysis**: Supports anonymous functions and closures. Variables that outlive their scope are promoted to the heap, represented via a 2-word fat pointer `{fn_ptr, env_ptr}`.
+* **Delegated Toolchain Pipeline**: Emits LLVM IR, allowing users to pass standard Clang/LLVM linker flags, link native `.rc` resources, or run LTO directly.
+* **Standalone WebAssembly Target**: Compiles to `wasm32-unknown-unknown` via Clang `-nostdlib` without requiring third-party WASI toolchains.
 
 ---
 
