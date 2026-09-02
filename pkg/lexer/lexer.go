@@ -2,6 +2,8 @@ package lexer
 
 import (
 	"fmt"
+	"strings"
+
 	"hikec-go/pkg/token"
 )
 
@@ -343,17 +345,36 @@ func (l *Lexer) readNumber() (string, token.TokenType) {
 }
 
 func (l *Lexer) readString() string {
-	position := l.position + 1
+	var sb strings.Builder
 	for {
 		l.readChar()
 		if l.ch == '"' || l.ch == 0 {
 			break
 		}
-		if l.ch == '\\' && l.peekChar() != 0 {
+		if l.ch == '\\' {
 			l.readChar()
+			switch l.ch {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			case 'r':
+				sb.WriteByte('\r')
+			case '"':
+				sb.WriteByte('"')
+			case '\\':
+				sb.WriteByte('\\')
+			case '0':
+				sb.WriteByte(0)
+			default:
+				sb.WriteByte('\\')
+				sb.WriteByte(l.ch)
+			}
+		} else {
+			sb.WriteByte(l.ch)
 		}
 	}
-	str := l.input[position:l.position]
+	str := sb.String()
 	l.readChar()
 	return str
 }

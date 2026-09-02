@@ -1,7 +1,6 @@
 package loader
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,93 +8,32 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/lexer"
+	"hikec-go/pkg/mod"
 	"hikec-go/pkg/parser"
 )
 
-type ModuleInfo struct {
-	Name     string
-	RootDir  string
-	Replaces map[string]string
-}
-
 type Loader struct {
 	rootDir      string
-	moduleInfo   *ModuleInfo
+	module       *mod.Module
 	visitedFiles map[string]bool
 	visitedPkgs  map[string]bool
 	verbose      bool
 }
 
-func findModuleRoot(startDir string) string {
-	absDir, err := filepath.Abs(startDir)
-	if err != nil {
-		cwd, _ := os.Getwd()
-		return cwd
-	}
-
-	cur := absDir
-	for {
-		modFile := filepath.Join(cur, "hike.mod")
-		if fi, err := os.Stat(modFile); err == nil && !fi.IsDir() {
-			return cur
-		}
-
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-		cur = parent
-	}
-
-	cwd, _ := os.Getwd()
-	return cwd
-}
-
-func readModuleInfo(startDir string) *ModuleInfo {
-	rootDir := findModuleRoot(startDir)
-	modFile := filepath.Join(rootDir, "hike.mod")
-	modName := filepath.Base(rootDir)
-	replaces := make(map[string]string)
-
-	if f, err := os.Open(modFile); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, "module ") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					modName = fields[1]
-				}
-			} else if strings.HasPrefix(line, "replace ") {
-				// replace std/json => ../../std/json
-				fields := strings.Fields(line)
-				if len(fields) >= 4 && fields[2] == "=>" {
-					replaces[fields[1]] = fields[3]
-				} else if len(fields) >= 3 {
-					replaces[fields[1]] = fields[2]
-				}
-			}
-		}
-	}
-
-	return &ModuleInfo{
-		Name:     modName,
-		RootDir:  rootDir,
-		Replaces: replaces,
-	}
-}
-
 func New(rootDir string) *Loader {
-	modInfo := readModuleInfo(rootDir)
 	effectiveRoot := rootDir
-	if effectiveRoot == "" || effectiveRoot == "." {
-		effectiveRoot = modInfo.RootDir
+	if effectiveRoot == "" {
+		effectiveRoot = "."
+	}
+
+	module, _ := mod.FindModuleRoot(effectiveRoot)
+	if module != nil && module.RootDir != "" {
+		effectiveRoot = module.RootDir
 	}
 
 	return &Loader{
 		rootDir:      effectiveRoot,
-		moduleInfo:   modInfo,
+		module:       module,
 		visitedFiles: make(map[string]bool),
 		visitedPkgs:  make(map[string]bool),
 		verbose:      false,
@@ -129,9 +67,11 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 			return nil, err
 		}
 
-		if l.moduleInfo == nil || l.moduleInfo.RootDir == "" {
-			l.moduleInfo = readModuleInfo(filepath.Dir(absPath))
-			l.rootDir = l.moduleInfo.RootDir
+		if l.module == nil || l.module.RootDir == "" {
+			l.module, _ = mod.FindModuleRoot(filepath.Dir(absPath))
+			if l.module != nil {
+				l.rootDir = l.module.RootDir
+			}
 		}
 
 		fi, err := os.Stat(absPath)
@@ -190,8 +130,11 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 
 		fileDir := filepath.Dir(curFile)
 		for _, imp := range fileProg.Imports {
-			pkgDir := l.resolveImportDir(imp.Path, fileDir)
-			if pkgDir != "" && !l.visitedPkgs[pkgDir] {
+			if l.module == nil {
+				continue
+			}
+			pkgDir, err := l.module.ResolvePackagePath(fileDir, imp.Path)
+			if err == nil && pkgDir != "" && !l.visitedPkgs[pkgDir] {
 				l.visitedPkgs[pkgDir] = true
 				hikeFiles, err := l.findHikeFilesInDir(pkgDir)
 				if err != nil {
@@ -233,64 +176,6 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 	return files, nil
 }
 
-func (l *Loader) resolveImportDir(importPath string, currentFileDir string) string {
-	// 1. 相対パス指定 (./ または ../)
-	if strings.HasPrefix(importPath, "./") || strings.HasPrefix(importPath, "../") {
-		return filepath.Clean(filepath.Join(currentFileDir, importPath))
-	}
-
-	// 2. hike.mod の replace ディレクティブ判定
-	if l.moduleInfo != nil && l.moduleInfo.Replaces != nil {
-		for fromMod, targetRel := range l.moduleInfo.Replaces {
-			if importPath == fromMod || strings.HasPrefix(importPath, fromMod+"/") {
-				relSub := strings.TrimPrefix(importPath, fromMod)
-				relSub = strings.TrimPrefix(relSub, "/")
-				targetPath := filepath.Clean(filepath.Join(l.moduleInfo.RootDir, targetRel, relSub))
-				if fi, err := os.Stat(targetPath); err == nil && fi.IsDir() {
-					return targetPath
-				}
-			}
-		}
-	}
-
-	cleanPath := importPath
-	if l.moduleInfo != nil && l.moduleInfo.Name != "" && strings.HasPrefix(cleanPath, l.moduleInfo.Name+"/") {
-		cleanPath = strings.TrimPrefix(cleanPath, l.moduleInfo.Name+"/")
-	}
-
-	// 3. モジュールルート直下探索
-	if l.moduleInfo != nil && l.moduleInfo.RootDir != "" {
-		candidateMod := filepath.Join(l.moduleInfo.RootDir, cleanPath)
-		if fi, err := os.Stat(candidateMod); err == nil && fi.IsDir() {
-			return candidateMod
-		}
-	}
-
-	// 4. Loader rootDir 探索
-	if l.rootDir != "" {
-		candidateRoot := filepath.Join(l.rootDir, cleanPath)
-		if fi, err := os.Stat(candidateRoot); err == nil && fi.IsDir() {
-			return candidateRoot
-		}
-	}
-
-	// 5. コンパイラ隣接探索
-	if exePath, err := os.Executable(); err == nil {
-		exeStdCandidate := filepath.Join(filepath.Dir(exePath), "..", cleanPath)
-		if fi, err := os.Stat(exeStdCandidate); err == nil && fi.IsDir() {
-			return exeStdCandidate
-		}
-	}
-
-	// 6. カレントファイルディレクトリ探索
-	candidateCurr := filepath.Join(currentFileDir, importPath)
-	if fi, err := os.Stat(candidateCurr); err == nil && fi.IsDir() {
-		return candidateCurr
-	}
-
-	return ""
-}
-
 func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl {
 	localTypes := make(map[string]bool)
 	localFuncs := make(map[string]bool)
@@ -322,47 +207,63 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		}
 		switch node := t.(type) {
 		case *ast.NamedType:
+			typeArgs := make([]ast.TypeExpr, len(node.TypeArgs))
+			for i, arg := range node.TypeArgs {
+				typeArgs[i] = rewriteType(arg)
+			}
 			if node.Package == nil && localTypes[node.Name.Value] {
 				return &ast.NamedType{
-					Token:   node.Token,
-					Package: nil,
-					Name:    &ast.Identifier{Token: node.Name.Token, Value: pkgName + "_" + node.Name.Value},
+					Token:    node.Token,
+					Package:  nil,
+					Name:     &ast.Identifier{Token: node.Name.Token, Value: pkgName + "_" + node.Name.Value},
+					TypeArgs: typeArgs,
 				}
 			}
-			return node
+			return &ast.NamedType{
+				Token:    node.Token,
+				Package:  node.Package,
+				Name:     node.Name,
+				TypeArgs: typeArgs,
+			}
 		case *ast.PointerType:
 			return &ast.PointerType{Token: node.Token, Base: rewriteType(node.Base)}
 		case *ast.SliceType:
 			return &ast.SliceType{Token: node.Token, Elem: rewriteType(node.Elem)}
 		case *ast.ArrayType:
 			return &ast.ArrayType{Token: node.Token, Len: node.Len, Elem: rewriteType(node.Elem)}
+		case *ast.MapType:
+			return &ast.MapType{
+				Token: node.Token,
+				Key:   rewriteType(node.Key),
+				Value: rewriteType(node.Value),
+			}
 		case *ast.FuncType:
-			pts := []ast.TypeExpr{}
-			for _, pt := range node.ParamTypes {
-				pts = append(pts, rewriteType(pt))
+			pts := make([]ast.TypeExpr, len(node.ParamTypes))
+			for i, pt := range node.ParamTypes {
+				pts[i] = rewriteType(pt)
 			}
-			rts := []ast.TypeExpr{}
-			for _, rt := range node.ReturnTypes {
-				rts = append(rts, rewriteType(rt))
+			rts := make([]ast.TypeExpr, len(node.ReturnTypes))
+			for i, rt := range node.ReturnTypes {
+				rts[i] = rewriteType(rt)
 			}
-			return &ast.FuncType{Token: node.Token, ParamTypes: pts, ReturnTypes: rts}
+			return &ast.FuncType{Token: node.Token, ParamTypes: pts, ReturnTypes: rts, IsVariadic: node.IsVariadic}
 		case *ast.InterfaceType:
-			methods := []*ast.MethodSig{}
-			for _, m := range node.Methods {
-				pts := []ast.TypeExpr{}
-				for _, pt := range m.ParamTypes {
-					pts = append(pts, rewriteType(pt))
+			methods := make([]*ast.MethodSig, len(node.Methods))
+			for i, m := range node.Methods {
+				pts := make([]ast.TypeExpr, len(m.ParamTypes))
+				for j, pt := range m.ParamTypes {
+					pts[j] = rewriteType(pt)
 				}
-				rts := []ast.TypeExpr{}
-				for _, rt := range m.ReturnTypes {
-					rts = append(rts, rewriteType(rt))
+				rts := make([]ast.TypeExpr, len(m.ReturnTypes))
+				for j, rt := range m.ReturnTypes {
+					rts[j] = rewriteType(rt)
 				}
-				methods = append(methods, &ast.MethodSig{
+				methods[i] = &ast.MethodSig{
 					Token:       m.Token,
 					Name:        m.Name,
 					ParamTypes:  pts,
 					ReturnTypes: rts,
-				})
+				}
 			}
 			return &ast.InterfaceType{Token: node.Token, Methods: methods}
 		}
@@ -375,7 +276,6 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		}
 		switch node := e.(type) {
 		case *ast.Identifier:
-			// 組み込み基本型およびキーワードはリライトしない
 			switch node.Value {
 			case "int", "byte", "bool", "float32", "float64", "float", "string", "void", "any", "error",
 				"true", "false", "nil", "make", "len", "cap", "append", "delete":
@@ -399,9 +299,9 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Right:    rewriteExpr(node.Right),
 			}
 		case *ast.CallExpr:
-			args := []ast.Expression{}
-			for _, arg := range node.Args {
-				args = append(args, rewriteExpr(arg))
+			args := make([]ast.Expression, len(node.Args))
+			for i, arg := range node.Args {
+				args[i] = rewriteExpr(arg)
 			}
 			return &ast.CallExpr{
 				Token:       node.Token,
@@ -421,6 +321,16 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Left:  rewriteExpr(node.Left),
 				Index: rewriteExpr(node.Index),
 			}
+		case *ast.GenericInstExpr:
+			args := make([]ast.TypeExpr, len(node.TypeArgs))
+			for i, arg := range node.TypeArgs {
+				args[i] = rewriteType(arg)
+			}
+			return &ast.GenericInstExpr{
+				Token:    node.Token,
+				Left:     rewriteExpr(node.Left),
+				TypeArgs: args,
+			}
 		case *ast.SliceExpr:
 			return &ast.SliceExpr{
 				Token: node.Token,
@@ -431,23 +341,68 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		case *ast.StructLiteral:
 			t := rewriteType(node.Type)
 			namedT, _ := t.(*ast.NamedType)
-			fields := []*ast.StructFieldValue{}
-			for _, f := range node.Fields {
-				fields = append(fields, &ast.StructFieldValue{
+			fields := make([]*ast.StructFieldValue, len(node.Fields))
+			for i, f := range node.Fields {
+				fields[i] = &ast.StructFieldValue{
 					Name:  f.Name,
 					Value: rewriteExpr(f.Value),
-				})
+				}
 			}
 			return &ast.StructLiteral{
 				Token:  node.Token,
 				Type:   namedT,
 				Fields: fields,
 			}
+		case *ast.ArrayLiteral:
+			elements := make([]ast.Expression, len(node.Elements))
+			for i, el := range node.Elements {
+				elements[i] = rewriteExpr(el)
+			}
+			return &ast.ArrayLiteral{
+				Token:    node.Token,
+				Type:     rewriteType(node.Type).(*ast.ArrayType),
+				Elements: elements,
+			}
+		case *ast.SliceLiteral:
+			elements := make([]ast.Expression, len(node.Elements))
+			for i, el := range node.Elements {
+				elements[i] = rewriteExpr(el)
+			}
+			return &ast.SliceLiteral{
+				Token:    node.Token,
+				Type:     rewriteType(node.Type).(*ast.SliceType),
+				Elements: elements,
+			}
 		case *ast.TypeAssertExpr:
 			return &ast.TypeAssertExpr{
 				Token:  node.Token,
 				Expr:   rewriteExpr(node.Expr),
 				Target: rewriteType(node.Target),
+			}
+		case *ast.FuncLit:
+			params := make([]*ast.ParamDecl, len(node.Params))
+			for i, p := range node.Params {
+				params[i] = &ast.ParamDecl{
+					Token:     p.Token,
+					Name:      p.Name,
+					Type:      rewriteType(p.Type),
+					IsEscaped: p.IsEscaped,
+				}
+			}
+			rts := make([]ast.TypeExpr, len(node.ReturnTypes))
+			for i, rt := range node.ReturnTypes {
+				rts[i] = rewriteType(rt)
+			}
+			var body *ast.BlockStmt = nil
+			if node.Body != nil {
+				body = rewriteStmt(node.Body).(*ast.BlockStmt)
+			}
+			return &ast.FuncLit{
+				Token:       node.Token,
+				Params:      params,
+				ReturnTypes: rts,
+				Body:        body,
+				IsVariadic:  node.IsVariadic,
 			}
 		}
 		return e
@@ -462,19 +417,20 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			return &ast.ExprStmt{Token: node.Token, Expr: rewriteExpr(node.Expr)}
 		case *ast.VarDecl:
 			return &ast.VarDecl{
-				Token: node.Token,
-				Name:  node.Name,
-				Type:  rewriteType(node.Type),
-				Value: rewriteExpr(node.Value),
+				Token:     node.Token,
+				Name:      node.Name,
+				Type:      rewriteType(node.Type),
+				Value:     rewriteExpr(node.Value),
+				IsEscaped: node.IsEscaped,
 			}
 		case *ast.AssignStmt:
-			lefts := []ast.Expression{}
-			for _, l := range node.Left {
-				lefts = append(lefts, rewriteExpr(l))
+			lefts := make([]ast.Expression, len(node.Left))
+			for i, l := range node.Left {
+				lefts[i] = rewriteExpr(l)
 			}
-			rights := []ast.Expression{}
-			for _, r := range node.Right {
-				rights = append(rights, rewriteExpr(r))
+			rights := make([]ast.Expression, len(node.Right))
+			for i, r := range node.Right {
+				rights[i] = rewriteExpr(r)
 			}
 			return &ast.AssignStmt{
 				Token: node.Token,
@@ -483,15 +439,21 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Type:  rewriteType(node.Type),
 			}
 		case *ast.ReturnStmt:
-			vals := []ast.Expression{}
-			for _, v := range node.Values {
-				vals = append(vals, rewriteExpr(v))
+			vals := make([]ast.Expression, len(node.Values))
+			for i, v := range node.Values {
+				vals[i] = rewriteExpr(v)
 			}
 			return &ast.ReturnStmt{Token: node.Token, Values: vals}
+		case *ast.DeferStmt:
+			var call *ast.CallExpr = nil
+			if node.Call != nil {
+				call = rewriteExpr(node.Call).(*ast.CallExpr)
+			}
+			return &ast.DeferStmt{Token: node.Token, Call: call}
 		case *ast.BlockStmt:
-			stmts := []ast.Statement{}
-			for _, st := range node.Statements {
-				stmts = append(stmts, rewriteStmt(st))
+			stmts := make([]ast.Statement, len(node.Statements))
+			for i, st := range node.Statements {
+				stmts[i] = rewriteStmt(st)
 			}
 			return &ast.BlockStmt{Token: node.Token, Statements: stmts}
 		case *ast.IfStmt:
@@ -519,17 +481,17 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Body:  rewriteStmt(node.Body).(*ast.BlockStmt),
 			}
 		case *ast.SwitchStmt:
-			cases := []*ast.CaseClause{}
-			for _, cc := range node.Cases {
-				vals := []ast.Expression{}
-				for _, v := range cc.Values {
-					vals = append(vals, rewriteExpr(v))
+			cases := make([]*ast.CaseClause, len(node.Cases))
+			for i, cc := range node.Cases {
+				vals := make([]ast.Expression, len(cc.Values))
+				for j, v := range cc.Values {
+					vals[j] = rewriteExpr(v)
 				}
-				body := []ast.Statement{}
-				for _, bs := range cc.Body {
-					body = append(body, rewriteStmt(bs))
+				body := make([]ast.Statement, len(cc.Body))
+				for j, bs := range cc.Body {
+					body[j] = rewriteStmt(bs)
 				}
-				cases = append(cases, &ast.CaseClause{Token: cc.Token, Values: vals, Body: body})
+				cases[i] = &ast.CaseClause{Token: cc.Token, Values: vals, Body: body}
 			}
 			return &ast.SwitchStmt{
 				Token: node.Token,
@@ -538,17 +500,17 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Cases: cases,
 			}
 		case *ast.TypeSwitchStmt:
-			cases := []*ast.TypeCaseClause{}
-			for _, cc := range node.Cases {
-				types := []ast.TypeExpr{}
-				for _, te := range cc.Types {
-					types = append(types, rewriteType(te))
+			cases := make([]*ast.TypeCaseClause, len(node.Cases))
+			for i, cc := range node.Cases {
+				types := make([]ast.TypeExpr, len(cc.Types))
+				for j, te := range cc.Types {
+					types[j] = rewriteType(te)
 				}
-				body := []ast.Statement{}
-				for _, bs := range cc.Body {
-					body = append(body, rewriteStmt(bs))
+				body := make([]ast.Statement, len(cc.Body))
+				for j, bs := range cc.Body {
+					body[j] = rewriteStmt(bs)
 				}
-				cases = append(cases, &ast.TypeCaseClause{Token: cc.Token, Types: types, Body: body})
+				cases[i] = &ast.TypeCaseClause{Token: cc.Token, Types: types, Body: body}
 			}
 			return &ast.TypeSwitchStmt{
 				Token:    node.Token,
@@ -567,25 +529,27 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 		case *ast.TypeDecl:
 			mangledName := pkgName + "_" + node.Name.Value
 			if st, ok := node.Type.(*ast.StructType); ok {
-				fields := []*ast.FieldDecl{}
-				for _, f := range st.Fields {
-					fields = append(fields, &ast.FieldDecl{
+				fields := make([]*ast.FieldDecl, len(st.Fields))
+				for i, f := range st.Fields {
+					fields[i] = &ast.FieldDecl{
 						Token:      f.Token,
 						Name:       f.Name,
 						Type:       rewriteType(f.Type),
 						IsEmbedded: f.IsEmbedded,
-					})
+					}
 				}
 				mangledDecls = append(mangledDecls, &ast.TypeDecl{
-					Token: node.Token,
-					Name:  &ast.Identifier{Token: node.Name.Token, Value: mangledName},
-					Type:  &ast.StructType{Token: st.Token, Fields: fields},
+					Token:      node.Token,
+					Name:       &ast.Identifier{Token: node.Name.Token, Value: mangledName},
+					TypeParams: node.TypeParams,
+					Type:       &ast.StructType{Token: st.Token, Fields: fields},
 				})
 			} else {
 				mangledDecls = append(mangledDecls, &ast.TypeDecl{
-					Token: node.Token,
-					Name:  &ast.Identifier{Token: node.Name.Token, Value: mangledName},
-					Type:  rewriteType(node.Type),
+					Token:      node.Token,
+					Name:       &ast.Identifier{Token: node.Name.Token, Value: mangledName},
+					TypeParams: node.TypeParams,
+					Type:       rewriteType(node.Type),
 				})
 			}
 
@@ -593,9 +557,10 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			var recv *ast.ParamDecl = nil
 			if node.Receiver != nil {
 				recv = &ast.ParamDecl{
-					Token: node.Receiver.Token,
-					Name:  node.Receiver.Name,
-					Type:  rewriteType(node.Receiver.Type),
+					Token:     node.Receiver.Token,
+					Name:      node.Receiver.Name,
+					Type:      rewriteType(node.Receiver.Type),
+					IsEscaped: node.Receiver.IsEscaped,
 				}
 			}
 
@@ -604,18 +569,19 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				fnName = pkgName + "_" + fnName
 			}
 
-			params := []*ast.ParamDecl{}
-			for _, p := range node.Params {
-				params = append(params, &ast.ParamDecl{
-					Token: p.Token,
-					Name:  p.Name,
-					Type:  rewriteType(p.Type),
-				})
+			params := make([]*ast.ParamDecl, len(node.Params))
+			for i, p := range node.Params {
+				params[i] = &ast.ParamDecl{
+					Token:     p.Token,
+					Name:      p.Name,
+					Type:      rewriteType(p.Type),
+					IsEscaped: p.IsEscaped,
+				}
 			}
 
-			rts := []ast.TypeExpr{}
-			for _, rt := range node.ReturnTypes {
-				rts = append(rts, rewriteType(rt))
+			rts := make([]ast.TypeExpr, len(node.ReturnTypes))
+			for i, rt := range node.ReturnTypes {
+				rts[i] = rewriteType(rt)
 			}
 
 			var body *ast.BlockStmt = nil
@@ -627,6 +593,7 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 				Token:       node.Token,
 				Receiver:    recv,
 				Name:        &ast.Identifier{Token: node.Name.Token, Value: fnName},
+				TypeParams:  node.TypeParams,
 				Params:      params,
 				ReturnTypes: rts,
 				Body:        body,
@@ -642,10 +609,11 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 
 		case *ast.VarDecl:
 			mangledDecls = append(mangledDecls, &ast.VarDecl{
-				Token: node.Token,
-				Name:  &ast.Identifier{Token: node.Name.Token, Value: pkgName + "_" + node.Name.Value},
-				Type:  rewriteType(node.Type),
-				Value: rewriteExpr(node.Value),
+				Token:     node.Token,
+				Name:      &ast.Identifier{Token: node.Name.Token, Value: pkgName + "_" + node.Name.Value},
+				Type:      rewriteType(node.Type),
+				Value:     rewriteExpr(node.Value),
+				IsEscaped: node.IsEscaped,
 			})
 		}
 	}

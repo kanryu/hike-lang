@@ -1,4 +1,4 @@
-package codegen
+package target
 
 import (
 	"fmt"
@@ -97,4 +97,8 @@ func ParseTarget(name string) (*Target, error) {
 	default:
 		return nil, fmt.Errorf("unsupported target: %s", name)
 	}
+}
+
+func (t *Target) Is64Bit() bool {
+	return t.PtrBytes == 8
 }

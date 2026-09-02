@@ -28,6 +28,38 @@ type TypeExpr interface {
 	typeExprNode()
 }
 
+// -----------------------------------------------------------------------------
+// キャスト・意味変換定義
+// -----------------------------------------------------------------------------
+
+type CastKind int
+
+const (
+	CastIntToFloat   CastKind = iota // 整数 -> 浮動小数点 (sitofp)
+	CastFloatToInt                   // 浮動小数点 -> 整数 (fptosi)
+	CastTrunc                        // 整数縮小 (trunc)
+	CastZExt                         // 整数符号なし拡張 (zext)
+	CastBitcast                      // ポインタ/型ビットキャスト
+	CastPtrToInt                     // ポインタ -> 整数 (ptrtoint)
+	CastIntToPtr                     // 整数 -> ポインタ (inttoptr)
+	CastBoxInterface                 // インターフェース / any へのボクシング
+)
+
+// セマンティクス解析で決定された暗黙のキャスト・型変換式
+type ImplicitCastExpr struct {
+	Token      token.Token
+	Expr       Expression
+	Kind       CastKind
+	TargetType TypeExpr
+}
+
+func (ice *ImplicitCastExpr) expressionNode()      {}
+func (ice *ImplicitCastExpr) TokenLiteral() string { return ice.Token.Literal }
+
+// -----------------------------------------------------------------------------
+// 宣言ノード
+// -----------------------------------------------------------------------------
+
 type ImportDecl struct {
 	Token token.Token
 	Path  string
@@ -47,18 +79,16 @@ func (cd *ConstDecl) TokenLiteral() string { return cd.Token.Literal }
 
 // トップレベルおよびローカルの変数宣言ノード
 type VarDecl struct {
-	Token token.Token
-	Name  *Identifier
-	Type  TypeExpr
-	Value Expression
+	Token     token.Token
+	Name      *Identifier
+	Type      TypeExpr
+	Value     Expression
+	IsEscaped bool // 追加: エスケープ解析によりヒープ昇格が必要かどうかの決定フラグ
 }
 
 func (vd *VarDecl) declNode()            {}
 func (vd *VarDecl) statementNode()       {}
 func (vd *VarDecl) TokenLiteral() string { return vd.Token.Literal }
-
-// AssignStmt にも declNode を実装
-func (as *AssignStmt) declNode() {}
 
 type Program struct {
 	Package string
@@ -89,6 +119,48 @@ func (f *File) TokenLiteral() string {
 	}
 	return ""
 }
+
+type ParamDecl struct {
+	Token     token.Token
+	Name      *Identifier
+	Type      TypeExpr
+	IsEscaped bool // 追加: クロージャにキャプチャされヒープ退避が必要かどうかの決定フラグ
+}
+
+func (pd *ParamDecl) TokenLiteral() string {
+	if pd.Name != nil {
+		return pd.Name.TokenLiteral()
+	}
+	return pd.Token.Literal
+}
+
+type TypeDecl struct {
+	Token      token.Token
+	Name       *Identifier
+	TypeParams []*TypeParam
+	Type       TypeExpr
+}
+
+func (td *TypeDecl) declNode()            {}
+func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
+
+type FuncDecl struct {
+	Token       token.Token
+	Receiver    *ParamDecl
+	Name        *Identifier
+	TypeParams  []*TypeParam
+	Params      []*ParamDecl
+	IsVariadic  bool
+	ReturnTypes []TypeExpr
+	Body        *BlockStmt
+}
+
+func (fd *FuncDecl) declNode()            {}
+func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
+
+// -----------------------------------------------------------------------------
+// 式ノード
+// -----------------------------------------------------------------------------
 
 type Identifier struct {
 	Token token.Token
@@ -158,7 +230,6 @@ type IndexExpr struct {
 func (ie *IndexExpr) expressionNode()      {}
 func (ie *IndexExpr) TokenLiteral() string { return ie.Token.Literal }
 
-// fn[int, string](...) や Box[int]{...} の型適用式
 type GenericInstExpr struct {
 	Token    token.Token
 	Left     Expression
@@ -187,14 +258,99 @@ type CallExpr struct {
 func (ce *CallExpr) expressionNode()      {}
 func (ce *CallExpr) TokenLiteral() string { return ce.Token.Literal }
 
+type IotaExpr struct {
+	Token token.Token
+	Value int64
+}
+
+func (ie *IotaExpr) expressionNode()      {}
+func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }
+
+type SliceExpr struct {
+	Token token.Token
+	Left  Expression
+	Low   Expression
+	High  Expression
+}
+
+func (s *SliceExpr) expressionNode()      {}
+func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }
+
+type SliceLiteral struct {
+	Token    token.Token
+	Type     *SliceType
+	Elements []Expression
+}
+
+func (sl *SliceLiteral) expressionNode()      {}
+func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+type StructFieldValue struct {
+	Name  *Identifier
+	Value Expression
+}
+
+type StructLiteral struct {
+	Token  token.Token
+	Type   *NamedType
+	Fields []*StructFieldValue
+}
+
+func (sl *StructLiteral) expressionNode()      {}
+func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
+
+type ArrayLiteral struct {
+	Token    token.Token
+	Type     *ArrayType
+	Elements []Expression
+}
+
+func (al *ArrayLiteral) expressionNode()      {}
+func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
+
+type MethodSig struct {
+	Token       token.Token
+	Name        *Identifier
+	ParamTypes  []TypeExpr
+	ReturnTypes []TypeExpr
+}
+
+func (ms *MethodSig) expressionNode()      {}
+func (ms *MethodSig) TokenLiteral() string { return ms.Token.Literal }
+
+type TypeAssertExpr struct {
+	Token  token.Token
+	Expr   Expression
+	Target TypeExpr
+}
+
+func (tae *TypeAssertExpr) expressionNode()      {}
+func (tae *TypeAssertExpr) TokenLiteral() string { return tae.Token.Literal }
+
+type FuncLit struct {
+	Token       token.Token
+	Params      []*ParamDecl
+	IsVariadic  bool
+	ReturnTypes []TypeExpr
+	Body        *BlockStmt
+}
+
+func (fl *FuncLit) expressionNode()      {}
+func (fl *FuncLit) TokenLiteral() string { return fl.Token.Literal }
+
+// -----------------------------------------------------------------------------
+// 型ノード (TypeExpr)
+// -----------------------------------------------------------------------------
+
 type NamedType struct {
 	Token    token.Token
 	Package  *Identifier
 	Name     *Identifier
-	TypeArgs []TypeExpr // 追加: Box[int] の [int]
+	TypeArgs []TypeExpr
 }
 
 func (nt *NamedType) typeExprNode()        {}
+func (nt *NamedType) expressionNode()      {}
 func (nt *NamedType) TokenLiteral() string { return nt.Token.Literal }
 
 type PointerType struct {
@@ -203,6 +359,7 @@ type PointerType struct {
 }
 
 func (pt *PointerType) typeExprNode()        {}
+func (pt *PointerType) expressionNode()      {}
 func (pt *PointerType) TokenLiteral() string { return pt.Token.Literal }
 
 type StructType struct {
@@ -223,42 +380,66 @@ type FieldDecl struct {
 func (fd *FieldDecl) statementNode()       {}
 func (fd *FieldDecl) TokenLiteral() string { return fd.Token.Literal }
 
-type ParamDecl struct {
+type SliceType struct {
+	Token token.Token
+	Elem  TypeExpr
+}
+
+func (s *SliceType) typeExprNode()        {}
+func (s *SliceType) expressionNode()      {}
+func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
+
+type ArrayType struct {
+	Token token.Token
+	Len   int64
+	Elem  TypeExpr
+}
+
+func (at *ArrayType) typeExprNode()        {}
+func (at *ArrayType) expressionNode()      {}
+func (at *ArrayType) TokenLiteral() string { return at.Token.Literal }
+
+type MapType struct {
+	Token token.Token
+	Key   TypeExpr
+	Value TypeExpr
+}
+
+func (mt *MapType) typeExprNode()        {}
+func (mt *MapType) expressionNode()      {}
+func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
+
+type TypeParam struct {
 	Token token.Token
 	Name  *Identifier
-	Type  TypeExpr
 }
 
-func (pd *ParamDecl) TokenLiteral() string {
-	if pd.Name != nil {
-		return pd.Name.TokenLiteral()
-	}
-	return pd.Token.Literal
+func (tp *TypeParam) typeExprNode()        {}
+func (tp *TypeParam) TokenLiteral() string { return tp.Token.Literal }
+
+type InterfaceType struct {
+	Token   token.Token
+	Methods []*MethodSig
 }
 
-type TypeDecl struct {
-	Token      token.Token
-	Name       *Identifier
-	TypeParams []*TypeParam // 追加: [T]
-	Type       TypeExpr
-}
+func (it *InterfaceType) typeExprNode()        {}
+func (it *InterfaceType) expressionNode()      {}
+func (it *InterfaceType) TokenLiteral() string { return it.Token.Literal }
 
-func (td *TypeDecl) declNode()            {}
-func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
-
-type FuncDecl struct {
+type FuncType struct {
 	Token       token.Token
-	Receiver    *ParamDecl
-	Name        *Identifier
-	TypeParams  []*TypeParam // 追加: [T, U]
-	Params      []*ParamDecl
+	ParamTypes  []TypeExpr
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
-	Body        *BlockStmt
 }
 
-func (fd *FuncDecl) declNode()            {}
-func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
+func (ft *FuncType) typeExprNode()        {}
+func (ft *FuncType) expressionNode()      {}
+func (ft *FuncType) TokenLiteral() string { return ft.Token.Literal }
+
+// -----------------------------------------------------------------------------
+// 文ノード (Statement)
+// -----------------------------------------------------------------------------
 
 type BlockStmt struct {
 	Token      token.Token
@@ -280,10 +461,11 @@ type AssignStmt struct {
 	Token token.Token
 	Left  []Expression
 	Right []Expression
-	Type  TypeExpr // var x any = 42 などの型指定
+	Type  TypeExpr
 }
 
 func (as *AssignStmt) statementNode() {}
+func (as *AssignStmt) declNode()      {}
 func (as *AssignStmt) TokenLiteral() string {
 	if as.Token.Literal != "" {
 		return as.Token.Literal
@@ -323,7 +505,7 @@ func (cs *ContinueStmt) TokenLiteral() string { return cs.Token.Literal }
 
 type IfStmt struct {
 	Token       token.Token
-	Init        Statement // 追加: if init; cond
+	Init        Statement
 	Condition   Expression
 	Consequence *BlockStmt
 	Alternative Statement
@@ -354,14 +536,6 @@ type ForRangeStmt struct {
 func (fr *ForRangeStmt) statementNode()       {}
 func (fr *ForRangeStmt) TokenLiteral() string { return fr.Token.Literal }
 
-type IotaExpr struct {
-	Token token.Token
-	Value int64
-}
-
-func (ie *IotaExpr) expressionNode()      {}
-func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }
-
 type CaseClause struct {
 	Token  token.Token
 	Values []Expression
@@ -373,150 +547,13 @@ func (cc *CaseClause) TokenLiteral() string { return cc.Token.Literal }
 
 type SwitchStmt struct {
 	Token token.Token
-	Init  Statement // 追加: switch init; expr
+	Init  Statement
 	Value Expression
 	Cases []*CaseClause
 }
 
 func (ss *SwitchStmt) statementNode()       {}
 func (ss *SwitchStmt) TokenLiteral() string { return ss.Token.Literal }
-
-type SliceType struct {
-	Token token.Token
-	Elem  TypeExpr
-}
-
-func (s *SliceType) typeExprNode()        {}
-func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
-func (s *SliceType) expressionNode()      {}
-func (pt *PointerType) expressionNode()   {}
-func (nt *NamedType) expressionNode()     {}
-
-type SliceExpr struct {
-	Token token.Token
-	Left  Expression
-	Low   Expression
-	High  Expression
-}
-
-func (s *SliceExpr) expressionNode()      {}
-func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }
-
-type SliceLiteral struct {
-	Token    token.Token
-	Type     *SliceType
-	Elements []Expression
-}
-
-func (sl *SliceLiteral) expressionNode()      {}
-func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
-
-type MapType struct {
-	Token token.Token // 'map'
-	Key   TypeExpr
-	Value TypeExpr
-}
-
-func (mt *MapType) typeExprNode()        {}
-func (mt *MapType) expressionNode()      {}
-func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
-
-// 型パラメータ宣言（例: T, U）
-type TypeParam struct {
-	Token token.Token
-	Name  *Identifier
-}
-
-func (tp *TypeParam) typeExprNode()        {}
-func (tp *TypeParam) TokenLiteral() string { return tp.Token.Literal }
-
-type StructFieldValue struct {
-	Name  *Identifier
-	Value Expression
-}
-
-type StructLiteral struct {
-	Token  token.Token
-	Type   *NamedType
-	Fields []*StructFieldValue
-}
-
-func (sl *StructLiteral) expressionNode()      {}
-func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
-
-type ArrayType struct {
-	Token token.Token
-	Len   int64
-	Elem  TypeExpr
-}
-
-func (at *ArrayType) typeExprNode()        {}
-func (at *ArrayType) expressionNode()      {}
-func (at *ArrayType) TokenLiteral() string { return at.Token.Literal }
-
-type ArrayLiteral struct {
-	Token    token.Token
-	Type     *ArrayType
-	Elements []Expression
-}
-
-func (al *ArrayLiteral) expressionNode()      {}
-func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
-
-// インターフェースのメソッドシグネチャノード
-type MethodSig struct {
-	Token       token.Token
-	Name        *Identifier
-	ParamTypes  []TypeExpr
-	ReturnTypes []TypeExpr
-}
-
-func (ms *MethodSig) expressionNode()      {}
-func (ms *MethodSig) TokenLiteral() string { return ms.Token.Literal }
-
-// インターフェース型ノード
-type InterfaceType struct {
-	Token   token.Token
-	Methods []*MethodSig
-}
-
-func (it *InterfaceType) typeExprNode()        {}
-func (it *InterfaceType) expressionNode()      {}
-func (it *InterfaceType) TokenLiteral() string { return it.Token.Literal }
-
-// 型アサーション: x.(TargetType)
-type TypeAssertExpr struct {
-	Token  token.Token
-	Expr   Expression
-	Target TypeExpr
-}
-
-func (tae *TypeAssertExpr) expressionNode()      {}
-func (tae *TypeAssertExpr) TokenLiteral() string { return tae.Token.Literal }
-
-// 関数型ノード: func(int, int) int
-type FuncType struct {
-	Token       token.Token
-	ParamTypes  []TypeExpr
-	IsVariadic  bool // 追加: 可変長引数フラグ
-	ReturnTypes []TypeExpr
-}
-
-func (ft *FuncType) typeExprNode()        {}
-func (ft *FuncType) expressionNode()      {}
-func (ft *FuncType) TokenLiteral() string { return ft.Token.Literal }
-
-// 無名関数リテラルノード: func(a int) int { return a * 2 }
-type FuncLit struct {
-	Token       token.Token
-	Params      []*ParamDecl
-	IsVariadic  bool // 追加: 可変長引数フラグ
-	ReturnTypes []TypeExpr
-	Body        *BlockStmt
-}
-
-func (fl *FuncLit) expressionNode()      {}
-func (fl *FuncLit) TokenLiteral() string { return fl.Token.Literal }
 
 type TypeCaseClause struct {
 	Token token.Token

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"hikec-go/pkg/ast"
+	"hikec-go/pkg/token"
 )
 
 type Type interface {
@@ -74,12 +75,12 @@ type Field struct {
 
 type StructType struct {
 	Name            string
-	TypeParams      []string // テンプレート時の型パラメータ名 (例: ["K", "V"])
-	TypeArgs        []Type   // 特殊化インスタンスの具象型引数
+	TypeParams      []string
+	TypeArgs        []Type
 	Fields          []Field
 	Template        *ast.TypeDecl
-	IsSpecialized   bool                   // 特殊化インスタンスかどうか
-	Specializations map[string]*StructType // 大元テンプレートが保持する特殊化インスタンスキャッシュ
+	IsSpecialized   bool
+	Specializations map[string]*StructType
 }
 
 func (t *StructType) TypeName() string { return t.Name }
@@ -108,12 +109,12 @@ type Method struct {
 
 type InterfaceType struct {
 	Name            string
-	TypeParams      []string // テンプレート時の型パラメータ名
-	TypeArgs        []Type   // 特殊化インスタンスの具象型引数
+	TypeParams      []string
+	TypeArgs        []Type
 	Methods         []Method
 	Template        *ast.TypeDecl
-	IsSpecialized   bool                      // 特殊化インスタンスかどうか
-	Specializations map[string]*InterfaceType // 大元テンプレートが保持する特殊化インスタンスキャッシュ
+	IsSpecialized   bool
+	Specializations map[string]*InterfaceType
 }
 
 func (t *InterfaceType) TypeName() string {
@@ -136,18 +137,18 @@ func (t *InterfaceType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.Is
 
 type FuncType struct {
 	Name            string
-	TypeParams      []string // テンプレート時の型パラメータ名
-	TypeArgs        []Type   // 特殊化インスタンスの具象型引数
+	TypeParams      []string
+	TypeArgs        []Type
 	IsMethod        bool
 	ParamTypes      []Type
 	ReturnTypes     []Type
 	IsVariadic      bool
 	IsExtern        bool
 	Template        *ast.FuncDecl
-	IsSpecialized   bool                 // 特殊化インスタンスかどうか
-	SpecializedAst  *ast.FuncDecl        // 単相化された実体AST
-	Emitted         bool                 // LLVM IR出力済みフラグ
-	Specializations map[string]*FuncType // 大元テンプレートが保持する特殊化インスタンスキャッシュ
+	IsSpecialized   bool
+	SpecializedAst  *ast.FuncDecl
+	Emitted         bool
+	Specializations map[string]*FuncType
 }
 
 func (t *FuncType) TypeName() string { return "func" }
@@ -369,6 +370,16 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		name := t.Name.Value
 		if t.Package != nil {
 			name = t.Package.Value + "_" + t.Name.Value
+		}
+
+		// プレフィックスによる安全網の展開
+		if strings.HasPrefix(name, "*") {
+			baseName := strings.TrimPrefix(name, "*")
+			return &PointerType{Base: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: baseName}})}
+		}
+		if strings.HasPrefix(name, "[]") {
+			elemName := strings.TrimPrefix(name, "[]")
+			return &SliceType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
 		}
 
 		if tp, ok := c.TypeParams[name]; ok {
@@ -703,6 +714,344 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 	return c.ResolveType(t)
 }
 
+func DetermineCast(from, to Type) (ast.CastKind, bool) {
+	if from == nil || to == nil {
+		return 0, false
+	}
+	if from == to || from.TypeName() == to.TypeName() {
+		return 0, false
+	}
+
+	if targetIface, isIface := to.(*InterfaceType); isIface {
+		if _, srcIsIface := from.(*InterfaceType); !srcIsIface {
+			return ast.CastBoxInterface, true
+		}
+		if targetIface.IsAny() {
+			return ast.CastBoxInterface, true
+		}
+	}
+
+	fromLLVM := from.LLVMType()
+	toLLVM := to.LLVMType()
+	if fromLLVM == toLLVM {
+		return 0, false
+	}
+
+	if (fromLLVM == "double" || fromLLVM == "float") && (toLLVM == "i64" || toLLVM == "i32") {
+		return ast.CastFloatToInt, true
+	}
+	if (fromLLVM == "i64" || fromLLVM == "i32") && (toLLVM == "double" || toLLVM == "float") {
+		return ast.CastIntToFloat, true
+	}
+	if fromLLVM == "i64" && (toLLVM == "i32" || toLLVM == "i8" || toLLVM == "i1") {
+		return ast.CastTrunc, true
+	}
+	if (fromLLVM == "i32" || fromLLVM == "i8" || fromLLVM == "i1") && toLLVM == "i64" {
+		return ast.CastZExt, true
+	}
+	if strings.HasSuffix(fromLLVM, "*") && strings.HasSuffix(toLLVM, "*") {
+		return ast.CastBitcast, true
+	}
+	if strings.HasSuffix(fromLLVM, "*") && toLLVM == "i64" {
+		return ast.CastPtrToInt, true
+	}
+	if fromLLVM == "i64" && strings.HasSuffix(toLLVM, "*") {
+		return ast.CastIntToPtr, true
+	}
+
+	return 0, false
+}
+
+func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Type {
+	if expr == nil {
+		return TypeVoid
+	}
+
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return TypeInt
+	case *ast.FloatLiteral:
+		return TypeFloat64
+	case *ast.StringLiteral:
+		return TypeString
+	case *ast.NilLiteral:
+		return &PointerType{Base: TypeByte}
+	case *ast.Identifier:
+		switch e.Value {
+		case "true", "false":
+			return TypeBool
+		}
+		if t, ok := locals[e.Value]; ok {
+			return t
+		}
+		if t, ok := c.Globals[e.Value]; ok {
+			return t
+		}
+		if _, ok := c.Constants[e.Value]; ok {
+			return TypeInt
+		}
+		if _, ok := c.FloatConstants[e.Value]; ok {
+			return TypeFloat64
+		}
+		if fn, ok := c.Functions[e.Value]; ok {
+			return fn
+		}
+		return TypeInt
+
+	case *ast.ImplicitCastExpr:
+		return c.ResolveType(e.TargetType)
+
+	case *ast.PrefixExpr:
+		base := c.InferExprType(e.Right, locals)
+		switch e.Operator {
+		case "&":
+			return &PointerType{Base: base}
+		case "*":
+			if pt, ok := base.(*PointerType); ok {
+				return pt.Base
+			}
+			return TypeInt
+		case "!":
+			return TypeBool
+		case "-", "^":
+			return base
+		}
+
+	case *ast.BinaryExpr:
+		switch e.Operator {
+		case "==", "!=", "<", "<=", ">", ">=":
+			return TypeBool
+		case "&&", "||":
+			return TypeBool
+		case "+":
+			lt := c.InferExprType(e.Left, locals)
+			rt := c.InferExprType(e.Right, locals)
+			if lt == TypeString || rt == TypeString {
+				return TypeString
+			}
+			if lt == TypeFloat64 || rt == TypeFloat64 {
+				return TypeFloat64
+			}
+			return lt
+		default:
+			lt := c.InferExprType(e.Left, locals)
+			rt := c.InferExprType(e.Right, locals)
+			if lt == TypeFloat64 || rt == TypeFloat64 {
+				return TypeFloat64
+			}
+			return lt
+		}
+
+	case *ast.MemberExpr:
+		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
+			qualified := pkgId.Value + "_" + e.Field.Value
+			if t, ok := c.Globals[qualified]; ok {
+				return t
+			}
+			if _, ok := c.Constants[qualified]; ok {
+				return TypeInt
+			}
+			if _, ok := c.FloatConstants[qualified]; ok {
+				return TypeFloat64
+			}
+			if fn, ok := c.Functions[qualified]; ok {
+				return fn
+			}
+		}
+		objType := c.InferExprType(e.Object, locals)
+		if pt, ok := objType.(*PointerType); ok {
+			objType = pt.Base
+		}
+		if st, ok := objType.(*StructType); ok {
+			for _, f := range st.Fields {
+				if f.Name == e.Field.Value {
+					return f.Type
+				}
+			}
+		}
+
+	case *ast.IndexExpr:
+		lt := c.InferExprType(e.Left, locals)
+		if t, err := c.ResolveIndexExprType(lt, e.Index); err == nil {
+			return t
+		}
+
+	case *ast.SliceExpr:
+		lt := c.InferExprType(e.Left, locals)
+		if lt == TypeString {
+			return TypeString
+		}
+		if sl, ok := lt.(*SliceType); ok {
+			return sl
+		}
+		if ar, ok := lt.(*ArrayType); ok {
+			return &SliceType{Elem: ar.Elem}
+		}
+		return lt
+
+	case *ast.TypeAssertExpr:
+		if e.Target != nil {
+			return c.ResolveType(e.Target)
+		}
+		return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+
+	case *ast.CallExpr:
+		if len(e.Args) == 1 {
+			if castT := c.resolveTypeFromExpr(e.Function); castT != nil && castT != TypeVoid {
+				if _, isFn := castT.(*FuncType); !isFn {
+					return castT
+				}
+			}
+		}
+		if id, ok := e.Function.(*ast.Identifier); ok {
+			switch id.Value {
+			case "len", "cap":
+				return TypeInt
+			case "string":
+				return TypeString
+			case "make":
+				if len(e.Args) > 0 {
+					return c.ResolveType(e.Args[0].(ast.TypeExpr))
+				}
+			case "append":
+				if len(e.Args) > 0 {
+					return c.InferExprType(e.Args[0], locals)
+				}
+			}
+		}
+		fnType := c.InferExprType(e.Function, locals)
+		if ft, ok := fnType.(*FuncType); ok {
+			if len(ft.ReturnTypes) == 1 {
+				return ft.ReturnTypes[0]
+			} else if len(ft.ReturnTypes) > 1 {
+				return &TupleType{Types: ft.ReturnTypes}
+			}
+			return TypeVoid
+		}
+
+	case *ast.StructLiteral:
+		return c.ResolveType(e.Type)
+
+	case *ast.ArrayLiteral:
+		return c.ResolveType(e.Type)
+
+	case *ast.SliceLiteral:
+		return c.ResolveType(e.Type)
+
+	case *ast.FuncLit:
+		ft := &FuncType{
+			ParamTypes:      make([]Type, len(e.Params)),
+			ReturnTypes:     make([]Type, len(e.ReturnTypes)),
+			IsVariadic:      e.IsVariadic,
+			Specializations: make(map[string]*FuncType),
+		}
+		for i, p := range e.Params {
+			ft.ParamTypes[i] = c.ResolveType(p.Type)
+		}
+		for i, rt := range e.ReturnTypes {
+			ft.ReturnTypes[i] = c.ResolveType(rt)
+		}
+		return ft
+	}
+
+	return TypeInt
+}
+
+func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
+	if e == nil {
+		return nil
+	}
+	if te, ok := e.(ast.TypeExpr); ok {
+		return c.ResolveType(te)
+	}
+	if id, ok := e.(*ast.Identifier); ok {
+		switch id.Value {
+		case "int":
+			return TypeInt
+		case "byte":
+			return TypeByte
+		case "bool":
+			return TypeBool
+		case "float32":
+			return TypeFloat32
+		case "float64", "float":
+			return TypeFloat64
+		case "string":
+			return TypeString
+		case "void":
+			return TypeVoid
+		case "any":
+			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+		}
+		if st, _ := c.LookupStruct(id.Value); st != nil {
+			return st
+		}
+		if iface, _ := c.LookupInterface(id.Value); iface != nil {
+			return iface
+		}
+	}
+	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+		base := c.resolveTypeFromExpr(pref.Right)
+		if base != nil && base != TypeVoid {
+			return &PointerType{Base: base}
+		}
+	}
+	return nil
+}
+
+func typeToTypeExpr(t Type) ast.TypeExpr {
+	if t == nil {
+		return nil
+	}
+	switch v := t.(type) {
+	case *PointerType:
+		return &ast.PointerType{
+			Base: typeToTypeExpr(v.Base),
+		}
+	case *SliceType:
+		return &ast.SliceType{
+			Elem: typeToTypeExpr(v.Elem),
+		}
+	case *ArrayType:
+		return &ast.ArrayType{
+			Len:  int64(v.Len),
+			Elem: typeToTypeExpr(v.Elem),
+		}
+	case *MapType:
+		return &ast.MapType{
+			Key:   typeToTypeExpr(v.Key),
+			Value: typeToTypeExpr(v.Value),
+		}
+	default:
+		return &ast.NamedType{
+			Name: &ast.Identifier{Value: v.TypeName()},
+		}
+	}
+}
+
+func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[string]Type) ast.Expression {
+	if expr == nil || targetType == nil {
+		return expr
+	}
+	actualType := c.InferExprType(expr, locals)
+	kind, needed := DetermineCast(actualType, targetType)
+	if !needed {
+		return expr
+	}
+
+	targetNode := typeToTypeExpr(targetType)
+
+	return &ast.ImplicitCastExpr{
+		Token: token.Token{
+			Type:    token.IMPLICIT_CAST,
+			Literal: "cast",
+		},
+		Expr:       expr,
+		Kind:       kind,
+		TargetType: targetNode,
+	}
+}
+
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
@@ -741,7 +1090,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				}
 			}
 
-			// 順序を保って型パラメータを登録
 			tParams := []string{}
 			for _, tp := range td.TypeParams {
 				tParams = append(tParams, tp.Name.Value)
@@ -810,7 +1158,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				collectTypeParamsFromNode(r, tpSet)
 			}
 
-			// 関数・メソッドの型パラメータも定義順を最優先
 			tParams := []string{}
 			for _, tp := range fd.TypeParams {
 				tParams = append(tParams, tp.Name.Value)
@@ -1052,7 +1399,514 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
+	// Pass 3: エスケープ解析
+	runEscapeAnalysis(prog)
+
+	// Pass 4: 暗黙キャスト挿入
+	insertImplicitCasts(prog, ctx)
+
 	return ctx, nil
+}
+
+func runEscapeAnalysis(prog *ast.Program) {
+	for _, decl := range prog.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			varDecls := make(map[string]*ast.VarDecl)
+			paramDecls := make(map[string]*ast.ParamDecl)
+
+			if fn.Receiver != nil {
+				paramDecls[fn.Receiver.Name.Value] = fn.Receiver
+			}
+			for _, p := range fn.Params {
+				paramDecls[p.Name.Value] = p
+			}
+
+			collectDeclsInBlock(fn.Body, varDecls)
+			capturedNames := collectAllCapturesInBlock(fn.Body)
+
+			for name := range capturedNames {
+				if vd, ok := varDecls[name]; ok {
+					vd.IsEscaped = true
+				}
+				if pd, ok := paramDecls[name]; ok {
+					pd.IsEscaped = true
+				}
+			}
+		}
+	}
+}
+
+func collectDeclsInBlock(b *ast.BlockStmt, out map[string]*ast.VarDecl) {
+	if b == nil {
+		return
+	}
+	for _, stmt := range b.Statements {
+		collectDeclsInStmt(stmt, out)
+	}
+}
+
+func collectDeclsInStmt(stmt ast.Statement, out map[string]*ast.VarDecl) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.VarDecl:
+		out[s.Name.Value] = s
+	case *ast.BlockStmt:
+		collectDeclsInBlock(s, out)
+	case *ast.IfStmt:
+		if s.Init != nil {
+			collectDeclsInStmt(s.Init, out)
+		}
+		if s.Consequence != nil {
+			collectDeclsInBlock(s.Consequence, out)
+		}
+		if s.Alternative != nil {
+			collectDeclsInStmt(s.Alternative, out)
+		}
+	case *ast.ForStmt:
+		if s.Init != nil {
+			collectDeclsInStmt(s.Init, out)
+		}
+		if s.Body != nil {
+			collectDeclsInBlock(s.Body, out)
+		}
+	case *ast.ForRangeStmt:
+		if s.Body != nil {
+			collectDeclsInBlock(s.Body, out)
+		}
+	case *ast.SwitchStmt:
+		if s.Init != nil {
+			collectDeclsInStmt(s.Init, out)
+		}
+		for _, cc := range s.Cases {
+			for _, bs := range cc.Body {
+				collectDeclsInStmt(bs, out)
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if s.Init != nil {
+			collectDeclsInStmt(s.Init, out)
+		}
+		for _, cc := range s.Cases {
+			for _, bs := range cc.Body {
+				collectDeclsInStmt(bs, out)
+			}
+		}
+	}
+}
+
+func collectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
+	capturedSet := make(map[string]bool)
+	if b == nil {
+		return capturedSet
+	}
+
+	var walkExpr func(e ast.Expression)
+	var walkStmt func(s ast.Statement)
+
+	walkExpr = func(e ast.Expression) {
+		if e == nil {
+			return
+		}
+		if fl, ok := e.(*ast.FuncLit); ok {
+			caps := scanCapturesFromLit(fl)
+			for _, c := range caps {
+				capturedSet[c] = true
+			}
+			if fl.Body != nil {
+				walkStmt(fl.Body)
+			}
+			return
+		}
+		switch n := e.(type) {
+		case *ast.BinaryExpr:
+			walkExpr(n.Left)
+			walkExpr(n.Right)
+		case *ast.PrefixExpr:
+			walkExpr(n.Right)
+		case *ast.CallExpr:
+			walkExpr(n.Function)
+			for _, arg := range n.Args {
+				walkExpr(arg)
+			}
+		case *ast.MemberExpr:
+			walkExpr(n.Object)
+		case *ast.IndexExpr:
+			walkExpr(n.Left)
+			walkExpr(n.Index)
+		case *ast.SliceExpr:
+			walkExpr(n.Left)
+			walkExpr(n.Low)
+			walkExpr(n.High)
+		case *ast.TypeAssertExpr:
+			walkExpr(n.Expr)
+		case *ast.ArrayLiteral:
+			for _, el := range n.Elements {
+				walkExpr(el)
+			}
+		case *ast.SliceLiteral:
+			for _, el := range n.Elements {
+				walkExpr(el)
+			}
+		case *ast.StructLiteral:
+			for _, sf := range n.Fields {
+				walkExpr(sf.Value)
+			}
+		}
+	}
+
+	walkStmt = func(s ast.Statement) {
+		if s == nil {
+			return
+		}
+		switch st := s.(type) {
+		case *ast.BlockStmt:
+			for _, inner := range st.Statements {
+				walkStmt(inner)
+			}
+		case *ast.ExprStmt:
+			walkExpr(st.Expr)
+		case *ast.ReturnStmt:
+			for _, v := range st.Values {
+				walkExpr(v)
+			}
+		case *ast.DeferStmt:
+			if st.Call != nil {
+				walkExpr(st.Call)
+			}
+		case *ast.AssignStmt:
+			for _, l := range st.Left {
+				walkExpr(l)
+			}
+			for _, r := range st.Right {
+				walkExpr(r)
+			}
+		case *ast.VarDecl:
+			if st.Value != nil {
+				walkExpr(st.Value)
+			}
+		case *ast.IfStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Condition)
+			walkStmt(st.Consequence)
+			if st.Alternative != nil {
+				walkStmt(st.Alternative)
+			}
+		case *ast.ForStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Cond)
+			if st.Post != nil {
+				walkStmt(st.Post)
+			}
+			walkStmt(st.Body)
+		case *ast.ForRangeStmt:
+			walkExpr(st.X)
+			walkStmt(st.Body)
+		case *ast.SwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Value)
+			for _, cc := range st.Cases {
+				for _, v := range cc.Values {
+					walkExpr(v)
+				}
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Expr)
+			for _, cc := range st.Cases {
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		}
+	}
+
+	for _, s := range b.Statements {
+		walkStmt(s)
+	}
+	return capturedSet
+}
+
+func scanCapturesFromLit(fl *ast.FuncLit) []string {
+	params := make(map[string]bool)
+	for _, p := range fl.Params {
+		params[p.Name.Value] = true
+	}
+
+	locals := make(map[string]bool)
+	captured := []string{}
+	seen := make(map[string]bool)
+
+	var walkStmt func(s ast.Statement)
+	var walkExpr func(e ast.Expression)
+
+	walkExpr = func(e ast.Expression) {
+		if e == nil {
+			return
+		}
+		switch node := e.(type) {
+		case *ast.Identifier:
+			name := node.Value
+			if !params[name] && !locals[name] && !seen[name] {
+				switch name {
+				case "true", "false", "nil", "len", "cap", "append", "delete", "make",
+					"int", "byte", "string", "bool", "float32", "float64", "void", "any", "error":
+					return
+				}
+				seen[name] = true
+				captured = append(captured, name)
+			}
+		case *ast.BinaryExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Right)
+		case *ast.PrefixExpr:
+			walkExpr(node.Right)
+		case *ast.CallExpr:
+			walkExpr(node.Function)
+			for _, arg := range node.Args {
+				walkExpr(arg)
+			}
+		case *ast.MemberExpr:
+			walkExpr(node.Object)
+		case *ast.IndexExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Index)
+		case *ast.SliceExpr:
+			walkExpr(node.Left)
+			walkExpr(node.Low)
+			walkExpr(node.High)
+		case *ast.TypeAssertExpr:
+			walkExpr(node.Expr)
+		case *ast.ArrayLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.SliceLiteral:
+			for _, el := range node.Elements {
+				walkExpr(el)
+			}
+		case *ast.StructLiteral:
+			for _, sf := range node.Fields {
+				walkExpr(sf.Value)
+			}
+		case *ast.FuncLit:
+			if node.Body != nil {
+				for _, s := range node.Body.Statements {
+					walkStmt(s)
+				}
+			}
+		}
+	}
+
+	walkStmt = func(s ast.Statement) {
+		if s == nil {
+			return
+		}
+		switch st := s.(type) {
+		case *ast.BlockStmt:
+			for _, inner := range st.Statements {
+				walkStmt(inner)
+			}
+		case *ast.ExprStmt:
+			walkExpr(st.Expr)
+		case *ast.ReturnStmt:
+			for _, v := range st.Values {
+				walkExpr(v)
+			}
+		case *ast.DeferStmt:
+			if st.Call != nil {
+				walkExpr(st.Call)
+			}
+		case *ast.AssignStmt:
+			for _, r := range st.Right {
+				walkExpr(r)
+			}
+			for _, l := range st.Left {
+				if st.Token.Literal == ":=" {
+					if ident, ok := l.(*ast.Identifier); ok {
+						locals[ident.Value] = true
+					}
+				} else {
+					walkExpr(l)
+				}
+			}
+		case *ast.VarDecl:
+			locals[st.Name.Value] = true
+			if st.Value != nil {
+				walkExpr(st.Value)
+			}
+		case *ast.IfStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Condition)
+			walkStmt(st.Consequence)
+			if st.Alternative != nil {
+				walkStmt(st.Alternative)
+			}
+		case *ast.ForStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Cond)
+			if st.Post != nil {
+				walkStmt(st.Post)
+			}
+			walkStmt(st.Body)
+		case *ast.ForRangeStmt:
+			if kIdent, ok := st.Key.(*ast.Identifier); ok && kIdent != nil {
+				locals[kIdent.Value] = true
+			}
+			if vIdent, ok := st.Value.(*ast.Identifier); ok && vIdent != nil {
+				locals[vIdent.Value] = true
+			}
+			walkExpr(st.X)
+			walkStmt(st.Body)
+		}
+	}
+
+	if fl.Body != nil {
+		for _, s := range fl.Body.Statements {
+			walkStmt(s)
+		}
+	}
+	return captured
+}
+
+func insertImplicitCasts(prog *ast.Program, ctx *Context) {
+	for _, decl := range prog.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			locals := make(map[string]Type)
+			if fn.Receiver != nil {
+				locals[fn.Receiver.Name.Value] = ctx.ResolveType(fn.Receiver.Type)
+			}
+			for _, p := range fn.Params {
+				locals[p.Name.Value] = ctx.ResolveType(p.Type)
+			}
+			insertCastsInBlock(fn.Body, locals, ctx, fn)
+		}
+	}
+}
+
+func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, currentFn *ast.FuncDecl) {
+	if b == nil {
+		return
+	}
+	for _, stmt := range b.Statements {
+		switch s := stmt.(type) {
+		case *ast.VarDecl:
+			var targetType Type = TypeInt
+			if s.Type != nil {
+				targetType = ctx.ResolveType(s.Type)
+			} else if s.Value != nil {
+				targetType = ctx.InferExprType(s.Value, locals)
+			}
+			locals[s.Name.Value] = targetType
+			if s.Value != nil {
+				s.Value = ctx.CoerceExpr(s.Value, targetType, locals)
+			}
+
+		case *ast.AssignStmt:
+			for i, left := range s.Left {
+				var targetType Type = nil
+				if id, ok := left.(*ast.Identifier); ok {
+					if s.Token.Literal == ":=" {
+						if i < len(s.Right) {
+							targetType = ctx.InferExprType(s.Right[i], locals)
+							locals[id.Value] = targetType
+						}
+					} else if t, ok := locals[id.Value]; ok {
+						targetType = t
+					} else if t, ok := ctx.Globals[id.Value]; ok {
+						targetType = t
+					}
+				} else {
+					targetType = ctx.InferExprType(left, locals)
+				}
+
+				if targetType != nil && i < len(s.Right) {
+					s.Right[i] = ctx.CoerceExpr(s.Right[i], targetType, locals)
+				}
+			}
+
+		case *ast.ReturnStmt:
+			for i, val := range s.Values {
+				if i < len(currentFn.ReturnTypes) {
+					expected := ctx.ResolveType(currentFn.ReturnTypes[i])
+					s.Values[i] = ctx.CoerceExpr(val, expected, locals)
+				}
+			}
+
+		case *ast.ExprStmt:
+			insertCastsInExpr(s.Expr, locals, ctx)
+
+		case *ast.IfStmt:
+			if s.Init != nil {
+				if initBlock, ok := s.Init.(*ast.BlockStmt); ok {
+					insertCastsInBlock(initBlock, locals, ctx, currentFn)
+				}
+			}
+			insertCastsInExpr(s.Condition, locals, ctx)
+			if s.Consequence != nil {
+				insertCastsInBlock(s.Consequence, locals, ctx, currentFn)
+			}
+			if s.Alternative != nil {
+				if altBlock, ok := s.Alternative.(*ast.BlockStmt); ok {
+					insertCastsInBlock(altBlock, locals, ctx, currentFn)
+				}
+			}
+
+		case *ast.ForStmt:
+			insertCastsInExpr(s.Cond, locals, ctx)
+			if s.Body != nil {
+				insertCastsInBlock(s.Body, locals, ctx, currentFn)
+			}
+
+		case *ast.ForRangeStmt:
+			insertCastsInExpr(s.X, locals, ctx)
+			if s.Body != nil {
+				insertCastsInBlock(s.Body, locals, ctx, currentFn)
+			}
+		}
+	}
+}
+
+func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
+	if e == nil {
+		return
+	}
+	switch expr := e.(type) {
+	case *ast.CallExpr:
+		fnType := ctx.InferExprType(expr.Function, locals)
+		if ft, ok := fnType.(*FuncType); ok {
+			for i, arg := range expr.Args {
+				if i < len(ft.ParamTypes) {
+					expr.Args[i] = ctx.CoerceExpr(arg, ft.ParamTypes[i], locals)
+				}
+			}
+		}
+		insertCastsInExpr(expr.Function, locals, ctx)
+		for _, arg := range expr.Args {
+			insertCastsInExpr(arg, locals, ctx)
+		}
+	case *ast.BinaryExpr:
+		insertCastsInExpr(expr.Left, locals, ctx)
+		insertCastsInExpr(expr.Right, locals, ctx)
+	case *ast.PrefixExpr:
+		insertCastsInExpr(expr.Right, locals, ctx)
+	}
 }
 
 func (c *Context) EnsureMapSupported(line, col int) error {

@@ -8,9 +8,8 @@ import (
 	"strings"
 
 	"hikec-go/pkg/cgen"
-	"hikec-go/pkg/codegen"
-	"hikec-go/pkg/loader"
-	"hikec-go/pkg/sema"
+	"hikec-go/pkg/compiler"
+	"hikec-go/pkg/target"
 )
 
 func printUsage() {
@@ -49,7 +48,6 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		// サブコマンド省略時は後方互換性のため emit-ir として実行
 		cmdArgs = os.Args[1:]
 		runEmitIR(cmdArgs)
 	}
@@ -62,15 +60,12 @@ func runEmitIR(args []string) {
 	outputLL := ""
 	outputHeader := ""
 	targetName := ""
-	debugInfo := false
 	verbose := false
 	var sourceFiles []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-g" {
-			debugInfo = true
-		} else if arg == "-o" && i+1 < len(args) {
+		if arg == "-o" && i+1 < len(args) {
 			outputLL = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "-o=") {
@@ -90,7 +85,7 @@ func runEmitIR(args []string) {
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 		} else if strings.HasPrefix(arg, "-") {
-			// 未知のオプションは無視
+			// 未知または未対応のフラグはスキップ
 		} else {
 			sourceFiles = append(sourceFiles, arg)
 		}
@@ -101,40 +96,23 @@ func runEmitIR(args []string) {
 		os.Exit(1)
 	}
 
-	target, err := codegen.ParseTarget(targetName)
+	tgt, err := target.ParseTarget(targetName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
 	}
 
-	rootDir := "."
-	if len(sourceFiles) > 0 {
-		rootDir = filepath.Dir(sourceFiles[0])
-		if rootDir == "" {
-			rootDir = "."
-		}
-	}
+	// 新コンパイラドライバの呼び出し
+	comp := compiler.New(tgt)
+	comp.SetVerbose(verbose)
 
-	ld := loader.New(rootDir)
-	ld.SetVerbose(verbose)
-
-	prog, err := ld.Load(sourceFiles...)
+	llvmIR, semaCtx, prog, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Loader error: %v\n", err)
-		os.Exit(1)
-	}
-
-	semaCtx, err := sema.Analyze(prog)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Sema error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
 		os.Exit(1)
 	}
 
 	srcPath := sourceFiles[0]
-	cg := codegen.New(prog, semaCtx, target, srcPath, debugInfo)
-	cg.SetVerbose(verbose)
-	llvmIR := cg.Generate()
-
 	if outputLL == "" {
 		ext := filepath.Ext(srcPath)
 		base := strings.TrimSuffix(filepath.Base(srcPath), ext)
@@ -162,7 +140,7 @@ func runEmitIR(args []string) {
 }
 
 // -----------------------------------------------------------------------------
-// build: Clang を呼び出して実行可能バイナリを直接出力する
+// build: Clang を呼び出して実行可能バイナリを出力する
 // -----------------------------------------------------------------------------
 func runBuild(args []string) {
 	outputBin := ""
@@ -198,7 +176,7 @@ func runBuild(args []string) {
 		os.Exit(1)
 	}
 
-	target, err := codegen.ParseTarget(targetName)
+	tgt, err := target.ParseTarget(targetName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
@@ -207,27 +185,24 @@ func runBuild(args []string) {
 	tempLL := filepath.Join(os.TempDir(), fmt.Sprintf("hike_build_%d.ll", os.Getpid()))
 	defer os.Remove(tempLL)
 
-	// 1. 中間 IR を生成
 	emitArgs := append([]string{"-o", tempLL}, passThroughArgs...)
 	runEmitIR(emitArgs)
 
-	// 2. 出力バイナリ名の決定
 	srcBase := strings.TrimSuffix(filepath.Base(sourceFiles[0]), filepath.Ext(sourceFiles[0]))
 	if outputBin == "" {
-		if target.IsWasm {
+		if tgt.IsWasm {
 			outputBin = srcBase + ".wasm"
-		} else if target.Triple == codegen.TargetX86_64Windows.Triple {
+		} else if tgt.Triple == target.TargetX86_64Windows.Triple {
 			outputBin = srcBase + ".exe"
 		} else {
 			outputBin = srcBase
 		}
 	}
 
-	// 3. Clang 呼び出し（ネイティブ時にも --target を明示）
 	var clangArgs []string
-	if target.IsWasm {
+	if tgt.IsWasm {
 		clangArgs = []string{
-			"--target=" + target.Triple,
+			"--target=" + tgt.Triple,
 			"-O2", "-nostdlib",
 			"-Wl,--no-entry", "-Wl,--export-all", "-Wl,--allow-undefined",
 			tempLL, "-o", outputBin,
@@ -238,7 +213,7 @@ func runBuild(args []string) {
 			opt = "-O0"
 			clangArgs = append(clangArgs, "-g")
 		}
-		clangArgs = append(clangArgs, "--target="+target.Triple, opt, tempLL, "-o", outputBin)
+		clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 	}
 
 	cmd := exec.Command("clang", clangArgs...)
@@ -249,7 +224,6 @@ func runBuild(args []string) {
 		os.Exit(1)
 	}
 
-	// run 以外から直接 build が呼ばれた場合のみ完了表示
 	if !strings.Contains(outputBin, "hike_run_") {
 		fmt.Printf("Build completed -> %s\n", outputBin)
 	}
@@ -270,11 +244,9 @@ func runRun(args []string) {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
-		// 子プロセスが非ゼロ終了した場合、その終了コードをそのまま引き継いで終了する
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
-		// コマンド自体の起動失敗などの場合のみ exit 1
 		fmt.Fprintf(os.Stderr, "failed to run executable: %v\n", err)
 		os.Exit(1)
 	}

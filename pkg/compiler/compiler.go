@@ -2,115 +2,92 @@ package compiler
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
 	"hikec-go/pkg/ast"
-	"hikec-go/pkg/codegen"
-	"hikec-go/pkg/lexer"
-	"hikec-go/pkg/parser"
+	"hikec-go/pkg/backend/llvm"
+	"hikec-go/pkg/hir"
+	"hikec-go/pkg/loader"
+	"hikec-go/pkg/lower"
 	"hikec-go/pkg/sema"
+	"hikec-go/pkg/target"
+	"hikec-go/pkg/transform"
 )
 
 type Compiler struct {
-	loadedPkgs map[string]*ast.Program
+	target  *target.Target
+	verbose bool
 }
 
-func New() *Compiler {
+func New(tgt *target.Target) *Compiler {
+	if tgt == nil {
+		tgt = target.DefaultTarget()
+	}
 	return &Compiler{
-		loadedPkgs: make(map[string]*ast.Program),
+		target:  tgt,
+		verbose: false,
 	}
 }
 
-// pkg/compiler/compiler.go 内の parseFile
-func (c *Compiler) parseFile(path string) (*ast.Program, error) {
-	src, err := os.ReadFile(path)
+func (c *Compiler) SetVerbose(v bool) {
+	c.verbose = v
+}
+
+// CompileToHIR はフロントエンド・ミドルエンドを実行し、ターゲット非依存の HIR を生成します
+func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Context, *ast.Program, error) {
+	if len(entryPaths) == 0 {
+		return nil, nil, nil, fmt.Errorf("no input files provided")
+	}
+
+	rootDir := filepath.Dir(entryPaths[0])
+	if rootDir == "" {
+		rootDir = "."
+	}
+
+	// 1. パッケージ探索・構文解析・名前マングリング・AST統合
+	ld := loader.New(rootDir)
+	ld.SetVerbose(c.verbose)
+	rawProg, err := ld.Load(entryPaths...)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, fmt.Errorf("loader error: %w", err)
 	}
 
-	l := lexer.New(string(src))
-	p := parser.New(l)
-	prog := p.ParseProgram()
-
-	if len(p.Errors()) > 0 {
-		return nil, fmt.Errorf("parse errors in %s:\n%s", path, strings.Join(p.Errors(), "\n"))
+	// 2. 意味解析・型検査・エスケープ解析・暗黙キャスト挿入
+	semaCtx, err := sema.Analyze(rawProg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("semantic error: %w", err)
 	}
 
-	return prog, nil
+	// 3. ジェネリクス単相化（Monomorphization）
+	tf := transform.New(rawProg, semaCtx)
+	concreteProg, err := tf.Transform()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("transform error: %w", err)
+	}
+
+	// 4. ターゲット非依存 HIR への Lowering
+	lw := lower.New(concreteProg, semaCtx)
+	hirProg := lw.Lower()
+
+	return hirProg, semaCtx, concreteProg, nil
 }
 
-func (c *Compiler) loadPackage(importPath string) (*ast.Program, error) {
-	if prog, exists := c.loadedPkgs[importPath]; exists {
-		return prog, nil
+// CompileToLLVM は HIR 生成を経て、最終的な LLVM IR 文字列を出力します
+func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *ast.Program, error) {
+	hirProg, semaCtx, concreteProg, err := c.CompileToHIR(entryPaths...)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
-	// ディレクトリ内の全 .hike ファイルを探索
-	files, err := filepath.Glob(filepath.Join(importPath, "*.hike"))
-	if err != nil || len(files) == 0 {
-		return nil, fmt.Errorf("package not found: %s", importPath)
-	}
+	// 5. LLVM バックエンドによるコード出力
+	emitter := llvm.New(hirProg, semaCtx, c.target.Triple)
+	llvmIR := emitter.Emit()
 
-	pkgProg := &ast.Program{
-		Package: filepath.Base(importPath),
-		Decls:   []ast.Decl{},
-	}
-
-	for _, file := range files {
-		prog, err := c.parseFile(file)
-		if err != nil {
-			return nil, err
-		}
-		pkgProg.Decls = append(pkgProg.Decls, prog.Decls...)
-	}
-
-	c.loadedPkgs[importPath] = pkgProg
-	return pkgProg, nil
+	return llvmIR, semaCtx, concreteProg, nil
 }
 
+// CompileFile は単一ファイルのコンパイル用ショートカット（後方互換性）
 func (c *Compiler) CompileFile(entryPath string) (string, error) {
-	c.loadedPkgs = make(map[string]*ast.Program)
-	entryProg, err := c.parseFile(entryPath)
-	if err != nil {
-		return "", err
-	}
-
-	// 単一の統合 AST プログラムを作成
-	mergedProg := &ast.Program{
-		Package: entryProg.Package,
-		Decls:   []ast.Decl{},
-	}
-
-	// 1. 依存パッケージを再帰的にロードして結合
-	for _, imp := range entryProg.Imports {
-		pkgProg, err := c.loadPackage(imp.Path)
-		if err != nil {
-			return "", err
-		}
-
-		// パッケージ内の関数・型にプレフィックスを付与してシンボル衝突を回避
-		pkgName := pkgProg.Package
-		for _, decl := range pkgProg.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				// C言語 extern 宣言（Body == nil）はそのまま、HIKE 関数は pkg_Func 名に変更
-				if fn.Body != nil {
-					fn.Name.Value = pkgName + "_" + fn.Name.Value
-				}
-			}
-			mergedProg.Decls = append(mergedProg.Decls, decl)
-		}
-	}
-
-	// 2. エントリファイル自体の宣言を追加
-	mergedProg.Decls = append(mergedProg.Decls, entryProg.Decls...)
-
-	// 3. 型検査とコード生成
-	semaCtx, err := sema.Analyze(mergedProg)
-	if err != nil {
-		return "", fmt.Errorf("semantic error: %w", err)
-	}
-
-	cg := codegen.New(mergedProg, semaCtx, nil, entryPath, false)
-	return cg.Generate(), nil
+	ir, _, _, err := c.CompileToLLVM(entryPath)
+	return ir, err
 }

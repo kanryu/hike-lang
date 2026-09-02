@@ -16,14 +16,14 @@ const (
 	// Literals
 	IDENT  = "IDENT"
 	INT    = "INT"
-	FLOAT  = "FLOAT" // 追加
+	FLOAT  = "FLOAT"
 	STRING = "STRING"
 
 	// Operators
 	ASSIGN    = "="
 	PLUS      = "+"
 	MINUS     = "-"
-	PERCENT   = "%" // 追加
+	PERCENT   = "%"
 	BANG      = "!"
 	ASTERISK  = "*"
 	SLASH     = "/"
@@ -72,7 +72,7 @@ const (
 	PACKAGE   = "PACKAGE"
 	IMPORT    = "IMPORT"
 	FUNC      = "FUNC"
-	MAP       = "MAP" // 追加
+	MAP       = "MAP"
 	RETURN    = "RETURN"
 	TYPE      = "TYPE"
 	STRUCT    = "STRUCT"
@@ -90,7 +90,10 @@ const (
 	DEFAULT   = "DEFAULT"
 	DEFER     = "DEFER"
 	NIL       = "NIL"
-	VAR       = "VAR" // 追加
+	VAR       = "VAR"
+
+	// Internal Synthetic Tokens (AST変換・意味決定フェーズ用)
+	IMPLICIT_CAST = "IMPLICIT_CAST"
 )
 
 var keywords = map[string]TokenType{
@@ -102,7 +105,7 @@ var keywords = map[string]TokenType{
 	"type":      TYPE,
 	"struct":    STRUCT,
 	"interface": INTERFACE,
-	"map":       MAP, // 追加
+	"map":       MAP,
 	"if":        IF,
 	"else":      ELSE,
 	"for":       FOR,
