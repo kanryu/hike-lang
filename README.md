@@ -17,46 +17,47 @@ A systems programming language with Go-like syntax that compiles to LLVM IR, gen
 
 ## Overview
 
-Hike is an experimental language designed to combine Go-style syntax and ergonomics with direct C-ABI compatibility and no garbage collection.
+Hike is an experimental systems language combining Go-style syntax and ergonomics with C-equivalent execution, direct C-ABI compatibility, and no garbage collection.
 
-Rather than generating machine code or object files directly, the Hike compiler (`hikec`) acts strictly as a frontend that compiles source code into clean LLVM IR (`.ll`). Platform-specific binary formatting (PE/COFF, ELF), optimization passes (`-O3`), and linking are delegated entirely to Clang and LLVM.
+Rather than generating machine code or object files directly, the Hike compiler (`hikec`) acts strictly as a frontend that compiles source code into LLVM IR (`.ll`). Platform-specific binary formatting (PE/COFF, ELF), optimization passes (`-O3`), and linking are delegated entirely to Clang and LLVM.
 
-The compiler can output standalone executables, C-compatible shared libraries (`.dll` / `.so`), or WebAssembly modules (`.wasm`). When exporting library functions, `hikec` can automatically generate corresponding C/C++ header files (`.h`).
+The compiler builds standalone executables, C-compatible shared libraries (`.dll` / `.so`), and WebAssembly modules (`.wasm`). When exporting library functions, `hikec` automatically generates corresponding C/C++ header files (`.h`).
 
 ---
 
-## Features
+## Key Features
 
-* **Go-Style Syntax**: Supports type inference (`:=`), multiple return values, structs, and slice views.
-* **No Runtime Garbage Collector**: No GC pauses and no background scheduler. Memory layout follows standard C conventions.
-* **Monomorphized Generics**: Generic functions and structs are specialized at compile time.
-* **C-ABI Export & Header Generation**: Top-level functions using POD types or pointers export cleanly to C-ABI, with matching `.h` headers emitted on demand.
-* **Stack-Based Iteration**: Map and container iteration protocols allocate state on the stack (`alloca`) rather than requiring dynamic heap allocation.
-* **Closures with Escape Analysis**: Supports anonymous functions and closures. Variables that outlive their scope are promoted to the heap, represented via a 2-word fat pointer `{fn_ptr, env_ptr}`.
-* **Delegated Toolchain Pipeline**: Emits LLVM IR, allowing users to pass standard Clang/LLVM linker flags, link native `.rc` resources, or run LTO directly.
-* **Standalone WebAssembly Target**: Compiles to `wasm32-unknown-unknown` via Clang `-nostdlib` without requiring third-party WASI toolchains.
+* **Go-Inspired Ergonomics**: Multi-return values, slices, structs, type inference (`:=`), and generic type parameters.
+* **Zero Runtime Overhead**: No GC pauses, no background scheduler, and standard C memory layout.
+* **Compile-Time Monomorphization**: Generic functions and types are fully specialized during compilation without dynamic dispatch penalties.
+* **First-Class C-ABI Support**: Emits pure C-ABI binaries and automatically emits matching `.h` headers for C/C++ host integration.
+* **2-Pass Stack Iterators**: Custom containers can provide zero-allocation `for-range` traversal using compile-time stack allocation (`alloca`).
+* **Closures with Escape Analysis**: Lexical closures capture by reference. Variables escaping their stack lifetime are promoted to the heap, unified under a 2-word fat pointer ABI.
+* **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`)[cite: 2, 3].
+* **Standalone WebAssembly Target**: Emits `wasm32-unknown-unknown` via Clang without requiring external WASI-SDK installations.
+* **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB step debugging.
 
 ---
 
 ## Architecture
 
 ```text
-[ .hike Source Files ]
+[ .hike Source Code ]
            │
-           ▼  (hikec: Frontend, Typecheck, Monomorphization)
+           ▼  (hikec: Go Frontend, Typecheck, Monomorphization)
   [ AST & Desugaring ]
-     ├───► C/C++ Header (.h) [Optional via -header]
+     ├───► Auto-Generated C/C++ Header (.h) [Optional via -header]
      │
      ▼  (LLVM IR Codegen)
-  [ LLVM IR (.ll) ]
+  [ Pure LLVM IR (.ll) ]
      │
-     ▼  (Clang / LLVM)
+     ▼  (Clang / LLVM Optimizer -O3)
   ┌─────────────────────────────────────────────────────────────┐
   │                                                             │
   ▼                                                             ▼
-[ Native Executable ]                         [ Shared Library & Import Lib ]
+[ Standalone Executable ]                     [ Shared Library & Import Lib ]
 (.exe / ELF binary)                           (.dll / .so / .dll.a)
-                                                ├──► C / C++ Applications
+                                                ├──► Native C/C++ Applications
                                                 └──► Python (ctypes) / Node.js
 
 ```
@@ -76,100 +77,450 @@ The compiler can output standalone executables, C-compatible shared libraries (`
 * **Windows Toolchain**: MinGW-w64 GCC runtime (`x86_64-w64-windows-gnu`)
 
 
-* **Make** (MinGW / MSYS2 / Linux)
+* **Make** (MinGW / MSYS2 / Linux / macOS)
 
 
-* **Python**: 3.8+ (for integration test scripts)
+* **Python**: 3.8+ (for integration test suites)
 
 
 
-### Build the Compiler
+### Building the Compiler
 
 ```bash
-git clone [https://github.com/kanryu/hike-lang.git](https://github.com/kanryu/hike-lang.git)
+git clone https://github.com/kanryu/hike-lang.git
 cd hike-lang
 
-# Run test suite
+# Run Unit Tests
 go test ./...
 
-# Build the CLI driver
+# Build Compiler CLI Driver
 go build -o hikec.exe ./cmd/hikec
 
 ```
 
 ---
 
-## Quick Examples
+## Language Tour & Syntax Reference
 
-### 1. Standalone Executable
+### 1. Variables, Types & Constants
+
+Hike supports explicit type declarations and local type inference via `:=`. Primitive types map to fixed-width representations: `int` (`i64`), `float64` (`double`), `byte` (`u8`), `bool` (`i1`), and `string` (`i8*`).
 
 ```go
 package main
 
-func printf(format string, ...) int
+var globalCounter int = 0
+const MaxLimit int = 1024
 
-func main() int {
-    msg := "Hello from Hike"
-    printf("%s\n", msg)
-    return 0
+func DemoVariables() {
+    var a int = 42
+    var b float64 = 3.14159
+    var isEnabled bool = true
+    var msg string = "Hello, Hike!"
+
+    // Type inference
+    count := 100
+    ratio := 0.75
 }
-
-```
-
-Compile and run using the built-in driver:
-
-```bash
-hikec run main.hike
-
-```
-
-Or emit LLVM IR and compile with Clang directly:
-
-```bash
-hikec emit-ir -o main.ll main.hike
-clang -O3 main.ll -o app.exe
-./app.exe
 
 ```
 
 ---
 
-### 2. Exporting a Shared Library with C Header
+### 2. Pointers & Structs
 
-#### Hike Implementation (`mathlib.hike`)
+Structs follow C memory layouts without hidden metadata or GC headers. Raw pointer operations do not incur runtime tracking.
 
 ```go
 package main
 
-type Matrix2x2 struct {
-    M00 float64
-    M01 float64
-    M10 float64
-    M11 float64
+type Point struct {
+    X float64
+    Y float64
 }
 
-func HikeMatrixDeterminant(m *Matrix2x2) float64 {
-    return (m.M00 * m.M11) - (m.M01 * m.M10)
+type Rectangle struct {
+    TopLeft     Point
+    BottomRight Point
+}
+
+func CreatePoint(x float64, y float64) Point {
+    return Point{X: x, Y: y}
+}
+
+// Pass by pointer to avoid copying
+func OffsetPoint(p *Point, dx float64, dy float64) {
+    p.X = p.X + dx
+    p.Y = p.Y + dy
 }
 
 ```
 
-#### Build Command (Windows MinGW / Clang)
+---
+
+### 3. Functions & Multiple Return Values
+
+Functions are first-class constructs and support multiple return values.
+
+```go
+package main
+
+func SafeDivide(a int, b int) (int, bool) {
+    if b == 0 {
+        return 0, false
+    }
+    return a / b, true
+}
+
+func DemoFunctions() {
+    result, ok := SafeDivide(10, 2)
+    if ok {
+        // Use result
+    }
+}
+
+```
+
+---
+
+### 4. Control Flow
+
+Hike supports `if` statements with short variable declarations, standard 3-clause `for` loops, `for-range` iterations, and `switch` statements.
+
+```go
+package main
+
+func DemoControlFlow(values [5]int) int {
+    sum := 0
+
+    // 1. If with initializer
+    if n := len(values); n > 0 {
+        sum = sum + 1
+    }
+
+    // 2. 3-clause for loop
+    for i := 0; i < 5; i = i + 1 {
+        sum = sum + values[i]
+    }
+
+    // 3. for-range loop over fixed arrays
+    for idx, val := range values {
+        if val < 0 {
+            continue
+        }
+        sum = sum + val
+    }
+
+    // 4. Switch statement
+    status := 200
+    switch status {
+    case 200:
+        sum = sum + 10
+    case 404, 500:
+        sum = sum - 1
+    default:
+        sum = 0
+    }
+
+    return sum
+}
+
+```
+
+---
+
+### 5. Arrays & Slices
+
+Fixed-size arrays allocate contiguous memory inline. Slices provide dynamic views backed by a three-word header: pointer, length, and capacity.
+
+```go
+package main
+
+func DemoArrays() {
+    // Fixed-size array
+    var arr [4]int
+    arr[0] = 10
+    arr[1] = 20
+
+    primes := [3]int{2, 3, 5}
+
+    // Slice expression
+    sub := primes[1:3]
+}
+
+```
+
+---
+
+### 6. Zero-Cost Monomorphized Generics
+
+Generic functions and struct definitions are specialized into concrete implementations at compile time, eliminating runtime dispatch overhead.
+
+```go
+package main
+
+// Generic function with type union constraint
+func Min[T int | float64](a T, b T) T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// Generic struct
+type Pair[K, V] struct {
+    Key   K
+    Value V
+}
+
+func DemoGenerics() {
+    minInt := Min(10, 20)           // Specializes Min__int
+    minFloat := Min(3.14, 2.71)     // Specializes Min__float64
+
+    p := Pair[string, int]{Key: "hike", Value: 1}
+}
+
+```
+
+---
+
+### 7. Generic Hash Map (`std/maps`) & Indexing Sugar
+
+Hike provides a generic hash map implementation (`std/maps`) with syntax sugar for indexing, membership testing, deletion, and `for-range` traversal.
+
+```go
+package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    // Initialize map with initial bucket capacity
+    hmap := maps.New[string, int](8)
+
+    // Subscript assignment sugar
+    hmap["Tokyo"] = 1400
+    hmap["Osaka"] = 880
+    hmap["Nagoya"] = 230
+
+    // Comma-ok lookup idiom
+    if val, ok := hmap["Osaka"]; ok {
+        printf("Osaka population: %d\n", val)
+    }
+
+    // for-range traversal (stack-allocated iterator)
+    for city, population := range hmap {
+        printf("  - %s: %d\n", city, population)
+    }
+
+    // Removal and length query
+    delete(hmap, "Nagoya")
+    printf("Remaining entries: %d\n", len(hmap))
+
+    return 0
+}
+
+```
+
+---
+
+### 8. Custom Subscripting & 2-Pass Stack Iterator Protocol
+
+Any user-defined struct can implement the **Map Behavior** protocol to enable indexing syntax (`obj[k]`, `obj[k] = v`, `len(obj)`, `delete(obj, k)`) and `for-range` loops.
+
+To eliminate heap allocations during `for-range` iterations over custom containers, Hike uses a 2-pass protocol:
+
+1. **Pass 1 (Size Probe)**: `InitIterator(nil)` returns the state buffer byte size.
+
+
+2. **Stack Allocation**: The compiler issues an `alloca` instruction on the caller's stack frame.
+
+
+3. **Pass 2 (Initialization)**: `InitIterator(buf)` initializes the allocated state buffer in-place.
+
+
+4. **Iteration**: `Next(buf)` runs on each step, returning pointers to the current key/value and a continuation flag.
+
+
+
+```go
+package main
+
+type Entry[K, V] struct {
+    Key   K
+    Value V
+}
+
+type CustomDictionary[K, V] struct {
+    Entries []Entry[K, V]
+}
+
+func (d *CustomDictionary[K, V]) Set(key K, val V) {
+    for i := 0; i < len(d.Entries); i = i + 1 {
+        if d.Entries[i].Key == key {
+            d.Entries[i].Value = val
+            return
+        }
+    }
+    d.Entries = append(d.Entries, Entry[K, V]{Key: key, Value: val})
+}
+
+func (d *CustomDictionary[K, V]) Get(key K) (V, bool) {
+    for i := 0; i < len(d.Entries); i = i + 1 {
+        if d.Entries[i].Key == key {
+            return d.Entries[i].Value, true
+        }
+    }
+    var zero V
+    return zero, false
+}
+
+func (d *CustomDictionary[K, V]) Len() int {
+    return len(d.Entries)
+}
+
+// --- 2-Pass Iterator Methods ---
+
+type DictIterator struct {
+    Index int
+}
+
+func (d *CustomDictionary[K, V]) InitIterator(buf *byte) int {
+    if buf == nil {
+        return 8 // sizeof(DictIterator)
+    }
+    it := (*DictIterator)(buf)
+    it.Index = 0
+    return 0
+}
+
+func (d *CustomDictionary[K, V]) Next(buf *byte) (*K, *V, bool) {
+    it := (*DictIterator)(buf)
+    if it.Index >= len(d.Entries) {
+        return nil, nil, false
+    }
+    entry := &d.Entries[it.Index]
+    it.Index = it.Index + 1
+    return &entry.Key, &entry.Value, true
+}
+
+func DemoMapBehavior() {
+    var dict CustomDictionary[string, int]
+
+    // Uses indexing sugar
+    dict["itemA"] = 100
+    dict["itemB"] = 200
+
+    // Traverses with zero heap allocation
+    for k, v := range dict {
+        // ...
+    }
+}
+
+```
+
+---
+
+### 9. First-Class Functions, Closures & Escape Analysis
+
+Functions can be passed as values, returned from factories, or defined inline as closures.
+
+* **Reference Capturing**: Captured variables maintain reference semantics across calls.
+
+
+* **Automatic Heap Promotion**: Variables that escape their stack scope (such as parameters returned inside a closure) are automatically promoted to heap allocation (`malloc`).
+
+
+* **Fat Pointer ABI**: Function values compile to a two-word structure:
+
+$$\text{FuncValue} \implies \{ \text{i8* fn\_ptr},\, \text{i8* env\_ptr} \}$$
+
+
+
+Top-level and stateless functions carry `env_ptr = null`. Closures carry a pointer to the captured environment.
+
+
+
+```go
+package main
+
+// 'base' is promoted to heap by escape analysis
+func makeAdder(base int) func(int) int {
+    return func(n int) int {
+        return base + n
+    }
+}
+
+func main() int {
+    add100 := makeAdder(100)
+    result := add100(42) // => 142
+
+    counter := 0
+    increment := func() int {
+        counter = counter + 1 // Mutates outer variable
+        return counter
+    }
+
+    increment()
+    increment()
+    finalCount := increment() // finalCount == 3
+
+    return 0
+}
+
+```
+
+---
+
+## C-ABI Export & Shared Library Generation
+
+Any top-level function taking POD types or pointers can be exported to C-ABI. Passing `-header <name.h>` instructs `hikec` to emit a C/C++ header matching the exported functions.
+
+### Hike Implementation (`libcalc.hike`)
+
+```go
+package main
+
+type Vector2D struct {
+    X float64
+    Y float64
+}
+
+func Add[T int | float64](a T, b T) T {
+    return a + b
+}
+
+func HikeAddInt(a int, b int) int {
+    return Add(a, b)
+}
+
+func HikeAddFloat(a float64, b float64) float64 {
+    return Add(a, b)
+}
+
+func HikeDotProduct(v1 *Vector2D, v2 *Vector2D) float64 {
+    return (v1.X * v2.X) + (v1.Y * v2.Y)
+}
+
+```
+
+### Compilation Commands
 
 ```bash
-# 1. Emit IR and generate C header
-hikec emit-ir -header mathlib.h -o mathlib.ll mathlib.hike
+# 1. Emit LLVM IR and C/C++ header
+hikec emit-ir -header libcalc.h -o libcalc.ll libcalc.hike
 
-# 2. Compile shared library and generate import library for C++
-clang -shared -O3 -Wl,--export-all-symbols -Wl,--out-implib,libmathlib.dll.a mathlib.ll -o mathlib.dll
+# 2. Build shared library and import library using Clang
+clang -shared -O3 -Wl,--export-all-symbols -Wl,--out-implib,libcalc.dll.a libcalc.ll -o libcalc.dll
 
 ```
 
-The generated `mathlib.h` contains standard C declarations:
+### Auto-Generated Header (`libcalc.h`)
 
 ```c
-#ifndef HIKE_MATHLIB_H
-#define HIKE_MATHLIB_H
+#ifndef HIKE_LIBCALC_H
+#define HIKE_LIBCALC_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -187,14 +538,14 @@ extern "C" {
   #endif
 #endif
 
-typedef struct Matrix2x2 {
-    double M00;
-    double M01;
-    double M10;
-    double M11;
-} Matrix2x2;
+typedef struct Vector2D {
+    double X;
+    double Y;
+} Vector2D;
 
-HIKE_API double HikeMatrixDeterminant(Matrix2x2* m);
+HIKE_API int64_t HikeAddInt(int64_t a, int64_t b);
+HIKE_API double HikeAddFloat(double a, double b);
+HIKE_API double HikeDotProduct(Vector2D* v1, Vector2D* v2);
 
 #ifdef __cplusplus
 }
@@ -203,159 +554,32 @@ HIKE_API double HikeMatrixDeterminant(Matrix2x2* m);
 
 ```
 
-#### Consuming from C++ (`main.cpp`)
+### C++ Host Client (`main.cpp`)
 
 ```cpp
 #include <iostream>
-#include "mathlib.h"
+#include "libcalc.h"
 
 int main() {
-    Matrix2x2 mat = { 1.0, 2.0, 3.0, 4.0 };
-    double det = HikeMatrixDeterminant(&mat);
-    std::cout << "Determinant: " << det << std::endl;
+    int64_t sumInt = HikeAddInt(400, 600);
+    double sumFloat = HikeAddFloat(1.414, 1.732);
+
+    Vector2D v1 = { 3.0, 4.0 };
+    Vector2D v2 = { 2.0, 5.0 };
+    double dot = HikeDotProduct(&v1, &v2);
+
+    std::cout << "SumInt: " << sumInt << std::endl;
+    std::cout << "Dot: " << dot << std::endl;
     return 0;
 }
 
 ```
 
----
+Compile and link C++ directly:
 
-## Language Reference
-
-### Variables & Basic Types
-
-Primitive types map directly to native machine representations: `int` (`i64`), `float64` (`double`), `byte` (`u8`), `bool` (`i1`), and `string` (`i8*`).
-
-```go
-package main
-
-var globalCounter int = 0
-const MaxLimit int = 1024
-
-func Demo() {
-    var a int = 42
-    var b float64 = 3.14159
-    
-    // Type inference
-    count := 100
-    ratio := 0.75
-}
-
-```
-
-### Structs & Pointers
-
-Structs use flat C memory layouts without hidden metadata or GC headers.
-
-```go
-package main
-
-type Point struct {
-    X float64
-    Y float64
-}
-
-func OffsetPoint(p *Point, dx float64, dy float64) {
-    p.X = p.X + dx
-    p.Y = p.Y + dy
-}
-
-```
-
-### Monomorphized Generics
-
-Generic functions and types use compile-time monomorphization:
-
-```go
-package main
-
-func Min[T int | float64](a T, b T) T {
-    if a < b {
-        return a
-    }
-    return b
-}
-
-func main() int {
-    minInt := Min(10, 20)       // Emits Min__int
-    minFloat := Min(3.14, 2.71) // Emits Min__float64
-    return 0
-}
-
-```
-
-### Map Behavior Protocol & 2-Pass Stack Iterator
-
-Custom collections can implement the Map Behavior protocol to enable indexing syntax (`m[k]`, `m[k] = v`, `len(m)`, `delete(m, k)`) and `for-range` loops.
-
-To avoid dynamic heap allocations during `for-range` traversal, the compiler uses a 2-pass stack allocation protocol:
-
-1. Calls `InitIterator(nil)` to query required state buffer size.
-
-
-2. Allocates the buffer on the stack frame via `alloca`.
-
-
-3. Calls `InitIterator(buf)` to initialize the state.
-
-
-4. Calls `Next(buf)` on each iteration step.
-
-
-
-```go
-type DictIterator struct {
-    Index int
-}
-
-func (d *CustomDictionary[K, V]) InitIterator(buf *byte) int {
-    if buf == nil {
-        return 8 // Size of DictIterator state
-    }
-    it := (*DictIterator)(buf)
-    it.Index = 0
-    return 0
-}
-
-func (d *CustomDictionary[K, V]) Next(buf *byte) (*K, *V, bool) {
-    it := (*DictIterator)(buf)
-    if it.Index >= len(d.Entries) {
-        return nil, nil, false
-    }
-    entry := &d.Entries[it.Index]
-    it.Index = it.Index + 1
-    return &entry.Key, &entry.Value, true
-}
-
-```
-
-### Functions & Closures
-
-Function values compile to an LLVM fat pointer: `{ i8* fn_ptr, i8* env_ptr }`.
-
-* Stateless functions pass `null` as `env_ptr`.
-
-
-* Closures pass a pointer to their captured environment.
-
-
-* Variables that escape the stack lifetime are promoted to the heap (`malloc`).
-
-
-
-```go
-package main
-
-func makeAdder(base int) func(int) int {
-    return func(n int) int {
-        return base + n // 'base' escapes and is promoted to heap
-    }
-}
-
-func main() int {
-    add100 := makeAdder(100)
-    return add100(42) // 142
-}
+```bash
+clang++ -O3 main.cpp libcalc.dll.a -o client.exe
+./client.exe
 
 ```
 
@@ -363,15 +587,70 @@ func main() int {
 
 ## Module Management (`hike.mod`)
 
-Module boundaries and import path mappings are handled through `hike.mod`.
+Hike resolves local dependencies and package roots via `hike.mod` in the project root.
 
 ```text
 module my-project
 
 hike 0.1.0
 
-# Map import paths to local directory trees
+# Remap import path to local directory
 replace std/encoding/json => ../../std/encoding/json
+
+```
+
+---
+
+## Working with JSON (`std/encoding/json`)
+
+The standard library provides DOM parsing, traversal, mutation, serialization, and file I/O.
+
+```go
+package main
+
+import (
+    "std/encoding/json"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    // 1. Read file content
+    content := json.ReadFile("data.json")
+    if len(content) == 0 {
+        printf("Failed to read data.json\n")
+        return 1
+    }
+
+    // 2. Parse DOM tree
+    doc := json.Parse(content)
+    if doc == nil {
+        printf("Failed to parse JSON\n")
+        return 1
+    }
+
+    // 3. Access fields
+    nameVal := doc.Get("name")
+    verVal := doc.Get("version")
+    if nameVal != nil {
+        printf("Name: %s\n", nameVal.AsString())
+    }
+    if verVal != nil {
+        printf("Version: %d\n", verVal.AsInt())
+    }
+
+    // 4. Mutate DOM
+    doc.Set("modified_by", json.NewString("hikec"))
+    newStats := json.NewObject()
+    newStats.Set("active_threads", json.NewNumber(8.0))
+    doc.Set("stats", newStats)
+
+    // 5. Serialize and write back
+    outStr := json.Stringify(doc)
+    json.WriteFile("output.json", outStr)
+
+    return 0
+}
 
 ```
 
@@ -379,7 +658,9 @@ replace std/encoding/json => ../../std/encoding/json
 
 ## WebAssembly Support
 
-Hike compiles directly to `wasm32-unknown-unknown` without WASI-SDK:
+Hike compiles directly to `wasm32-unknown-unknown` using Clang without requiring WASI-SDK.
+
+### Build Pipeline
 
 ```bash
 # 1. Generate wasm32 IR
@@ -388,47 +669,92 @@ hikec -target wasm32 -o main.ll main.hike
 # 2. Compile to standalone .wasm with Clang
 clang --target=wasm32-unknown-unknown -O2 -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined main.ll -o app.wasm
 
-# 3. Run with Node.js
+# 3. Execute in Node.js host
 node run_wasm.js
 
 ```
 
+A minimal JavaScript runner binds memory and basic C symbols (`printf`, `malloc`, `memcpy`). Complete scripts are located in `examples/wasm`.
+
 ---
 
-## Debugging
+## Source-Level Debugging in VS Code
 
-Passing `-g` instructs `hikec` to emit LLVM DWARF metadata. This enables source-level step debugging in VS Code using GDB or LLDB:
+Passing `-g` instructs `hikec` to emit LLVM DWARF metadata, enabling source-level breakpoints, single-stepping, and variable inspection in VS Code using GDB or LLDB.
+
+### `.vscode/tasks.json`
 
 ```json
-// .vscode/tasks.json
 {
   "version": "2.0.0",
   "tasks": [
     {
       "label": "Build Hike Debug Executable",
       "type": "shell",
-      "command": "hikec ${file} -g -o main.ll && clang -g -O0 main.ll -o app.exe"
+      "command": "hikec ${file} -g -o${fileDirname}/main.ll && clang -g -O0 ${fileDirname}/main.ll -o${fileDirname}/app.exe",
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
     }
   ]
 }
 
 ```
 
+### `.vscode/launch.json`
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Hike Program (F5)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${fileDirname}/app.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${fileDirname}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "preLaunchTask": "Build Hike Debug Executable",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
+
+```
+
+Pressing **`F5`** compiles the active `.hike` file and launches the debug session, supporting breakpoints, Step Over (`F10`), Step Into (`F11`), and variable inspection.
+
 ---
 
-## CLI Reference
+## CLI Reference (`hikec`)
 
 ```text
 Usage: hikec <command> [options] <source.hike...>
 
 Commands:
-  emit-ir   Compiles Hike code into LLVM IR (.ll) (default)
-  build     Invokes Clang to compile Hike code to a binary (.exe / .wasm)
-  run       Compiles and runs a Hike program immediately
+  emit-ir   Compiles Hike code into target LLVM IR (.ll) (default)
+  build     Invokes Clang to compile Hike code directly to an executable or .wasm
+  run       Builds into a temporary binary and executes it immediately
 
 Options:
-  -o <path>       Output path
-  -target <name>  Target platform (windows, linux, darwin, wasm32)
+  -o <path>       Output binary or IR path
+  -target <name>  Compilation target (windows, linux, darwin, wasm32)
   -header <path>  Export C/C++ header (.h)
   -g              Emit DWARF debug metadata
   -v, --verbose   Enable verbose logs
@@ -442,13 +768,13 @@ Options:
 * [ ] Dynamic interface dispatch (`vtable`)
 
 
-* [ ] Memory management utilities (Arena allocator abstractions)
+* [ ] Memory management utilities (Arena allocator integrations)
 
 
-* [ ] Integrated package resolution
+* [ ] Package registry and remote dependency resolution
 
 
-* [ ] Self-hosting frontend
+* [ ] Self-hosting compiler frontend in Hike
 
 
 
@@ -457,3 +783,4 @@ Options:
 ## License
 
 MIT License
+
