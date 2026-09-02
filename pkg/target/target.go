@@ -7,73 +7,63 @@ import (
 )
 
 type Target struct {
-	Name     string
-	Triple   string
-	PtrType  string // "i64" or "i32"
-	PtrBytes int    // 8 or 4
-	IsWasm   bool
-	IsWASI   bool
+	Name   string
+	Triple string
+	IsWasm bool
+	Cflags string
 }
 
 var (
-	TargetX86_64Windows = &Target{
-		Name:     "x86_64-windows",
-		Triple:   "x86_64-w64-windows-gnu",
-		PtrType:  "i64",
-		PtrBytes: 8,
-		IsWasm:   false,
-		IsWASI:   false,
+	TargetX86_64Windows = Target{
+		Name:   "windows",
+		Triple: "x86_64-w64-windows-gnu",
+		IsWasm: false,
+		Cflags: "",
 	}
-	TargetX86_64Linux = &Target{
-		Name:     "x86_64-linux",
-		Triple:   "x86_64-unknown-linux-gnu",
-		PtrType:  "i64",
-		PtrBytes: 8,
-		IsWasm:   false,
-		IsWASI:   false,
+	TargetX86_64WindowsMSVC = Target{
+		Name:   "windows-msvc",
+		Triple: "x86_64-pc-windows-msvc",
+		IsWasm: false,
+		// UCRT でインライン化された stdio シンボルを解決するライブラリを指定
+		Cflags: "-llegacy_stdio_definitions -Wno-override-module",
 	}
-	TargetX86_64Darwin = &Target{
-		Name:     "x86_64-darwin",
-		Triple:   "x86_64-apple-darwin",
-		PtrType:  "i64",
-		PtrBytes: 8,
-		IsWasm:   false,
-		IsWASI:   false,
+	TargetX86_64Linux = Target{
+		Name:   "linux",
+		Triple: "x86_64-unknown-linux-gnu",
+		IsWasm: false,
+		Cflags: "",
 	}
-	TargetWasm32WASI = &Target{
-		Name:     "wasm32-wasi",
-		Triple:   "wasm32-unknown-wasi",
-		PtrType:  "i32",
-		PtrBytes: 4,
-		IsWasm:   true,
-		IsWASI:   true,
+	TargetAarch64Darwin = Target{
+		Name:   "darwin",
+		Triple: "arm64-apple-darwin",
+		IsWasm: false,
+		Cflags: "",
 	}
-	TargetWasm32Unknown = &Target{
-		Name:     "wasm32-unknown",
-		Triple:   "wasm32-unknown-unknown",
-		PtrType:  "i32",
-		PtrBytes: 4,
-		IsWasm:   true,
-		IsWASI:   false,
+	TargetWasm32 = Target{
+		Name:   "wasm32",
+		Triple: "wasm32-unknown-unknown",
+		IsWasm: true,
+		Cflags: "",
 	}
-	TargetWasm64 = &Target{
-		Name:     "wasm64",
-		Triple:   "wasm64-unknown-unknown",
-		PtrType:  "i64",
-		PtrBytes: 8,
-		IsWasm:   true,
-		IsWASI:   false,
+	TargetWasm64 = Target{
+		Name:   "wasm64",
+		Triple: "wasm64-unknown-unknown",
+		IsWasm: true,
+		Cflags: "",
 	}
 )
 
 func DefaultTarget() *Target {
 	switch runtime.GOOS {
 	case "windows":
-		return TargetX86_64Windows
+		t := TargetX86_64Windows
+		return &t
 	case "darwin":
-		return TargetX86_64Darwin
+		t := TargetAarch64Darwin
+		return &t
 	default:
-		return TargetX86_64Linux
+		t := TargetX86_64Linux
+		return &t
 	}
 }
 
@@ -82,23 +72,25 @@ func ParseTarget(name string) (*Target, error) {
 		return DefaultTarget(), nil
 	}
 	switch strings.ToLower(name) {
-	case "windows", "x86_64-windows", "win64":
-		return TargetX86_64Windows, nil
-	case "linux", "x86_64-linux":
-		return TargetX86_64Linux, nil
-	case "darwin", "macos", "x86_64-darwin":
-		return TargetX86_64Darwin, nil
-	case "wasm", "wasm32", "wasm32-wasi", "wasi", "node":
-		return TargetWasm32WASI, nil
-	case "wasm32-unknown", "browser":
-		return TargetWasm32Unknown, nil
-	case "wasm64", "wasm64-unknown":
-		return TargetWasm64, nil
+	case "windows", "x86_64-windows", "x86_64-windows-gnu", "x86_64-w64-windows-gnu":
+		t := TargetX86_64Windows
+		return &t, nil
+	case "windows-msvc", "x86_64-windows-msvc", "x86_64-pc-windows-msvc":
+		t := TargetX86_64WindowsMSVC
+		return &t, nil
+	case "linux", "x86_64-linux", "x86_64-linux-gnu", "x86_64-unknown-linux-gnu":
+		t := TargetX86_64Linux
+		return &t, nil
+	case "darwin", "macos", "arm64-darwin", "aarch64-apple-darwin":
+		t := TargetAarch64Darwin
+		return &t, nil
+	case "wasm", "wasm32", "wasm32-unknown", "wasm32-unknown-unknown":
+		t := TargetWasm32
+		return &t, nil
+	case "wasm64", "wasm64-unknown", "wasm64-unknown-unknown":
+		t := TargetWasm64
+		return &t, nil
 	default:
-		return nil, fmt.Errorf("unsupported target: %s", name)
+		return nil, fmt.Errorf("unknown target: %s", name)
 	}
-}
-
-func (t *Target) Is64Bit() bool {
-	return t.PtrBytes == 8
 }

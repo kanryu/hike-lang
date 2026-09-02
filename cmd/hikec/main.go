@@ -21,7 +21,8 @@ func printUsage() {
 	fmt.Println("\nOptions for emit-ir:")
 	fmt.Println("  -o <path>        Output LLVM IR file path (default: <source>.ll)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
-	fmt.Println("  -target <name>   Target platform (windows, linux, darwin, wasm32, wasm64)")
+	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
+	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -v               Enable verbose logging")
 }
@@ -82,6 +83,10 @@ func runEmitIR(args []string) {
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
 			parts := strings.SplitN(arg, "=", 2)
 			targetName = parts[1]
+		} else if arg == "-cflags" && i+1 < len(args) {
+			i++ // emit-ir では Clang フラグはスキップ
+		} else if strings.HasPrefix(arg, "-cflags=") {
+			// スキップ
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 		} else if strings.HasPrefix(arg, "-") {
@@ -102,7 +107,6 @@ func runEmitIR(args []string) {
 		os.Exit(1)
 	}
 
-	// 新コンパイラドライバの呼び出し
 	comp := compiler.New(tgt)
 	comp.SetVerbose(verbose)
 
@@ -145,6 +149,7 @@ func runEmitIR(args []string) {
 func runBuild(args []string) {
 	outputBin := ""
 	targetName := ""
+	extraCflags := ""
 	debugInfo := false
 	var passThroughArgs []string
 	var sourceFiles []string
@@ -160,6 +165,14 @@ func runBuild(args []string) {
 			targetName = args[i+1]
 			passThroughArgs = append(passThroughArgs, "-target", targetName)
 			i++
+		} else if strings.HasPrefix(arg, "-target=") {
+			targetName = strings.TrimPrefix(arg, "-target=")
+			passThroughArgs = append(passThroughArgs, arg)
+		} else if arg == "-cflags" && i+1 < len(args) {
+			extraCflags = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-cflags=") {
+			extraCflags = strings.TrimPrefix(arg, "-cflags=")
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
@@ -192,7 +205,7 @@ func runBuild(args []string) {
 	if outputBin == "" {
 		if tgt.IsWasm {
 			outputBin = srcBase + ".wasm"
-		} else if tgt.Triple == target.TargetX86_64Windows.Triple {
+		} else if tgt.Triple == target.TargetX86_64Windows.Triple || tgt.Triple == target.TargetX86_64WindowsMSVC.Triple {
 			outputBin = srcBase + ".exe"
 		} else {
 			outputBin = srcBase
@@ -216,6 +229,16 @@ func runBuild(args []string) {
 		clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 	}
 
+	// 1. ターゲットプリセットに設定されている Cflags を適用
+	if tgt.Cflags != "" {
+		clangArgs = append(clangArgs, strings.Fields(tgt.Cflags)...)
+	}
+
+	// 2. コマンドライン引数 -cflags から渡された追加フラグを適用
+	if extraCflags != "" {
+		clangArgs = append(clangArgs, strings.Fields(extraCflags)...)
+	}
+
 	cmd := exec.Command("clang", clangArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -229,9 +252,9 @@ func runBuild(args []string) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // run: ビルドして即時実行する
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 func runRun(args []string) {
 	tempExe := filepath.Join(os.TempDir(), fmt.Sprintf("hike_run_%d.exe", os.Getpid()))
 	defer os.Remove(tempExe)
