@@ -111,6 +111,6 @@ func (c *Compiler) CompileFile(entryPath string) (string, error) {
 		return "", fmt.Errorf("semantic error: %w", err)
 	}
 
-	cg := codegen.New(mergedProg, semaCtx)
+	cg := codegen.New(mergedProg, semaCtx, nil, entryPath, false)
 	return cg.Generate(), nil
 }

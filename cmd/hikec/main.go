@@ -270,9 +270,13 @@ func runRun(args []string) {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
+		// 子プロセスが非ゼロ終了した場合、その終了コードをそのまま引き継いで終了する
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
+		// コマンド自体の起動失敗などの場合のみ exit 1
+		fmt.Fprintf(os.Stderr, "failed to run executable: %v\n", err)
 		os.Exit(1)
 	}
+	os.Exit(0)
 }
