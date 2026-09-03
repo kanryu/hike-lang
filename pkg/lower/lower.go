@@ -30,6 +30,7 @@ type Lowerer struct {
 	loopStack     []loopContext
 	deferStack    []*ast.CallExpr
 	itabs         map[string]*hir.ItabDef
+	escapedVars   map[string]bool // 追加
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
@@ -43,6 +44,8 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 		loopStack:   []loopContext{},
 		deferStack:  []*ast.CallExpr{},
 		itabs:       make(map[string]*hir.ItabDef),
+		escapedVars: make(map[string]bool), // 追加
+
 	}
 }
 
@@ -124,6 +127,14 @@ func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 		return &hir.ConstZero{Typ: t}
 	}
 	if _, isIface := t.(*sema.InterfaceType); isIface {
+		return &hir.ConstZero{Typ: t}
+	}
+	// 追記: 関数型 (クロージャ構造体 { i8*, i8* }) の初期値を zeroinitializer に設定
+	if _, isFunc := t.(*sema.FuncType); isFunc {
+		return &hir.ConstZero{Typ: t}
+	}
+	// 複合型全般に対するフォールバック
+	if strings.HasPrefix(t.LLVMType(), "{") || strings.HasPrefix(t.LLVMType(), "[") || strings.HasPrefix(t.LLVMType(), "%struct.") {
 		return &hir.ConstZero{Typ: t}
 	}
 	return &hir.ConstInt{Val: 0, Typ: t}
@@ -260,6 +271,11 @@ func (l *Lowerer) lowerFunc(fn *ast.FuncDecl) {
 	l.symbolTypes = make(map[string]sema.Type)
 	l.deferStack = []*ast.CallExpr{}
 	l.regCount = 0
+	if fn.Body != nil {
+		l.escapedVars = sema.CollectAllCapturesInBlock(fn.Body)
+	} else {
+		l.escapedVars = make(map[string]bool)
+	}
 
 	fnName := fn.Name.Value
 	var recvType sema.Type = nil
@@ -377,7 +393,7 @@ func (l *Lowerer) lowerFunc(fn *ast.FuncDecl) {
 			hirFn.Params = append(hirFn.Params, paramReg)
 
 			ptrReg := l.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
-			if p.IsEscaped {
+			if p.IsEscaped || l.escapedVars[p.Name.Value] {
 				sizeVal := &hir.ConstInt{Val: int64(pType.Size()), Typ: sema.TypeInt}
 				l.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType})
 			} else {
@@ -487,8 +503,28 @@ func (l *Lowerer) lowerVarDecl(vd *ast.VarDecl) {
 	}
 }
 
+func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value {
+	if val.Type().LLVMType() == targetType.LLVMType() {
+		return val
+	}
+	if iface, ok := targetType.(*sema.InterfaceType); ok {
+		itabName := ""
+		if !iface.IsAny() {
+			itabDef := l.getOrCreateItab(val.Type(), iface)
+			itabName = itabDef.GlobalName
+		}
+		dst := l.nextReg(iface)
+		l.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName})
+		return dst
+	}
+	dst := l.nextReg(targetType)
+	l.emit(&hir.InstrCast{Dst: dst, Val: val, ToType: targetType})
+	return dst
+}
+
 func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
-	isDefine := (as.Token.Type == token.DEFINE) || (as.Token.Literal == ":=")
+	isDefine := (as.Token.Type == token.DEFINE) || (as.Token.Literal == ":=") ||
+		(as.Token.Type == token.VAR) || (as.Token.Literal == "var") || (as.Type != nil)
 
 	// 1. 多値代入 (Tuple unpacking)
 	if len(as.Left) > 1 && len(as.Right) == 1 {
@@ -505,7 +541,12 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 				if id, ok := left.(*ast.Identifier); ok {
 					if isDefine {
 						ptrReg := l.nextReg(&sema.PointerType{Base: elemType}, id.Value)
-						l.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: elemType})
+						if l.escapedVars[id.Value] {
+							sizeVal := &hir.ConstInt{Val: int64(elemType.Size()), Typ: sema.TypeInt}
+							l.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: elemType})
+						} else {
+							l.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: elemType})
+						}
 						l.symbols[id.Value] = ptrReg
 						l.symbolTypes[id.Value] = elemType
 						l.emit(&hir.InstrStore{Val: elemReg, Ptr: ptrReg})
@@ -520,35 +561,9 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 	}
 
 	// 2. マップインデックス代入: m[k] = v
-	if len(as.Left) == 1 && len(as.Right) == 1 {
-		if idxExpr, ok := as.Left[0].(*ast.IndexExpr); ok {
-			baseVal := l.lowerExpr(idxExpr.Left)
-			if mp, isMap := baseVal.Type().(*sema.MapType); isMap {
-				keyVal := l.lowerExpr(idxExpr.Index)
-				valVal := l.lowerExpr(as.Right[0])
+	// ... (中略: 既存のまま) ...
 
-				keyI64 := l.coerceToI64(keyVal, mp.Key)
-				valI64 := l.coerceToI64(valVal, mp.Value)
-				l.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set", Args: []hir.Value{baseVal, keyI64, valI64}})
-				return
-			}
-
-			objPtr := l.lowerStructPtr(idxExpr.Left)
-			objType := objPtr.Type().(*sema.PointerType).Base
-			if _, _, okBeh := l.semaCtx.CheckMapBehavior(objType); okBeh {
-				st, sName := l.findStruct(objType)
-				targetFnName, targetFn, finalRecv, found := l.resolveMethodPath(st, sName, objPtr, "Set")
-				if found && targetFn != nil {
-					keyVal := l.lowerExpr(idxExpr.Index)
-					valVal := l.lowerExpr(as.Right[0])
-					l.emit(&hir.InstrCallStatic{CalleeName: targetFnName, Args: []hir.Value{finalRecv, keyVal, valVal}})
-					return
-				}
-			}
-		}
-	}
-
-	// 3. 通常の代入
+	// 3. 通常の代入 / 定義
 	for i, left := range as.Left {
 		var rhs ast.Expression = nil
 		if i < len(as.Right) {
@@ -556,11 +571,42 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 		}
 
 		if id, ok := left.(*ast.Identifier); ok && isDefine {
-			val := l.lowerExpr(rhs)
-			ptrReg := l.nextReg(&sema.PointerType{Base: val.Type()}, id.Value)
-			l.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: val.Type()})
+			var actualType sema.Type = nil
+			if as.Type != nil {
+				actualType = l.semaCtx.ResolveType(as.Type)
+			}
+
+			isUninitVar := false
+			if il, okIl := rhs.(*ast.IntegerLiteral); okIl && (as.Token.Type == token.VAR || as.Token.Literal == "var") && il.Token.Type == token.VAR {
+				isUninitVar = true
+			}
+
+			var val hir.Value
+			if isUninitVar && actualType != nil {
+				val = l.defaultConstValue(actualType)
+			} else if rhs != nil {
+				val = l.lowerExpr(rhs)
+				if actualType == nil {
+					actualType = val.Type()
+				} else {
+					val = l.emitValueCoerce(val, actualType)
+				}
+			} else if actualType != nil {
+				val = l.defaultConstValue(actualType)
+			} else {
+				actualType = sema.TypeInt
+				val = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+			}
+
+			ptrReg := l.nextReg(&sema.PointerType{Base: actualType}, id.Value)
+			if l.escapedVars[id.Value] {
+				sizeVal := &hir.ConstInt{Val: int64(actualType.Size()), Typ: sema.TypeInt}
+				l.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: actualType})
+			} else {
+				l.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: actualType})
+			}
 			l.symbols[id.Value] = ptrReg
-			l.symbolTypes[id.Value] = val.Type()
+			l.symbolTypes[id.Value] = actualType
 			l.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
 			continue
 		}
@@ -568,7 +614,22 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 		ptr := l.lowerLValue(left)
 		val := l.lowerExpr(rhs)
 
+		// 修正: ++ / -- の場合は val を明示的に 1 とする
 		switch as.Token.Literal {
+		case "++":
+			targetType := ptr.Type().(*sema.PointerType).Base
+			curValReg := l.nextReg(targetType)
+			l.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
+			resReg := l.nextReg(targetType)
+			l.emit(&hir.InstrBinary{Dst: resReg, Op: hir.OpAdd, L: curValReg, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+			val = resReg
+		case "--":
+			targetType := ptr.Type().(*sema.PointerType).Base
+			curValReg := l.nextReg(targetType)
+			l.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
+			resReg := l.nextReg(targetType)
+			l.emit(&hir.InstrBinary{Dst: resReg, Op: hir.OpSub, L: curValReg, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+			val = resReg
 		case "+=", "-=", "*=", "/=", "%=":
 			curValReg := l.nextReg(val.Type())
 			l.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
@@ -589,12 +650,7 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 		}
 
 		targetType := ptr.Type().(*sema.PointerType).Base
-		if val.Type().LLVMType() != targetType.LLVMType() {
-			castReg := l.nextReg(targetType)
-			l.emit(&hir.InstrCast{Dst: castReg, Val: val, ToType: targetType})
-			val = castReg
-		}
-
+		val = l.emitValueCoerce(val, targetType)
 		l.emit(&hir.InstrStore{Val: val, Ptr: ptr})
 	}
 }
@@ -1222,6 +1278,14 @@ func (l *Lowerer) lowerLValue(expr ast.Expression) hir.Value {
 			return l.lowerExpr(e.Right)
 		}
 
+	// 追記: 構造体リテラルのアドレス取得 (&Struct{...}) 用の一時メモリ化
+	case *ast.StructLiteral:
+		val := l.lowerExpr(e)
+		allocaTmp := l.nextReg(&sema.PointerType{Base: val.Type()})
+		l.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: val.Type()})
+		l.emit(&hir.InstrStore{Val: val, Ptr: allocaTmp})
+		return allocaTmp
+
 	case *ast.MemberExpr:
 		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
 			qualified := pkgId.Value + "_" + e.Field.Value
@@ -1454,14 +1518,30 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 			return subRes
 		}
 
-		slType := baseVal.Type().(*sema.SliceType)
-		rawBytePtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		capVal := l.nextReg(sema.TypeInt)
-		l.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
-		l.emit(&hir.InstrExtractValue{Dst: capVal, Agg: baseVal, Index: 2})
+		var elemType sema.Type = sema.TypeByte
+		var typedDataPtr hir.Value = nil
+		var capVal hir.Value = nil
 
-		typedDataPtr := l.nextReg(&sema.PointerType{Base: slType.Elem})
-		l.emit(&hir.InstrCast{Dst: typedDataPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: slType.Elem}})
+		if slType, isSlice := baseVal.Type().(*sema.SliceType); isSlice {
+			elemType = slType.Elem
+			rawBytePtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			cVal := l.nextReg(sema.TypeInt)
+			l.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
+			l.emit(&hir.InstrExtractValue{Dst: cVal, Agg: baseVal, Index: 2})
+			tPtr := l.nextReg(&sema.PointerType{Base: elemType})
+			l.emit(&hir.InstrCast{Dst: tPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: elemType}})
+			typedDataPtr = tPtr
+			capVal = cVal
+		} else if arType, isArray := baseVal.Type().(*sema.ArrayType); isArray {
+			elemType = arType.Elem
+			arrPtr := l.lowerLValue(e.Left)
+			tPtr := l.nextReg(&sema.PointerType{Base: elemType})
+			l.emit(&hir.InstrCast{Dst: tPtr, Val: arrPtr, ToType: &sema.PointerType{Base: elemType}})
+			typedDataPtr = tPtr
+			capVal = &hir.ConstInt{Val: int64(arType.Len), Typ: sema.TypeInt}
+		} else {
+			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", baseVal.Type().TypeName()))
+		}
 
 		lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
 		if e.Low != nil {
@@ -1472,7 +1552,7 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 			highVal = l.lowerExpr(e.High)
 		}
 
-		elemPtr := l.nextReg(&sema.PointerType{Base: slType.Elem})
+		elemPtr := l.nextReg(&sema.PointerType{Base: elemType})
 		l.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedDataPtr, Index: lowVal})
 		newLen := l.nextReg(sema.TypeInt)
 		l.emit(&hir.InstrBinary{Dst: newLen, Op: hir.OpSub, L: highVal, R: lowVal})
@@ -1482,11 +1562,12 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 		elemBytePtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		l.emit(&hir.InstrCast{Dst: elemBytePtr, Val: elemPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
-		t1 := l.nextReg(slType)
-		l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(slType), Val: elemBytePtr, Index: 0})
-		t2 := l.nextReg(slType)
+		resSliceType := &sema.SliceType{Elem: elemType}
+		t1 := l.nextReg(resSliceType)
+		l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(resSliceType), Val: elemBytePtr, Index: 0})
+		t2 := l.nextReg(resSliceType)
 		l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: newLen, Index: 1})
-		t3 := l.nextReg(slType)
+		t3 := l.nextReg(resSliceType)
 		l.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: newCap, Index: 2})
 		return t3
 
@@ -1620,7 +1701,13 @@ func (l *Lowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
 	l.emit(&hir.InstrBinary{Dst: matchReg, Op: hir.OpEq, L: typeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt}})
 
 	unpackedReg := l.nextReg(targetType)
-	l.emit(&hir.InstrCast{Dst: unpackedReg, Val: dataPtrReg, ToType: targetType})
+	if strings.HasSuffix(targetType.LLVMType(), "*") {
+		l.emit(&hir.InstrCast{Dst: unpackedReg, Val: dataPtrReg, ToType: targetType})
+	} else {
+		typedPtr := l.nextReg(&sema.PointerType{Base: targetType})
+		l.emit(&hir.InstrCast{Dst: typedPtr, Val: dataPtrReg, ToType: &sema.PointerType{Base: targetType}})
+		l.emit(&hir.InstrLoad{Dst: unpackedReg, Ptr: typedPtr})
+	}
 
 	tupleType := &sema.TupleType{Types: []sema.Type{targetType, sema.TypeBool}}
 	t1 := l.nextReg(tupleType)
@@ -1974,7 +2061,24 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 			if targetFn != nil {
 				args := make([]hir.Value, len(call.Args))
 				for i, arg := range call.Args {
-					args[i] = l.lowerExpr(arg)
+					val := l.lowerExpr(arg)
+					// C-ABI Variadic Promotion (bool/byte -> i64, float32 -> double)
+					if targetFn.IsVariadic && i >= len(targetFn.ParamTypes) {
+						if val.Type() == sema.TypeBool || val.Type().LLVMType() == "i1" {
+							extReg := l.nextReg(sema.TypeInt)
+							l.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeInt})
+							val = extReg
+						} else if val.Type() == sema.TypeByte || val.Type().LLVMType() == "i8" {
+							extReg := l.nextReg(sema.TypeInt)
+							l.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeInt})
+							val = extReg
+						} else if val.Type() == sema.TypeFloat32 || val.Type().LLVMType() == "float" {
+							extReg := l.nextReg(sema.TypeFloat64)
+							l.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeFloat64})
+							val = extReg
+						}
+					}
+					args[i] = val
 				}
 
 				var retType sema.Type = sema.TypeVoid
@@ -2139,6 +2243,8 @@ func (l *Lowerer) lowerFuncLit(fl *ast.FuncLit) hir.Value {
 	envParamReg := &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
 	anonFn.Params = append(anonFn.Params, envParamReg)
 
+	captures := sema.ScanCapturesFromLit(fl)
+
 	prevFunc := l.curFunc
 	prevBlock := l.curBlock
 	prevSymbols := l.symbols
@@ -2150,6 +2256,25 @@ func (l *Lowerer) lowerFuncLit(fl *ast.FuncLit) hir.Value {
 	anonEntry := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	l.setBlock(anonEntry)
 
+	// 1. キャプチャ変数の展開 (環境ポインタからの復元)
+	if len(captures) > 0 {
+		envTyped := l.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
+		l.emit(&hir.InstrCast{Dst: envTyped, Val: envParamReg, ToType: &sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}})
+
+		for idx, name := range captures {
+			symType := prevTypes[name]
+			slot := l.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
+			l.emit(&hir.InstrGetElemPtr{Dst: slot, BasePtr: envTyped, Index: &hir.ConstInt{Val: int64(idx), Typ: sema.TypeInt}})
+			rawPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrLoad{Dst: rawPtr, Ptr: slot})
+			typedPtr := l.nextReg(&sema.PointerType{Base: symType})
+			l.emit(&hir.InstrCast{Dst: typedPtr, Val: rawPtr, ToType: &sema.PointerType{Base: symType}})
+			l.symbols[name] = typedPtr
+			l.symbolTypes[name] = symType
+		}
+	}
+
+	// 2. 仮引数の展開
 	for _, p := range fl.Params {
 		pType := l.semaCtx.ResolveType(p.Type)
 		pReg := l.nextReg(pType, p.Name.Value+"_arg")
@@ -2175,12 +2300,33 @@ func (l *Lowerer) lowerFuncLit(fl *ast.FuncLit) hir.Value {
 	l.symbols = prevSymbols
 	l.symbolTypes = prevTypes
 
+	// 3. 親関数側での環境構築 (ヒープ確保とポインタ格納)
+	var envVal hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+	if len(captures) > 0 {
+		envSize := len(captures) * 8
+		envRaw := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		l.emit(&hir.InstrHeapAlloc{Dst: envRaw, Size: &hir.ConstInt{Val: int64(envSize), Typ: sema.TypeInt}, AllocType: sema.TypeByte})
+
+		envTyped := l.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
+		l.emit(&hir.InstrCast{Dst: envTyped, Val: envRaw, ToType: &sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}})
+
+		for idx, name := range captures {
+			symPtr := l.symbols[name]
+			symRaw := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrCast{Dst: symRaw, Val: symPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
+			slot := l.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
+			l.emit(&hir.InstrGetElemPtr{Dst: slot, BasePtr: envTyped, Index: &hir.ConstInt{Val: int64(idx), Typ: sema.TypeInt}})
+			l.emit(&hir.InstrStore{Val: symRaw, Ptr: slot})
+		}
+		envVal = envRaw
+	}
+
 	fatType := ft
 	t1 := l.nextReg(fatType)
 	fnGlobal := &hir.GlobalVar{Name: anonName, Typ: &sema.PointerType{Base: sema.TypeByte}}
 	l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(fatType), Val: fnGlobal, Index: 0})
 	t2 := l.nextReg(fatType)
-	l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
+	l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: envVal, Index: 1})
 	return t2
 }
 

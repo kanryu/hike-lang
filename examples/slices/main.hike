@@ -1,0 +1,82 @@
+package main
+
+import (
+    "std/slices"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    printf("=== Testing std/slices All API Operations ===\n\n")
+
+    nums := []int{5, 2, 8, 1, 9, 4}
+
+    // 1. Filter: 偶数の抽出
+    printf("1. Testing Filter (evens only)...\n")
+    evens := slices.Filter[int](nums, func(x int) bool {
+        return x % 2 == 0
+    })
+    printf("   Evens (%d items): ", len(evens))
+    for i := 0; i < len(evens); i = i + 1 {
+        printf("%d ", evens[i])
+    }
+    printf("\n\n")
+
+    // 2. Map: 各要素を10倍に変換
+    printf("2. Testing Map (x * 10)...\n")
+    mapped := slices.Map[int, int](evens, func(x int) int {
+        return x * 10
+    })
+    printf("   Mapped (%d items): ", len(mapped))
+    for i := 0; i < len(mapped); i = i + 1 {
+        printf("%d ", mapped[i])
+    }
+    printf("\n\n")
+
+    // 3. IndexFunc: 条件一致インデックス探索 (成功と失敗)
+    printf("3. Testing IndexFunc...\n")
+    idxFound := slices.IndexFunc[int](nums, func(x int) bool {
+        return x > 5
+    })
+    idxNotFound := slices.IndexFunc[int](nums, func(x int) bool {
+        return x > 100
+    })
+    printf("   Found (> 5)    : index = %d (value = %d)\n", idxFound, nums[idxFound])
+    printf("   Not found (>100): index = %d\n\n", idxNotFound)
+
+    // 4. Find: 多値返却 (T, bool) による要素探索 (成功と失敗)
+    printf("4. Testing Find...\n")
+    valFound, okFound := slices.Find[int](nums, func(x int) bool {
+        return x > 5
+    })
+    valNotFound, okNotFound := slices.Find[int](nums, func(x int) bool {
+        return x > 100
+    })
+    printf("   Found (> 5)    : val = %d, ok = %d\n", valFound, okFound)
+    printf("   Not found (>100): val = %d, ok = %d\n\n", valNotFound, okNotFound)
+
+    // 5. SortFunc: 三値比較関数による昇順ソート (a - b)
+    printf("5. Testing SortFunc (ascending)...\n")
+    slices.SortFunc[int](nums, func(a int, b int) int {
+        return a - b
+    })
+    printf("   Sorted items (asc) : ")
+    for i := 0; i < len(nums); i = i + 1 {
+        printf("%d ", nums[i])
+    }
+    printf("\n\n")
+
+    // 6. SortBy: 二値述語 (less) による降順ソート (a > b)
+    printf("6. Testing SortBy (descending)...\n")
+    slices.SortBy[int](nums, func(a int, b int) bool {
+        return a > b
+    })
+    printf("   Sorted items (desc): ")
+    for i := 0; i < len(nums); i = i + 1 {
+        printf("%d ", nums[i])
+    }
+    printf("\n\n")
+
+    printf("=== All Slice Operations Completed Successfully ===\n")
+    return 0
+}

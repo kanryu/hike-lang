@@ -1422,7 +1422,7 @@ func runEscapeAnalysis(prog *ast.Program) {
 			}
 
 			collectDeclsInBlock(fn.Body, varDecls)
-			capturedNames := collectAllCapturesInBlock(fn.Body)
+			capturedNames := CollectAllCapturesInBlock(fn.Body)
 
 			for name := range capturedNames {
 				if vd, ok := varDecls[name]; ok {
@@ -1496,7 +1496,7 @@ func collectDeclsInStmt(stmt ast.Statement, out map[string]*ast.VarDecl) {
 	}
 }
 
-func collectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
+func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 	capturedSet := make(map[string]bool)
 	if b == nil {
 		return capturedSet
@@ -1510,7 +1510,7 @@ func collectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			return
 		}
 		if fl, ok := e.(*ast.FuncLit); ok {
-			caps := scanCapturesFromLit(fl)
+			caps := ScanCapturesFromLit(fl)
 			for _, c := range caps {
 				capturedSet[c] = true
 			}
@@ -1639,7 +1639,7 @@ func collectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 	return capturedSet
 }
 
-func scanCapturesFromLit(fl *ast.FuncLit) []string {
+func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 	params := make(map[string]bool)
 	for _, p := range fl.Params {
 		params[p.Name.Value] = true
@@ -1788,6 +1788,11 @@ func scanCapturesFromLit(fl *ast.FuncLit) []string {
 func insertImplicitCasts(prog *ast.Program, ctx *Context) {
 	for _, decl := range prog.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			// 未具象化のジェネリック関数テンプレートは単相化前のため型解決をスキップ
+			if IsGenericFuncDecl(fn) {
+				continue
+			}
+
 			locals := make(map[string]Type)
 			if fn.Receiver != nil {
 				locals[fn.Receiver.Name.Value] = ctx.ResolveType(fn.Receiver.Type)

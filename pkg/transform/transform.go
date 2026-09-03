@@ -245,11 +245,13 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			explicitTypeArgs = append(explicitTypeArgs, t.semaCtx.ResolveType(tArg))
 		}
 	} else if idxExpr, ok := call.Function.(*ast.IndexExpr); ok {
-		// 単一型引数インデックス形式: Min[int](...)
+		// 単一型引数インデックス形式: Min[int](...), slices.Filter[int](...)
 		funcToken = idxExpr.Token
 		funcName = t.resolveTargetName(idxExpr.Left)
-		if tArg := t.semaCtx.ResolveType(idxExpr.Index.(ast.TypeExpr)); tArg != nil && tArg != sema.TypeVoid {
-			explicitTypeArgs = append(explicitTypeArgs, tArg)
+		if tExpr := exprToTypeExpr(idxExpr.Index); tExpr != nil {
+			if tArg := t.semaCtx.ResolveType(tExpr); tArg != nil && tArg != sema.TypeVoid {
+				explicitTypeArgs = append(explicitTypeArgs, tArg)
+			}
 		}
 	} else if id, ok := call.Function.(*ast.Identifier); ok {
 		if genTemplate := t.findGenericTemplate(id.Value); genTemplate != nil {
@@ -529,6 +531,23 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 			Key:   t.substituteAstType(node.Key, typeMap, orderedTypeArgs),
 			Value: t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
 		}
+
+	// 追記: 関数シグネチャ内部の型パラメータ (T, U 等) を再帰的に置換
+	case *ast.FuncType:
+		newParams := make([]ast.TypeExpr, len(node.ParamTypes))
+		for i, pt := range node.ParamTypes {
+			newParams[i] = t.substituteAstType(pt, typeMap, orderedTypeArgs)
+		}
+		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
+		for i, rt := range node.ReturnTypes {
+			newReturns[i] = t.substituteAstType(rt, typeMap, orderedTypeArgs)
+		}
+		return &ast.FuncType{
+			Token:       node.Token,
+			ParamTypes:  newParams,
+			IsVariadic:  node.IsVariadic,
+			ReturnTypes: newReturns,
+		}
 	}
 	return typ
 }
@@ -614,6 +633,16 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 	if e == nil {
 		return nil
 	}
+
+	// 0. 式ノードとして現れる型式 (例: make([]T, ...) の []T や make(map[K]V) の map[K]V)
+	if te, ok := e.(ast.TypeExpr); ok {
+		if substituted := t.substituteAstType(te, typeMap, orderedTypeArgs); substituted != nil {
+			if expr, okExpr := substituted.(ast.Expression); okExpr {
+				return expr
+			}
+		}
+	}
+
 	switch node := e.(type) {
 	case *ast.BinaryExpr:
 		return &ast.BinaryExpr{
@@ -651,6 +680,13 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 			Left:  t.substituteAstExpr(node.Left, typeMap, orderedTypeArgs),
 			Index: t.substituteAstExpr(node.Index, typeMap, orderedTypeArgs),
 		}
+	case *ast.SliceExpr:
+		return &ast.SliceExpr{
+			Token: node.Token,
+			Left:  t.substituteAstExpr(node.Left, typeMap, orderedTypeArgs),
+			Low:   t.substituteAstExpr(node.Low, typeMap, orderedTypeArgs),
+			High:  t.substituteAstExpr(node.High, typeMap, orderedTypeArgs),
+		}
 	case *ast.GenericInstExpr:
 		newArgs := make([]ast.TypeExpr, len(node.TypeArgs))
 		for i, arg := range node.TypeArgs {
@@ -680,6 +716,69 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 			Type:   newType,
 			Fields: newFields,
 		}
+	case *ast.ArrayLiteral:
+		newType := node.Type
+		if substituted := t.substituteAstType(node.Type, typeMap, orderedTypeArgs); substituted != nil {
+			if at, ok := substituted.(*ast.ArrayType); ok {
+				newType = at
+			}
+		}
+		newElems := make([]ast.Expression, len(node.Elements))
+		for i, el := range node.Elements {
+			newElems[i] = t.substituteAstExpr(el, typeMap, orderedTypeArgs)
+		}
+		return &ast.ArrayLiteral{
+			Token:    node.Token,
+			Type:     newType,
+			Elements: newElems,
+		}
+	case *ast.SliceLiteral:
+		newType := node.Type
+		if substituted := t.substituteAstType(node.Type, typeMap, orderedTypeArgs); substituted != nil {
+			if st, ok := substituted.(*ast.SliceType); ok {
+				newType = st
+			}
+		}
+		newElems := make([]ast.Expression, len(node.Elements))
+		for i, el := range node.Elements {
+			newElems[i] = t.substituteAstExpr(el, typeMap, orderedTypeArgs)
+		}
+		return &ast.SliceLiteral{
+			Token:    node.Token,
+			Type:     newType,
+			Elements: newElems,
+		}
+	case *ast.TypeAssertExpr:
+		return &ast.TypeAssertExpr{
+			Token:  node.Token,
+			Expr:   t.substituteAstExpr(node.Expr, typeMap, orderedTypeArgs),
+			Target: t.substituteAstType(node.Target, typeMap, orderedTypeArgs),
+		}
+	case *ast.FuncLit:
+		newParams := make([]*ast.ParamDecl, len(node.Params))
+		for i, p := range node.Params {
+			newParams[i] = &ast.ParamDecl{
+				Token:     p.Token,
+				Name:      p.Name,
+				Type:      t.substituteAstType(p.Type, typeMap, orderedTypeArgs),
+				IsEscaped: p.IsEscaped,
+			}
+		}
+		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
+		for i, rt := range node.ReturnTypes {
+			newReturns[i] = t.substituteAstType(rt, typeMap, orderedTypeArgs)
+		}
+		var newBody *ast.BlockStmt = nil
+		if node.Body != nil {
+			newBody = t.substituteAstBlock(node.Body, typeMap, orderedTypeArgs)
+		}
+		return &ast.FuncLit{
+			Token:       node.Token,
+			Params:      newParams,
+			IsVariadic:  node.IsVariadic,
+			ReturnTypes: newReturns,
+			Body:        newBody,
+		}
 	}
 	return e
 }
@@ -702,4 +801,43 @@ func getBaseTypeName(typ ast.TypeExpr) string {
 		return node.Name.Value
 	}
 	return ""
+}
+
+func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
+	if e == nil {
+		return nil
+	}
+	if te, ok := e.(ast.TypeExpr); ok {
+		return te
+	}
+	if id, ok := e.(*ast.Identifier); ok {
+		return &ast.NamedType{Token: id.Token, Name: id}
+	}
+	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+		base := exprToTypeExpr(pref.Right)
+		if base != nil {
+			return &ast.PointerType{Token: pref.Token, Base: base}
+		}
+	}
+	if mem, ok := e.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			return &ast.NamedType{
+				Token:   pkgId.Token,
+				Package: pkgId,
+				Name:    mem.Field,
+			}
+		}
+	}
+	if fl, ok := e.(*ast.FuncLit); ok {
+		pts := make([]ast.TypeExpr, len(fl.Params))
+		for i, p := range fl.Params {
+			pts[i] = p.Type
+		}
+		return &ast.FuncType{
+			Token:       fl.Token,
+			ParamTypes:  pts,
+			ReturnTypes: fl.ReturnTypes,
+		}
+	}
+	return nil
 }

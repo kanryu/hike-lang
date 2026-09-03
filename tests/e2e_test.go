@@ -11,23 +11,45 @@ import (
 	"testing"
 )
 
-var hikecBin string
+var (
+	hikecBin    string
+	projectRoot string
+)
+
+// プロジェクトルート (std ディレクトリが存在するルート) を探索
+func findProjectRoot() string {
+	dir, err := os.Getwd()
+	if err == nil {
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "std")); err == nil {
+				return dir
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	abs, _ := filepath.Abs("..")
+	return abs
+}
 
 func TestMain(m *testing.M) {
-	tmpDir, err := os.MkdirTemp("", "hikec-test-bin-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "一時ディレクトリ作成失敗: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.RemoveAll(tmpDir)
+	projectRoot = findProjectRoot()
+
+	// プロジェクトルート直下にテスト作業親ディレクトリを作成
+	testTmpBase := filepath.Join(projectRoot, ".test_tmp")
+	_ = os.MkdirAll(testTmpBase, 0755)
+	defer os.RemoveAll(testTmpBase)
 
 	binName := "hikec"
 	if runtime.GOOS == "windows" {
 		binName = "hikec.exe"
 	}
-	hikecBin = filepath.Join(tmpDir, binName)
+	hikecBin = filepath.Join(testTmpBase, binName)
 
-	buildCmd := exec.Command("go", "build", "-o", hikecBin, "../cmd/hikec")
+	buildCmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(projectRoot, "cmd", "hikec"))
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "hikec のビルドに失敗しました: %v\n%s\n", err, string(out))
 		os.Exit(1)
@@ -47,18 +69,51 @@ type TestCase struct {
 func runTryRunTest(t *testing.T, tc TestCase) {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "hike-test-*")
+	testTmpBase := filepath.Join(projectRoot, ".test_tmp")
+	_ = os.MkdirAll(testTmpBase, 0755)
+
+	// プロジェクト同一ボリューム内に一時ディレクトリを作成 (ドライブ跨ぎを防止)
+	tmpDir, err := os.MkdirTemp(testTmpBase, "hike-test-*")
 	if err != nil {
 		t.Fatalf("一時ディレクトリ作成失敗: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// 1. main.hike を書き込み
 	srcPath := filepath.Join(tmpDir, "main.hike")
 	if err := os.WriteFile(srcPath, []byte(tc.HikeSource), 0644); err != nil {
 		t.Fatalf("ソース書き込み失敗: %v", err)
 	}
 
+	// 2. hike.mod を動的生成して配置
+	stdDir := filepath.Join(projectRoot, "std")
+	relStd, err := filepath.Rel(tmpDir, stdDir)
+	if err != nil {
+		relStd = stdDir
+	}
+	relStdSlash := filepath.ToSlash(relStd)
+
+	var modBuilder strings.Builder
+	modBuilder.WriteString("module test-runner\n\nhike 0.1.0\n\n")
+	modBuilder.WriteString(fmt.Sprintf("replace std => %s\n", relStdSlash))
+
+	// std 直下の全サブパッケージ (std/slices, std/json, std/maps など) を replace 登録
+	if entries, err := os.ReadDir(stdDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				modBuilder.WriteString(fmt.Sprintf("replace std/%s => %s/%s\n", e.Name(), relStdSlash, e.Name()))
+			}
+		}
+	}
+
+	modPath := filepath.Join(tmpDir, "hike.mod")
+	if err := os.WriteFile(modPath, []byte(modBuilder.String()), 0644); err != nil {
+		t.Fatalf("hike.mod 書き込み失敗: %v", err)
+	}
+
+	// 3. カレントディレクトリを一時ディレクトリに設定して実行
 	runCmd := exec.Command(hikecBin, "run", srcPath)
+	runCmd.Dir = tmpDir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	runCmd.Stdout = &stdout
@@ -79,8 +134,20 @@ func runTryRunTest(t *testing.T, tc TestCase) {
 		t.Errorf("[%s] 終了コード不一致: 期待値 %d, 実際値 %d\n[Stderr]: %s", tc.Name, tc.ExpectedExit, actualExit, stderr.String())
 	}
 
-	actualOut := strings.TrimSpace(stdout.String())
-	expectedOut := strings.TrimSpace(tc.ExpectedOut)
+	normalize := func(s string) string {
+		// 1. CRLF を LF に統一
+		s = strings.ReplaceAll(s, "\r\n", "\n")
+		// 2. 行ごとの末尾空白を除去
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimRight(line, " \t\r")
+		}
+		// 3. 全体の先頭・末尾の空行や空白を除去
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+
+	actualOut := normalize(stdout.String())
+	expectedOut := normalize(tc.ExpectedOut)
 	if actualOut != expectedOut {
 		t.Errorf("[%s] 出力不一致:\n期待値:\n%s\n実際値:\n%s\n[Stderr]: %s", tc.Name, expectedOut, actualOut, stderr.String())
 	}
@@ -574,6 +641,62 @@ func main() int {
 `,
 			ExpectedOut:  "",
 			ExpectedExit: 42,
+		},
+		{
+			Name: "Slices Functional Operations",
+			HikeSource: `
+package main
+
+import "std/slices"
+
+func printf(format string, ...) int
+
+func main() int {
+    // 1. Filter: 偶数のみ抽出
+    nums := []int{5, 2, 8, 1, 9, 4}
+    evens := slices.Filter[int](nums, func(x int) bool {
+        return x % 2 == 0
+    })
+    printf("EVENS_LEN=%d: ", len(evens))
+    for i := 0; i < len(evens); i = i + 1 {
+        printf("%d ", evens[i])
+    }
+    printf("\n")
+
+    // 2. Map: 各要素を10倍
+    mapped := slices.Map[int, int](evens, func(x int) int {
+        return x * 10
+    })
+    printf("MAPPED: ")
+    for i := 0; i < len(mapped); i = i + 1 {
+        printf("%d ", mapped[i])
+    }
+    printf("\n")
+
+    // 3. SortFunc: 昇順ソート
+    slices.SortFunc[int](nums, func(a int, b int) int {
+        return a - b
+    })
+    printf("SORTED: ")
+    for i := 0; i < len(nums); i = i + 1 {
+        printf("%d ", nums[i])
+    }
+    printf("\n")
+
+    // 4. Find & IndexFunc: 5より大きい最初の要素
+    foundVal, ok := slices.Find[int](nums, func(x int) bool {
+        return x > 5
+    })
+    foundIdx := slices.IndexFunc[int](nums, func(x int) bool {
+        return x > 5
+    })
+    printf("FIND=%d,OK=%d,IDX=%d\n", foundVal, ok, foundIdx)
+
+    return 0
+}
+`,
+			ExpectedOut:  "EVENS_LEN=3: 2 8 4 \nMAPPED: 20 80 40 \nSORTED: 1 2 4 5 8 9 \nFIND=8,OK=1,IDX=4",
+			ExpectedExit: 0,
 		},
 	}
 

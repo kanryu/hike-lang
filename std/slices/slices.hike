@@ -1,0 +1,144 @@
+package slices
+
+// -------------------------------------------------------------
+// Sort: ソート操作
+// -------------------------------------------------------------
+
+// SortFunc は三値比較関数 cmp (a < b なら負、a == b なら 0、a > b なら正) を用いてスライスをソートします
+func SortFunc[T](s []T, cmp func(a T, b T) int) {
+    if len(s) <= 1 {
+        return
+    }
+    quickSortFunc(s, 0, len(s)-1, cmp)
+}
+
+func quickSortFunc[T](s []T, low int, high int, cmp func(a T, b T) int) {
+    if low < high {
+        p := partitionFunc(s, low, high, cmp)
+        quickSortFunc(s, low, p, cmp)
+        quickSortFunc(s, p+1, high, cmp)
+    }
+}
+
+func partitionFunc[T](s []T, low int, high int, cmp func(a T, b T) int) int {
+    pivot := s[low]
+    i := low - 1
+    j := high + 1
+    for {
+        for {
+            i = i + 1
+            if cmp(s[i], pivot) >= 0 {
+                break
+            }
+        }
+        for {
+            j = j - 1
+            if cmp(s[j], pivot) <= 0 {
+                break
+            }
+        }
+        if i >= j {
+            return j
+        }
+        tmp := s[i]
+        s[i] = s[j]
+        s[j] = tmp
+    }
+    return j
+}
+
+// SortBy は述語 less (a < b なら true) を用いてスライスをソートします
+func SortBy[T](s []T, less func(a T, b T) bool) {
+    if len(s) <= 1 {
+        return
+    }
+    quickSortBy(s, 0, len(s)-1, less)
+}
+
+func quickSortBy[T](s []T, low int, high int, less func(a T, b T) bool) {
+    if low < high {
+        p := partitionBy(s, low, high, less)
+        quickSortBy(s, low, p, less)
+        quickSortBy(s, p+1, high, less)
+    }
+}
+
+func partitionBy[T](s []T, low int, high int, less func(a T, b T) bool) int {
+    pivot := s[low]
+    i := low - 1
+    j := high + 1
+    for {
+        for {
+            i = i + 1
+            if !less(s[i], pivot) {
+                break
+            }
+        }
+        for {
+            j = j - 1
+            if !less(pivot, s[j]) {
+                break
+            }
+        }
+        if i >= j {
+            return j
+        }
+        tmp := s[i]
+        s[i] = s[j]
+        s[j] = tmp
+    }
+    return j
+}
+
+// -------------------------------------------------------------
+// Map: 射影操作
+// -------------------------------------------------------------
+
+// Map は各要素に関数 transform を適用した新しいスライスを返します
+func Map[T, U](s []T, transform func(item T) U) []U {
+    res := make([]U, 0, len(s))
+    for i := 0; i < len(s); i = i + 1 {
+        res = append(res, transform(s[i]))
+    }
+    return res
+}
+
+// -------------------------------------------------------------
+// Filter: フィルタリング操作
+// -------------------------------------------------------------
+
+// Filter は述語 predicate が true を返す要素のみを抽出した新しいスライスを返します
+func Filter[T](s []T, predicate func(item T) bool) []T {
+    res := make([]T, 0, len(s))
+    for i := 0; i < len(s); i = i + 1 {
+        if predicate(s[i]) {
+            res = append(res, s[i])
+        }
+    }
+    return res
+}
+
+// -------------------------------------------------------------
+// Find / Search: 検索操作
+// -------------------------------------------------------------
+
+// Find は述語 predicate に最初に一致した要素とその成否 (true/false) を返します
+func Find[T](s []T, predicate func(item T) bool) (T, bool) {
+    for i := 0; i < len(s); i = i + 1 {
+        if predicate(s[i]) {
+            return s[i], true
+        }
+    }
+    var zero T
+    return zero, false
+}
+
+// IndexFunc は述語 predicate に最初に一致した要素のインデックスを返します。一致しない場合は -1 を返します
+func IndexFunc[T](s []T, predicate func(item T) bool) int {
+    for i := 0; i < len(s); i = i + 1 {
+        if predicate(s[i]) {
+            return i
+        }
+    }
+    return -1
+}
