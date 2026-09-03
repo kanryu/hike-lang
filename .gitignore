@@ -12,6 +12,7 @@ hikec.exe
 
 # Intermediate / Compiler Output files
 *.ll
+!**/runtime.ll
 *.bc
 *.s
 *.o
