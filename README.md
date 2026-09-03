@@ -599,6 +599,74 @@ replace std/encoding/json => ../../std/encoding/json
 
 ```
 
+`README.md`の既存の書式（`Working with JSON`や`Generic Hash Map`などのセクション構成）に合わせ、誇張表現を避けて機能とシグネチャ、使用例を端的にまとめた追加セクションです。
+
+`## Working with JSON (std/encoding/json)`の直前（または直後）への配置を想定しています。
+
+---
+
+```markdown
+## Working with Slices (`std/slices`)
+
+The standard library provides generic collection operations for slices, conforming to standard functional and Go-like semantics. All operations are monomorphized at compile time with zero overhead.
+
+### API Reference
+
+* `Filter[T](s []T, predicate func(item T) bool) []T`: Returns a new slice containing elements that satisfy the predicate.
+* `Map[T, U](s []T, transform func(item T) U) []U`: Returns a new slice where each element is mapped via `transform`.
+* `IndexFunc[T](s []T, predicate func(item T) bool) int`: Returns the index of the first element satisfying the predicate, or `-1` if not found.
+* `Find[T](s []T, predicate func(item T) bool) (T, bool)`: Returns the first matching element and a boolean flag indicating success.
+* `SortFunc[T](s []T, cmp func(a T, b T) int)`: Performs an in-place quicksort using a three-way comparison function (`a < b` returns negative, `a == b` returns 0, `a > b` returns positive).
+* `SortBy[T](s []T, less func(a T, b T) bool)`: Performs an in-place quicksort using a boolean comparison predicate (`a < b` returns true).
+
+### Example
+
+```go
+package main
+
+import (
+    "std/slices"
+)
+
+func printf(format string, ...) int
+
+func main() int {
+    nums := []int{5, 2, 8, 1, 9, 4}
+
+    // 1. Filter elements
+    evens := slices.Filter[int](nums, func(x int) bool {
+        return x % 2 == 0
+    })
+
+    // 2. Map elements
+    mapped := slices.Map[int, int](evens, func(x int) int {
+        return x * 10
+    })
+
+    // 3. Search elements
+    val, ok := slices.Find[int](nums, func(x int) bool {
+        return x > 5
+    })
+    idx := slices.IndexFunc[int](nums, func(x int) bool {
+        return x > 5
+    })
+    printf("Find: %d (ok: %d), Index: %d\n", val, ok, idx)
+
+    // 4. In-place sorting
+    slices.SortFunc[int](nums, func(a int, b int) int {
+        return a - b // Ascending
+    })
+
+    slices.SortBy[int](nums, func(a int, b int) bool {
+        return a > b // Descending
+    })
+
+    return 0
+}
+
+```
+
+
 ---
 
 ## Working with JSON (`std/encoding/json`)
