@@ -2,6 +2,7 @@ package fmt
 
 func printf(format *byte, ...) int
 
+// PrintStr: 文字列を出力します
 func PrintStr(s *byte) {
 	if s == nil {
 		return
@@ -9,14 +10,17 @@ func PrintStr(s *byte) {
 	printf("%s", s)
 }
 
+// PrintInt: 整数を出力します
 func PrintInt(v int) {
 	printf("%d", v)
 }
 
+// PrintFloat: 浮動小数点数を出力します
 func PrintFloat(f float64) {
 	printf("%f", f)
 }
 
+// PrintLn: 改行付きで文字列を出力します (*byte 版)
 func PrintLn(s *byte) {
 	if s == nil {
 		printf("\n")
@@ -25,6 +29,12 @@ func PrintLn(s *byte) {
 	printf("%s\n", s)
 }
 
+// Println: Go標準互換の改行付き文字列出力 (string 版)
+func Println(s string) {
+	printf("%s\n", s)
+}
+
+// ErrorLn: コンパイルエラー表示用プレフィックス付き出力
 func ErrorLn(msg *byte) {
 	printf("[ERROR] %s\n", msg)
 }

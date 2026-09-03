@@ -107,3 +107,62 @@ func Split(s string, sep string) []string {
 	}
 	return res
 }
+
+func ToUpper(s string) string {
+	lenS := len(s)
+	buf := make([]byte, lenS)
+	for i := 0; i < lenS; i++ {
+		c := s[i]
+		if c >= 97 && c <= 122 {
+			buf[i] = c - 32
+		} else {
+			buf[i] = c
+		}
+	}
+	return string(buf)
+}
+
+func ToLower(s string) string {
+	lenS := len(s)
+	buf := make([]byte, lenS)
+	for i := 0; i < lenS; i++ {
+		c := s[i]
+		if c >= 65 && c <= 90 {
+			buf[i] = c + 32
+		} else {
+			buf[i] = c
+		}
+	}
+	return string(buf)
+}
+
+func TrimSpace(s string) string {
+	lenS := len(s)
+	start := 0
+	for start < lenS {
+		c := s[start]
+		if c == 32 || c == 9 || c == 10 || c == 13 {
+			start++
+		} else {
+			break
+		}
+	}
+	end := lenS
+	for end > start {
+		c := s[end-1]
+		if c == 32 || c == 9 || c == 10 || c == 13 {
+			end--
+		} else {
+			break
+		}
+	}
+	return s[start:end]
+}
+
+func ReplaceAll(s string, old string, new string) string {
+	if len(old) == 0 {
+		return s
+	}
+	parts := Split(s, old)
+	return Join(parts, new)
+}

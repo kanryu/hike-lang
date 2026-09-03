@@ -250,6 +250,29 @@ func (l *Lowerer) Lower() *hir.Program {
 		}
 	}
 
+	// 追記: ビルトイン C 関数 snprintf の extern 宣言を保証
+	hasSnprintf := false
+	for _, fn := range l.hirProg.Functions {
+		if fn.Name == "snprintf" {
+			hasSnprintf = true
+			break
+		}
+	}
+	if !hasSnprintf {
+		l.hirProg.Functions = append(l.hirProg.Functions, &hir.Function{
+			Name: "snprintf",
+			Params: []*hir.Reg{
+				{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}},
+				{ID: 2, Typ: sema.TypeInt},
+				{ID: 3, Typ: sema.TypeString},
+			},
+			ReturnTypes: []sema.Type{sema.TypeInt},
+			Blocks:      nil,
+			IsVariadic:  true,
+			IsExtern:    true,
+		})
+	}
+
 	for _, decl := range l.prog.Decls {
 		if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Body != nil {
 			if sema.IsGenericFuncDecl(fnDecl) {
@@ -1778,6 +1801,15 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 	leftVal := l.lowerExpr(e.Left)
 	rightVal := l.lowerExpr(e.Right)
 
+	// ポインタ + 整数 (または 整数 + ポインタ) のポインタ加算を GEP (getelementptr) として出力
+	if pt, isPtr := leftVal.Type().(*sema.PointerType); isPtr && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte) {
+		if e.Operator == "+" {
+			dst := l.nextReg(pt)
+			l.emit(&hir.InstrGetElemPtr{Dst: dst, BasePtr: leftVal, Index: rightVal})
+			return dst
+		}
+	}
+
 	if leftVal.Type() == sema.TypeString || rightVal.Type() == sema.TypeString {
 		if e.Operator == "+" {
 			res := l.nextReg(sema.TypeString)
@@ -1954,6 +1986,29 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 	}
 
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
+		// fmt.Sprintf のビルトイン処理: malloc + snprintf でフォーマット済み文字列を生成
+		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "fmt" && mem.Field.Value == "Sprintf" {
+			bufSize := int64(1024)
+			bufReg := l.nextReg(sema.TypeString)
+			l.emit(&hir.InstrHeapAlloc{
+				Dst:       bufReg,
+				Size:      &hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
+				AllocType: sema.TypeByte,
+			})
+
+			args := []hir.Value{
+				bufReg,
+				&hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
+			}
+			for _, arg := range call.Args {
+				args = append(args, l.lowerExpr(arg))
+			}
+
+			retReg := l.nextReg(sema.TypeInt)
+			l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "snprintf", Args: args})
+			return bufReg
+		}
+
 		isVariable := false
 		if objIdent, okObj := mem.Object.(*ast.Identifier); okObj {
 			if _, exists := l.symbols[objIdent.Value]; exists {
