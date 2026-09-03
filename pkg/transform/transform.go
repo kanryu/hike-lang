@@ -15,6 +15,7 @@ type Transformer struct {
 	specializedQueue      []*sema.FuncType
 	emittedSpecialization map[string]bool
 	newSpecializedDecls   []ast.Decl
+	localTypes            map[string]ast.TypeExpr
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *Transformer {
@@ -24,6 +25,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Transformer {
 		specializedQueue:      []*sema.FuncType{},
 		emittedSpecialization: make(map[string]bool),
 		newSpecializedDecls:   []ast.Decl{},
+		localTypes:            make(map[string]ast.TypeExpr),
 	}
 }
 
@@ -84,6 +86,13 @@ func (t *Transformer) transformFuncDecl(fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
+	t.localTypes = make(map[string]ast.TypeExpr)
+	if fn.Receiver != nil {
+		t.localTypes[fn.Receiver.Name.Value] = fn.Receiver.Type
+	}
+	for _, p := range fn.Params {
+		t.localTypes[p.Name.Value] = p.Type
+	}
 	t.transformBlock(fn.Body)
 }
 
@@ -103,12 +112,26 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 	switch stmt := s.(type) {
 	case *ast.VarDecl:
 		stmt.Value = t.transformExpr(stmt.Value)
+		if stmt.Type != nil {
+			t.localTypes[stmt.Name.Value] = stmt.Type
+		} else if stmt.Value != nil {
+			if inferred := t.inferExprTypeExpr(stmt.Value); inferred != nil {
+				t.localTypes[stmt.Name.Value] = inferred
+			}
+		}
 	case *ast.AssignStmt:
 		for i, l := range stmt.Left {
 			stmt.Left[i] = t.transformExpr(l)
 		}
 		for i, r := range stmt.Right {
 			stmt.Right[i] = t.transformExpr(r)
+		}
+		if len(stmt.Left) == 1 && len(stmt.Right) == 1 {
+			if id, ok := stmt.Left[0].(*ast.Identifier); ok {
+				if inferred := t.inferExprTypeExpr(stmt.Right[0]); inferred != nil {
+					t.localTypes[id.Value] = inferred
+				}
+			}
 		}
 	case *ast.ExprStmt:
 		stmt.Expr = t.transformExpr(stmt.Expr)
@@ -236,6 +259,9 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 	var funcName string
 	var funcToken token.Token
 	var explicitTypeArgs []sema.Type = nil
+	var isMethodCall bool
+	var methodReceiverExpr ast.Expression
+	var methodReceiverIsPointer bool
 
 	// 1. 明示的型引数を持つジェネリクス適用: fn[int, string](...)
 	if genExpr, ok := call.Function.(*ast.GenericInstExpr); ok {
@@ -259,11 +285,39 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			funcToken = id.Token
 		}
 	} else if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-			pkgFnName := pkgId.Value + "_" + mem.Field.Value
-			if genTemplate := t.findGenericTemplate(pkgFnName); genTemplate != nil {
-				funcName = pkgFnName
-				funcToken = mem.Field.Token
+		// A. レシーバ式を持つメソッド呼び出し (例: acc.Get(), entry.SetValue("Omega"), stack.Len())
+		objTypeExpr := t.inferExprTypeExpr(mem.Object)
+		if objTypeExpr != nil {
+			structName, typeArgs, isPtr := extractStructAndTypeArgs(objTypeExpr)
+			if structName != "" {
+				methodCandidate := structName + "_" + mem.Field.Value
+				if genTemplate := t.findGenericTemplate(methodCandidate); genTemplate != nil {
+					funcName = methodCandidate
+					funcToken = mem.Field.Token
+					isMethodCall = true
+					methodReceiverExpr = mem.Object
+					methodReceiverIsPointer = isPtr
+
+					for _, targ := range typeArgs {
+						if resolved := t.semaCtx.ResolveType(targ); resolved != nil && resolved != sema.TypeVoid {
+							explicitTypeArgs = append(explicitTypeArgs, resolved)
+						}
+					}
+				}
+			}
+		}
+
+		// B. パッケージ修飾関数呼び出し (例: slices.Filter)
+		// ローカル変数でない場合のみパッケージ修飾とみなす
+		if funcName == "" {
+			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+				if _, isLocalVar := t.localTypes[pkgId.Value]; !isLocalVar {
+					pkgFnName := pkgId.Value + "_" + mem.Field.Value
+					if genTemplate := t.findGenericTemplate(pkgFnName); genTemplate != nil {
+						funcName = pkgFnName
+						funcToken = mem.Field.Token
+					}
+				}
 			}
 		}
 	}
@@ -287,6 +341,28 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			if len(typeArgs) > 0 {
 				specName := t.getOrCreateSpecializedFunc(funcName, typeArgs)
 				call.Function = &ast.Identifier{Token: funcToken, Value: specName}
+
+				// メソッド呼び出しの場合は脱糖関数 (specName) の第1引数としてレシーバを注入
+				if isMethodCall && methodReceiverExpr != nil {
+					receiverArg := methodReceiverExpr
+					if genTemplate.Receiver != nil {
+						_, templateRecvIsPtr := genTemplate.Receiver.Type.(*ast.PointerType)
+						if templateRecvIsPtr && !methodReceiverIsPointer {
+							receiverArg = &ast.PrefixExpr{
+								Token:    funcToken,
+								Operator: "&",
+								Right:    methodReceiverExpr,
+							}
+						} else if !templateRecvIsPtr && methodReceiverIsPointer {
+							receiverArg = &ast.PrefixExpr{
+								Token:    funcToken,
+								Operator: "*",
+								Right:    methodReceiverExpr,
+							}
+						}
+					}
+					call.Args = append([]ast.Expression{receiverArg}, call.Args...)
+				}
 			}
 		}
 	}
@@ -316,11 +392,25 @@ func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 		return nil
 	}
 
+	// 構造体メソッド形式 (例: "Entry_SetValue", "Accumulator_Add") の探索
+	if strings.Contains(name, "_") {
+		parts := strings.SplitN(name, "_", 2)
+		structName := parts[0]
+		methodName := parts[1]
+		for _, decl := range t.prog.Decls {
+			if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Receiver != nil {
+				if getBaseTypeName(fnDecl.Receiver.Type) == structName && fnDecl.Name.Value == methodName {
+					return fnDecl
+				}
+			}
+		}
+	}
+
 	if tmpl, ok := t.semaCtx.GenericFuncs[name]; ok && tmpl != nil {
 		return tmpl
 	}
 	for k, v := range t.semaCtx.GenericFuncs {
-		if v != nil && (k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k)) {
+		if v != nil && (k == name || strings.HasSuffix(k, "_"+name)) {
 			return v
 		}
 	}
@@ -329,7 +419,7 @@ func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 	}
 	for k, fn := range t.semaCtx.Functions {
 		if fn != nil && fn.Template != nil && fn.IsGeneric() {
-			if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
+			if k == name || strings.HasSuffix(k, "_"+name) {
 				return fn.Template
 			}
 		}
@@ -375,6 +465,15 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 		recvTypeName := getBaseTypeName(template.Receiver.Type)
 		if st, _ := t.semaCtx.LookupStruct(recvTypeName); st != nil && len(st.TypeParams) > 0 {
 			typeParamNames = append(typeParamNames, st.TypeParams...)
+		} else {
+			// レシーバの型ノードから直接型引数名 (K, V 等) を補完
+			if named := getNamedTypeFromExpr(template.Receiver.Type); named != nil {
+				for _, tArg := range named.TypeArgs {
+					if id, ok := tArg.(*ast.NamedType); ok {
+						typeParamNames = append(typeParamNames, id.Name.Value)
+					}
+				}
+			}
 		}
 	}
 	if len(typeParamNames) == 0 && origFnMeta != nil {
@@ -505,9 +604,13 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 				TypeArgs: newArgs,
 			})
 			if resolvedType != nil && resolvedType != sema.TypeVoid {
+				// 具象構造体 (Stack__string 等) に解決された後は、TypeArgs を nil にして
+				// sema が「非ジェネリック型に型引数が付与されている」と誤判定するのを防止する
 				return &ast.NamedType{
-					Token: node.Token,
-					Name:  &ast.Identifier{Token: node.Token, Value: resolvedType.TypeName()},
+					Token:    node.Token,
+					Package:  node.Package,
+					Name:     &ast.Identifier{Token: node.Token, Value: resolvedType.TypeName()},
+					TypeArgs: nil,
 				}
 			}
 		}
@@ -532,7 +635,6 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 			Value: t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
 		}
 
-	// 追記: 関数シグネチャ内部の型パラメータ (T, U 等) を再帰的に置換
 	case *ast.FuncType:
 		newParams := make([]ast.TypeExpr, len(node.ParamTypes))
 		for i, pt := range node.ParamTypes {
@@ -840,4 +942,203 @@ func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
 		}
 	}
 	return nil
+}
+
+func splitTypeArgs(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '[', '<':
+			depth++
+		case ']', '>':
+			depth--
+		case ',':
+			if depth == 0 {
+				part := strings.TrimSpace(s[start:i])
+				if part != "" {
+					parts = append(parts, part)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(s) {
+		part := strings.TrimSpace(s[start:])
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
+	typeName = strings.TrimSpace(typeName)
+	if strings.HasPrefix(typeName, "*") {
+		return &ast.PointerType{
+			Token: tok,
+			Base:  parseSimpleTypeExpr(tok, strings.TrimPrefix(typeName, "*")),
+		}
+	}
+	if strings.HasPrefix(typeName, "[]") {
+		return &ast.SliceType{
+			Token: tok,
+			Elem:  parseSimpleTypeExpr(tok, strings.TrimPrefix(typeName, "[]")),
+		}
+	}
+	idx := strings.Index(typeName, "[")
+	if idx != -1 && strings.HasSuffix(typeName, "]") {
+		base := typeName[:idx]
+		argsStr := typeName[idx+1 : len(typeName)-1]
+		var args []ast.TypeExpr
+		for _, p := range splitTypeArgs(argsStr) {
+			args = append(args, parseSimpleTypeExpr(tok, p))
+		}
+		return &ast.NamedType{
+			Token:    tok,
+			Name:     &ast.Identifier{Token: tok, Value: base},
+			TypeArgs: args,
+		}
+	}
+	return &ast.NamedType{
+		Token: tok,
+		Name:  &ast.Identifier{Token: tok, Value: typeName},
+	}
+}
+
+func getNamedTypeFromExpr(typ ast.TypeExpr) *ast.NamedType {
+	if typ == nil {
+		return nil
+	}
+	switch node := typ.(type) {
+	case *ast.PointerType:
+		return getNamedTypeFromExpr(node.Base)
+	case *ast.NamedType:
+		return node
+	}
+	return nil
+}
+
+func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
+	if e == nil {
+		return nil
+	}
+	switch expr := e.(type) {
+	case *ast.StructLiteral:
+		return expr.Type
+	case *ast.PrefixExpr:
+		if expr.Operator == "&" {
+			base := t.inferExprTypeExpr(expr.Right)
+			if base != nil {
+				return &ast.PointerType{Token: expr.Token, Base: base}
+			}
+		}
+	case *ast.Identifier:
+		if typ, ok := t.localTypes[expr.Value]; ok {
+			return typ
+		}
+	case *ast.MemberExpr:
+		objTyp := t.inferExprTypeExpr(expr.Object)
+		if objTyp != nil {
+			structName, _, _ := extractStructAndTypeArgs(objTyp)
+			if st, _ := t.semaCtx.LookupStruct(structName); st != nil {
+				for _, f := range st.Fields {
+					if f.Name == expr.Field.Value {
+						return parseSimpleTypeExpr(expr.Field.Token, f.Type.TypeName())
+					}
+				}
+			}
+		}
+	case *ast.CallExpr:
+		var targetName string
+		var tArgs []ast.TypeExpr
+
+		if id, ok := expr.Function.(*ast.Identifier); ok {
+			targetName = id.Value
+		} else if idxExpr, ok := expr.Function.(*ast.IndexExpr); ok {
+			targetName = t.resolveTargetName(idxExpr.Left)
+			if tExpr := exprToTypeExpr(idxExpr.Index); tExpr != nil {
+				tArgs = append(tArgs, tExpr)
+			}
+		} else if genExpr, ok := expr.Function.(*ast.GenericInstExpr); ok {
+			targetName = t.resolveTargetName(genExpr.Left)
+			tArgs = append(tArgs, genExpr.TypeArgs...)
+		}
+
+		if targetName != "" {
+			if fnMeta, ok := t.semaCtx.Functions[targetName]; ok && fnMeta != nil {
+				if fnMeta.SpecializedAst != nil && len(fnMeta.SpecializedAst.ReturnTypes) > 0 {
+					return fnMeta.SpecializedAst.ReturnTypes[0]
+				}
+				if len(fnMeta.ReturnTypes) > 0 {
+					return parseSimpleTypeExpr(expr.Token, fnMeta.ReturnTypes[0].TypeName())
+				}
+			}
+			if tmpl := t.findGenericTemplate(targetName); tmpl != nil && len(tmpl.ReturnTypes) > 0 {
+				if len(tArgs) > 0 {
+					typeMap := make(map[string]ast.TypeExpr)
+					for i, tp := range tmpl.TypeParams {
+						if i < len(tArgs) {
+							typeMap[tp.Name.Value] = tArgs[i]
+						}
+					}
+					return t.substituteAstType(tmpl.ReturnTypes[0], typeMap, tArgs)
+				}
+				return tmpl.ReturnTypes[0]
+			}
+		}
+	}
+	return nil
+}
+
+func extractStructAndTypeArgs(typ ast.TypeExpr) (structName string, typeArgs []ast.TypeExpr, isPtr bool) {
+	if typ == nil {
+		return "", nil, false
+	}
+	if ptr, ok := typ.(*ast.PointerType); ok {
+		sName, tArgs, _ := extractStructAndTypeArgs(ptr.Base)
+		return sName, tArgs, true
+	}
+	if named, ok := typ.(*ast.NamedType); ok {
+		sName := named.Name.Value
+		if named.Package != nil {
+			sName = named.Package.Value + "_" + sName
+		}
+
+		// 1. Stack[string] 形式
+		if idx := strings.Index(sName, "["); idx != -1 && strings.HasSuffix(sName, "]") {
+			base := sName[:idx]
+			argsStr := sName[idx+1 : len(sName)-1]
+			var args []ast.TypeExpr
+			for _, p := range splitTypeArgs(argsStr) {
+				args = append(args, parseSimpleTypeExpr(named.Token, p))
+			}
+			return base, args, false
+		}
+
+		// 2. Stack__string 形式 (マングル名)
+		if strings.Contains(sName, "__") {
+			parts := strings.SplitN(sName, "__", 2)
+			base := parts[0]
+			if len(named.TypeArgs) > 0 {
+				return base, named.TypeArgs, false
+			}
+			argsParts := strings.Split(parts[1], "_")
+			var args []ast.TypeExpr
+			for _, p := range argsParts {
+				if p != "" {
+					args = append(args, parseSimpleTypeExpr(named.Token, p))
+				}
+			}
+			return base, args, false
+		}
+
+		// 3. TypeArgs スライスを直接保持している形式
+		if len(named.TypeArgs) > 0 {
+			return sName, named.TypeArgs, false
+		}
+		return sName, nil, false
+	}
+	return "", nil, false
 }

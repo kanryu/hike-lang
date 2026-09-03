@@ -736,9 +736,17 @@ func (p *Parser) parseStatement() ast.Statement {
 
 func (p *Parser) parseVarStmt() ast.Statement {
 	varTok := p.curToken
-	p.nextToken()
-	ident := p.parseIdentifier()
-	p.nextToken()
+	p.nextToken() // 'var' の次 (最初の識別子)
+
+	idents := []*ast.Identifier{p.parseIdentifier()}
+
+	// カンマ区切りの複数変数宣言 (例: var a, b int)
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken() // ','
+		p.nextToken() // 次の識別子
+		idents = append(idents, p.parseIdentifier())
+	}
+	p.nextToken() // 最後の識別子の次へ (型注釈、'='、または ';'/EOF)
 
 	var typeExpr ast.TypeExpr = nil
 	if !p.curTokenIs(token.ASSIGN) && !p.curTokenIs(token.SEMICOLON) && !p.curTokenIs(token.EOF) {
@@ -748,21 +756,37 @@ func (p *Parser) parseVarStmt() ast.Statement {
 		}
 	}
 
+	lefts := make([]ast.Expression, len(idents))
+	for i, id := range idents {
+		lefts[i] = id
+	}
+
 	if p.curTokenIs(token.ASSIGN) {
-		p.nextToken()
-		rhs := p.parseExpression(LOWEST)
+		p.nextToken() // '=' の次 (最初の右辺式)
+		rights := []ast.Expression{p.parseExpression(LOWEST)}
+		for p.peekTokenIs(token.COMMA) {
+			p.nextToken() // ','
+			p.nextToken() // 次の右辺式
+			rights = append(rights, p.parseExpression(LOWEST))
+		}
 		return &ast.AssignStmt{
 			Token: varTok,
-			Left:  []ast.Expression{ident},
-			Right: []ast.Expression{rhs},
+			Left:  lefts,
+			Right: rights,
 			Type:  typeExpr,
 		}
 	}
 
+	// 初期化式が省略された場合、全変数にデフォルトのゼロ値を割り当てる
+	rights := make([]ast.Expression, len(idents))
+	for i := range rights {
+		rights[i] = &ast.IntegerLiteral{Token: varTok, Value: 0}
+	}
+
 	return &ast.AssignStmt{
 		Token: varTok,
-		Left:  []ast.Expression{ident},
-		Right: []ast.Expression{&ast.IntegerLiteral{Token: varTok, Value: 0}},
+		Left:  lefts,
+		Right: rights,
 		Type:  typeExpr,
 	}
 }
@@ -937,43 +961,65 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 	switchTok := p.curToken
 	p.nextToken()
 
-	oldAllow := p.allowStructLit
-	p.allowStructLit = false
-
-	firstStmt := p.parseAssignOrExprStmt()
-
 	var initStmt ast.Statement = nil
-	var switchGuard ast.Statement = firstStmt
-
-	if p.peekTokenIs(token.SEMICOLON) {
-		initStmt = firstStmt
-		p.nextToken() // ';'
-		p.nextToken()
-		switchGuard = p.parseAssignOrExprStmt()
-	}
-	p.allowStructLit = oldAllow
-
+	var condExpr ast.Expression = nil
+	var isTypeSwitch bool
 	var typeSwitchVar *ast.Identifier = nil
 	var typeSwitchExpr ast.Expression = nil
-	isTypeSwitch := false
 
-	if assignStmt, ok := switchGuard.(*ast.AssignStmt); ok {
-		if len(assignStmt.Left) == 1 && len(assignStmt.Right) == 1 {
-			if typeAssert, ok := assignStmt.Right[0].(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
-				if ident, ok := assignStmt.Left[0].(*ast.Identifier); ok {
+	// 1. switch 直後に波括弧が現れた場合 (例: switch { case ... })
+	if p.curTokenIs(token.LBRACE) {
+		condExpr = &ast.Identifier{
+			Token: token.Token{Type: token.IDENT, Literal: "true", Line: switchTok.Line, Col: switchTok.Col},
+			Value: "true",
+		}
+	} else {
+		oldAllow := p.allowStructLit
+		p.allowStructLit = false
+
+		firstStmt := p.parseAssignOrExprStmt()
+		switchGuard := firstStmt
+
+		if p.peekTokenIs(token.SEMICOLON) {
+			initStmt = firstStmt
+			p.nextToken() // ';'
+			if p.peekTokenIs(token.LBRACE) {
+				// switch init; { ... } の形式
+				condExpr = &ast.Identifier{
+					Token: token.Token{Type: token.IDENT, Literal: "true", Line: switchTok.Line, Col: switchTok.Col},
+					Value: "true",
+				}
+				switchGuard = nil
+			} else {
+				p.nextToken()
+				switchGuard = p.parseAssignOrExprStmt()
+			}
+		}
+		p.allowStructLit = oldAllow
+
+		if switchGuard != nil {
+			if assignStmt, ok := switchGuard.(*ast.AssignStmt); ok {
+				if len(assignStmt.Left) == 1 && len(assignStmt.Right) == 1 {
+					if typeAssert, ok := assignStmt.Right[0].(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
+						if ident, ok := assignStmt.Left[0].(*ast.Identifier); ok {
+							isTypeSwitch = true
+							typeSwitchVar = ident
+							typeSwitchExpr = typeAssert.Expr
+						}
+					}
+				}
+			} else if exprStmt, ok := switchGuard.(*ast.ExprStmt); ok {
+				if typeAssert, ok := exprStmt.Expr.(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
 					isTypeSwitch = true
-					typeSwitchVar = ident
 					typeSwitchExpr = typeAssert.Expr
+				} else {
+					condExpr = exprStmt.Expr
 				}
 			}
 		}
-	} else if exprStmt, ok := switchGuard.(*ast.ExprStmt); ok {
-		if typeAssert, ok := exprStmt.Expr.(*ast.TypeAssertExpr); ok && typeAssert.Target == nil {
-			isTypeSwitch = true
-			typeSwitchExpr = typeAssert.Expr
-		}
 	}
 
+	// 型スイッチ (Type Switch)
 	if isTypeSwitch {
 		stmt := &ast.TypeSwitchStmt{
 			Token:    switchTok,
@@ -983,7 +1029,7 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 			Cases:    []*ast.TypeCaseClause{},
 		}
 
-		if !p.expectPeek(token.LBRACE) {
+		if !p.curTokenIs(token.LBRACE) && !p.expectPeek(token.LBRACE) {
 			return nil
 		}
 
@@ -1020,12 +1066,15 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 		return stmt
 	}
 
-	stmt := &ast.SwitchStmt{Token: switchTok, Init: initStmt, Cases: []*ast.CaseClause{}}
-	if exprStmt, ok := switchGuard.(*ast.ExprStmt); ok {
-		stmt.Value = exprStmt.Expr
+	// 通常の値スイッチ (Expression Switch)
+	stmt := &ast.SwitchStmt{
+		Token: switchTok,
+		Init:  initStmt,
+		Value: condExpr,
+		Cases: []*ast.CaseClause{},
 	}
 
-	if !p.expectPeek(token.LBRACE) {
+	if !p.curTokenIs(token.LBRACE) && !p.expectPeek(token.LBRACE) {
 		return nil
 	}
 

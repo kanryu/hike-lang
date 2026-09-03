@@ -564,10 +564,20 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 	// ... (中略: 既存のまま) ...
 
 	// 3. 通常の代入 / 定義
+	// 右辺のすべての式をあらかじめ評価し、多重代入 (例: a, b = b, a) の値上書き競合を防止する
+	rhsVals := make([]hir.Value, len(as.Right))
+	for i, r := range as.Right {
+		rhsVals[i] = l.lowerExpr(r)
+	}
+
 	for i, left := range as.Left {
 		var rhs ast.Expression = nil
+		var val hir.Value = nil
 		if i < len(as.Right) {
 			rhs = as.Right[i]
+		}
+		if i < len(rhsVals) {
+			val = rhsVals[i]
 		}
 
 		if id, ok := left.(*ast.Identifier); ok && isDefine {
@@ -581,11 +591,9 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 				isUninitVar = true
 			}
 
-			var val hir.Value
 			if isUninitVar && actualType != nil {
 				val = l.defaultConstValue(actualType)
-			} else if rhs != nil {
-				val = l.lowerExpr(rhs)
+			} else if val != nil {
 				if actualType == nil {
 					actualType = val.Type()
 				} else {
@@ -612,9 +620,8 @@ func (l *Lowerer) lowerAssignStmt(as *ast.AssignStmt) {
 		}
 
 		ptr := l.lowerLValue(left)
-		val := l.lowerExpr(rhs)
 
-		// 修正: ++ / -- の場合は val を明示的に 1 とする
+		// ++ / -- の場合は val を明示的に 1 とする
 		switch as.Token.Literal {
 		case "++":
 			targetType := ptr.Type().(*sema.PointerType).Base
@@ -1579,6 +1586,12 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 					if argVal.Type().LLVMType() == targetType.LLVMType() {
 						return argVal
 					}
+					// []byte から string へのキャスト: スライスのデータポインタ (Index 0) を抽出
+					if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
+						dst := l.nextReg(sema.TypeString)
+						l.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: 0})
+						return dst
+					}
 					dst := l.nextReg(targetType)
 					l.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: targetType})
 					return dst
@@ -2031,7 +2044,17 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 		if st != nil {
 			targetFnName, targetFn, finalRecv, found := l.resolveMethodPath(st, sName, objPtr, mem.Field.Value)
 			if found && targetFn != nil {
-				args := []hir.Value{finalRecv}
+				recvArg := finalRecv
+				// 値レシーバの場合はポインタではなく構造体データを直接ロードして渡す
+				if !l.isPointerReceiver(targetFnName) {
+					if ptrType, ok := finalRecv.Type().(*sema.PointerType); ok {
+						loaded := l.nextReg(ptrType.Base)
+						l.emit(&hir.InstrLoad{Dst: loaded, Ptr: finalRecv})
+						recvArg = loaded
+					}
+				}
+
+				args := []hir.Value{recvArg}
 				for _, arg := range call.Args {
 					args = append(args, l.lowerExpr(arg))
 				}
@@ -2128,6 +2151,22 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 		Args:   args,
 	})
 	return dst
+}
+
+func (l *Lowerer) isPointerReceiver(targetFnName string) bool {
+	for _, decl := range l.prog.Decls {
+		if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Receiver != nil {
+			rType := l.semaCtx.ResolveType(fnDecl.Receiver.Type)
+			if rType != nil {
+				rName := strings.TrimPrefix(rType.TypeName(), "*")
+				if rName+"_"+fnDecl.Name.Value == targetFnName {
+					_, isPtr := rType.(*sema.PointerType)
+					return isPtr
+				}
+			}
+		}
+	}
+	return true
 }
 
 func (l *Lowerer) lowerAppend(call *ast.CallExpr) hir.Value {
