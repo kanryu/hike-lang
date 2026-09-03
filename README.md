@@ -583,7 +583,74 @@ clang++ -O3 main.cpp libcalc.dll.a -o client.exe
 
 ```
 
+## Direct C Interoperability (Zero-Overhead C-ABI)
+
+Unlike Go, which requires `cgo`, preambles, wrapper generation, and runtime stack-switching overhead, Hike interacts with C at zero runtime cost.
+
+Because `hikec` compiles directly to standard LLVM IR and delegates code generation to Clang, a function declaration without a body (`func ...`) is emitted as a standard external C-ABI symbol declaration (`declare`).
+
+### 1. Standard C Runtime (libc)
+
+You can call standard C library functions simply by declaring their signatures in your `.hike` source. The Clang backend automatically links the C runtime (libc / MinGW-w64 / MSVCRT) and resolves the symbols directly.
+
+```go
+package main
+
+// Declare standard C library functions directly
+func printf(format string, ...) int
+func puts(str string) int
+
+func main() int {
+    puts("Hello directly from C libc!")
+    printf("Formatted number: %d\n", 42)
+    return 0
+}
+
+```
+
+### 2. Third-Party C Libraries
+
+To integrate third-party C libraries (e.g., SQLite, Raylib, OpenSSL):
+
+1. **Declare the C API**: Write matching function signatures without bodies in your Hike code.
+
+
+2. **Link via Clang**: Pass `-l<lib>` or direct paths to static (`.a` / `.lib`) or dynamic (`.so` / `.dll` / `.dylib`) libraries during build.
+
+
+
+#### Example (`main.hike`)
+
+```go
+package main
+
+// External library declaration (e.g., libcurl or a custom C library)
+func my_c_library_init() int
+func my_c_calculate(a int, b int) int
+
+func main() int {
+    if my_c_library_init() != 0 {
+        return 1
+    }
+    res := my_c_calculate(10, 20)
+    return 0
+}
+
+```
+
+#### Build & Link Command
+
+```bash
+# 1. Emit LLVM IR
+hikec emit-ir -o main.ll main.hike
+
+# 2. Compile and link external C library with Clang
+clang -O3 main.ll -L/path/to/libs -lmy_c_library -o app.exe
+
+```
+
 ---
+
 
 ## Module Management (`hike.mod`)
 
