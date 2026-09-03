@@ -599,13 +599,11 @@ replace std/encoding/json => ../../std/encoding/json
 
 ```
 
-`README.md`の既存の書式（`Working with JSON`や`Generic Hash Map`などのセクション構成）に合わせ、誇張表現を避けて機能とシグネチャ、使用例を端的にまとめた追加セクションです。
 
-`## Working with JSON (std/encoding/json)`の直前（または直後）への配置を想定しています。
 
 ---
 
-```markdown
+
 ## Working with Slices (`std/slices`)
 
 The standard library provides generic collection operations for slices, conforming to standard functional and Go-like semantics. All operations are monomorphized at compile time with zero overhead.
