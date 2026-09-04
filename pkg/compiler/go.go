@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 
+	"hikec-go/pkg/lexer"
+	"hikec-go/pkg/parser"
 	"hikec-go/pkg/target"
 )
 
@@ -65,15 +67,21 @@ func BuildGoPackage(opts GoBuildOptions) error {
 	// 3. コンパイラインスタンスの準備
 	comp := New(tgt)
 	comp.SetVerbose(opts.Verbose)
-	// TODO: AST/Sema層にGoファイルモードを導入後、ここで comp.SetGoMode(true) を有効化
 
 	// 4. LLVM IR へのコンパイル
-	llvmIR, _, _, err := comp.CompileToLLVM(hikeFiles...)
+	llvmIR, _, prog, err := comp.CompileToLLVM(hikeFiles...)
 	if err != nil {
 		return fmt.Errorf("compilation error: %w", err)
 	}
 
 	dirName := filepath.Base(absDir)
+	pkgName := detectPackageName(hikeFiles[0], dirName)
+
+	// Plan 9 アセンブリの自動生成（第4引数に opts.Verbose を明示して連携）
+	if err := GenerateGoStubs(absDir, pkgName, prog.Decls, opts.Verbose); err != nil {
+		return fmt.Errorf("failed to generate stubs: %w", err)
+	}
+
 	llPath := filepath.Join(absDir, dirName+".ll")
 	if err := os.WriteFile(llPath, []byte(llvmIR), 0644); err != nil {
 		return fmt.Errorf("failed to write LLVM IR: %w", err)
@@ -89,8 +97,8 @@ func BuildGoPackage(opts GoBuildOptions) error {
 	// 6. Clang を呼び出して .syso（オブジェクトファイル）を出力
 	clangArgs := []string{
 		"-c",
-		"-O2",                  // 追加: 未使用のビルトイン関数と未解決Cシンボルを除去
-		"-mno-stack-arg-probe", // 追加: Windows固有の ___chkstk_ms 呼び出しを抑制
+		"-O2",                  // 未使用の internal 関数・未解決 C シンボル参照を完全除去
+		"-mno-stack-arg-probe", // Windows 固有の ___chkstk_ms 生成を抑制
 		llPath,
 		"-o",
 		outputSyso,
@@ -112,6 +120,22 @@ func BuildGoPackage(opts GoBuildOptions) error {
 
 	fmt.Printf("[hikec go] Successfully generated: %s\n", outputSyso)
 	return nil
+}
+
+// detectPackageName はソースファイルの先頭からパッケージ宣言を取得します。
+// 取得できない場合はディレクトリ名をフォールバックとして使用します。
+func detectPackageName(filePath string, fallback string) string {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fallback
+	}
+	l := lexer.New(string(content))
+	p := parser.New(l)
+	fileProg := p.ParseProgram()
+	if fileProg.Package != "" && fileProg.Package != "main" {
+		return fileProg.Package
+	}
+	return fallback
 }
 
 // resolveGoEnv は Target から Go の GOOS / GOARCH プレフィックスを解決します。

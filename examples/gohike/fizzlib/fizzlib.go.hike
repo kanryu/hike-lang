@@ -1,29 +1,29 @@
 package fizzlib
 
-// 1. GetFizzFileSize -> c_GetFizzFileSize として LLVM IR に出力
-cfunc GetFizzFileSize(ptr cstring, len int) int {
+// 1. GetFizzFileSize: 通常 cfunc
+cfunc GetFizzFileSize(fn_ptr cstring, fn_len int) int {
     return 15
 }
 
-// 2. ReadFizzFile -> c_ReadFizzFile として出力
+// 2. ReadFizzFile: 通常 cfunc
 cfunc ReadFizzFile(fn_ptr cstring, fn_len int, readSize int, buf *byte) int {
     if readSize <= 0 {
         return 0
     }
-    // バッファへのダミー書き込み
+
     for i := 0; i < readSize; i++ {
-        *(buf + i) = byte(65 + (i % 26))
+        buf[i] = byte(65 + (i % 26))
     }
+
     return readSize
 }
 
-// 3. GetMetaData -> c_GetMetaData として出力
-cfunc GetMetaData(fn_ptr cstring, fn_len int, outLen *int) cstring {
+// 3. GetMetaData: passthrough cfunc（Goroutine スタックで直接超高速実行）
+passthrough cfunc GetMetaData(fn_ptr cstring, fn_len int, outLen *int) cstring {
     *outLen = 4
     return "fizz"
 }
 
-// 4. free -> c_free として出力
+// 4. free: 通常 cfunc
 cfunc free(ptr *byte) {
-    // 解放用スタブ
 }

@@ -158,12 +158,23 @@ func (p *Parser) ParseProgram() *ast.Program {
 
 func (p *Parser) parseTopLevelDecl() ast.Decl {
 	switch p.curToken.Type {
-	case token.TYPE:
-		return p.parseTypeDecl()
 	case token.FUNC:
 		return p.parseFuncDecl()
+	case token.PASSTHROUGH:
+		p.nextToken()
+		if !p.curTokenIs(token.CFUNC) {
+			p.errors = append(p.errors, fmt.Sprintf("line %d:%d: expected 'cfunc' after 'passthrough'", p.curToken.Line, p.curToken.Col))
+			return nil
+		}
+		cfn := p.parseCFuncDecl()
+		if cfn != nil {
+			cfn.IsPassThrough = true
+		}
+		return cfn
 	case token.CFUNC:
-		return p.parseCFuncDecl() // 追加: cfunc の構文解析
+		return p.parseCFuncDecl()
+	case token.TYPE:
+		return p.parseTypeDecl()
 	case token.VAR:
 		return p.parseVarDecl()
 	default:

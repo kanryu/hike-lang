@@ -69,57 +69,59 @@ const (
 	RBRACKET = "]"
 
 	// Keywords
-	PACKAGE   = "PACKAGE"
-	IMPORT    = "IMPORT"
-	FUNC      = "FUNC"
-	CFUNC     = "CFUNC"
-	MAP       = "MAP"
-	RETURN    = "RETURN"
-	TYPE      = "TYPE"
-	STRUCT    = "STRUCT"
-	INTERFACE = "INTERFACE"
-	CONST     = "CONST"
-	IOTA      = "IOTA"
-	RANGE     = "RANGE"
-	BREAK     = "BREAK"
-	CONTINUE  = "CONTINUE"
-	IF        = "IF"
-	ELSE      = "ELSE"
-	FOR       = "FOR"
-	SWITCH    = "SWITCH"
-	CASE      = "CASE"
-	DEFAULT   = "DEFAULT"
-	DEFER     = "DEFER"
-	NIL       = "NIL"
-	VAR       = "VAR"
+	PACKAGE     = "PACKAGE"
+	IMPORT      = "IMPORT"
+	FUNC        = "FUNC"
+	CFUNC       = "CFUNC"
+	PASSTHROUGH = "PASSTHROUGH" // 追加
+	MAP         = "MAP"
+	RETURN      = "RETURN"
+	TYPE        = "TYPE"
+	STRUCT      = "STRUCT"
+	INTERFACE   = "INTERFACE"
+	CONST       = "CONST"
+	IOTA        = "IOTA"
+	RANGE       = "RANGE"
+	BREAK       = "BREAK"
+	CONTINUE    = "CONTINUE"
+	IF          = "IF"
+	ELSE        = "ELSE"
+	FOR         = "FOR"
+	SWITCH      = "SWITCH"
+	CASE        = "CASE"
+	DEFAULT     = "DEFAULT"
+	DEFER       = "DEFER"
+	NIL         = "NIL"
+	VAR         = "VAR"
 
 	// Internal Synthetic Tokens (AST変換・意味決定フェーズ用)
 	IMPLICIT_CAST = "IMPLICIT_CAST"
 )
 
 var keywords = map[string]TokenType{
-	"package":   PACKAGE,
-	"import":    IMPORT,
-	"func":      FUNC,
-	"cfunc":     CFUNC,
-	"var":       VAR,
-	"const":     CONST,
-	"type":      TYPE,
-	"struct":    STRUCT,
-	"interface": INTERFACE,
-	"map":       MAP,
-	"if":        IF,
-	"else":      ELSE,
-	"for":       FOR,
-	"range":     RANGE,
-	"switch":    SWITCH,
-	"case":      CASE,
-	"default":   DEFAULT,
-	"return":    RETURN,
-	"defer":     DEFER,
-	"break":     BREAK,
-	"continue":  CONTINUE,
-	"nil":       NIL,
+	"package":     PACKAGE,
+	"import":      IMPORT,
+	"func":        FUNC,
+	"cfunc":       CFUNC,
+	"passthrough": PASSTHROUGH, // 追加
+	"var":         VAR,
+	"const":       CONST,
+	"type":        TYPE,
+	"struct":      STRUCT,
+	"interface":   INTERFACE,
+	"map":         MAP,
+	"if":          IF,
+	"else":        ELSE,
+	"for":         FOR,
+	"range":       RANGE,
+	"switch":      SWITCH,
+	"case":        CASE,
+	"default":     DEFAULT,
+	"return":      RETURN,
+	"defer":       DEFER,
+	"break":       BREAK,
+	"continue":    CONTINUE,
+	"nil":         NIL,
 }
 
 func LookupIdent(ident string) TokenType {

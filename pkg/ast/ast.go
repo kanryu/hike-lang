@@ -160,12 +160,13 @@ func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
 
 // CFuncDecl は Go 連携用の cfunc 宣言を表すノード
 type CFuncDecl struct {
-	Token       token.Token
-	Name        *Identifier
-	Params      []*ParamDecl
-	ReturnTypes []TypeExpr
-	TargetCName *Identifier // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
-	Body        *BlockStmt  // 手書きブロック形式 ({ ... }) の場合の本体ブロック
+	Token         token.Token
+	IsPassThrough bool // 追加: passthrough 修飾子フラグ
+	Name          *Identifier
+	Params        []*ParamDecl
+	ReturnTypes   []TypeExpr
+	TargetCName   *Identifier // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
+	Body          *BlockStmt  // 手書きブロック形式 ({ ... }) の場合の本体ブロック
 }
 
 func (cfd *CFuncDecl) declNode()            {}
