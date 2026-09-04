@@ -38,6 +38,8 @@ func (t *Transformer) Transform() (*ast.Program, error) {
 				continue
 			}
 			t.transformFuncDecl(fnDecl)
+		} else if cfnDecl, ok := decl.(*ast.CFuncDecl); ok && cfnDecl.Body != nil { // 追加: cfunc 手書きブロックの走査
+			t.transformCFuncDecl(cfnDecl)
 		}
 	}
 
@@ -81,6 +83,16 @@ func (t *Transformer) Transform() (*ast.Program, error) {
 // -----------------------------------------------------------------------------
 // ASTノード走査と呼び出し書き換え
 // -----------------------------------------------------------------------------
+func (t *Transformer) transformCFuncDecl(cfn *ast.CFuncDecl) {
+	if cfn.Body == nil {
+		return
+	}
+	t.localTypes = make(map[string]ast.TypeExpr)
+	for _, p := range cfn.Params {
+		t.localTypes[p.Name.Value] = p.Type
+	}
+	t.transformBlock(cfn.Body)
+}
 
 func (t *Transformer) transformFuncDecl(fn *ast.FuncDecl) {
 	if fn.Body == nil {

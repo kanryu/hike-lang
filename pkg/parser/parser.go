@@ -162,11 +162,88 @@ func (p *Parser) parseTopLevelDecl() ast.Decl {
 		return p.parseTypeDecl()
 	case token.FUNC:
 		return p.parseFuncDecl()
+	case token.CFUNC:
+		return p.parseCFuncDecl() // 追加: cfunc の構文解析
 	case token.VAR:
 		return p.parseVarDecl()
 	default:
 		return nil
 	}
+}
+
+func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
+	cfn := &ast.CFuncDecl{Token: p.curToken}
+	p.nextToken() // 'cfunc' を消費
+
+	cfn.Name = p.parseIdentifier()
+	p.log(fmt.Sprintf("[%d:%d] Parsing cfunc: %s", cfn.Token.Line, cfn.Token.Col, cfn.Name.Value))
+	p.nextToken() // 関数名を消費して '(' へ
+
+	// 1. 引数リストの解析
+	cfn.Params = []*ast.ParamDecl{}
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		for {
+			pName := p.parseIdentifier()
+			p.nextToken()
+			pType := p.parseTypeExpr()
+			cfn.Params = append(cfn.Params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
+
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RPAREN)
+
+	// 2. 戻り値型の解析（'=' や '{' の直前にある型定義を取得）
+	cfn.ReturnTypes = []ast.TypeExpr{}
+	if p.peekToken.Line == p.curToken.Line &&
+		!p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) &&
+		!p.curTokenIs(token.ASSIGN) && !p.peekTokenIs(token.ASSIGN) &&
+		!p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
+
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken()
+			p.nextToken()
+			for {
+				cfn.ReturnTypes = append(cfn.ReturnTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+			p.expectPeek(token.RPAREN)
+		} else {
+			p.nextToken()
+			cfn.ReturnTypes = append(cfn.ReturnTypes, p.parseTypeExpr())
+		}
+	}
+
+	// 3. 終端判定: '='（エイリアス記法）または '{'（手書きブロック記法）
+	if p.peekTokenIs(token.ASSIGN) {
+		p.nextToken() // '=' へ進む
+		p.nextToken() // 右辺の C 関数識別子へ進む
+		cfn.TargetCName = p.parseIdentifier()
+	} else if p.peekTokenIs(token.LBRACE) {
+		p.nextToken() // '{' へ進む
+		cfn.Body = p.parseBlockStmt()
+	} else if p.curTokenIs(token.LBRACE) {
+		cfn.Body = p.parseBlockStmt()
+	} else {
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected '=' or '{' in cfunc declaration", p.curToken.Line, p.curToken.Col))
+		return nil
+	}
+
+	return cfn
 }
 
 func (p *Parser) parseVarDecl() *ast.VarDecl {

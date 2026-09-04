@@ -174,6 +174,8 @@ func (l *Lowerer) resolveTypeFromExpr(e ast.Expression) sema.Type {
 			return sema.TypeFloat64
 		case "string":
 			return sema.TypeString
+		case "cstring": // 追加: Cポインタ文字列型
+			return sema.TypeCString
 		case "void":
 			return sema.TypeVoid
 		case "any":
@@ -234,7 +236,7 @@ func (l *Lowerer) Lower() *hir.Program {
 	}
 
 	for _, fn := range l.semaCtx.Functions {
-		if fn.IsExtern {
+		if fn.IsExtern && !fn.IsCFunc { // 修正: CFunc は lowerCFunc 側でメタデータ付きで一括登録するため除外
 			params := []*hir.Reg{}
 			for i, pt := range fn.ParamTypes {
 				params = append(params, &hir.Reg{ID: i + 1, Typ: pt})
@@ -279,6 +281,8 @@ func (l *Lowerer) Lower() *hir.Program {
 				continue
 			}
 			l.lowerFunc(fnDecl)
+		} else if cfnDecl, ok := decl.(*ast.CFuncDecl); ok { // 追加: CFunc のロワリング
+			l.lowerCFunc(cfnDecl)
 		}
 	}
 
@@ -440,6 +444,106 @@ func (l *Lowerer) lowerFunc(fn *ast.FuncDecl) {
 		if isMain {
 			l.terminate(&hir.InstrReturn{Vals: []hir.Value{&hir.ConstInt{Val: 0, Typ: sema.TypeInt}}})
 		} else if len(returnTypes) == 0 {
+			l.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
+		} else {
+			defaults := make([]hir.Value, len(returnTypes))
+			for i, rt := range returnTypes {
+				defaults[i] = l.defaultConstValue(rt)
+			}
+			l.terminate(&hir.InstrReturn{Vals: defaults})
+		}
+	}
+}
+
+func (l *Lowerer) lowerCFunc(cfn *ast.CFuncDecl) {
+	targetCName := ""
+	if cfn.TargetCName != nil {
+		targetCName = cfn.TargetCName.Value
+	} else {
+		targetCName = "c_" + cfn.Name.Value
+	}
+
+	returnTypes := []sema.Type{}
+	if fnType := l.semaCtx.Functions[cfn.Name.Value]; fnType != nil && len(fnType.ReturnTypes) > 0 {
+		returnTypes = fnType.ReturnTypes
+	} else {
+		for _, rt := range cfn.ReturnTypes {
+			returnTypes = append(returnTypes, l.semaCtx.ResolveType(rt))
+		}
+	}
+
+	// 1. 簡易エイリアス形式 (cfunc Foo(...) = c_foo)
+	if cfn.Body == nil {
+		params := []*hir.Reg{}
+		for i, p := range cfn.Params {
+			pType := l.semaCtx.ResolveType(p.Type)
+			params = append(params, &hir.Reg{ID: i + 1, Typ: pType, Name: p.Name.Value})
+		}
+
+		hirFn := &hir.Function{
+			Name:        targetCName,
+			Params:      params,
+			ReturnTypes: returnTypes,
+			Blocks:      nil,
+			IsVariadic:  false,
+			IsExtern:    true,
+			IsCFunc:     true,
+			CFuncTarget: targetCName,
+		}
+		l.hirProg.Functions = append(l.hirProg.Functions, hirFn)
+		return
+	}
+
+	// 2. 手書きブロック形式 (cfunc Foo(...) { ... })
+	l.symbols = make(map[string]hir.Value)
+	l.symbolTypes = make(map[string]sema.Type)
+	l.deferStack = []*ast.CallExpr{}
+	l.regCount = 0
+	l.escapedVars = sema.CollectAllCapturesInBlock(cfn.Body)
+
+	hirFn := &hir.Function{
+		Name:        targetCName,
+		Params:      []*hir.Reg{},
+		ReturnTypes: returnTypes,
+		Blocks:      []*hir.BasicBlock{},
+		IsVariadic:  false,
+		IsExtern:    false,
+		IsCFunc:     true,
+		CFuncTarget: targetCName,
+	}
+	l.curFunc = hirFn
+	l.hirProg.Functions = append(l.hirProg.Functions, hirFn)
+
+	entryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	l.setBlock(entryBB)
+
+	for _, p := range cfn.Params {
+		pType := l.semaCtx.ResolveType(p.Type)
+		paramReg := l.nextReg(pType, p.Name.Value+"_arg")
+		hirFn.Params = append(hirFn.Params, paramReg)
+
+		ptrReg := l.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
+		if p.IsEscaped || l.escapedVars[p.Name.Value] {
+			sizeVal := &hir.ConstInt{Val: int64(pType.Size()), Typ: sema.TypeInt}
+			l.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType})
+		} else {
+			l.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: pType})
+		}
+		l.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
+		l.symbols[p.Name.Value] = ptrReg
+		l.symbolTypes[p.Name.Value] = pType
+	}
+
+	for _, stmt := range cfn.Body.Statements {
+		l.lowerStmt(stmt)
+	}
+
+	for i := len(l.deferStack) - 1; i >= 0; i-- {
+		l.lowerCall(l.deferStack[i])
+	}
+
+	if l.curBlock.Terminator == nil {
+		if len(returnTypes) == 0 {
 			l.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
 		} else {
 			defaults := make([]hir.Value, len(returnTypes))
@@ -2170,7 +2274,14 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				if retType != sema.TypeVoid {
 					dst = l.nextReg(retType)
 				}
-				l.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: canonicalName, Args: args})
+				// 追加: CFunc の場合は実際の C シンボル名へ呼び出し先を差し替える
+				callee := canonicalName
+				if targetFn.IsCFunc && targetFn.CFuncTarget != "" {
+					callee = targetFn.CFuncTarget
+				} else if targetFn.IsCFunc {
+					callee = "c_" + canonicalName
+				}
+				l.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
 				return dst
 			}
 		}

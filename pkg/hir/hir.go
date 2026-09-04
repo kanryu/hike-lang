@@ -449,6 +449,12 @@ type Function struct {
 	Blocks      []*BasicBlock
 	IsVariadic  bool
 	IsExtern    bool
+
+	// -------------------------------------------------------------------------
+	// CFunc / Go 連携用フィールド（追加）
+	// -------------------------------------------------------------------------
+	IsCFunc     bool   // cfunc 宣言であるかどうかのフラグ
+	CFuncTarget string // エイリアス形式の場合の呼び出し先Cシンボル名（空文字列なら手書きブロック）
 }
 
 func (f *Function) String() string {

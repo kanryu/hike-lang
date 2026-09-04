@@ -13,11 +13,16 @@ import (
 )
 
 func printUsage() {
-	fmt.Println("Usage: hikec <command> [options] <source.hike...>")
+	fmt.Println("Usage: hikec <command> [options] <source.hike... | directory>")
 	fmt.Println("\nCommands:")
+	fmt.Println("  go          Compile all .go.hike files in directory into a single .syso object")
 	fmt.Println("  emit-ir     Generate LLVM IR from Hike source (default)")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary via Clang")
 	fmt.Println("  run         Build and immediately execute the Hike program")
+	fmt.Println("\nOptions for go:")
+	fmt.Println("  -o <path>        Output .syso file path")
+	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin)")
+	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("\nOptions for emit-ir:")
 	fmt.Println("  -o <path>        Output LLVM IR file path (default: <source>.ll)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
@@ -37,6 +42,9 @@ func main() {
 	var cmdArgs []string
 
 	switch cmd {
+	case "go":
+		cmdArgs = os.Args[2:]
+		runGo(cmdArgs)
 	case "emit-ir":
 		cmdArgs = os.Args[2:]
 		runEmitIR(cmdArgs)
@@ -51,6 +59,39 @@ func main() {
 	default:
 		cmdArgs = os.Args[1:]
 		runEmitIR(cmdArgs)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// go: ディレクトリ内の *.go.hike を集約して単一 .syso を生成
+// -----------------------------------------------------------------------------
+func runGo(args []string) {
+	opts := compiler.GoBuildOptions{
+		Dir: ".",
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-o" && i+1 < len(args) {
+			opts.OutputFile = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-o=") {
+			opts.OutputFile = strings.TrimPrefix(arg, "-o=")
+		} else if (arg == "-target" || arg == "--target") && i+1 < len(args) {
+			opts.TargetName = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
+			opts.TargetName = strings.SplitN(arg, "=", 2)[1]
+		} else if arg == "-v" || arg == "--verbose" {
+			opts.Verbose = true
+		} else if !strings.HasPrefix(arg, "-") {
+			opts.Dir = arg
+		}
+	}
+
+	if err := compiler.BuildGoPackage(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

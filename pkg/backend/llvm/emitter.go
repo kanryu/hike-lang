@@ -140,12 +140,31 @@ func (e *Emitter) emitItabs() {
 }
 
 func (e *Emitter) emitFunctions() {
+	// モジュール内で実際に call されている外部シンボルを収集
+	referencedExterns := make(map[string]bool)
+	for _, fn := range e.prog.Functions {
+		for _, bb := range fn.Blocks {
+			for _, inst := range bb.Instructions {
+				if call, ok := inst.(*hir.InstrCallStatic); ok {
+					referencedExterns[call.CalleeName] = true
+				}
+			}
+		}
+	}
+
 	for _, fn := range e.prog.Functions {
 		if fn.IsExtern {
 			switch fn.Name {
 			case "malloc", "free", "calloc", "strcmp", "strlen", "memcpy", "memcmp", "printf":
 				continue
 			}
+
+			// 追加: cfunc エイリアス宣言で、かつ Hike 内部から一度も call されていない外部 C シンボルは出力しない
+			// （Goアセンブリ側から直接呼ばれるため、LLVM IR 側に UNDEF シンボルを残さない安全策）
+			if fn.IsCFunc && !referencedExterns[fn.Name] {
+				continue
+			}
+
 			retTypeStr := "void"
 			if len(fn.ReturnTypes) == 1 {
 				retTypeStr = fn.ReturnTypes[0].LLVMType()

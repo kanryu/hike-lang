@@ -72,6 +72,7 @@ const (
 	PACKAGE   = "PACKAGE"
 	IMPORT    = "IMPORT"
 	FUNC      = "FUNC"
+	CFUNC     = "CFUNC"
 	MAP       = "MAP"
 	RETURN    = "RETURN"
 	TYPE      = "TYPE"
@@ -100,6 +101,7 @@ var keywords = map[string]TokenType{
 	"package":   PACKAGE,
 	"import":    IMPORT,
 	"func":      FUNC,
+	"cfunc":     CFUNC,
 	"var":       VAR,
 	"const":     CONST,
 	"type":      TYPE,
