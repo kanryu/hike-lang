@@ -177,22 +177,21 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 }
 
 // manglePackageDecls はパッケージ内のトップレベル宣言を名前空間修飾（マングル）します。
-// cfunc などの C-ABI 連携宣言や未知の宣言がドロップされないよう安全にパススルーします。
 func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl {
 	var mangled []ast.Decl
 
 	for _, decl := range decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			// main パッケージの main 関数以外はパッケージ名を付与してマングル
-			if pkgName != "main" || d.Name.Value != "main" {
+			// 外部 C 関数（Body == nil の extern 宣言）は C ライブラリのシンボルであるためマングルしない。
+			// 実体を持つ関数（Body != nil）のみ、main パッケージ以外でパッケージ名を付与してマングルする。
+			if d.Body != nil && (pkgName != "main" || d.Name.Value != "main") {
 				d.Name.Value = pkgName + "_" + d.Name.Value
 			}
 			mangled = append(mangled, d)
 
 		case *ast.CFuncDecl:
-			// cfunc は C リンケージおよび Go スタブと名前が直結するため、
-			// パッケージ名によるマングルを行わず、そのままのシンボルで保持する
+			// cfunc は C リンケージおよび外部スタブと直結するため、パッケージ名によるマングルを行わない
 			mangled = append(mangled, d)
 
 		case *ast.TypeDecl:
@@ -214,7 +213,6 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			mangled = append(mangled, d)
 
 		default:
-			// 未知またはマングル不要のノードは暗黙に破棄せず素通しする
 			mangled = append(mangled, d)
 		}
 	}
