@@ -216,3 +216,169 @@ In languages using `async/await`, functions must be annotated with `async`, forc
 * Functions like `fetchRemoteData` and `computeHash` remain standard, sequential routines.
 * The decision to execute concurrently belongs entirely to the call site.
 * The compiler handles closure environment captures, return buffer allocations, thread scheduling, kernel event signaling, and register unpacks automatically at the IR level.
+
+`concurrency.md` の末尾に追加するセクションです。Goの `go func()` との設計思想の違い、および `chan func()` によるロックフリーなイベントループ制御パターンを網羅しています。
+
+---
+
+
+## 5. Design Rationale: `Async` vs. Go's `go func()`
+
+Hike deliberately avoids adopting Go's `go` keyword, replacing it with the explicit `Async(...)` syntax. While both constructs appear superficially similar at the call site, their underlying runtime semantics and resource models are fundamentally distinct.
+
+| Dimension | Go (`go func()`) | Hike (`Async(func())`) |
+| --- | --- | --- |
+| **Execution Model** | M:N green-thread scheduling (Goroutines) | 1:1 OS thread pool offloading (`QueueUserWorkItem`) |
+| **Stack Allocation** | Dynamic contiguous stack (starts at 2 KB, resizable) | Native fixed OS stack (committed by the operating system) |
+| **Concurrency Scale** | Millions of fine-grained concurrent tasks | Hundreds of concurrent I/O or compute-heavy worker tasks |
+| **Runtime Footprint** | Heavy Go runtime (scheduler, sysmon, GC stop-the-world) | Zero runtime overhead (direct kernel32 calls compiled to LLVM IR) |
+| **Mental Model** | "Fire a lightweight micro-thread for everything" | "Offload a bounded task to an OS-managed thread pool" |
+
+### Avoiding the Green-Thread Fallacy
+
+In Go, the `go` keyword suggests near-zero-cost instantiation. Developers frequently spawn Goroutines inside tight loops, relying on the M:N scheduler to multiplex them across a small set of OS threads.
+
+If Hike retained the `go` keyword, programmers familiar with Go would intuitively treat background jobs as lightweight green threads. Because Hike delegates execution directly to native OS thread pools without an M:N user-space runtime, spawning hundreds of thousands of tasks concurrently would saturate kernel queues and exhaust pool limits. 
+
+Renaming the construct to `Async`:
+1. **Clarifies Resource Boundaries**: It signals that execution leaves the current thread context and enters an OS-managed pool rather than creating an independent micro-scheduler.
+2. **Discourages Trivial Over-Spawning**: It establishes a clear boundary between fine-grained sequential instructions and coarse-grained asynchronous background workloads.
+3. **Encourages Structured Synchronization**: By pairing naturally with typed handles (`task := Async(...)`) and continuation operators (`<-task`), it fosters explicit orchestration over unmonitored background leakage.
+
+---
+
+## 6. Event Loop Pattern: Lock-Free State Mutation via `chan func()`
+
+While `Async` handles background offloading, stateful systems (such as UI runtimes, game engines, or connection multiplexers) often require all mutations to execute strictly serialized on a single coordinator thread.
+
+Hike accomplishes this without explicit mutexes or condition variables by combining native channels with first-class closure dispatch: **the `chan func()` Event Loop**.
+
+### Architecture: Actor-Style Serialization
+
+Instead of locking shared variables across worker threads, background workers package state transitions into closures and dispatch them into a typed channel. The main coordinator thread runs a blocking loop, pulling closures and executing them sequentially.
+
+```text
+[Worker Thread 1]          [Worker Thread 2]
+       │                          │
+       │ (pack state in closure)  │ (pack state in closure)
+       ├─ actions <- func() {...} │
+       │                          ├─ actions <- func() {...}
+       │                          │
+       ▼                          ▼
+ ┌──────────────────────────────────────────────┐
+ │       actions: chan func() (Buffer: 100)      │
+ └──────────────────────┬───────────────────────┘
+                        │
+                        ▼ (<-actions: unblocks without spin)
+               [Main Event Loop]
+               - Serial execution
+               - No mutex contention
+               - Mutates local state safely
+
+```
+
+### The Poison Pill Termination Idiom
+
+To terminate an event loop driven by multiple concurrent producers, closing the channel can cause panics if another worker attempts a write. Hike employs the **Poison Pill Pattern**: workers inject a `nil` closure when a termination criteria is met.
+
+When the coordinator receives `nil`, it breaks the loop cleanly, guaranteeing that all prior tasks have drained.
+
+### Production Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+func main() {
+    // 1. Allocate an asynchronous action queue for closures
+    actions := make(chan func(), 100)
+
+    fmt.Println("=== Event Loop Started (Main Thread Waiting) ===")
+
+    // 2. Worker 1: Periodic metric ticker (runs indefinitely)
+    Async(func() {
+        count := 0
+        for {
+            count = count + 1
+            idx := count
+
+            // Pack context into a closure and dispatch to the main loop
+            actions <- func() {
+                fmt.Println("[Worker 1] Periodic tick event handled. Count:", idx)
+            }
+
+            time.Sleep(200 * time.Millisecond)
+        }
+    })
+
+    // 3. Worker 2: Command controller with exit condition
+    Async(func() {
+        step := 0
+        for {
+            step = step + 1
+            s := step
+
+            if s < 5 {
+                actions <- func() {
+                    fmt.Println("[Worker 2] High-priority command executed. Step:", s)
+                }
+                time.Sleep(350 * time.Millisecond)
+            } else {
+                // Termination condition reached: send nil poison pill
+                fmt.Println("[Worker 2] Termination criteria met. Sending nil poison pill...")
+                actions <- nil
+                break
+            }
+        }
+    })
+
+    // 4. Coordinator Thread (Event Loop)
+    // Completely blocks at the kernel level with 0% CPU consumption when empty
+    for {
+        act := <-actions
+
+        // Intercept poison pill
+        if act == nil {
+            fmt.Println("Main Thread: Received nil poison pill. Exiting event loop.")
+            break
+        }
+
+        // Execute sequentially on the main thread (zero locks required)
+        act()
+    }
+
+    fmt.Println("=== Event Loop Terminated Cleanly ===")
+}
+
+```
+
+### Low-Level Channel Internals
+
+Channels in Hike are tracked via an aligned control block containing ring-buffer indices, a spinlock with active OS yields, and kernel event handles:
+
+```llvm
+; Channel Descriptor Layout
+%struct.__hike_chan = type { 
+    i64, ; elem_size (bytes per item)
+    i64, ; cap (ring buffer capacity)
+    i64, ; count (current queue length)
+    i64, ; head index
+    i64, ; tail index
+    i8*, ; raw buffer pointer
+    i32, ; atomic spinlock (CAS)
+    i32, ; closed state flag
+    i8*, ; ev_recv (Win32 auto-reset Event for consumers)
+    i8*  ; ev_send (Win32 auto-reset Event for producers)
+}
+
+```
+
+1. **Zero-CPU Wait State**: When `actions` is empty, `__hike_chan_recv` enters `WaitForSingleObject` on `ev_recv`. The calling thread is removed from the OS scheduling queue, consuming 0% CPU until a worker performs `__hike_chan_send` and issues `SetEvent`.
+
+
+2. **Atomic Buffer Transfer**: Values are copied directly into the target slot via `memcpy`. When transmitting `func()` closures, the 16-byte fat pointer `{ i8*, i8* }` (function pointer + captured environment) moves across the ring buffer as an atomic unit, preventing partial writes.
+
