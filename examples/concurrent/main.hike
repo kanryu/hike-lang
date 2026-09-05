@@ -5,46 +5,59 @@ import (
 	"time"
 )
 
-// 通常の関数（async/await等の色づけ汚染なし）
+// 通常の関数（シグネチャの汚染なし）
 func fetchRemoteData(endpoint string, delayMs int) (string, error) {
 	fmt.Printf("[Worker] リモートデータ取得中: %s\n", endpoint)
-	time.Sleep(time.Duration(delayMs) * time.Millisecond) // 短い待機処理
+	time.Sleep(time.Duration(delayMs) * time.Millisecond)
 	return fmt.Sprintf("Payload from %s", endpoint), nil
 }
 
 func computeHash(seed int) (int, error) {
 	fmt.Println("[Worker] ハッシュ計算を開始...")
-	time.Sleep(150 * time.Millisecond) // 150msの計算ラグ
+	time.Sleep(150 * time.Millisecond)
 	return seed * 997, nil
+}
+
+// ワーカースレッド上でバックグラウンド実行される関数
+func runConfigTask() {
+	fmt.Println("[TaskFunc/Worker] スレッドプール内でタスクを開始し、データ取得を待機します...")
+
+	// ワーカースレッド側で待機
+	data, err := <-Async(func() (string, error) {
+		return fetchRemoteData("https://api.internal/config", 80)
+	})
+
+	// 左矢印（<-）完了後のメッセージ
+	fmt.Println("[TaskFunc/Worker] 重い処理が完了しました。同じ関数内でそのまま処理結果の判定を確認・継続します。")
+
+	if err != nil {
+		fmt.Printf("[TaskFunc/Worker] エラー発生: %v\n", err)
+		return
+	}
+	fmt.Printf("[TaskFunc/Worker] 受領完了: %s\n", data)
 }
 
 func main() {
 	fmt.Println("=== Hike スレッドプール非同期コンソール ===")
 
 	// -------------------------------------------------------------
-	// 1. 直列待機パターン
-	// `<-Async(...)` がその場でメインスレッドを待機（ブロック）させる
+	// 1. バックグラウンドタスクの即時投入とメインスレッドのノンブロッキング検証
 	// -------------------------------------------------------------
-	fmt.Println("\n--- 1. 単一タスクの直列待機 ---")
-	fmt.Println("[Main] スレッドプールへタスクを投入...")
+	fmt.Println("\n--- 1. バックグラウンドタスクの即時投入検証 ---")
 
-	data, err := <-Async(func() (string, error) {
-		return fetchRemoteData("https://api.internal/config", 80)
+	// runConfigTask 自体をスレッドプールへ投入
+	taskConfig := Async(func() {
+		runConfigTask()
 	})
 
-	if err != nil {
-		fmt.Printf("[Main] エラー発生: %v\n", err)
-		return
-	}
-	fmt.Printf("[Main] 受領完了: %s\n", data)
+	// Async 投入直後のメッセージ
+	fmt.Println("[Main] 重いタスクをワーカースレッドへ投げ渡しました。メインスレッドは直ちに制御を取り戻して実行を継続します。")
 
 	// -------------------------------------------------------------
-	// 2. 並行実行と合流待機パターン（メインスレッドの待機）
-	// ハンドルを保持してバックグラウンドで並行稼働させ、最後に合流待機
+	// 2. 複数タスクの並行投入と合流待機パターン
 	// -------------------------------------------------------------
 	fmt.Println("\n--- 2. 複数タスクの並行投入と合流待機 ---")
 
-	// スレッドプールに2つのタスクを投入（50〜250ms程度で並行処理）
 	task1 := Async(func() (string, error) {
 		return fetchRemoteData("https://api.internal/heavy-assets", 250)
 	})
@@ -53,16 +66,16 @@ func main() {
 		return computeHash(42)
 	})
 
-	// メインスレッド側で短時間のアニメーションや軽量処理をシミュレート
 	fmt.Println("[Main] バックグラウンドタスク稼働中...")
 	for i := 1; i <= 3; i++ {
 		time.Sleep(50 * time.Millisecond)
 		fmt.Printf("[Main] メインループ進行中 (%d/3)...\n", i)
 	}
 
-	// メインスレッドの同期待ち（Join）
 	fmt.Println("[Main] 全タスクの完了を待機しています...")
 
+	// バックグラウンドで走らせていた全タスクの合流待機（Join）
+	<-taskConfig
 	res1, err1 := <-task1
 	res2, err2 := <-task2
 
