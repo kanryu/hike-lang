@@ -160,6 +160,226 @@ get_res:
 }
 
 ; ------------------------------------------------------------------------------
+; Channel & Concurrency Queue Runtime
+; ------------------------------------------------------------------------------
+
+; %struct.__hike_chan = { elem_size, cap, count, head, tail, buf, lock, closed, ev_recv, ev_send }
+%struct.__hike_chan = type { i64, i64, i64, i64, i64, i8*, i32, i32, i8*, i8* }
+
+; チャネル内部スピンロックの獲得 (Yield 付き)
+define internal void @__hike_chan_lock(i32* %lock) {
+entry:
+  br label %spin
+spin:
+  %prev = atomicrmw xchg i32* %lock, i32 1 seq_cst
+  %is_free = icmp eq i32 %prev, 0
+  br i1 %is_free, label %acquired, label %wait
+wait:
+  call void @Sleep(i32 0)
+  br label %spin
+acquired:
+  ret void
+}
+
+; チャネル内部スピンロックの解放
+define internal void @__hike_chan_unlock(i32* %lock) {
+entry:
+  store atomic i32 0, i32* %lock seq_cst, align 4
+  ret void
+}
+
+; チャネルの新規生成 (make(chan T, cap))
+define internal i8* @__hike_chan_make(i64 %elem_size, i64 %cap) {
+entry:
+  %cap_le_0 = icmp sle i64 %cap, 0
+  %real_cap = select i1 %cap_le_0, i64 1, i64 %cap
+
+  %raw = call i8* @malloc(i64 72)
+  %ch = bitcast i8* %raw to %struct.__hike_chan*
+
+  %buf_bytes = mul i64 %real_cap, %elem_size
+  %buf = call i8* @malloc(i64 %buf_bytes)
+
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  store i64 %elem_size, i64* %p_es
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  store i64 %real_cap, i64* %p_cap
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  store i64 0, i64* %p_cnt
+  %p_hd = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 3
+  store i64 0, i64* %p_hd
+  %p_tl = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 4
+  store i64 0, i64* %p_tl
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  store i8* %buf, i8** %p_buf
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  store i32 0, i32* %p_lock
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  store i32 0, i32* %p_cls
+
+  ; 自動リセットイベントの生成 (受信側・送信側)
+  %ev_recv = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  store i8* %ev_recv, i8** %p_ev_r
+
+  %ev_send = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  store i8* %ev_send, i8** %p_ev_s
+
+  ret i8* %raw
+}
+
+; チャネルへの値送信 (ch <- val)
+define internal void @__hike_chan_send(i8* %ch_raw, i8* %val_ptr) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  %p_tl = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 4
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  br label %try_send
+
+try_send:
+  call void @__hike_chan_lock(i32* %p_lock)
+  %cnt = load i64, i64* %p_cnt
+  %cap = load i64, i64* %p_cap
+  %has_room = icmp slt i64 %cnt, %cap
+  br i1 %has_room, label %do_send, label %full
+
+do_send:
+  %tl = load i64, i64* %p_tl
+  %es = load i64, i64* %p_es
+  %buf = load i8*, i8** %p_buf
+  %offset = mul i64 %tl, %es
+  %dst = getelementptr inbounds i8, i8* %buf, i64 %offset
+  call i8* @memcpy(i8* %dst, i8* %val_ptr, i64 %es)
+
+  %next_tl_raw = add i64 %tl, 1
+  %next_tl = urem i64 %next_tl_raw, %cap
+  store i64 %next_tl, i64* %p_tl
+
+  %next_cnt = add i64 %cnt, 1
+  store i64 %next_cnt, i64* %p_cnt
+
+  ; 受信待ちスレッドを起床
+  %ev_r = load i8*, i8** %p_ev_r
+  call i32 @SetEvent(i8* %ev_r)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+full:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  %ev_s = load i8*, i8** %p_ev_s
+  call i32 @WaitForSingleObject(i8* %ev_s, i32 10)
+  br label %try_send
+}
+
+; チャネルからの値受信 (<-ch)
+define internal void @__hike_chan_recv(i8* %ch_raw, i8* %val_ptr) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  %p_hd = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 3
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  br label %try_recv
+
+try_recv:
+  call void @__hike_chan_lock(i32* %p_lock)
+  %cnt = load i64, i64* %p_cnt
+  %has_data = icmp sgt i64 %cnt, 0
+  br i1 %has_data, label %do_recv, label %empty
+
+do_recv:
+  %hd = load i64, i64* %p_hd
+  %cap = load i64, i64* %p_cap
+  %es = load i64, i64* %p_es
+  %buf = load i8*, i8** %p_buf
+  %offset = mul i64 %hd, %es
+  %src = getelementptr inbounds i8, i8* %buf, i64 %offset
+  call i8* @memcpy(i8* %val_ptr, i8* %src, i64 %es)
+
+  %next_hd_raw = add i64 %hd, 1
+  %next_hd = urem i64 %next_hd_raw, %cap
+  store i64 %next_hd, i64* %p_hd
+
+  %next_cnt = sub i64 %cnt, 1
+  store i64 %next_cnt, i64* %p_cnt
+
+  ; 送信待ちスレッドを起床
+  %ev_s = load i8*, i8** %p_ev_s
+  call i32 @SetEvent(i8* %ev_s)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+empty:
+  %cls = load i32, i32* %p_cls
+  %is_closed = icmp ne i32 %cls, 0
+  br i1 %is_closed, label %on_closed, label %wait_data
+
+on_closed:
+  ; クローズ済みで空の場合はゼロ値（null / 0）を書き込んで即座に復帰
+  %es_c = load i64, i64* %p_es
+  br label %zero_loop.cond
+
+zero_loop.cond:
+  %zi = phi i64 [ 0, %on_closed ], [ %zi.next, %zero_loop.body ]
+  %z_cmp = icmp slt i64 %zi, %es_c
+  br i1 %z_cmp, label %zero_loop.body, label %zero_loop.end
+
+zero_loop.body:
+  %z_ptr = getelementptr inbounds i8, i8* %val_ptr, i64 %zi
+  store i8 0, i8* %z_ptr
+  %zi.next = add i64 %zi, 1
+  br label %zero_loop.cond
+
+zero_loop.end:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+wait_data:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ; 空の間は OS イベントでスリープ待機 (CPU 使用率 0%)
+  %ev_r = load i8*, i8** %p_ev_r
+  call i32 @WaitForSingleObject(i8* %ev_r, i32 10)
+  br label %try_recv
+}
+
+; チャネルのクローズ (close(ch))
+define internal void @__hike_chan_close(i8* %ch_raw) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+
+  call void @__hike_chan_lock(i32* %p_lock)
+  store i32 1, i32* %p_cls
+
+  ; 待機中の全スレッドを起床させて終了状態を検知させる
+  %ev_r = load i8*, i8** %p_ev_r
+  call i32 @SetEvent(i8* %ev_r)
+
+  %ev_s = load i8*, i8** %p_ev_s
+  call i32 @SetEvent(i8* %ev_s)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+}
+
+; ------------------------------------------------------------------------------
 ; String Runtime Functions
 ; ------------------------------------------------------------------------------
 

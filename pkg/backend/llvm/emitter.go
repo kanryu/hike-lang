@@ -174,7 +174,8 @@ func (e *Emitter) emitFunctions() {
 			switch fn.Name {
 			case "malloc", "free", "calloc", "strcmp", "strlen", "memcpy", "memcmp", "printf",
 				"QueueUserWorkItem", "CreateEventA", "SetEvent", "WaitForSingleObject", "CloseHandle", "Sleep",
-				"os_sleep_ms", "c_os_sleep_ms":
+				"os_sleep_ms", "c_os_sleep_ms",
+				"__hike_chan_make", "__hike_chan_send", "__hike_chan_recv", "__hike_chan_close":
 				continue
 			}
 
@@ -438,7 +439,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 	case *hir.InstrCallIface:
 		e.emitCallIface(i)
 
-	// 追加: スレッドプールへの非同期タスク投入
+	// スレッドプールへの非同期タスク投入
 	case *hir.InstrAsync:
 		retLLVM := e.getRetLLVMType(i.RetTypes)
 		retSize := e.getRetSize(i.RetTypes)
@@ -476,11 +477,70 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			taskPtr, thunkPtr, rawEnv, retSize))
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__hike_task* %s to i8*\n", i.Dst, taskPtr))
 
-	// 追加: タスクの完了待機とバッファ取得
+	// タスクの完了待機とバッファ取得
 	case *hir.InstrTaskWait:
 		taskPtr := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %%struct.__hike_task*\n", taskPtr, e.formatVal(i.Task)))
 		e.b.WriteString(fmt.Sprintf("  %s = call i8* @__hike_task_wait(%%struct.__hike_task* %s)\n", i.Dst, taskPtr))
+
+	// 追加: チャネル生成
+	case *hir.InstrChanMake:
+		elemSize := int64(i.ElemType.Size())
+		if elemSize <= 0 {
+			elemSize = 8
+		}
+		capVal := e.formatVal(i.Cap)
+		if i.Cap == nil {
+			capVal = "0"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @__hike_chan_make(i64 %d, i64 %s)\n",
+			i.Dst, elemSize, capVal))
+
+	// 追加: チャネル送信
+	case *hir.InstrChanSend:
+		valLLVM := i.Val.Type().LLVMType()
+		valVal := e.formatVal(i.Val)
+
+		tmpAlloca := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", tmpAlloca, valLLVM))
+		e.b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n", valLLVM, valVal, valLLVM, tmpAlloca))
+		rawPtr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", rawPtr, valLLVM, tmpAlloca))
+
+		chVal := e.formatVal(i.Chan)
+		if i.Chan.Type().LLVMType() != "i8*" {
+			castCh := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
+			chVal = castCh
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @__hike_chan_send(i8* %s, i8* %s)\n", chVal, rawPtr))
+
+	// 追加: チャネル受信
+	case *hir.InstrChanRecv:
+		elemLLVM := i.Dst.Typ.LLVMType()
+		tmpAlloca := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", tmpAlloca, elemLLVM))
+		rawPtr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", rawPtr, elemLLVM, tmpAlloca))
+
+		chVal := e.formatVal(i.Chan)
+		if i.Chan.Type().LLVMType() != "i8*" {
+			castCh := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
+			chVal = castCh
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @__hike_chan_recv(i8* %s, i8* %s)\n", chVal, rawPtr))
+		e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", i.Dst, elemLLVM, elemLLVM, tmpAlloca))
+
+	// 追加: チャネルクローズ
+	case *hir.InstrChanClose:
+		chVal := e.formatVal(i.Chan)
+		if i.Chan.Type().LLVMType() != "i8*" {
+			castCh := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
+			chVal = castCh
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @__hike_chan_close(i8* %s)\n", chVal))
 
 	case *hir.InstrExtractValue:
 		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n",

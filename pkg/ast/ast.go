@@ -456,6 +456,16 @@ func (ct *ChanType) typeExprNode()        {}
 func (ct *ChanType) expressionNode()      {}
 func (ct *ChanType) TokenLiteral() string { return ct.Token.Literal }
 
+// SendStmt はチャネルへの値送信文 (channel <- value) を表すノード
+type SendStmt struct {
+	Token token.Token // '<-' トークン
+	Chan  Expression  // 送信先チャネル式
+	Value Expression  // 送信する値の式
+}
+
+func (ss *SendStmt) statementNode()       {}
+func (ss *SendStmt) TokenLiteral() string { return ss.Token.Literal }
+
 // FutureType は Async(fn) が生成するスレッドプール待機用ハンドル型を表す内部型ノード
 type FutureType struct {
 	Token       token.Token

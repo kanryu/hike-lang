@@ -1,0 +1,5 @@
+module example-eventloop
+
+hike 0.1.0
+
+replace std => ../../std

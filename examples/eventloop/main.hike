@@ -1,0 +1,69 @@
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	// 1. メインスレッドが待機するアクションキュー（関数を運ぶチャネル）
+	actions := make(chan func(), 100)
+
+	fmt.Println("=== Event Loop Started (Main Thread Waiting) ===")
+
+	// 2. ワーカースレッド 1: 定期データ受信・バックグラウンド監視ループ（無限受付）
+	Async(func() {
+		count := 0
+		for {
+			count = count + 1
+			idx := count
+
+			// イベントとハンドラをクロージャにパックしてメインスレッドへ投入
+			actions <- func() {
+				fmt.Println("[Worker 1] Periodic tick event handled. Count:", idx)
+			}
+
+			// std/time の Duration（ミリ秒単位）でスリープ
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	// 3. ワーカースレッド 2: 外部入力・制御シグナル受付ループ（無限受付 -> 終了検知）
+	Async(func() {
+		step := 0
+		for {
+			step = step + 1
+			s := step
+
+			if s < 5 {
+				// 通常の制御イベントを投入
+				actions <- func() {
+					fmt.Println("[Worker 2] High-priority command executed. Step:", s)
+				}
+				time.Sleep(35 * time.Millisecond)
+			} else {
+				// 終了トリガー成立: 毒薬（nil）をアクションキューへ投下してワーカーを離脱
+				fmt.Println("[Worker 2] Termination condition met. Sending nil poison pill...")
+				actions <- nil
+				break
+			}
+		}
+	})
+
+	// 4. メインスレッド（イベントループ）
+	// キューが空の間はカーネルレベルでブロックされ、CPU使用率0で完全待機
+	for {
+		act := <-actions
+
+		// nil（毒薬）を受け取ったら、即座にイベントループを抜ける
+		if act == nil {
+			fmt.Println("Main Thread: Received nil poison pill. Exiting event loop.")
+			break
+		}
+
+		// メインスレッド上で直列実行（排他ロック不要で安全に状態更新可能）
+		act()
+	}
+
+	fmt.Println("=== Event Loop Terminated Cleanly ===")
+}

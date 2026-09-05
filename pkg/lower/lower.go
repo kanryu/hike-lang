@@ -161,31 +161,20 @@ func (l *Lowerer) resolveTypeFromExpr(e ast.Expression) sema.Type {
 	case *ast.FuncType:
 		return l.semaCtx.ResolveType(node)
 	case *ast.Identifier:
-		switch node.Value {
-		case "int":
-			return sema.TypeInt
-		case "byte":
-			return sema.TypeByte
-		case "bool":
-			return sema.TypeBool
-		case "float32":
-			return sema.TypeFloat32
-		case "float64", "float":
-			return sema.TypeFloat64
-		case "string":
-			return sema.TypeString
-		case "cstring": // 追加: Cポインタ文字列型
-			return sema.TypeCString
-		case "void":
-			return sema.TypeVoid
-		case "any":
+		// ★ sema の定義マップから直接引く
+		if builtinT, ok := sema.LookupBuiltinType(node.Value); ok {
+			return builtinT
+		}
+		if node.Value == "any" {
 			return &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
-		case "error":
+		}
+		if node.Value == "error" {
 			if iface, ok := l.semaCtx.Interfaces["error"]; ok {
 				return iface
 			}
 			return nil
 		}
+		// (以降の構造体・インターフェース解決へ)
 		if st, _ := l.semaCtx.LookupStruct(node.Value); st != nil {
 			if st.IsGeneric() {
 				return nil
@@ -571,6 +560,9 @@ func (l *Lowerer) lowerStmt(stmt ast.Statement) {
 		l.lowerVarDecl(s)
 	case *ast.AssignStmt:
 		l.lowerAssignStmt(s)
+	// 追加: チャネル送信文のディスパッチ
+	case *ast.SendStmt:
+		l.lowerSendStmt(s)
 	case *ast.ExprStmt:
 		l.lowerExpr(s.Expr)
 	case *ast.BlockStmt:
@@ -606,6 +598,21 @@ func (l *Lowerer) lowerStmt(stmt ast.Statement) {
 	}
 }
 
+func (l *Lowerer) lowerSendStmt(ss *ast.SendStmt) {
+	chVal := l.lowerExpr(ss.Chan)
+	val := l.lowerExpr(ss.Value)
+
+	// 送信値がチャネル要素型と一致しない場合（例: func() 型チャネルに nil を送る場合など）に型変換
+	if ct, ok := chVal.Type().(*sema.ChanType); ok {
+		val = l.emitValueCoerce(val, ct.Elem)
+	}
+
+	l.emit(&hir.InstrChanSend{
+		Chan: chVal,
+		Val:  val,
+	})
+}
+
 func (l *Lowerer) lowerVarDecl(vd *ast.VarDecl) {
 	var targetType sema.Type = sema.TypeInt
 	if vd.Type != nil {
@@ -637,7 +644,6 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		return val
 	}
 	if iface, ok := targetType.(*sema.InterfaceType); ok {
-		// 追加: nil の場合は itab を作らずインターフェースのゼロ値を返す
 		if isNilValue(val) {
 			return l.defaultConstValue(iface)
 		}
@@ -650,6 +656,11 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		l.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName})
 		return dst
 	}
+	// 追加: nil を関数型（クロージャファットポインタ { i8*, i8* }）へ代入・送信する場合はゼロ値を返す
+	if _, isFunc := targetType.(*sema.FuncType); isFunc && isNilValue(val) {
+		return l.defaultConstValue(targetType)
+	}
+
 	dst := l.nextReg(targetType)
 	l.emit(&hir.InstrCast{Dst: dst, Val: val, ToType: targetType})
 	return dst
@@ -1881,6 +1892,7 @@ func (l *Lowerer) lowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
 	targetVal := l.lowerExpr(re.Expr)
 	targetType := targetVal.Type()
 
+	// 1. Future / Task の完了待機
 	if fut, isFut := targetType.(*sema.FutureType); isFut {
 		waitRes := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		l.emit(&hir.InstrTaskWait{Dst: waitRes, Task: targetVal})
@@ -1901,7 +1913,6 @@ func (l *Lowerer) lowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
 		}
 
 		// 多値戻り値: タプル構造体ポインタにキャストしてロード
-		// これにより既存の lowerAssignStmt の多値アンパック処理がそのまま適用可能
 		tupleType := &sema.TupleType{Types: fut.ReturnTypes}
 		tuplePtrType := &sema.PointerType{Base: tupleType}
 		typedBuf := l.nextReg(tuplePtrType)
@@ -1910,6 +1921,13 @@ func (l *Lowerer) lowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
 		loadedTuple := l.nextReg(tupleType)
 		l.emit(&hir.InstrLoad{Dst: loadedTuple, Ptr: typedBuf})
 		return loadedTuple
+	}
+
+	// 2. 追加: チャネルからの受信 (<-actions)
+	if ct, isChan := targetType.(*sema.ChanType); isChan {
+		dst := l.nextReg(ct.Elem)
+		l.emit(&hir.InstrChanRecv{Dst: dst, Chan: targetVal})
+		return dst
 	}
 
 	return targetVal
@@ -2019,9 +2037,9 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 	leftVal := l.lowerExpr(e.Left)
 	rightVal := l.lowerExpr(e.Right)
 
-	// 3. インターフェース型と nil の比較 (err == nil / err != nil)
-	// 構造体 { i8*, i8* } 全体ではなく、Index 0 のデータポインタを取り出して null と比較
+	// 3. インターフェース型および関数型と nil の比較
 	if e.Operator == "==" || e.Operator == "!=" {
+		// インターフェース型と nil
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
 			dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: 0})
@@ -2042,6 +2060,30 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 			}
 			cmpReg := l.nextReg(sema.TypeBool)
 			l.emit(&hir.InstrBinary{Dst: cmpReg, Op: op, L: dataPtr, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
+			return cmpReg
+		}
+
+		// 追加: 関数/クロージャ型 (act == nil / act != nil)
+		if _, isFunc := leftVal.Type().(*sema.FuncType); isFunc && isNilValue(rightVal) {
+			fnPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrExtractValue{Dst: fnPtr, Agg: leftVal, Index: 0})
+			op := hir.OpEq
+			if e.Operator == "!=" {
+				op = hir.OpNeq
+			}
+			cmpReg := l.nextReg(sema.TypeBool)
+			l.emit(&hir.InstrBinary{Dst: cmpReg, Op: op, L: fnPtr, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
+			return cmpReg
+		}
+		if _, isFunc := rightVal.Type().(*sema.FuncType); isFunc && isNilValue(leftVal) {
+			fnPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrExtractValue{Dst: fnPtr, Agg: rightVal, Index: 0})
+			op := hir.OpEq
+			if e.Operator == "!=" {
+				op = hir.OpNeq
+			}
+			cmpReg := l.nextReg(sema.TypeBool)
+			l.emit(&hir.InstrBinary{Dst: cmpReg, Op: op, L: fnPtr, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
 			return cmpReg
 		}
 	}
@@ -2146,6 +2188,28 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
 		case "make":
+			// make(chan T, cap) のチャネル生成
+			var chanTypeNode *ast.ChanType
+			if ct, ok := call.Args[0].(*ast.ChanType); ok {
+				chanTypeNode = ct
+			} else if ice, ok := call.Args[0].(*ast.ImplicitCastExpr); ok {
+				if ct, ok := ice.Expr.(*ast.ChanType); ok {
+					chanTypeNode = ct
+				}
+			}
+
+			if chanTypeNode != nil {
+				elemType := l.semaCtx.ResolveType(chanTypeNode.Elem)
+				resChanType := &sema.ChanType{Elem: elemType}
+				capVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+				if len(call.Args) >= 2 {
+					capVal = l.lowerExpr(call.Args[1])
+				}
+				dst := l.nextReg(resChanType)
+				l.emit(&hir.InstrChanMake{Dst: dst, ElemType: elemType, Cap: capVal})
+				return dst
+			}
+
 			if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
 				kType := l.semaCtx.ResolveType(mapTypeNode.Key)
 				vType := l.semaCtx.ResolveType(mapTypeNode.Value)
@@ -2184,6 +2248,13 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				t3 := l.nextReg(resSliceType)
 				l.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: capVal, Index: 2})
 				return t3
+			}
+
+		case "close":
+			if len(call.Args) > 0 {
+				chVal := l.lowerExpr(call.Args[0])
+				l.emit(&hir.InstrChanClose{Chan: chVal})
+				return nil
 			}
 
 		case "delete":
@@ -2232,7 +2303,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 	}
 
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// fmt パッケージのビルトイン処理 (Sprintf, Printf, Println, Print)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "fmt" {
 			switch mem.Field.Value {
 			case "Sprintf":
@@ -2260,7 +2330,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				args := make([]hir.Value, len(call.Args))
 				for i, arg := range call.Args {
 					val := l.lowerExpr(arg)
-					// インターフェース型 ({ i8*, i8* }) を printf の可変長引数に渡す際、データポインタ (i8*) を抽出
 					if _, isIface := val.Type().(*sema.InterfaceType); isIface {
 						dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 						l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
@@ -2319,13 +2388,11 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 			}
 		}
 
-		// time パッケージのビルトイン処理 (Sleep, Duration)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "time" {
 			switch mem.Field.Value {
 			case "Sleep":
 				if len(call.Args) > 0 {
 					durVal := l.lowerExpr(call.Args[0])
-					// ナノ秒からミリ秒へ換算 (ms = dur / 1000000)
 					msReg := l.nextReg(sema.TypeInt)
 					l.emit(&hir.InstrBinary{
 						Dst: msReg,
@@ -2333,7 +2400,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 						L:   durVal,
 						R:   &hir.ConstInt{Val: 1000000, Typ: sema.TypeInt},
 					})
-					// i64 から i32 へキャスト (OS Sleep API は DWORD/i32)
 					ms32 := l.nextReg(&sema.BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"})
 					l.emit(&hir.InstrCast{
 						Dst:    ms32,
@@ -2348,7 +2414,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
 			case "Duration":
-				// time.Duration(x) は int64 へのキャストと同等
 				if len(call.Args) > 0 {
 					return l.lowerExpr(call.Args[0])
 				}
@@ -2447,7 +2512,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 			targetFnName, targetFn, finalRecv, found := l.resolveMethodPath(st, sName, objPtr, mem.Field.Value)
 			if found && targetFn != nil {
 				recvArg := finalRecv
-				// 値レシーバの場合はポインタではなく構造体データを直接ロードして渡す
 				if !l.isPointerReceiver(targetFnName) {
 					if ptrType, ok := finalRecv.Type().(*sema.PointerType); ok {
 						loaded := l.nextReg(ptrType.Base)
@@ -2487,7 +2551,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				args := make([]hir.Value, len(call.Args))
 				for i, arg := range call.Args {
 					val := l.lowerExpr(arg)
-					// C-ABI Variadic Promotion (bool/byte -> i64, float32 -> double)
 					if targetFn.IsVariadic && i >= len(targetFn.ParamTypes) {
 						if val.Type() == sema.TypeBool || val.Type().LLVMType() == "i1" {
 							extReg := l.nextReg(sema.TypeInt)
@@ -2517,7 +2580,6 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 				if retType != sema.TypeVoid {
 					dst = l.nextReg(retType)
 				}
-				// 追加: CFunc の場合は実際の C シンボル名へ呼び出し先を差し替える
 				callee := canonicalName
 				if targetFn.IsCFunc && targetFn.CFuncTarget != "" {
 					callee = targetFn.CFuncTarget
@@ -2530,6 +2592,7 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 		}
 	}
 
+	// 間接関数ポインタ / クロージャ呼び出し (act() など)
 	fnFatPtr := l.lowerExpr(call.Function)
 	fnPtrReg := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	envPtrReg := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -2541,12 +2604,14 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 		args[i] = l.lowerExpr(arg)
 	}
 
-	ft := fnFatPtr.Type().(*sema.FuncType)
+	// ★修正: 万が一 fnFatPtr が FuncType でない場合でもパニックを回避して安全に処理
 	var retType sema.Type = sema.TypeVoid
-	if len(ft.ReturnTypes) == 1 {
-		retType = ft.ReturnTypes[0]
-	} else if len(ft.ReturnTypes) > 1 {
-		retType = &sema.TupleType{Types: ft.ReturnTypes}
+	if ft, ok := fnFatPtr.Type().(*sema.FuncType); ok {
+		if len(ft.ReturnTypes) == 1 {
+			retType = ft.ReturnTypes[0]
+		} else if len(ft.ReturnTypes) > 1 {
+			retType = &sema.TupleType{Types: ft.ReturnTypes}
+		}
 	}
 
 	var dst *hir.Reg = nil

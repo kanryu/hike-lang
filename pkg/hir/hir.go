@@ -343,7 +343,7 @@ func (i *InstrCallIface) String() string {
 }
 
 // -----------------------------------------------------------------------------
-// スレッドプール非同期処理用命令（追加）
+// スレッドプール非同期処理用命令
 // -----------------------------------------------------------------------------
 
 // InstrAsync はスレッドプールへのタスク投入命令
@@ -372,6 +372,58 @@ type InstrTaskWait struct {
 func (i *InstrTaskWait) Result() *Reg { return i.Dst }
 func (i *InstrTaskWait) String() string {
 	return fmt.Sprintf("  %s = task_wait %s", i.Dst, i.Task)
+}
+
+// -----------------------------------------------------------------------------
+// チャネル・並行キュー処理用命令（追加）
+// -----------------------------------------------------------------------------
+
+// InstrChanMake はチャネルの生成命令 (make(chan T, cap))
+type InstrChanMake struct {
+	Dst      *Reg
+	ElemType sema.Type
+	Cap      Value
+}
+
+func (i *InstrChanMake) Result() *Reg { return i.Dst }
+func (i *InstrChanMake) String() string {
+	capStr := "0"
+	if i.Cap != nil {
+		capStr = i.Cap.String()
+	}
+	return fmt.Sprintf("  %s = chan_make %s, cap: %s", i.Dst, i.ElemType.TypeName(), capStr)
+}
+
+// InstrChanSend はチャネルへの値送信命令 (ch <- val)
+type InstrChanSend struct {
+	Chan Value
+	Val  Value
+}
+
+func (i *InstrChanSend) Result() *Reg { return nil }
+func (i *InstrChanSend) String() string {
+	return fmt.Sprintf("  chan_send %s, %s %s", i.Chan, i.Val.Type().TypeName(), i.Val)
+}
+
+// InstrChanRecv はチャネルからの値受信命令 (<-ch)
+type InstrChanRecv struct {
+	Dst  *Reg
+	Chan Value
+}
+
+func (i *InstrChanRecv) Result() *Reg { return i.Dst }
+func (i *InstrChanRecv) String() string {
+	return fmt.Sprintf("  %s = chan_recv %s", i.Dst, i.Chan)
+}
+
+// InstrChanClose はチャネルのクローズ命令 (close(ch))
+type InstrChanClose struct {
+	Chan Value
+}
+
+func (i *InstrChanClose) Result() *Reg { return nil }
+func (i *InstrChanClose) String() string {
+	return fmt.Sprintf("  chan_close %s", i.Chan)
 }
 
 type InstrExtractValue struct {

@@ -1238,6 +1238,19 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	startTok := p.curToken
 	leftExpr := p.parseExpression(LOWEST)
 
+	// 追加: チャネル送信文 (channel <- value)
+	if p.peekTokenIs(token.ARROW) {
+		p.nextToken() // '<-' へ進む
+		arrowTok := p.curToken
+		p.nextToken() // 送信値の先頭へ進む
+		val := p.parseExpression(LOWEST)
+		return &ast.SendStmt{
+			Token: arrowTok,
+			Chan:  leftExpr,
+			Value: val,
+		}
+	}
+
 	if p.peekTokenIs(token.INC) || p.peekTokenIs(token.DEC) {
 		p.nextToken()
 		opTok := p.curToken
@@ -1352,14 +1365,14 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
 
-	// 追加: 前置受信演算子 (<-expr)
+	// 前置受信演算子 (<-expr)
 	case token.ARROW:
 		tok := p.curToken
 		p.nextToken()
 		right := p.parseExpression(PREFIX)
 		leftExp = &ast.ReceiveExpr{Token: tok, Expr: right}
 
-	// 追加: Async(fn) スレッドプール非同期タスク投入式
+	// Async(fn) スレッドプール非同期タスク投入式
 	case token.ASYNC:
 		tok := p.curToken
 		if !p.expectPeek(token.LPAREN) {
@@ -1427,6 +1440,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.FuncLit{Token: tok, Params: params, ReturnTypes: returnTypes, Body: body}
 
 	case token.MAP:
+		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
+			leftExp = expr
+		}
+
+	// ★追加: 式の文脈（make の引数等）で chan T 型式をパース可能にする
+	case token.CHAN:
 		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
 			leftExp = expr
 		}

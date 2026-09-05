@@ -26,14 +26,73 @@ func (t *BasicType) Size() int        { return t.ByteSize }
 
 var (
 	TypeInt     = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
+	TypeInt64   = &BasicType{Name: "int64", ByteSize: 8, LLVM: "i64"}
+	TypeInt32   = &BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"}
+	TypeInt16   = &BasicType{Name: "int16", ByteSize: 2, LLVM: "i16"}
+	TypeInt8    = &BasicType{Name: "int8", ByteSize: 1, LLVM: "i8"}
+	TypeUint    = &BasicType{Name: "uint", ByteSize: 8, LLVM: "i64"}
+	TypeUint64  = &BasicType{Name: "uint64", ByteSize: 8, LLVM: "i64"}
+	TypeUint32  = &BasicType{Name: "uint32", ByteSize: 4, LLVM: "i32"}
+	TypeUint16  = &BasicType{Name: "uint16", ByteSize: 2, LLVM: "i16"}
+	TypeUint8   = &BasicType{Name: "uint8", ByteSize: 1, LLVM: "i8"}
+	TypeUintptr = &BasicType{Name: "uintptr", ByteSize: 8, LLVM: "i64"}
 	TypeByte    = &BasicType{Name: "byte", ByteSize: 1, LLVM: "i8"}
 	TypeBool    = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
 	TypeFloat32 = &BasicType{Name: "float32", ByteSize: 4, LLVM: "float"}
 	TypeFloat64 = &BasicType{Name: "float64", ByteSize: 8, LLVM: "double"}
 	TypeString  = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"}
-	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"} // 追加: C文字列型 (char*)
+	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"} // C文字列型 (char*)
 	TypeVoid    = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
+
+// -----------------------------------------------------------------------------
+// 組み込み型テーブル（将来の int128 や SIMD 型もここへの追加だけで対応可能）
+// -----------------------------------------------------------------------------
+var BuiltinTypes = map[string]Type{
+	// 整数型
+	"int":     TypeInt,
+	"int64":   TypeInt64,
+	"int32":   TypeInt32,
+	"int16":   TypeInt16,
+	"int8":    TypeInt8,
+	"uint":    TypeUint,
+	"uint64":  TypeUint64,
+	"uint32":  TypeUint32,
+	"uint16":  TypeUint16,
+	"uint8":   TypeUint8,
+	"uintptr": TypeUintptr,
+	"byte":    TypeByte,
+
+	// 浮動小数点数型
+	"float":   TypeFloat64,
+	"float32": TypeFloat32,
+	"float64": TypeFloat64,
+
+	// その他基本型
+	"bool":    TypeBool,
+	"string":  TypeString,
+	"cstring": TypeCString,
+	"void":    TypeVoid,
+
+	// 将来の拡張枠（SIMD / 128bit 等）
+	// "int128":  &BasicType{Name: "int128", ByteSize: 16, LLVM: "i128"},
+	// "v256":    &BasicType{Name: "v256", ByteSize: 32, LLVM: "<8 x float>"},
+	// "v512":    &BasicType{Name: "v512", ByteSize: 64, LLVM: "<16 x float>"},
+}
+
+// IsBuiltinType は指定された識別子名が言語組み込み型であるかを高速判定する
+func IsBuiltinType(name string) bool {
+	if _, ok := BuiltinTypes[name]; ok {
+		return true
+	}
+	return name == "any" || name == "error"
+}
+
+// LookupBuiltinType は組み込み型マップから型を取得する
+func LookupBuiltinType(name string) (Type, bool) {
+	t, ok := BuiltinTypes[name]
+	return t, ok
+}
 
 type TypeParamType struct {
 	Name string
@@ -385,8 +444,8 @@ func collectTypeParamsFromNode(t ast.TypeExpr, out map[string]bool) {
 			collectTypeParamsFromNode(ta, out)
 		}
 		name := node.Name.Value
-		switch name {
-		case "int", "byte", "bool", "float32", "float64", "float", "string", "void", "any", "error":
+		// ★ 組み込み型なら型パラメータではない
+		if IsBuiltinType(name) {
 			return
 		}
 		if len(name) <= 2 && node.Package == nil {
@@ -423,30 +482,19 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return tp
 		}
 
-		switch name {
-		case "int":
-			return TypeInt
-		case "byte":
-			return TypeByte
-		case "bool":
-			return TypeBool
-		case "float32":
-			return TypeFloat32
-		case "float64", "float":
-			return TypeFloat64
-		case "string":
-			return TypeString
-		case "cstring":
-			return TypeCString
-		case "void":
-			return TypeVoid
-		case "any":
+		// ★ 組み込み型マップからO(1)で即座に解決
+		if builtinT, ok := LookupBuiltinType(name); ok {
+			return builtinT
+		}
+		if name == "any" {
 			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
-		case "error":
+		}
+		if name == "error" {
 			return c.Interfaces["error"]
 		}
 
 		if st, canonicalName := c.LookupStruct(name); st != nil {
+			// (以降のジェネリクス・構造体解決ロジックへ)
 			if st.IsGeneric() {
 				if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
 					return st
@@ -1036,6 +1084,26 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 		switch id.Value {
 		case "int":
 			return TypeInt
+		case "int64":
+			return TypeInt64
+		case "int32":
+			return TypeInt32
+		case "int16":
+			return TypeInt16
+		case "int8":
+			return TypeInt8
+		case "uint":
+			return TypeUint
+		case "uint64":
+			return TypeUint64
+		case "uint32":
+			return TypeUint32
+		case "uint16":
+			return TypeUint16
+		case "uint8":
+			return TypeUint8
+		case "uintptr":
+			return TypeUintptr
 		case "byte":
 			return TypeByte
 		case "bool":
@@ -1046,7 +1114,7 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 			return TypeFloat64
 		case "string":
 			return TypeString
-		case "cstring": // 追加
+		case "cstring":
 			return TypeCString
 		case "void":
 			return TypeVoid
@@ -1671,6 +1739,10 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			}
 		case *ast.ExprStmt:
 			walkExpr(st.Expr)
+		// 追加: チャネル送信文の子ノード走査
+		case *ast.SendStmt:
+			walkExpr(st.Chan)
+			walkExpr(st.Value)
 		case *ast.ReturnStmt:
 			for _, v := range st.Values {
 				walkExpr(v)
@@ -1766,7 +1838,7 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			if !params[name] && !locals[name] && !seen[name] {
 				switch name {
 				case "true", "false", "nil", "len", "cap", "append", "delete", "make",
-					"int", "byte", "string", "bool", "float32", "float64", "void", "any", "error":
+					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "bool", "float32", "float64", "void", "any", "error":
 					return
 				}
 				seen[name] = true
@@ -1829,6 +1901,9 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			}
 		case *ast.ExprStmt:
 			walkExpr(st.Expr)
+		case *ast.SendStmt:
+			walkExpr(st.Chan)
+			walkExpr(st.Value)
 		case *ast.ReturnStmt:
 			for _, v := range st.Values {
 				walkExpr(v)
@@ -1919,52 +1994,127 @@ func insertImplicitCasts(prog *ast.Program, ctx *Context) {
 	}
 }
 
-// 第4引数を currentFn *ast.FuncDecl から retTypes []ast.TypeExpr に変更
 func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, retTypes []ast.TypeExpr) {
 	if b == nil {
 		return
 	}
+
+	// ブロックスコープの分離（親スコープの locals をシャドーイング可能に複製）
+	blockLocals := make(map[string]Type)
+	for k, v := range locals {
+		blockLocals[k] = v
+	}
+
 	for _, stmt := range b.Statements {
 		switch s := stmt.(type) {
-		// ... VarDecl, AssignStmt 等はそのまま ...
+		case *ast.VarDecl:
+			var targetType Type = TypeInt
+			if s.Type != nil {
+				targetType = ctx.ResolveType(s.Type)
+			} else if s.Value != nil {
+				targetType = ctx.InferExprType(s.Value, blockLocals)
+			}
+			blockLocals[s.Name.Value] = targetType
+
+			if s.Value != nil {
+				s.Value = ctx.CoerceExpr(s.Value, targetType, blockLocals)
+				insertCastsInExpr(s.Value, blockLocals, ctx)
+			}
+
+		case *ast.AssignStmt:
+			isDefine := (s.Token.Type == token.DEFINE) || (s.Token.Literal == ":=") ||
+				(s.Token.Type == token.VAR) || (s.Token.Literal == "var") || (s.Type != nil)
+
+			if isDefine {
+				// 短縮変数定義 (:=) の場合: 右辺の推論型を左辺の変数として登録
+				for i, left := range s.Left {
+					var actualType Type = TypeInt
+					if s.Type != nil {
+						actualType = ctx.ResolveType(s.Type)
+					} else if i < len(s.Right) {
+						actualType = ctx.InferExprType(s.Right[i], blockLocals)
+					}
+
+					if ident, ok := left.(*ast.Identifier); ok {
+						blockLocals[ident.Value] = actualType
+					}
+
+					if i < len(s.Right) {
+						if s.Type != nil {
+							s.Right[i] = ctx.CoerceExpr(s.Right[i], actualType, blockLocals)
+						}
+						insertCastsInExpr(s.Right[i], blockLocals, ctx)
+					}
+				}
+			} else {
+				// 通常代入 (=) の場合: 既存変数の型に合わせて右辺をキャスト
+				for i, r := range s.Right {
+					if i < len(s.Left) {
+						targetType := ctx.InferExprType(s.Left[i], blockLocals)
+						s.Right[i] = ctx.CoerceExpr(r, targetType, blockLocals)
+					}
+					insertCastsInExpr(s.Right[i], blockLocals, ctx)
+				}
+				for _, l := range s.Left {
+					insertCastsInExpr(l, blockLocals, ctx)
+				}
+			}
+
+		case *ast.SendStmt:
+			insertCastsInExpr(s.Chan, blockLocals, ctx)
+			chanType := ctx.InferExprType(s.Chan, blockLocals)
+			if ct, ok := chanType.(*ChanType); ok {
+				s.Value = ctx.CoerceExpr(s.Value, ct.Elem, blockLocals)
+			}
+			insertCastsInExpr(s.Value, blockLocals, ctx)
 
 		case *ast.ReturnStmt:
 			for i, val := range s.Values {
-				if i < len(retTypes) { // retTypes を参照
+				if i < len(retTypes) {
 					expected := ctx.ResolveType(retTypes[i])
-					s.Values[i] = ctx.CoerceExpr(val, expected, locals)
+					s.Values[i] = ctx.CoerceExpr(val, expected, blockLocals)
 				}
 			}
 
 		case *ast.ExprStmt:
-			insertCastsInExpr(s.Expr, locals, ctx)
+			insertCastsInExpr(s.Expr, blockLocals, ctx)
 
 		case *ast.IfStmt:
 			if s.Init != nil {
 				if initBlock, ok := s.Init.(*ast.BlockStmt); ok {
-					insertCastsInBlock(initBlock, locals, ctx, retTypes)
+					insertCastsInBlock(initBlock, blockLocals, ctx, retTypes)
+				} else {
+					insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{s.Init}}, blockLocals, ctx, retTypes)
 				}
 			}
-			insertCastsInExpr(s.Condition, locals, ctx)
+			insertCastsInExpr(s.Condition, blockLocals, ctx)
 			if s.Consequence != nil {
-				insertCastsInBlock(s.Consequence, locals, ctx, retTypes)
+				insertCastsInBlock(s.Consequence, blockLocals, ctx, retTypes)
 			}
 			if s.Alternative != nil {
 				if altBlock, ok := s.Alternative.(*ast.BlockStmt); ok {
-					insertCastsInBlock(altBlock, locals, ctx, retTypes)
+					insertCastsInBlock(altBlock, blockLocals, ctx, retTypes)
+				} else if altIf, ok := s.Alternative.(*ast.IfStmt); ok {
+					insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{altIf}}, blockLocals, ctx, retTypes)
 				}
 			}
 
 		case *ast.ForStmt:
-			insertCastsInExpr(s.Cond, locals, ctx)
+			if s.Init != nil {
+				insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{s.Init}}, blockLocals, ctx, retTypes)
+			}
+			insertCastsInExpr(s.Cond, blockLocals, ctx)
+			if s.Post != nil {
+				insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{s.Post}}, blockLocals, ctx, retTypes)
+			}
 			if s.Body != nil {
-				insertCastsInBlock(s.Body, locals, ctx, retTypes)
+				insertCastsInBlock(s.Body, blockLocals, ctx, retTypes)
 			}
 
 		case *ast.ForRangeStmt:
-			insertCastsInExpr(s.X, locals, ctx)
+			insertCastsInExpr(s.X, blockLocals, ctx)
 			if s.Body != nil {
-				insertCastsInBlock(s.Body, locals, ctx, retTypes)
+				insertCastsInBlock(s.Body, blockLocals, ctx, retTypes)
 			}
 		}
 	}
@@ -2150,6 +2300,12 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 					return err
 				}
 			}
+		// 追加: チャネル送信文の妥当性検査
+		case *ast.SendStmt:
+			if err := checkExpr(st.Chan); err != nil {
+				return err
+			}
+			return checkExpr(st.Value)
 		case *ast.ExprStmt:
 			return checkExpr(st.Expr)
 		case *ast.BlockStmt:
@@ -2344,8 +2500,8 @@ func isTypeParamExpr(t ast.TypeExpr) bool {
 	case *ast.NamedType:
 		if node.Package == nil && len(node.TypeArgs) == 0 {
 			name := node.Name.Value
-			switch name {
-			case "int", "byte", "bool", "float32", "float64", "float", "string", "void", "any", "error":
+			// ★ 組み込み型なら型パラメータではない
+			if IsBuiltinType(name) {
 				return false
 			}
 			if len(name) <= 2 {

@@ -13,7 +13,7 @@ const (
 // OSネイティブAPIバインディング（libcフリー）
 // Windows: Kernel32.dll Sleep(DWORD dwMilliseconds)
 // System V (Linux/macOS): nanosleep システムコールラッパー
-cfunc os_sleep_ms(ms uint32)
+func os_sleep_ms(ms uint32)
 
 // Sleep は指定した期間、現在のスレッドをブロックして待機する
 func Sleep(d Duration) {
