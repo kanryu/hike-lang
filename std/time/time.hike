@@ -1,0 +1,36 @@
+package time
+
+// Duration は経過時間（ナノ秒単位）を表す型
+type Duration int64
+
+const (
+	Nanosecond  Duration = 1
+	Microsecond          = 1000 * Nanosecond
+	Millisecond          = 1000 * Microsecond
+	Second               = 1000 * Millisecond
+)
+
+// OSネイティブAPIバインディング（libcフリー）
+// Windows: Kernel32.dll Sleep(DWORD dwMilliseconds)
+// System V (Linux/macOS): nanosleep システムコールラッパー
+cfunc os_sleep_ms(ms uint32)
+
+// Sleep は指定した期間、現在のスレッドをブロックして待機する
+func Sleep(d Duration) {
+	if d <= 0 {
+		return
+	}
+
+	// ナノ秒からミリ秒へ丸め計算
+	ms := uint32(d / Millisecond)
+	if ms == 0 && d > 0 {
+		ms = 1 // 1ms未満の正の値は最低1ms待機
+	}
+
+	os_sleep_ms(ms)
+}
+
+// Since は指定した時刻からの経過時間を返す（必要に応じた拡張用）
+func (d Duration) Milliseconds() int64 {
+	return int64(d / Millisecond)
+}

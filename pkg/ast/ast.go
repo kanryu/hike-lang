@@ -230,6 +230,24 @@ type PrefixExpr struct {
 func (pe *PrefixExpr) expressionNode()      {}
 func (pe *PrefixExpr) TokenLiteral() string { return pe.Token.Literal }
 
+// ReceiveExpr はチャネルまたは Future からの受信用式 (<-expr) を表すノード
+type ReceiveExpr struct {
+	Token token.Token // '<-' トークン
+	Expr  Expression
+}
+
+func (re *ReceiveExpr) expressionNode()      {}
+func (re *ReceiveExpr) TokenLiteral() string { return re.Token.Literal }
+
+// AsyncExpr は Async(fn) によるスレッドプール非同期タスク投入式を表すノード
+type AsyncExpr struct {
+	Token token.Token // 'Async' トークン
+	Fn    Expression  // 実行対象の関数（FuncLit, Identifier, CallExpr 等）
+}
+
+func (ae *AsyncExpr) expressionNode()      {}
+func (ae *AsyncExpr) TokenLiteral() string { return ae.Token.Literal }
+
 type BinaryExpr struct {
 	Token    token.Token
 	Left     Expression
@@ -427,6 +445,26 @@ type MapType struct {
 func (mt *MapType) typeExprNode()        {}
 func (mt *MapType) expressionNode()      {}
 func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
+
+// ChanType は Go スタイルのチャネル型を表すノード
+type ChanType struct {
+	Token token.Token
+	Elem  TypeExpr
+}
+
+func (ct *ChanType) typeExprNode()        {}
+func (ct *ChanType) expressionNode()      {}
+func (ct *ChanType) TokenLiteral() string { return ct.Token.Literal }
+
+// FutureType は Async(fn) が生成するスレッドプール待機用ハンドル型を表す内部型ノード
+type FutureType struct {
+	Token       token.Token
+	ReturnTypes []TypeExpr
+}
+
+func (ft *FutureType) typeExprNode()        {}
+func (ft *FutureType) expressionNode()      {}
+func (ft *FutureType) TokenLiteral() string { return ft.Token.Literal }
 
 type TypeParam struct {
 	Token token.Token

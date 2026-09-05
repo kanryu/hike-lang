@@ -740,7 +740,6 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.nextToken()
 			for {
 				firstType := p.parseTypeExpr()
-				// "x int" のように識別子が先行していた場合は後続の型を採用
 				if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.LBRACKET) || p.peekTokenIs(token.MAP) || p.peekTokenIs(token.FUNC) {
 					p.nextToken()
 					actualType := p.parseTypeExpr()
@@ -793,6 +792,12 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		p.nextToken()
 		valType := p.parseTypeExpr()
 		return &ast.MapType{Token: tok, Key: keyType, Value: valType}
+	} else if p.curTokenIs(token.CHAN) {
+		// 追加: chan T チャネル型のパース
+		tok := p.curToken
+		p.nextToken() // 'chan' を消費して要素型へ
+		elem := p.parseTypeExpr()
+		return &ast.ChanType{Token: tok, Elem: elem}
 	}
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
@@ -1346,6 +1351,26 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.NilLiteral{Token: p.curToken}
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
+
+	// 追加: 前置受信演算子 (<-expr)
+	case token.ARROW:
+		tok := p.curToken
+		p.nextToken()
+		right := p.parseExpression(PREFIX)
+		leftExp = &ast.ReceiveExpr{Token: tok, Expr: right}
+
+	// 追加: Async(fn) スレッドプール非同期タスク投入式
+	case token.ASYNC:
+		tok := p.curToken
+		if !p.expectPeek(token.LPAREN) {
+			return nil
+		}
+		p.nextToken()
+		fn := p.parseExpression(LOWEST)
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		leftExp = &ast.AsyncExpr{Token: tok, Fn: fn}
 
 	case token.FUNC:
 		tok := p.curToken

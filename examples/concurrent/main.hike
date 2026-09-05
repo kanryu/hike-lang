@@ -1,0 +1,78 @@
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+// 通常の関数（async/await等の色づけ汚染なし）
+func fetchRemoteData(endpoint string, delayMs int) (string, error) {
+	fmt.Printf("[Worker] リモートデータ取得中: %s\n", endpoint)
+	time.Sleep(time.Duration(delayMs) * time.Millisecond) // 短い待機処理
+	return fmt.Sprintf("Payload from %s", endpoint), nil
+}
+
+func computeHash(seed int) (int, error) {
+	fmt.Println("[Worker] ハッシュ計算を開始...")
+	time.Sleep(150 * time.Millisecond) // 150msの計算ラグ
+	return seed * 997, nil
+}
+
+func main() {
+	fmt.Println("=== Hike スレッドプール非同期コンソール ===")
+
+	// -------------------------------------------------------------
+	// 1. 直列待機パターン
+	// `<-Async(...)` がその場でメインスレッドを待機（ブロック）させる
+	// -------------------------------------------------------------
+	fmt.Println("\n--- 1. 単一タスクの直列待機 ---")
+	fmt.Println("[Main] スレッドプールへタスクを投入...")
+
+	data, err := <-Async(func() (string, error) {
+		return fetchRemoteData("https://api.internal/config", 80)
+	})
+
+	if err != nil {
+		fmt.Printf("[Main] エラー発生: %v\n", err)
+		return
+	}
+	fmt.Printf("[Main] 受領完了: %s\n", data)
+
+	// -------------------------------------------------------------
+	// 2. 並行実行と合流待機パターン（メインスレッドの待機）
+	// ハンドルを保持してバックグラウンドで並行稼働させ、最後に合流待機
+	// -------------------------------------------------------------
+	fmt.Println("\n--- 2. 複数タスクの並行投入と合流待機 ---")
+
+	// スレッドプールに2つのタスクを投入（50〜250ms程度で並行処理）
+	task1 := Async(func() (string, error) {
+		return fetchRemoteData("https://api.internal/heavy-assets", 250)
+	})
+
+	task2 := Async(func() (int, error) {
+		return computeHash(42)
+	})
+
+	// メインスレッド側で短時間のアニメーションや軽量処理をシミュレート
+	fmt.Println("[Main] バックグラウンドタスク稼働中...")
+	for i := 1; i <= 3; i++ {
+		time.Sleep(50 * time.Millisecond)
+		fmt.Printf("[Main] メインループ進行中 (%d/3)...\n", i)
+	}
+
+	// メインスレッドの同期待ち（Join）
+	fmt.Println("[Main] 全タスクの完了を待機しています...")
+
+	res1, err1 := <-task1
+	res2, err2 := <-task2
+
+	if err1 != nil || err2 != nil {
+		fmt.Println("[Main] タスクのいずれかでエラーが発生しました")
+		return
+	}
+
+	fmt.Printf("[Main] タスク1結果: %s\n", res1)
+	fmt.Printf("[Main] タスク2結果: %d\n", res2)
+
+	fmt.Println("\n=== 全タスク完了・プロセス正常終了 ===")
+}

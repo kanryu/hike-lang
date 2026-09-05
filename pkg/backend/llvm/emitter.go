@@ -8,12 +8,18 @@ import (
 	"hikec-go/pkg/sema"
 )
 
+type asyncThunk struct {
+	name        string
+	retLLVMType string
+}
+
 type Emitter struct {
 	prog         *hir.Program
 	semaCtx      *sema.Context
 	targetTriple string
 	b            strings.Builder
 	regCount     int
+	asyncThunks  map[string]*asyncThunk // 戻り値型ごとのサンク関数キャッシュ
 }
 
 func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter {
@@ -24,6 +30,7 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter
 		prog:         prog,
 		semaCtx:      semaCtx,
 		targetTriple: targetTriple,
+		asyncThunks:  make(map[string]*asyncThunk),
 	}
 }
 
@@ -40,6 +47,7 @@ func (e *Emitter) Emit() string {
 	e.emitGlobals()
 	e.emitItabs()
 	e.emitFunctions()
+	e.emitAsyncThunks()
 	return e.b.String()
 }
 
@@ -119,7 +127,16 @@ func (e *Emitter) emitItabs() {
 				retTypeStr = m.MethodType.ReturnTypes[0].LLVMType()
 			}
 			rawParams := []string{"i8*"}
-			concreteParams := []string{fmt.Sprintf("%%struct.%s*", sName)}
+
+			// 構造体が存在する場合のみ %struct.xxx* とし、それ以外は LLVMType を採用
+			concreteRecv := fmt.Sprintf("%%struct.%s*", sName)
+			if e.semaCtx != nil {
+				if st, _ := e.semaCtx.LookupStruct(sName); st == nil {
+					concreteRecv = itab.ConcreteType.LLVMType()
+				}
+			}
+			concreteParams := []string{concreteRecv}
+
 			for _, pt := range m.MethodType.ParamTypes {
 				rawParams = append(rawParams, pt.LLVMType())
 				concreteParams = append(concreteParams, pt.LLVMType())
@@ -140,7 +157,6 @@ func (e *Emitter) emitItabs() {
 }
 
 func (e *Emitter) emitFunctions() {
-	// モジュール内で実際に call されている外部シンボルを収集
 	referencedExterns := make(map[string]bool)
 	for _, fn := range e.prog.Functions {
 		for _, bb := range fn.Blocks {
@@ -154,13 +170,14 @@ func (e *Emitter) emitFunctions() {
 
 	for _, fn := range e.prog.Functions {
 		if fn.IsExtern {
+			// ランタイムで定義・提供されるシンボルは重複定義を避けるため declare をスキップ
 			switch fn.Name {
-			case "malloc", "free", "calloc", "strcmp", "strlen", "memcpy", "memcmp", "printf":
+			case "malloc", "free", "calloc", "strcmp", "strlen", "memcpy", "memcmp", "printf",
+				"QueueUserWorkItem", "CreateEventA", "SetEvent", "WaitForSingleObject", "CloseHandle", "Sleep",
+				"os_sleep_ms", "c_os_sleep_ms":
 				continue
 			}
 
-			// 追加: cfunc エイリアス宣言で、かつ Hike 内部から一度も call されていない外部 C シンボルは出力しない
-			// （Goアセンブリ側から直接呼ばれるため、LLVM IR 側に UNDEF シンボルを残さない安全策）
 			if fn.IsCFunc && !referencedExterns[fn.Name] {
 				continue
 			}
@@ -241,6 +258,84 @@ func (e *Emitter) isVariadicFunc(name string) (bool, string) {
 		return true, fmt.Sprintf("(%s)", strings.Join(paramTypes, ", "))
 	}
 	return false, ""
+}
+
+func (e *Emitter) getRetSize(retTypes []sema.Type) int64 {
+	if len(retTypes) == 0 {
+		return 0
+	}
+	if len(retTypes) == 1 {
+		sz := int64(retTypes[0].Size())
+		if sz <= 0 {
+			sz = 8
+		}
+		return sz
+	}
+	sz := int64(0)
+	for _, rt := range retTypes {
+		s := int64(rt.Size())
+		if s <= 0 {
+			s = 8
+		}
+		sz += s
+	}
+	return sz
+}
+
+func (e *Emitter) getRetLLVMType(retTypes []sema.Type) string {
+	if len(retTypes) == 0 {
+		return "void"
+	}
+	if len(retTypes) == 1 {
+		return retTypes[0].LLVMType()
+	}
+	types := make([]string, len(retTypes))
+	for i, rt := range retTypes {
+		types[i] = rt.LLVMType()
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+}
+
+func (e *Emitter) getOrCreateAsyncThunk(retLLVMType string) string {
+	if thunk, ok := e.asyncThunks[retLLVMType]; ok {
+		return thunk.name
+	}
+	name := fmt.Sprintf("__hike_async_thunk_%d", len(e.asyncThunks)+1)
+	e.asyncThunks[retLLVMType] = &asyncThunk{
+		name:        name,
+		retLLVMType: retLLVMType,
+	}
+	return name
+}
+
+func (e *Emitter) emitAsyncThunks() {
+	if len(e.asyncThunks) == 0 {
+		return
+	}
+	e.b.WriteString("; --- Async Worker Thunks ---\n")
+	for _, thunk := range e.asyncThunks {
+		e.b.WriteString(fmt.Sprintf("define internal void @%s(i8* %%wrapper_env, i8* %%buf) {\n", thunk.name))
+		e.b.WriteString("entry:\n")
+		e.b.WriteString("  %env_arr = bitcast i8* %wrapper_env to i8**\n")
+		e.b.WriteString("  %p_fn = getelementptr inbounds i8*, i8** %env_arr, i64 0\n")
+		e.b.WriteString("  %fn_raw = load i8*, i8** %p_fn\n")
+		e.b.WriteString("  %p_env = getelementptr inbounds i8*, i8** %env_arr, i64 1\n")
+		e.b.WriteString("  %real_env = load i8*, i8** %p_env\n\n")
+
+		if thunk.retLLVMType == "void" {
+			e.b.WriteString("  %typed_fn = bitcast i8* %fn_raw to void (i8*)*\n")
+			e.b.WriteString("  call void %typed_fn(i8* %real_env)\n")
+		} else {
+			e.b.WriteString(fmt.Sprintf("  %%typed_fn = bitcast i8* %%fn_raw to %s (i8*)*\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%res = call %s %%typed_fn(i8* %%real_env)\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%typed_buf = bitcast i8* %%buf to %s*\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  store %s %%res, %s* %%typed_buf\n", thunk.retLLVMType, thunk.retLLVMType))
+		}
+
+		e.b.WriteString("\n  call void @free(i8* %wrapper_env)\n")
+		e.b.WriteString("  ret void\n")
+		e.b.WriteString("}\n\n")
+	}
 }
 
 func (e *Emitter) emitInstruction(inst hir.Instruction) {
@@ -342,6 +437,50 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 
 	case *hir.InstrCallIface:
 		e.emitCallIface(i)
+
+	// 追加: スレッドプールへの非同期タスク投入
+	case *hir.InstrAsync:
+		retLLVM := e.getRetLLVMType(i.RetTypes)
+		retSize := e.getRetSize(i.RetTypes)
+		thunkName := e.getOrCreateAsyncThunk(retLLVM)
+
+		rawEnv := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 16)\n", rawEnv))
+		arrEnv := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i8**\n", arrEnv, rawEnv))
+
+		pFn := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i64 0\n", pFn, arrEnv))
+		fnVal := e.formatVal(i.FnPtr)
+		if i.FnPtr.Type().LLVMType() != "i8*" {
+			castFn := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castFn, i.FnPtr.Type().LLVMType(), fnVal))
+			fnVal = castFn
+		}
+		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", fnVal, pFn))
+
+		pEnv := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i64 1\n", pEnv, arrEnv))
+		envVal := e.formatVal(i.EnvPtr)
+		if i.EnvPtr.Type().LLVMType() != "i8*" {
+			castEnv := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
+			envVal = castEnv
+		}
+		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", envVal, pEnv))
+
+		thunkPtr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast void (i8*, i8*)* @%s to i8*\n", thunkPtr, thunkName))
+		taskPtr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_task* @__hike_async(i8* %s, i8* %s, i64 %d)\n",
+			taskPtr, thunkPtr, rawEnv, retSize))
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__hike_task* %s to i8*\n", i.Dst, taskPtr))
+
+	// 追加: タスクの完了待機とバッファ取得
+	case *hir.InstrTaskWait:
+		taskPtr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %%struct.__hike_task*\n", taskPtr, e.formatVal(i.Task)))
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @__hike_task_wait(%%struct.__hike_task* %s)\n", i.Dst, taskPtr))
 
 	case *hir.InstrExtractValue:
 		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n",

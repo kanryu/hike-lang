@@ -191,6 +191,11 @@ func (l *Lexer) NextToken() token.Token {
 			} else {
 				tok = token.Token{Type: token.SHL, Literal: "<<", Line: startLine, Col: startCol}
 			}
+		} else if l.peekChar() == '-' {
+			// 追加: <- (ARROW) 演算子の認識
+			ch := l.ch
+			l.readChar()
+			tok = token.Token{Type: token.ARROW, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
 		} else if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()

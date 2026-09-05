@@ -42,6 +42,8 @@ const (
 	SHL   = "<<"
 	SHR   = ">>"
 
+	ARROW = "<-" // 追加: 受信・チャネル演算子
+
 	INC             = "++"
 	DEC             = "--"
 	PLUS_ASSIGN     = "+="
@@ -73,8 +75,10 @@ const (
 	IMPORT      = "IMPORT"
 	FUNC        = "FUNC"
 	CFUNC       = "CFUNC"
-	PASSTHROUGH = "PASSTHROUGH" // 追加
+	PASSTHROUGH = "PASSTHROUGH"
 	MAP         = "MAP"
+	CHAN        = "CHAN"  // 追加: チャネル型用
+	ASYNC       = "ASYNC" // 追加: スレッドプール非同期キーワード
 	RETURN      = "RETURN"
 	TYPE        = "TYPE"
 	STRUCT      = "STRUCT"
@@ -103,13 +107,16 @@ var keywords = map[string]TokenType{
 	"import":      IMPORT,
 	"func":        FUNC,
 	"cfunc":       CFUNC,
-	"passthrough": PASSTHROUGH, // 追加
+	"passthrough": PASSTHROUGH,
 	"var":         VAR,
 	"const":       CONST,
 	"type":        TYPE,
 	"struct":      STRUCT,
 	"interface":   INTERFACE,
 	"map":         MAP,
+	"chan":        CHAN,  // 追加
+	"Async":       ASYNC, // 追加: Hike非同期呼び出し構文用
+	"async":       ASYNC, // 追加
 	"if":          IF,
 	"else":        ELSE,
 	"for":         FOR,

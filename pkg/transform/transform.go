@@ -38,7 +38,7 @@ func (t *Transformer) Transform() (*ast.Program, error) {
 				continue
 			}
 			t.transformFuncDecl(fnDecl)
-		} else if cfnDecl, ok := decl.(*ast.CFuncDecl); ok && cfnDecl.Body != nil { // 追加: cfunc 手書きブロックの走査
+		} else if cfnDecl, ok := decl.(*ast.CFuncDecl); ok && cfnDecl.Body != nil {
 			t.transformCFuncDecl(cfnDecl)
 		}
 	}
@@ -210,6 +210,16 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 		expr.Right = t.transformExpr(expr.Right)
 		return expr
 
+	// 追加: 受信演算子 (<-expr) の走査
+	case *ast.ReceiveExpr:
+		expr.Expr = t.transformExpr(expr.Expr)
+		return expr
+
+	// 追加: Async(fn) 式の走査
+	case *ast.AsyncExpr:
+		expr.Fn = t.transformExpr(expr.Fn)
+		return expr
+
 	case *ast.IndexExpr:
 		expr.Left = t.transformExpr(expr.Left)
 		expr.Index = t.transformExpr(expr.Index)
@@ -275,7 +285,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 	var methodReceiverExpr ast.Expression
 	var methodReceiverIsPointer bool
 
-	// 1. 明示的型引数を持つジェネリクス適用: fn[int, string](...)
 	if genExpr, ok := call.Function.(*ast.GenericInstExpr); ok {
 		funcToken = genExpr.Token
 		funcName = t.resolveTargetName(genExpr.Left)
@@ -283,7 +292,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			explicitTypeArgs = append(explicitTypeArgs, t.semaCtx.ResolveType(tArg))
 		}
 	} else if idxExpr, ok := call.Function.(*ast.IndexExpr); ok {
-		// 単一型引数インデックス形式: Min[int](...), slices.Filter[int](...)
 		funcToken = idxExpr.Token
 		funcName = t.resolveTargetName(idxExpr.Left)
 		if tExpr := exprToTypeExpr(idxExpr.Index); tExpr != nil {
@@ -297,7 +305,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			funcToken = id.Token
 		}
 	} else if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// A. レシーバ式を持つメソッド呼び出し (例: acc.Get(), entry.SetValue("Omega"), stack.Len())
 		objTypeExpr := t.inferExprTypeExpr(mem.Object)
 		if objTypeExpr != nil {
 			structName, typeArgs, isPtr := extractStructAndTypeArgs(objTypeExpr)
@@ -319,8 +326,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			}
 		}
 
-		// B. パッケージ修飾関数呼び出し (例: slices.Filter)
-		// ローカル変数でない場合のみパッケージ修飾とみなす
 		if funcName == "" {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				if _, isLocalVar := t.localTypes[pkgId.Value]; !isLocalVar {
@@ -334,14 +339,12 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 		}
 	}
 
-	// 単相化と関数名の書き換え
 	if funcName != "" {
 		if genTemplate := t.findGenericTemplate(funcName); genTemplate != nil {
 			var typeArgs []sema.Type
 			if len(explicitTypeArgs) > 0 {
 				typeArgs = explicitTypeArgs
 			} else {
-				// 引数からの型推論
 				for i, arg := range call.Args {
 					if i < len(genTemplate.Params) {
 						argType := t.semaCtx.InferExprType(arg, nil)
@@ -354,7 +357,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 				specName := t.getOrCreateSpecializedFunc(funcName, typeArgs)
 				call.Function = &ast.Identifier{Token: funcToken, Value: specName}
 
-				// メソッド呼び出しの場合は脱糖関数 (specName) の第1引数としてレシーバを注入
 				if isMethodCall && methodReceiverExpr != nil {
 					receiverArg := methodReceiverExpr
 					if genTemplate.Receiver != nil {
@@ -404,7 +406,6 @@ func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 		return nil
 	}
 
-	// 構造体メソッド形式 (例: "Entry_SetValue", "Accumulator_Add") の探索
 	if strings.Contains(name, "_") {
 		parts := strings.SplitN(name, "_", 2)
 		structName := parts[0]
@@ -478,7 +479,6 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 		if st, _ := t.semaCtx.LookupStruct(recvTypeName); st != nil && len(st.TypeParams) > 0 {
 			typeParamNames = append(typeParamNames, st.TypeParams...)
 		} else {
-			// レシーバの型ノードから直接型引数名 (K, V 等) を補完
 			if named := getNamedTypeFromExpr(template.Receiver.Type); named != nil {
 				for _, tArg := range named.TypeArgs {
 					if id, ok := tArg.(*ast.NamedType); ok {
@@ -616,8 +616,6 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 				TypeArgs: newArgs,
 			})
 			if resolvedType != nil && resolvedType != sema.TypeVoid {
-				// 具象構造体 (Stack__string 等) に解決された後は、TypeArgs を nil にして
-				// sema が「非ジェネリック型に型引数が付与されている」と誤判定するのを防止する
 				return &ast.NamedType{
 					Token:    node.Token,
 					Package:  node.Package,
@@ -645,6 +643,24 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 			Token: node.Token,
 			Key:   t.substituteAstType(node.Key, typeMap, orderedTypeArgs),
 			Value: t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
+		}
+
+	// 追加: チャネル型の置換
+	case *ast.ChanType:
+		return &ast.ChanType{
+			Token: node.Token,
+			Elem:  t.substituteAstType(node.Elem, typeMap, orderedTypeArgs),
+		}
+
+	// 追加: Future型の置換
+	case *ast.FutureType:
+		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
+		for i, rt := range node.ReturnTypes {
+			newReturns[i] = t.substituteAstType(rt, typeMap, orderedTypeArgs)
+		}
+		return &ast.FutureType{
+			Token:       node.Token,
+			ReturnTypes: newReturns,
 		}
 
 	case *ast.FuncType:
@@ -748,7 +764,6 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 		return nil
 	}
 
-	// 0. 式ノードとして現れる型式 (例: make([]T, ...) の []T や make(map[K]V) の map[K]V)
 	if te, ok := e.(ast.TypeExpr); ok {
 		if substituted := t.substituteAstType(te, typeMap, orderedTypeArgs); substituted != nil {
 			if expr, okExpr := substituted.(ast.Expression); okExpr {
@@ -771,6 +786,21 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 			Operator: node.Operator,
 			Right:    t.substituteAstExpr(node.Right, typeMap, orderedTypeArgs),
 		}
+
+	// 追加: 受信演算子 (<-expr) の複製置換
+	case *ast.ReceiveExpr:
+		return &ast.ReceiveExpr{
+			Token: node.Token,
+			Expr:  t.substituteAstExpr(node.Expr, typeMap, orderedTypeArgs),
+		}
+
+	// 追加: Async(fn) 式の複製置換
+	case *ast.AsyncExpr:
+		return &ast.AsyncExpr{
+			Token: node.Token,
+			Fn:    t.substituteAstExpr(node.Fn, typeMap, orderedTypeArgs),
+		}
+
 	case *ast.CallExpr:
 		newArgs := make([]ast.Expression, len(node.Args))
 		for i, arg := range node.Args {
@@ -1118,7 +1148,6 @@ func extractStructAndTypeArgs(typ ast.TypeExpr) (structName string, typeArgs []a
 			sName = named.Package.Value + "_" + sName
 		}
 
-		// 1. Stack[string] 形式
 		if idx := strings.Index(sName, "["); idx != -1 && strings.HasSuffix(sName, "]") {
 			base := sName[:idx]
 			argsStr := sName[idx+1 : len(sName)-1]
@@ -1129,7 +1158,6 @@ func extractStructAndTypeArgs(typ ast.TypeExpr) (structName string, typeArgs []a
 			return base, args, false
 		}
 
-		// 2. Stack__string 形式 (マングル名)
 		if strings.Contains(sName, "__") {
 			parts := strings.SplitN(sName, "__", 2)
 			base := parts[0]
@@ -1146,7 +1174,6 @@ func extractStructAndTypeArgs(typ ast.TypeExpr) (structName string, typeArgs []a
 			return base, args, false
 		}
 
-		// 3. TypeArgs スライスを直接保持している形式
 		if len(named.TypeArgs) > 0 {
 			return sName, named.TypeArgs, false
 		}

@@ -481,14 +481,15 @@ func (l *Lowerer) lowerCFunc(cfn *ast.CFuncDecl) {
 		}
 
 		hirFn := &hir.Function{
-			Name:        targetCName,
-			Params:      params,
-			ReturnTypes: returnTypes,
-			Blocks:      nil,
-			IsVariadic:  false,
-			IsExtern:    true,
-			IsCFunc:     true,
-			CFuncTarget: targetCName,
+			Name:          targetCName,
+			Params:        params,
+			ReturnTypes:   returnTypes,
+			Blocks:        nil,
+			IsVariadic:    false,
+			IsExtern:      true,
+			IsCFunc:       true,
+			IsPassThrough: cfn.IsPassThrough, // 追加: passthrough 修飾子の伝播
+			CFuncTarget:   targetCName,
 		}
 		l.hirProg.Functions = append(l.hirProg.Functions, hirFn)
 		return
@@ -502,14 +503,15 @@ func (l *Lowerer) lowerCFunc(cfn *ast.CFuncDecl) {
 	l.escapedVars = sema.CollectAllCapturesInBlock(cfn.Body)
 
 	hirFn := &hir.Function{
-		Name:        targetCName,
-		Params:      []*hir.Reg{},
-		ReturnTypes: returnTypes,
-		Blocks:      []*hir.BasicBlock{},
-		IsVariadic:  false,
-		IsExtern:    false,
-		IsCFunc:     true,
-		CFuncTarget: targetCName,
+		Name:          targetCName,
+		Params:        []*hir.Reg{},
+		ReturnTypes:   returnTypes,
+		Blocks:        []*hir.BasicBlock{},
+		IsVariadic:    false,
+		IsExtern:      false,
+		IsCFunc:       true,
+		IsPassThrough: cfn.IsPassThrough, // 追加: passthrough 修飾子の伝播
+		CFuncTarget:   targetCName,
 	}
 	l.curFunc = hirFn
 	l.hirProg.Functions = append(l.hirProg.Functions, hirFn)
@@ -635,6 +637,10 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		return val
 	}
 	if iface, ok := targetType.(*sema.InterfaceType); ok {
+		// 追加: nil の場合は itab を作らずインターフェースのゼロ値を返す
+		if isNilValue(val) {
+			return l.defaultConstValue(iface)
+		}
 		itabName := ""
 		if !iface.IsAny() {
 			itabDef := l.getOrCreateItab(val.Type(), iface)
@@ -1489,6 +1495,10 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 			return val
 		}
 		if iface, ok := targetT.(*sema.InterfaceType); ok {
+			// 追加: nil をインターフェースに変換する場合は itab を作らずゼロ値を返す
+			if isNilValue(val) {
+				return l.defaultConstValue(iface)
+			}
 			itabName := ""
 			if !iface.IsAny() {
 				itabDef := l.getOrCreateItab(val.Type(), iface)
@@ -1729,6 +1739,20 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.MemberExpr:
 		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
+			// 追加: time パッケージ定数の即時解決（lowerLValue への脱落を確実に阻止）
+			if pkgId.Value == "time" {
+				switch e.Field.Value {
+				case "Nanosecond":
+					return &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+				case "Microsecond":
+					return &hir.ConstInt{Val: 1000, Typ: sema.TypeInt}
+				case "Millisecond":
+					return &hir.ConstInt{Val: 1000000, Typ: sema.TypeInt}
+				case "Second":
+					return &hir.ConstInt{Val: 1000000000, Typ: sema.TypeInt}
+				}
+			}
+
 			qualified := pkgId.Value + "_" + e.Field.Value
 			if c, ok := l.semaCtx.Constants[qualified]; ok {
 				return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
@@ -1811,9 +1835,84 @@ func (l *Lowerer) lowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.FuncLit:
 		return l.lowerFuncLit(e)
+
+	case *ast.AsyncExpr:
+		return l.lowerAsyncExpr(e)
+
+	case *ast.ReceiveExpr:
+		return l.lowerReceiveExpr(e)
 	}
 
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+}
+
+func (l *Lowerer) lowerAsyncExpr(ae *ast.AsyncExpr) hir.Value {
+	fnVal := l.lowerExpr(ae.Fn)
+
+	var fnPtr hir.Value
+	var envPtr hir.Value
+	var retTypes []sema.Type
+
+	if ft, ok := fnVal.Type().(*sema.FuncType); ok {
+		retTypes = ft.ReturnTypes
+		fnPtrReg := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		envPtrReg := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		l.emit(&hir.InstrExtractValue{Dst: fnPtrReg, Agg: fnVal, Index: 0})
+		l.emit(&hir.InstrExtractValue{Dst: envPtrReg, Agg: fnVal, Index: 1})
+		fnPtr = fnPtrReg
+		envPtr = envPtrReg
+	} else {
+		fnPtr = fnVal
+		envPtr = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+	}
+
+	futureType := &sema.FutureType{ReturnTypes: retTypes}
+	futReg := l.nextReg(futureType)
+	l.emit(&hir.InstrAsync{
+		Dst:      futReg,
+		FnPtr:    fnPtr,
+		EnvPtr:   envPtr,
+		RetTypes: retTypes,
+	})
+	return futReg
+}
+
+func (l *Lowerer) lowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
+	targetVal := l.lowerExpr(re.Expr)
+	targetType := targetVal.Type()
+
+	if fut, isFut := targetType.(*sema.FutureType); isFut {
+		waitRes := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		l.emit(&hir.InstrTaskWait{Dst: waitRes, Task: targetVal})
+
+		// 戻り値なし (void)
+		if len(fut.ReturnTypes) == 0 {
+			return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+		}
+
+		// 単一戻り値: バッファポインタから直接ロード
+		if len(fut.ReturnTypes) == 1 {
+			retType := fut.ReturnTypes[0]
+			typedPtr := l.nextReg(&sema.PointerType{Base: retType})
+			l.emit(&hir.InstrCast{Dst: typedPtr, Val: waitRes, ToType: &sema.PointerType{Base: retType}})
+			resVal := l.nextReg(retType)
+			l.emit(&hir.InstrLoad{Dst: resVal, Ptr: typedPtr})
+			return resVal
+		}
+
+		// 多値戻り値: タプル構造体ポインタにキャストしてロード
+		// これにより既存の lowerAssignStmt の多値アンパック処理がそのまま適用可能
+		tupleType := &sema.TupleType{Types: fut.ReturnTypes}
+		tuplePtrType := &sema.PointerType{Base: tupleType}
+		typedBuf := l.nextReg(tuplePtrType)
+		l.emit(&hir.InstrCast{Dst: typedBuf, Val: waitRes, ToType: tuplePtrType})
+
+		loadedTuple := l.nextReg(tupleType)
+		l.emit(&hir.InstrLoad{Dst: loadedTuple, Ptr: typedBuf})
+		return loadedTuple
+	}
+
+	return targetVal
 }
 
 func (l *Lowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
@@ -1857,7 +1956,21 @@ func (l *Lowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
 	return t2
 }
 
+func isNilValue(v hir.Value) bool {
+	if v == nil {
+		return true
+	}
+	if _, ok := v.(*hir.ConstNil); ok {
+		return true
+	}
+	if cz, ok := v.(*hir.ConstZero); ok && strings.HasSuffix(cz.Typ.LLVMType(), "*") {
+		return true
+	}
+	return v.String() == "nil" || v.String() == "null"
+}
+
 func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
+	// 1. 論理積 (&&) - 短絡評価
 	if e.Operator == "&&" {
 		resAlloca := l.nextReg(&sema.PointerType{Base: sema.TypeBool}, "land.res")
 		l.emit(&hir.InstrAlloca{Dst: resAlloca, AllocType: sema.TypeBool})
@@ -1880,6 +1993,7 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 		return finalReg
 	}
 
+	// 2. 論理和 (||) - 短絡評価
 	if e.Operator == "||" {
 		resAlloca := l.nextReg(&sema.PointerType{Base: sema.TypeBool}, "lor.res")
 		l.emit(&hir.InstrAlloca{Dst: resAlloca, AllocType: sema.TypeBool})
@@ -1905,7 +2019,34 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 	leftVal := l.lowerExpr(e.Left)
 	rightVal := l.lowerExpr(e.Right)
 
-	// ポインタ + 整数 (または 整数 + ポインタ) のポインタ加算を GEP (getelementptr) として出力
+	// 3. インターフェース型と nil の比較 (err == nil / err != nil)
+	// 構造体 { i8*, i8* } 全体ではなく、Index 0 のデータポインタを取り出して null と比較
+	if e.Operator == "==" || e.Operator == "!=" {
+		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
+			dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: 0})
+			op := hir.OpEq
+			if e.Operator == "!=" {
+				op = hir.OpNeq
+			}
+			cmpReg := l.nextReg(sema.TypeBool)
+			l.emit(&hir.InstrBinary{Dst: cmpReg, Op: op, L: dataPtr, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
+			return cmpReg
+		}
+		if _, isIface := rightVal.Type().(*sema.InterfaceType); isIface && isNilValue(leftVal) {
+			dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: rightVal, Index: 0})
+			op := hir.OpEq
+			if e.Operator == "!=" {
+				op = hir.OpNeq
+			}
+			cmpReg := l.nextReg(sema.TypeBool)
+			l.emit(&hir.InstrBinary{Dst: cmpReg, Op: op, L: dataPtr, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
+			return cmpReg
+		}
+	}
+
+	// 4. ポインタ加算 (GEP)
 	if pt, isPtr := leftVal.Type().(*sema.PointerType); isPtr && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte) {
 		if e.Operator == "+" {
 			dst := l.nextReg(pt)
@@ -1914,6 +2055,7 @@ func (l *Lowerer) lowerBinaryExpr(e *ast.BinaryExpr) hir.Value {
 		}
 	}
 
+	// 5. 文字列連結・比較
 	if leftVal.Type() == sema.TypeString || rightVal.Type() == sema.TypeString {
 		if e.Operator == "+" {
 			res := l.nextReg(sema.TypeString)
@@ -2090,27 +2232,128 @@ func (l *Lowerer) lowerCall(call *ast.CallExpr) hir.Value {
 	}
 
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// fmt.Sprintf のビルトイン処理: malloc + snprintf でフォーマット済み文字列を生成
-		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "fmt" && mem.Field.Value == "Sprintf" {
-			bufSize := int64(1024)
-			bufReg := l.nextReg(sema.TypeString)
-			l.emit(&hir.InstrHeapAlloc{
-				Dst:       bufReg,
-				Size:      &hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
-				AllocType: sema.TypeByte,
-			})
+		// fmt パッケージのビルトイン処理 (Sprintf, Printf, Println, Print)
+		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "fmt" {
+			switch mem.Field.Value {
+			case "Sprintf":
+				bufSize := int64(1024)
+				bufReg := l.nextReg(sema.TypeString)
+				l.emit(&hir.InstrHeapAlloc{
+					Dst:       bufReg,
+					Size:      &hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
+					AllocType: sema.TypeByte,
+				})
 
-			args := []hir.Value{
-				bufReg,
-				&hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
-			}
-			for _, arg := range call.Args {
-				args = append(args, l.lowerExpr(arg))
-			}
+				args := []hir.Value{
+					bufReg,
+					&hir.ConstInt{Val: bufSize, Typ: sema.TypeInt},
+				}
+				for _, arg := range call.Args {
+					args = append(args, l.lowerExpr(arg))
+				}
 
-			retReg := l.nextReg(sema.TypeInt)
-			l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "snprintf", Args: args})
-			return bufReg
+				retReg := l.nextReg(sema.TypeInt)
+				l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "snprintf", Args: args})
+				return bufReg
+
+			case "Printf":
+				args := make([]hir.Value, len(call.Args))
+				for i, arg := range call.Args {
+					val := l.lowerExpr(arg)
+					// インターフェース型 ({ i8*, i8* }) を printf の可変長引数に渡す際、データポインタ (i8*) を抽出
+					if _, isIface := val.Type().(*sema.InterfaceType); isIface {
+						dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+						l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
+						val = dataPtr
+					}
+					args[i] = val
+				}
+				retReg := l.nextReg(sema.TypeInt)
+				l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "printf", Args: args})
+				return retReg
+
+			case "Println", "Print":
+				isLn := (mem.Field.Value == "Println")
+				if len(call.Args) == 0 {
+					if isLn {
+						fmtStr := l.getStringConst("\n")
+						retReg := l.nextReg(sema.TypeInt)
+						l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "printf", Args: []hir.Value{fmtStr}})
+						return retReg
+					}
+					return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+				}
+
+				fmtParts := []string{}
+				args := []hir.Value{}
+				for _, arg := range call.Args {
+					val := l.lowerExpr(arg)
+					args = append(args, val)
+					switch val.Type().TypeName() {
+					case "string", "cstring":
+						fmtParts = append(fmtParts, "%s")
+					case "int":
+						fmtParts = append(fmtParts, "%ld")
+					case "bool":
+						fmtParts = append(fmtParts, "%d")
+					case "float64", "float":
+						fmtParts = append(fmtParts, "%f")
+					default:
+						if strings.HasSuffix(val.Type().LLVMType(), "*") {
+							fmtParts = append(fmtParts, "%p")
+						} else {
+							fmtParts = append(fmtParts, "%d")
+						}
+					}
+				}
+				fmtPattern := strings.Join(fmtParts, " ")
+				if isLn {
+					fmtPattern += "\n"
+				}
+				fmtConst := l.getStringConst(fmtPattern)
+				finalArgs := append([]hir.Value{fmtConst}, args...)
+
+				retReg := l.nextReg(sema.TypeInt)
+				l.emit(&hir.InstrCallStatic{Dst: retReg, CalleeName: "printf", Args: finalArgs})
+				return retReg
+			}
+		}
+
+		// time パッケージのビルトイン処理 (Sleep, Duration)
+		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && pkgIdent.Value == "time" {
+			switch mem.Field.Value {
+			case "Sleep":
+				if len(call.Args) > 0 {
+					durVal := l.lowerExpr(call.Args[0])
+					// ナノ秒からミリ秒へ換算 (ms = dur / 1000000)
+					msReg := l.nextReg(sema.TypeInt)
+					l.emit(&hir.InstrBinary{
+						Dst: msReg,
+						Op:  hir.OpDiv,
+						L:   durVal,
+						R:   &hir.ConstInt{Val: 1000000, Typ: sema.TypeInt},
+					})
+					// i64 から i32 へキャスト (OS Sleep API は DWORD/i32)
+					ms32 := l.nextReg(&sema.BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"})
+					l.emit(&hir.InstrCast{
+						Dst:    ms32,
+						Val:    msReg,
+						ToType: &sema.BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"},
+					})
+					l.emit(&hir.InstrCallStatic{
+						CalleeName: "Sleep",
+						Args:       []hir.Value{ms32},
+					})
+				}
+				return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+
+			case "Duration":
+				// time.Duration(x) は int64 へのキャストと同等
+				if len(call.Args) > 0 {
+					return l.lowerExpr(call.Args[0])
+				}
+				return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+			}
 		}
 
 		isVariable := false
@@ -2448,7 +2691,15 @@ func (l *Lowerer) lowerFuncLit(fl *ast.FuncLit) hir.Value {
 	envParamReg := &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
 	anonFn.Params = append(anonFn.Params, envParamReg)
 
-	captures := sema.ScanCapturesFromLit(fl)
+	// 親スコープ (l.symbols) に存在するローカル変数のみをキャプチャ対象に絞り込む
+	// (トップレベル関数名や定数、パッケージ名が誤って混入し型が nil になるのを防ぐ)
+	rawCaptures := sema.ScanCapturesFromLit(fl)
+	captures := []string{}
+	for _, name := range rawCaptures {
+		if _, ok := l.symbols[name]; ok {
+			captures = append(captures, name)
+		}
+	}
 
 	prevFunc := l.curFunc
 	prevBlock := l.curBlock

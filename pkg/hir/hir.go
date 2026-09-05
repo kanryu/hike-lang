@@ -342,6 +342,38 @@ func (i *InstrCallIface) String() string {
 	return fmt.Sprintf("  call_iface %s.#%d (%s), (%s)", i.IfaceVal, i.MethodIndex, i.MethodName, strings.Join(args, ", "))
 }
 
+// -----------------------------------------------------------------------------
+// スレッドプール非同期処理用命令（追加）
+// -----------------------------------------------------------------------------
+
+// InstrAsync はスレッドプールへのタスク投入命令
+type InstrAsync struct {
+	Dst      *Reg        // 生成された Future / Task ハンドル
+	FnPtr    Value       // 実行対象の関数ポインタまたはスタブ
+	EnvPtr   Value       // クロージャ環境または引数コンテキストポインタ（不要な場合は nil）
+	RetTypes []sema.Type // 関数の戻り値型リスト
+}
+
+func (i *InstrAsync) Result() *Reg { return i.Dst }
+func (i *InstrAsync) String() string {
+	envStr := "nil"
+	if i.EnvPtr != nil {
+		envStr = i.EnvPtr.String()
+	}
+	return fmt.Sprintf("  %s = async %s, env: %s", i.Dst, i.FnPtr, envStr)
+}
+
+// InstrTaskWait は Future / Task の完了待機命令（OSネイティブ同期待ちを実行し結果バッファを返す）
+type InstrTaskWait struct {
+	Dst  *Reg  // 完了後に結果を取り出すためのバッファポインタ
+	Task Value // 待機対象の Future / Task ハンドル
+}
+
+func (i *InstrTaskWait) Result() *Reg { return i.Dst }
+func (i *InstrTaskWait) String() string {
+	return fmt.Sprintf("  %s = task_wait %s", i.Dst, i.Task)
+}
+
 type InstrExtractValue struct {
 	Dst   *Reg
 	Agg   Value
@@ -451,10 +483,11 @@ type Function struct {
 	IsExtern    bool
 
 	// -------------------------------------------------------------------------
-	// CFunc / Go 連携用フィールド（追加）
+	// CFunc / Go 連携用フィールド
 	// -------------------------------------------------------------------------
-	IsCFunc     bool   // cfunc 宣言であるかどうかのフラグ
-	CFuncTarget string // エイリアス形式の場合の呼び出し先Cシンボル名（空文字列なら手書きブロック）
+	IsCFunc       bool   // cfunc 宣言であるかどうかのフラグ
+	IsPassThrough bool   // 追加: passthrough 修飾子フラグ (NOSPLIT 生成用)
+	CFuncTarget   string // エイリアス形式の場合の呼び出し先Cシンボル名（空文字列なら手書きブロック）
 }
 
 func (f *Function) String() string {

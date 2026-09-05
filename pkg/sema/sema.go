@@ -197,6 +197,28 @@ func (t *MapType) Size() int {
 	return 8
 }
 
+type ChanType struct {
+	Elem Type
+}
+
+func (t *ChanType) TypeName() string { return "chan " + t.Elem.TypeName() }
+func (t *ChanType) LLVMType() string { return "i8*" }
+func (t *ChanType) Size() int        { return 8 }
+
+type FutureType struct {
+	ReturnTypes []Type
+}
+
+func (t *FutureType) TypeName() string {
+	types := make([]string, len(t.ReturnTypes))
+	for i, rt := range t.ReturnTypes {
+		types[i] = rt.TypeName()
+	}
+	return fmt.Sprintf("future<(%s)>", strings.Join(types, ", "))
+}
+func (t *FutureType) LLVMType() string { return "i8*" }
+func (t *FutureType) Size() int        { return 8 }
+
 type Context struct {
 	Structs        map[string]*StructType
 	Interfaces     map[string]*InterfaceType
@@ -236,8 +258,8 @@ func NewContext() *Context {
 	ctx.typeIDs["string"] = 4
 	ctx.typeIDs["float32"] = 5
 	ctx.typeIDs["float64"] = 6
-	ctx.typeIDs["cstring"] = 7 // 追加
-	ctx.nextTypeID = 8         // 8からインクリメント
+	ctx.typeIDs["cstring"] = 7
+	ctx.nextTypeID = 8
 
 	errorIface := &InterfaceType{
 		Name:            "error",
@@ -248,6 +270,13 @@ func NewContext() *Context {
 	}
 	ctx.Interfaces["error"] = errorIface
 	ctx.Aliases["error"] = errorIface
+
+	// 追加: time パッケージのビルトイン型と定数
+	ctx.Aliases["time_Duration"] = TypeInt
+	ctx.Constants["time_Nanosecond"] = 1
+	ctx.Constants["time_Microsecond"] = 1000
+	ctx.Constants["time_Millisecond"] = 1000000
+	ctx.Constants["time_Second"] = 1000000000
 
 	return ctx
 }
@@ -378,7 +407,6 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			name = t.Package.Value + "_" + t.Name.Value
 		}
 
-		// プレフィックスによる安全網の展開
 		if strings.HasPrefix(name, "*") {
 			baseName := strings.TrimPrefix(name, "*")
 			return &PointerType{Base: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: baseName}})}
@@ -408,7 +436,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return TypeFloat64
 		case "string":
 			return TypeString
-		case "cstring": // 追加
+		case "cstring":
 			return TypeCString
 		case "void":
 			return TypeVoid
@@ -580,6 +608,14 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		return &ArrayType{Len: int(t.Len), Elem: c.ResolveType(t.Elem)}
 	case *ast.MapType:
 		return &MapType{Key: c.ResolveType(t.Key), Value: c.ResolveType(t.Value)}
+	case *ast.ChanType:
+		return &ChanType{Elem: c.ResolveType(t.Elem)}
+	case *ast.FutureType:
+		rts := make([]Type, len(t.ReturnTypes))
+		for i, rt := range t.ReturnTypes {
+			rts[i] = c.ResolveType(rt)
+		}
+		return &FutureType{ReturnTypes: rts}
 	case *ast.InterfaceType:
 		methods := []Method{}
 		for _, m := range t.Methods {
@@ -718,6 +754,8 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 			Key:   c.ResolveTypeWithSubst(node.Key, subst),
 			Value: c.ResolveTypeWithSubst(node.Value, subst),
 		}
+	case *ast.ChanType:
+		return &ChanType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
 	}
 	return c.ResolveType(t)
 }
@@ -808,6 +846,28 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 
 	case *ast.ImplicitCastExpr:
 		return c.ResolveType(e.TargetType)
+
+	case *ast.AsyncExpr:
+		fnType := c.InferExprType(e.Fn, locals)
+		if ft, ok := fnType.(*FuncType); ok {
+			return &FutureType{ReturnTypes: ft.ReturnTypes}
+		}
+		return &FutureType{ReturnTypes: []Type{TypeVoid}}
+
+	case *ast.ReceiveExpr:
+		innerType := c.InferExprType(e.Expr, locals)
+		if fut, ok := innerType.(*FutureType); ok {
+			if len(fut.ReturnTypes) == 1 {
+				return fut.ReturnTypes[0]
+			} else if len(fut.ReturnTypes) > 1 {
+				return &TupleType{Types: fut.ReturnTypes}
+			}
+			return TypeVoid
+		}
+		if ch, ok := innerType.(*ChanType); ok {
+			return ch.Elem
+		}
+		return innerType
 
 	case *ast.PrefixExpr:
 		base := c.InferExprType(e.Right, locals)
@@ -1565,6 +1625,10 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			walkExpr(n.Right)
 		case *ast.PrefixExpr:
 			walkExpr(n.Right)
+		case *ast.ReceiveExpr:
+			walkExpr(n.Expr)
+		case *ast.AsyncExpr:
+			walkExpr(n.Fn)
 		case *ast.CallExpr:
 			walkExpr(n.Function)
 			for _, arg := range n.Args {
@@ -1713,6 +1777,10 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			walkExpr(node.Right)
 		case *ast.PrefixExpr:
 			walkExpr(node.Right)
+		case *ast.ReceiveExpr:
+			walkExpr(node.Expr)
+		case *ast.AsyncExpr:
+			walkExpr(node.Fn)
 		case *ast.CallExpr:
 			walkExpr(node.Function)
 			for _, arg := range node.Args {
@@ -1925,6 +1993,10 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 		insertCastsInExpr(expr.Right, locals, ctx)
 	case *ast.PrefixExpr:
 		insertCastsInExpr(expr.Right, locals, ctx)
+	case *ast.ReceiveExpr:
+		insertCastsInExpr(expr.Expr, locals, ctx)
+	case *ast.AsyncExpr:
+		insertCastsInExpr(expr.Fn, locals, ctx)
 	}
 }
 
@@ -1957,6 +2029,9 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 				return err
 			}
 			return checkType(mt.Value)
+		}
+		if ct, ok := t.(*ast.ChanType); ok {
+			return checkType(ct.Elem)
 		}
 		if pt, ok := t.(*ast.PointerType); ok {
 			return checkType(pt.Base)
@@ -2030,6 +2105,10 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return checkExpr(n.Right)
 		case *ast.PrefixExpr:
 			return checkExpr(n.Right)
+		case *ast.ReceiveExpr:
+			return checkExpr(n.Expr)
+		case *ast.AsyncExpr:
+			return checkExpr(n.Fn)
 		case *ast.IndexExpr:
 			if err := checkExpr(n.Left); err != nil {
 				return err

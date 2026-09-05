@@ -15,10 +15,149 @@ declare i32 @memcmp(i8*, i8*, i64)
 declare i64 @printf(i8*, ...)
 
 ; ------------------------------------------------------------------------------
+; OS Native Threading & Synchronization (Kernel32 / Libc-Free)
+; ------------------------------------------------------------------------------
+declare i32 @QueueUserWorkItem(i32 (i8*)*, i8*, i32)
+declare i8* @CreateEventA(i8*, i32, i32, i8*)
+declare i32 @SetEvent(i8*)
+declare i32 @WaitForSingleObject(i8*, i32)
+declare i32 @CloseHandle(i8*)
+declare void @Sleep(i32)
+
+; ------------------------------------------------------------------------------
 ; Memory Management Types
 ; ------------------------------------------------------------------------------
 %struct.Arena = type { i8*, i64, i64 }
 %struct.Allocator = type { i8*, i8* }
+
+; ------------------------------------------------------------------------------
+; Standard OS Native Sleep Binding (std/time)
+; ------------------------------------------------------------------------------
+
+define void @c_os_sleep_ms(i32 %ms) {
+entry:
+  call void @Sleep(i32 %ms)
+  ret void
+}
+
+define void @os_sleep_ms(i32 %ms) {
+entry:
+  call void @Sleep(i32 %ms)
+  ret void
+}
+
+; ------------------------------------------------------------------------------
+; Async Thread Pool & Task Runtime
+; ------------------------------------------------------------------------------
+
+; %struct.__hike_task = { fn_thunk, env_ptr, ret_buf, completed, event_handle }
+%struct.__hike_task = type { void (i8*, i8*)*, i8*, i8*, i32, i8* }
+
+; スレッドプールワーカースレッドのエントリルーチン
+define internal i32 @__hike_task_worker_thunk(i8* %param) {
+entry:
+  %task = bitcast i8* %param to %struct.__hike_task*
+  %p_fn = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 0
+  %fn = load void (i8*, i8*)*, void (i8*, i8*)** %p_fn
+  %p_env = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 1
+  %env = load i8*, i8** %p_env
+  %p_buf = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 2
+  %buf = load i8*, i8** %p_buf
+
+  ; タスク本体（サンク）の実行
+  call void %fn(i8* %env, i8* %buf)
+
+  ; 完了状態へ遷移
+  %p_done = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 3
+  store i32 1, i32* %p_done
+
+  ; 待機側スレッドへの起床シグナル発火
+  %p_ev = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 4
+  %ev = load i8*, i8** %p_ev
+  %ev_null = icmp eq i8* %ev, null
+  br i1 %ev_null, label %exit, label %signal_ev
+signal_ev:
+  call i32 @SetEvent(i8* %ev)
+  br label %exit
+exit:
+  ret i32 0
+}
+
+; スレッドプールへの非同期タスク投入
+define internal %struct.__hike_task* @__hike_async(i8* %fn_ptr, i8* %env_ptr, i64 %ret_size) {
+entry:
+  %raw_task = call i8* @malloc(i64 40)
+  %task = bitcast i8* %raw_task to %struct.__hike_task*
+
+  ; 関数ポインタ・環境ポインタの設定
+  %fn_thunk = bitcast i8* %fn_ptr to void (i8*, i8*)*
+  %p_fn = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 0
+  store void (i8*, i8*)* %fn_thunk, void (i8*, i8*)** %p_fn
+
+  %p_env = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 1
+  store i8* %env_ptr, i8** %p_env
+
+  ; 戻り値格納バッファの確保
+  %need_buf = icmp sgt i64 %ret_size, 0
+  br i1 %need_buf, label %alloc_buf, label %no_buf
+alloc_buf:
+  %buf = call i8* @malloc(i64 %ret_size)
+  br label %set_buf
+no_buf:
+  br label %set_buf
+set_buf:
+  %buf_val = phi i8* [ %buf, %alloc_buf ], [ null, %no_buf ]
+  %p_buf = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 2
+  store i8* %buf_val, i8** %p_buf
+
+  ; 完了フラグ初期化 (0: 実行中)
+  %p_done = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 3
+  store i32 0, i32* %p_done
+
+  ; 同期イベントの生成 (自動リセット)
+  %ev = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %p_ev = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 4
+  store i8* %ev, i8** %p_ev
+
+  ; OS スレッドプールへ投入 (WT_EXECUTEDEFAULT = 0)
+  call i32 @QueueUserWorkItem(i32 (i8*)* @__hike_task_worker_thunk, i8* %raw_task, i32 0)
+
+  ret %struct.__hike_task* %task
+}
+
+; タスクの同期待ち (<- 演算子の実体)
+define internal i8* @__hike_task_wait(%struct.__hike_task* %task) {
+entry:
+  %task_null = icmp eq %struct.__hike_task* %task, null
+  br i1 %task_null, label %ret_null, label %check_done
+ret_null:
+  ret i8* null
+check_done:
+  %p_done = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 3
+  %done = load i32, i32* %p_done
+  %is_done = icmp ne i32 %done, 0
+  br i1 %is_done, label %get_res, label %wait_ev
+wait_ev:
+  %p_ev = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 4
+  %ev = load i8*, i8** %p_ev
+  %has_ev = icmp ne i8* %ev, null
+  br i1 %has_ev, label %do_wait, label %poll_loop
+do_wait:
+  ; INFINITE = 0xFFFFFFFF (-1)
+  call i32 @WaitForSingleObject(i8* %ev, i32 -1)
+  call i32 @CloseHandle(i8* %ev)
+  store i8* null, i8** %p_ev
+  br label %get_res
+poll_loop:
+  call void @Sleep(i32 1)
+  %done_poll = load i32, i32* %p_done
+  %is_done_poll = icmp ne i32 %done_poll, 0
+  br i1 %is_done_poll, label %get_res, label %poll_loop
+get_res:
+  %p_buf = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 2
+  %buf = load i8*, i8** %p_buf
+  ret i8* %buf
+}
 
 ; ------------------------------------------------------------------------------
 ; String Runtime Functions
@@ -420,4 +559,3 @@ get_len:
   %l = load i64, i64* %p_len
   ret i64 %l
 }
-
