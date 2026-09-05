@@ -77,11 +77,18 @@ func BuildGoPackage(opts GoBuildOptions) error {
 	dirName := filepath.Base(absDir)
 	pkgName := detectPackageName(hikeFiles[0], dirName)
 
-	// Plan 9 アセンブリの自動生成（第4引数に opts.Verbose を明示して連携）
+	// 1. Plan 9 アセンブリ（stub.s）の自動生成
 	if err := GenerateGoStubs(absDir, pkgName, prog.Decls, opts.Verbose); err != nil {
 		return fmt.Errorf("failed to generate stubs: %w", err)
 	}
 
+	// 2. Go コンパイラ用宣言ファイル（*.go）の自動生成
+	for _, hf := range hikeFiles {
+		goFilePath := strings.TrimSuffix(hf, ".hike") // fizzlib.go.hike -> fizzlib.go
+		if err := GenerateGoDeclarations(goFilePath, pkgName, prog.Decls, opts.Verbose); err != nil {
+			return fmt.Errorf("failed to generate go declarations: %w", err)
+		}
+	}
 	llPath := filepath.Join(absDir, dirName+".ll")
 	if err := os.WriteFile(llPath, []byte(llvmIR), 0644); err != nil {
 		return fmt.Errorf("failed to write LLVM IR: %w", err)

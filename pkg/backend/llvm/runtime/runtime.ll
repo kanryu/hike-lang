@@ -34,13 +34,13 @@ declare void @Sleep(i32)
 ; Standard OS Native Sleep Binding (std/time)
 ; ------------------------------------------------------------------------------
 
-define void @c_os_sleep_ms(i32 %ms) {
+define internal void @c_os_sleep_ms(i32 %ms) {
 entry:
   call void @Sleep(i32 %ms)
   ret void
 }
 
-define void @os_sleep_ms(i32 %ms) {
+define internal void @os_sleep_ms(i32 %ms) {
 entry:
   call void @Sleep(i32 %ms)
   ret void
