@@ -217,7 +217,6 @@ In languages using `async/await`, functions must be annotated with `async`, forc
 * The decision to execute concurrently belongs entirely to the call site.
 * The compiler handles closure environment captures, return buffer allocations, thread scheduling, kernel event signaling, and register unpacks automatically at the IR level.
 
-`concurrency.md` の末尾に追加するセクションです。Goの `go func()` との設計思想の違い、および `chan func()` によるロックフリーなイベントループ制御パターンを網羅しています。
 
 ---
 
