@@ -11,11 +11,103 @@ import (
 
 // CallLowerer は関数定義、関数呼び出し、メソッド解決、型キャスト、クロージャ生成を担当する
 type CallLowerer struct {
-	root *Lowerer
+	root           *Lowerer
+	currentVarArgs []ast.Expression // インライン展開中の可変長実引数リスト
 }
 
 func NewCallLowerer(root *Lowerer) *CallLowerer {
 	return &CallLowerer{root: root}
+}
+
+// findFuncDecl は AST プログラム宣言から指定名に一致する FuncDecl を探索する
+func (c *CallLowerer) findFuncDecl(canonicalName string) *ast.FuncDecl {
+	if c.root.prog == nil {
+		return nil
+	}
+	for _, d := range c.root.prog.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok {
+			if fn.Name.Value == canonicalName {
+				return fn
+			}
+			if strings.HasSuffix(canonicalName, "_"+fn.Name.Value) {
+				return fn
+			}
+			if strings.HasSuffix(fn.Name.Value, "_"+canonicalName) {
+				return fn
+			}
+		}
+	}
+	return nil
+}
+
+// inlineVariadicCall は C スタイル可変長引数を受け取り本体を持つ Hike 関数を呼び出し箇所でインライン展開する
+func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExpr) hir.Value {
+	prevSymbols := c.root.symbols
+	prevTypes := c.root.symbolTypes
+	prevVarArgs := c.currentVarArgs
+
+	c.root.symbols = make(map[string]hir.Value)
+	c.root.symbolTypes = make(map[string]sema.Type)
+	for k, v := range prevSymbols {
+		c.root.symbols[k] = v
+	}
+	for k, v := range prevTypes {
+		c.root.symbolTypes[k] = v
+	}
+
+	var fixedParams []*ast.ParamDecl
+	for _, p := range fnDecl.Params {
+		if !p.IsVariadic {
+			fixedParams = append(fixedParams, p)
+		}
+	}
+
+	for i, p := range fixedParams {
+		var pType sema.Type = sema.TypeString
+		if p.Type != nil {
+			pType = c.root.semaCtx.ResolveType(p.Type)
+		}
+		var val hir.Value = c.root.defaultConstValue(pType)
+		if i < len(call.Args) {
+			val = c.root.Expr.LowerExpr(call.Args[i])
+			val = c.root.emitValueCoerce(val, pType)
+		}
+		ptrReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
+		c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: pType})
+		c.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
+		c.root.symbols[p.Name.Value] = ptrReg
+		c.root.symbolTypes[p.Name.Value] = pType
+	}
+
+	var varArgs []ast.Expression
+	if len(call.Args) > len(fixedParams) {
+		varArgs = call.Args[len(fixedParams):]
+	}
+	c.currentVarArgs = varArgs
+
+	var retVal hir.Value = nil
+	if fnDecl.Body != nil {
+		for _, stmt := range fnDecl.Body.Statements {
+			if retStmt, isRet := stmt.(*ast.ReturnStmt); isRet {
+				if len(retStmt.Values) > 0 {
+					retVal = c.root.Expr.LowerExpr(retStmt.Values[0])
+				}
+				break
+			}
+			c.root.Stmt.LowerStmt(stmt)
+		}
+	}
+
+	if retVal == nil && len(fnDecl.ReturnTypes) > 0 {
+		retType := c.root.semaCtx.ResolveType(fnDecl.ReturnTypes[0])
+		retVal = c.root.defaultConstValue(retType)
+	}
+
+	c.currentVarArgs = prevVarArgs
+	c.root.symbols = prevSymbols
+	c.root.symbolTypes = prevTypes
+
+	return retVal
 }
 
 // -----------------------------------------------------------------------------
@@ -251,8 +343,25 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 	if isCFunc && isVariadic {
 		args := make([]hir.Value, 0, len(callArgs))
 		for i, arg := range callArgs {
-			// パススルー構文 "..." が C 関数へ渡された場合、親関数のスライスではなく個々の値を直接渡す
+			// パススルー構文 "..." が C 関数へ渡された場合、親関数から渡された可変長実引数を直接展開して渡す
 			if id, ok := arg.(*ast.Identifier); ok && id.Value == "..." {
+				for _, vArg := range c.currentVarArgs {
+					vVal := c.root.Expr.LowerExpr(vArg)
+					if vVal.Type() == sema.TypeBool || vVal.Type().LLVMType() == "i1" {
+						extReg := c.root.nextReg(sema.TypeInt)
+						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeInt})
+						vVal = extReg
+					} else if vVal.Type() == sema.TypeByte || vVal.Type().LLVMType() == "i8" {
+						extReg := c.root.nextReg(sema.TypeInt)
+						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeInt})
+						vVal = extReg
+					} else if vVal.Type() == sema.TypeFloat32 || vVal.Type().LLVMType() == "float" {
+						extReg := c.root.nextReg(sema.TypeFloat64)
+						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeFloat64})
+						vVal = extReg
+					}
+					args = append(args, vVal)
+				}
 				continue
 			}
 			val := c.root.Expr.LowerExpr(arg)
@@ -351,8 +460,16 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return argVal
 				}
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
+					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					rawLen := c.root.nextReg(sema.TypeInt)
+					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
+					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
 					dst := c.root.nextReg(sema.TypeString)
-					c.root.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: 0})
+					c.root.emit(&hir.InstrCallStatic{
+						Dst:        dst,
+						CalleeName: "__hike_slice_to_str",
+						Args:       []hir.Value{rawPtr, rawLen},
+					})
 					return dst
 				}
 				dst := c.root.nextReg(targetType)
@@ -471,8 +588,16 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		case "string":
 			argVal := c.root.Expr.LowerExpr(call.Args[0])
 			if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
+				rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				rawLen := c.root.nextReg(sema.TypeInt)
+				c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
+				c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
 				dst := c.root.nextReg(sema.TypeString)
-				c.root.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: 0})
+				c.root.emit(&hir.InstrCallStatic{
+					Dst:        dst,
+					CalleeName: "__hike_slice_to_str",
+					Args:       []hir.Value{rawPtr, rawLen},
+				})
 				return dst
 			}
 			return argVal
@@ -492,6 +617,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 			if targetFn == nil {
 				panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))
+			}
+
+			// C スタイル可変長引数を受け取り本体を持つ関数は、汎用インライン展開する
+			if targetFn.IsVariadic && targetFn.VariadicElem == nil {
+				if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
+					return c.inlineVariadicCall(fnDecl, call)
+				}
 			}
 
 			isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
@@ -514,9 +646,6 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				callee = targetFn.CFuncTarget
 			} else if targetFn.IsCFunc {
 				callee = "c_" + canonicalName
-			} else if targetFnName == "fmt_Printf" {
-				// 可変長引数が中間ラッパーで消失するのを防ぐため、libc の printf へ直接転送
-				callee = "printf"
 			}
 
 			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
@@ -636,6 +765,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		if !isLocal && !isGlobal {
 			targetFn, canonicalName := c.root.semaCtx.LookupFunction(fnId.Value)
 			if targetFn != nil {
+				// C スタイル可変長引数を受け取り本体を持つ関数は、汎用インライン展開する
+				if targetFn.IsVariadic && targetFn.VariadicElem == nil {
+					if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
+						return c.inlineVariadicCall(fnDecl, call)
+					}
+				}
+
 				isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
 				args := c.lowerArgs(call.Args, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 
@@ -720,9 +856,9 @@ func (c *CallLowerer) lowerIndirectCall(fnFatPtr hir.Value, callArgs []ast.Expre
 	return dst
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 関数定義 (Function Declaration) の変換
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	c.root.symbols = make(map[string]hir.Value)
 	c.root.symbolTypes = make(map[string]sema.Type)
@@ -751,6 +887,21 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	} else {
 		for _, rt := range fn.ReturnTypes {
 			returnTypes = append(returnTypes, c.root.semaCtx.ResolveType(rt))
+		}
+	}
+
+	// C言語スタイルの可変長引数 (...T スライスではなく ...) を持ち、本体を持つ関数は
+	// 呼び出し側でインライン展開されるため、独立した関数定義 (define ...) の生成をスキップする
+	if fn.Body != nil && fn.IsVariadic {
+		hasTypedVariadic := false
+		for _, p := range fn.Params {
+			if p.IsVariadic {
+				hasTypedVariadic = true
+				break
+			}
+		}
+		if !hasTypedVariadic {
+			return
 		}
 	}
 

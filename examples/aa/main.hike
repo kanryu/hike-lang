@@ -1,0 +1,14 @@
+
+package main
+
+import "std/fmt"
+
+func printf(format string, ...) int
+
+func main() int {
+    id := 42
+    name := "Hike"
+    formatted := fmt.Sprintf("ID:%d,NAME:%s", id, name)
+    printf("RES=%s\n", formatted)
+    return 0
+}

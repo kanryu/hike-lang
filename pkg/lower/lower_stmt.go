@@ -85,9 +85,9 @@ func (s *StmtLowerer) LowerSendStmt(ss *ast.SendStmt) {
 	})
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 変数宣言 (VarDecl)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 	var targetType sema.Type = nil
@@ -123,154 +123,202 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 	s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 代入文 (AssignStmt)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
+func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
+	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
+		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-func (s *StmtLowerer) LowerAssignStmt(as *ast.AssignStmt) {
-	isDefine := (as.Token.Type == token.DEFINE) || (as.Token.Literal == ":=") ||
-		(as.Token.Type == token.VAR) || (as.Token.Literal == "var") || (as.Type != nil)
-
-	// 1. 多値代入 (Tuple unpacking)
-	if len(as.Left) > 1 && len(as.Right) == 1 {
-		tupleVal := s.root.Expr.LowerExpr(as.Right[0])
-		if tt, isTuple := tupleVal.Type().(*sema.TupleType); isTuple {
-			for i, left := range as.Left {
-				if i >= len(tt.Types) {
+	// 多値アンパック代入 (例: sum, mul := <-async ... または a, b := fn())
+	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
+		rhsVal := s.root.Expr.LowerExpr(stmt.Right[0])
+		if tup, ok := rhsVal.Type().(*sema.TupleType); ok {
+			for i, left := range stmt.Left {
+				if i >= len(tup.Types) {
 					break
 				}
-				elemType := tt.Types[i]
-				elemReg := s.root.nextReg(elemType)
-				s.root.emit(&hir.InstrExtractValue{Dst: elemReg, Agg: tupleVal, Index: i})
+				elemType := tup.Types[i]
+				elemVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrExtractValue{
+					Dst:   elemVal,
+					Agg:   rhsVal,
+					Index: i,
+				})
 
-				if id, ok := left.(*ast.Identifier); ok {
-					if id.Value == "_" {
-						continue
-					}
-					if isDefine {
-						ptrReg := s.root.nextReg(&sema.PointerType{Base: elemType}, id.Value)
-						if s.root.escapedVars[id.Value] {
+				if isDefine {
+					if ident, okIdent := left.(*ast.Identifier); okIdent && ident.Value != "_" {
+						ptrReg := s.root.nextReg(&sema.PointerType{Base: elemType}, ident.Value)
+						if s.root.escapedVars[ident.Value] {
 							sizeVal := &hir.ConstInt{Val: int64(elemType.Size()), Typ: sema.TypeInt}
 							s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: elemType})
 						} else {
 							s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: elemType})
 						}
-						s.root.symbols[id.Value] = ptrReg
-						s.root.symbolTypes[id.Value] = elemType
-						s.root.emit(&hir.InstrStore{Val: elemReg, Ptr: ptrReg})
-					} else {
-						ptr := s.root.Expr.LowerLValue(id)
-						s.root.emit(&hir.InstrStore{Val: elemReg, Ptr: ptr})
+						s.root.emit(&hir.InstrStore{Val: elemVal, Ptr: ptrReg})
+						s.root.symbols[ident.Value] = ptrReg
+						s.root.symbolTypes[ident.Value] = elemType
 					}
 				} else {
-					ptr := s.root.Expr.LowerLValue(left)
-					targetType := ptr.Type().(*sema.PointerType).Base
-					val := s.root.emitValueCoerce(elemReg, targetType)
-					s.root.emit(&hir.InstrStore{Val: val, Ptr: ptr})
+					if ident, okIdent := left.(*ast.Identifier); okIdent {
+						if ident.Value == "_" {
+							continue
+						}
+						if ptr := s.root.symbols[ident.Value]; ptr != nil {
+							coerced := s.root.emitValueCoerce(elemVal, elemType)
+							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: ptr})
+						}
+					} else {
+						targetPtr := s.root.Expr.LowerLValue(left)
+						if targetPtr != nil {
+							coerced := s.root.emitValueCoerce(elemVal, elemType)
+							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: targetPtr})
+						}
+					}
 				}
 			}
 			return
 		}
 	}
 
-	// 2. 通常代入 / 短縮定義
-	rhsVals := make([]hir.Value, len(as.Right))
-	for i, r := range as.Right {
+	// 右辺の先行評価 (a, b = b, a などの多重代入で変数値が上書き破壊されるのを防止)
+	rhsVals := make([]hir.Value, len(stmt.Right))
+	for i, r := range stmt.Right {
 		rhsVals[i] = s.root.Expr.LowerExpr(r)
 	}
 
-	for i, left := range as.Left {
-		if id, ok := left.(*ast.Identifier); ok && id.Value == "_" {
-			continue
-		}
-
-		var rhs ast.Expression = nil
-		var val hir.Value = nil
-		if i < len(as.Right) {
-			rhs = as.Right[i]
-		}
-		if i < len(rhsVals) {
-			val = rhsVals[i]
-		}
-
-		if id, ok := left.(*ast.Identifier); ok && isDefine {
-			var actualType sema.Type = nil
-			if as.Type != nil {
-				actualType = s.root.semaCtx.ResolveType(as.Type)
+	// 定義代入 (:=)
+	if isDefine {
+		for i, left := range stmt.Left {
+			ident, ok := left.(*ast.Identifier)
+			if !ok || ident.Value == "_" {
+				continue
 			}
 
-			isUninitVar := false
-			if il, okIl := rhs.(*ast.IntegerLiteral); okIl && (as.Token.Type == token.VAR || as.Token.Literal == "var") && il.Token.Type == token.VAR {
-				isUninitVar = true
+			var val hir.Value
+			var targetType sema.Type
+
+			if i < len(rhsVals) {
+				val = rhsVals[i]
 			}
 
-			if isUninitVar && actualType != nil {
-				val = s.root.defaultConstValue(actualType)
-			} else if val != nil {
-				if actualType == nil {
-					actualType = val.Type()
-				} else {
-					val = s.root.emitValueCoerce(val, actualType)
+			if stmt.Type != nil {
+				targetType = s.root.semaCtx.ResolveType(stmt.Type)
+				if val != nil {
+					val = s.root.emitValueCoerce(val, targetType)
 				}
-			} else if actualType != nil {
-				val = s.root.defaultConstValue(actualType)
+			} else if val != nil {
+				targetType = val.Type()
 			} else {
-				actualType = sema.TypeInt
+				targetType = sema.TypeInt
 				val = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 			}
 
-			ptrReg := s.root.nextReg(&sema.PointerType{Base: actualType}, id.Value)
-			if s.root.escapedVars[id.Value] {
-				sizeVal := &hir.ConstInt{Val: int64(actualType.Size()), Typ: sema.TypeInt}
-				s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: actualType})
+			ptrReg := s.root.nextReg(&sema.PointerType{Base: targetType}, ident.Value)
+			if s.root.escapedVars[ident.Value] {
+				sizeVal := &hir.ConstInt{Val: int64(targetType.Size()), Typ: sema.TypeInt}
+				s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: targetType})
 			} else {
-				s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: actualType})
+				s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: targetType})
 			}
-			s.root.symbols[id.Value] = ptrReg
-			s.root.symbolTypes[id.Value] = actualType
-			s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
+			s.root.symbols[ident.Value] = ptrReg
+			s.root.symbolTypes[ident.Value] = targetType
+
+			if val != nil {
+				s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
+			}
+		}
+		return
+	}
+
+	// 通常代入 (=) および 演算子付き代入 (+=, -=, *=, ++, -- 等)
+	op := stmt.TokenLiteral()
+
+	for i, left := range stmt.Left {
+		if ident, ok := left.(*ast.Identifier); ok && ident.Value == "_" {
 			continue
 		}
 
-		ptr := s.root.Expr.LowerLValue(left)
-
-		switch as.Token.Literal {
-		case "++":
-			targetType := ptr.Type().(*sema.PointerType).Base
-			curValReg := s.root.nextReg(targetType)
-			s.root.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
-			resReg := s.root.nextReg(targetType)
-			s.root.emit(&hir.InstrBinary{Dst: resReg, Op: hir.OpAdd, L: curValReg, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
-			val = resReg
-		case "--":
-			targetType := ptr.Type().(*sema.PointerType).Base
-			curValReg := s.root.nextReg(targetType)
-			s.root.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
-			resReg := s.root.nextReg(targetType)
-			s.root.emit(&hir.InstrBinary{Dst: resReg, Op: hir.OpSub, L: curValReg, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
-			val = resReg
-		case "+=", "-=", "*=", "/=", "%=":
-			curValReg := s.root.nextReg(val.Type())
-			s.root.emit(&hir.InstrLoad{Dst: curValReg, Ptr: ptr})
-			op := hir.OpAdd
-			switch as.Token.Literal {
-			case "-=":
-				op = hir.OpSub
-			case "*=":
-				op = hir.OpMul
-			case "/=":
-				op = hir.OpDiv
-			case "%=":
-				op = hir.OpRem
+		// マップ要素への代入 m[k] = v の判定
+		if idxExpr, okIdx := left.(*ast.IndexExpr); okIdx {
+			leftVal := s.root.Expr.LowerExpr(idxExpr.Left)
+			if mp, isMap := leftVal.Type().(*sema.MapType); isMap {
+				keyVal := s.root.Expr.LowerExpr(idxExpr.Index)
+				if i < len(rhsVals) {
+					val := rhsVals[i]
+					val = s.root.emitValueCoerce(val, mp.Value)
+					keyI64 := s.root.coerceToI64(keyVal, mp.Key)
+					valI64 := s.root.coerceToI64(val, mp.Value)
+					s.root.emit(&hir.InstrCallStatic{
+						CalleeName: "__hike_map_set",
+						Args:       []hir.Value{leftVal, keyI64, valI64},
+					})
+				}
+				continue
 			}
-			resReg := s.root.nextReg(val.Type())
-			s.root.emit(&hir.InstrBinary{Dst: resReg, Op: op, L: curValReg, R: val})
-			val = resReg
+			if _, _, isBeh := s.root.semaCtx.CheckMapBehavior(leftVal.Type()); isBeh {
+				objPtr := s.root.Expr.LowerStructPtr(idxExpr.Left)
+				setFnName, setFn, finalRecv, found := s.root.Call.ResolveMethod(leftVal.Type(), "Set", objPtr)
+				if found && setFn != nil && i < len(rhsVals) {
+					keyVal := s.root.Expr.LowerExpr(idxExpr.Index)
+					val := rhsVals[i]
+					keyArg := s.root.emitValueCoerce(keyVal, setFn.ParamTypes[1])
+					valArg := s.root.emitValueCoerce(val, setFn.ParamTypes[2])
+					s.root.emit(&hir.InstrCallStatic{
+						CalleeName: setFnName,
+						Args:       []hir.Value{finalRecv, keyArg, valArg},
+					})
+					continue
+				}
+			}
 		}
 
-		targetType := ptr.Type().(*sema.PointerType).Base
-		val = s.root.emitValueCoerce(val, targetType)
-		s.root.emit(&hir.InstrStore{Val: val, Ptr: ptr})
+		// ターゲットポインタの解決: ローカル変数の場合は symbols から取得、それ以外は LowerLValue
+		var targetPtr hir.Value
+		if ident, ok := left.(*ast.Identifier); ok {
+			targetPtr = s.root.symbols[ident.Value]
+		} else {
+			targetPtr = s.root.Expr.LowerLValue(left)
+		}
+
+		if targetPtr != nil {
+			var val hir.Value
+			if i < len(rhsVals) {
+				val = rhsVals[i]
+			} else {
+				val = &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+			}
+
+			var elemType sema.Type = sema.TypeInt
+			if pt, ok := targetPtr.Type().(*sema.PointerType); ok {
+				elemType = pt.Base
+			}
+			val = s.root.emitValueCoerce(val, elemType)
+
+			// 演算子に応じた計算処理
+			switch op {
+			case "+=", "++":
+				curVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
+				newVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpAdd, L: curVal, R: val})
+				val = newVal
+			case "-=", "--":
+				curVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
+				newVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpSub, L: curVal, R: val})
+				val = newVal
+			case "*=":
+				curVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
+				newVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpMul, L: curVal, R: val})
+				val = newVal
+			}
+
+			s.root.emit(&hir.InstrStore{Val: val, Ptr: targetPtr})
+		}
 	}
 }
 
@@ -827,6 +875,35 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 // -------------------------------------------------------------
 
 func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
+	// 可変長関数のインライン展開中は、親関数のブロックを exit させない
+	if s.root.Call.currentVarArgs != nil {
+		return
+	}
+
+	// 多値戻り値のアンパック: 関数の戻り値が複数あり、return 式が 1 つで TupleType の場合
+	if len(rs.Values) == 1 && s.root.curFunc != nil && len(s.root.curFunc.ReturnTypes) > 1 {
+		rhsVal := s.root.Expr.LowerExpr(rs.Values[0])
+		if tup, ok := rhsVal.Type().(*sema.TupleType); ok {
+			vals := make([]hir.Value, len(s.root.curFunc.ReturnTypes))
+			for i := range s.root.curFunc.ReturnTypes {
+				var val hir.Value
+				if i < len(tup.Types) {
+					elemReg := s.root.nextReg(tup.Types[i])
+					s.root.emit(&hir.InstrExtractValue{Dst: elemReg, Agg: rhsVal, Index: i})
+					val = s.root.emitValueCoerce(elemReg, s.root.curFunc.ReturnTypes[i])
+				} else {
+					val = s.root.defaultConstValue(s.root.curFunc.ReturnTypes[i])
+				}
+				vals[i] = val
+			}
+			for i := len(s.root.deferStack) - 1; i >= 0; i-- {
+				s.root.Call.LowerCall(s.root.deferStack[i])
+			}
+			s.root.terminate(&hir.InstrReturn{Vals: vals})
+			return
+		}
+	}
+
 	vals := make([]hir.Value, len(rs.Values))
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)

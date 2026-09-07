@@ -1,11 +1,28 @@
 package fmt
 
-// 非公開のC標準関数宣言 (C ABI 可変長)
+// 非公開のC標準関数宣言 (C ABI)
 func printf(format string, ...) int
+func sprintf(buf *byte, format string, ...) int
+func malloc(size int) *byte
+func free(ptr *byte)
+func strlen(s *byte) int
+func memcpy(dst *byte, src *byte, n int) *byte
 
 // 外部公開する Printf 関数
 func Printf(format string, ...) int {
 	return printf(format, ...)
+}
+
+// 外部公開する Sprintf 関数
+// 1024バイトの一時バッファでフォーマットした後、実サイズ分だけ確保して即座に一時バッファを解放する
+func Sprintf(format string, ...) string {
+	buf := malloc(1024)
+	sprintf(buf, format, ...)
+	l := strlen(buf)
+	res := malloc(l + 1)
+	memcpy(res, buf, l + 1)
+	free(buf)
+	return string(res)
 }
 
 // PrintStr: 文字列を出力します

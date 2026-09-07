@@ -20,7 +20,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	// 外部 C 標準ライブラリ (declare)
 	"malloc": true, "calloc": true, "free": true,
 	"strcmp": true, "strlen": true, "memcpy": true, "memcmp": true,
-	"printf": true,
+	"printf": true, "snprintf": true, "sprintf": true,
 
 	// OS ネイティブ API (declare)
 	"QueueUserWorkItem": true, "CreateEventA": true, "SetEvent": true,
@@ -45,9 +45,10 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_chan_close":  true,
 
 	// 文字列ランタイム (define internal)
-	"hike_streq":  true,
-	"hike_substr": true,
-	"hike_strcat": true,
+	"hike_streq":          true,
+	"hike_substr":         true,
+	"hike_strcat":         true,
+	"__hike_slice_to_str": true,
 
 	// マップランタイム (define internal)
 	"__hike_hash_str":   true,

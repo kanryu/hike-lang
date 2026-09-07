@@ -13,6 +13,8 @@ declare i64 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i32 @memcmp(i8*, i8*, i64)
 declare i64 @printf(i8*, ...)
+declare i32 @sprintf(i8*, i8*, ...)
+declare i32 @snprintf(i8*, i64, i8*, ...)
 
 ; ------------------------------------------------------------------------------
 ; OS Native Threading & Synchronization (Kernel32 / Libc-Free)
@@ -448,6 +450,24 @@ entry:
   %dst_b = getelementptr inbounds i8, i8* %buf, i64 %len_a
   call i8* @memcpy(i8* %dst_b, i8* %b, i64 %len_b)
   %null_ptr = getelementptr inbounds i8, i8* %buf, i64 %total_len
+  store i8 0, i8* %null_ptr
+  ret i8* %buf
+}
+
+; スライス ([]byte) から null 終端文字列 (string) への安全な複製変換
+define internal i8* @__hike_slice_to_str(i8* %ptr, i64 %len) {
+entry:
+  %null_chk = icmp eq i8* %ptr, null
+  br i1 %null_chk, label %ret_empty, label %alloc
+ret_empty:
+  %empty = call i8* @malloc(i64 1)
+  store i8 0, i8* %empty
+  ret i8* %empty
+alloc:
+  %alloc_size = add i64 %len, 1
+  %buf = call i8* @malloc(i64 %alloc_size)
+  call i8* @memcpy(i8* %buf, i8* %ptr, i64 %len)
+  %null_ptr = getelementptr inbounds i8, i8* %buf, i64 %len
   store i8 0, i8* %null_ptr
   ret i8* %buf
 }

@@ -1368,6 +1368,22 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 				(s.Token.Type == token.VAR) || (s.Token.Literal == "var") || (s.Type != nil)
 
 			if isDefine {
+				// 右辺が1つのタプル式で左辺が複数のアンパック代入 (例: sum, mul := <-async ...)
+				if len(s.Left) > 1 && len(s.Right) == 1 {
+					rhsType := ctx.InferExprType(s.Right[0], blockLocals)
+					if tup, ok := rhsType.(*TupleType); ok {
+						for i, left := range s.Left {
+							if i < len(tup.Types) {
+								if ident, okIdent := left.(*ast.Identifier); okIdent {
+									blockLocals[ident.Value] = tup.Types[i]
+								}
+							}
+						}
+						insertCastsInExpr(s.Right[0], blockLocals, ctx)
+						break
+					}
+				}
+
 				for i, left := range s.Left {
 					var actualType Type = TypeInt
 					if s.Type != nil {
@@ -1388,6 +1404,18 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 					}
 				}
 			} else {
+				// 通常代入 (sum, mul = <-async ...)
+				if len(s.Left) > 1 && len(s.Right) == 1 {
+					rhsType := ctx.InferExprType(s.Right[0], blockLocals)
+					if _, ok := rhsType.(*TupleType); ok {
+						insertCastsInExpr(s.Right[0], blockLocals, ctx)
+						for _, l := range s.Left {
+							insertCastsInExpr(l, blockLocals, ctx)
+						}
+						break
+					}
+				}
+
 				for i, r := range s.Right {
 					if i < len(s.Left) {
 						targetType := ctx.InferExprType(s.Left[i], blockLocals)
