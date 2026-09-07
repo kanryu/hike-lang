@@ -83,7 +83,7 @@ type VarDecl struct {
 	Name      *Identifier
 	Type      TypeExpr
 	Value     Expression
-	IsEscaped bool // 追加: エスケープ解析によりヒープ昇格が必要かどうかの決定フラグ
+	IsEscaped bool // エスケープ解析によりヒープ昇格が必要かどうかの決定フラグ
 }
 
 func (vd *VarDecl) declNode()            {}
@@ -121,10 +121,11 @@ func (f *File) TokenLiteral() string {
 }
 
 type ParamDecl struct {
-	Token     token.Token
-	Name      *Identifier
-	Type      TypeExpr
-	IsEscaped bool // 追加: クロージャにキャプチャされヒープ退避が必要かどうかの決定フラグ
+	Token      token.Token
+	Name       *Identifier
+	Type       TypeExpr
+	IsVariadic bool // 追加: 可変長引数フラグ (...T)
+	IsEscaped  bool // クロージャにキャプチャされヒープ退避が必要かどうかの決定フラグ
 }
 
 func (pd *ParamDecl) TokenLiteral() string {
@@ -161,9 +162,10 @@ func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
 // CFuncDecl は Go 連携用の cfunc 宣言を表すノード
 type CFuncDecl struct {
 	Token         token.Token
-	IsPassThrough bool // 追加: passthrough 修飾子フラグ
+	IsPassThrough bool // passthrough 修飾子フラグ
 	Name          *Identifier
 	Params        []*ParamDecl
+	IsVariadic    bool // 追加: C 言語可変長引数フラグ
 	ReturnTypes   []TypeExpr
 	TargetCName   *Identifier // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
 	Body          *BlockStmt  // 手書きブロック形式 ({ ... }) の場合の本体ブロック
@@ -289,7 +291,7 @@ type CallExpr struct {
 	Token       token.Token
 	Function    Expression
 	Args        []Expression
-	HasEllipsis bool
+	HasEllipsis bool // スライス展開呼び出しフラグ (expr...)
 }
 
 func (ce *CallExpr) expressionNode()      {}
@@ -349,6 +351,7 @@ type MethodSig struct {
 	Token       token.Token
 	Name        *Identifier
 	ParamTypes  []TypeExpr
+	IsVariadic  bool // 追加: インターフェースメソッドの可変長引数フラグ
 	ReturnTypes []TypeExpr
 }
 
@@ -425,6 +428,16 @@ type SliceType struct {
 func (s *SliceType) typeExprNode()        {}
 func (s *SliceType) expressionNode()      {}
 func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
+
+// EllipsisType は Go スタイルの可変長パラメータ型 (...T) を表すノード
+type EllipsisType struct {
+	Token token.Token // '...'
+	Elem  TypeExpr
+}
+
+func (et *EllipsisType) typeExprNode()        {}
+func (et *EllipsisType) expressionNode()      {}
+func (et *EllipsisType) TokenLiteral() string { return et.Token.Literal }
 
 type ArrayType struct {
 	Token token.Token

@@ -1,0 +1,43 @@
+package main
+
+import (
+	"std/fmt"
+	"std/time"
+)
+
+func mandelbrot(size int) int {
+	count := 0
+	for y := 0; y < size; y++ {
+		ci := (float64(y)*2.0)/float64(size) - 1.0
+		for x := 0; x < size; x++ {
+			cr := (float64(x)*2.0)/float64(size) - 1.5
+			zr := 0.0
+			zi := 0.0
+			iter := 0
+			maxIter := 50
+			for iter < maxIter {
+				zr2 := zr * zr
+				zi2 := zi * zi
+				if zr2+zi2 > 4.0 {
+					break
+				}
+				zi = 2.0*zr*zi + ci
+				zr = zr2 - zi2 + cr
+				iter++
+			}
+			if iter == maxIter {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func main() {
+	size := 4000
+	start := time.Now()
+	res := mandelbrot(size)
+	elapsed := time.Since(start)
+
+	fmt.Printf("Mandelbrot count: %d (Size: %d, Elapsed: %ld ms)\n", res, size, elapsed.Milliseconds())
+}

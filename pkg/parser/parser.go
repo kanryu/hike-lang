@@ -181,7 +181,6 @@ func (p *Parser) parseTopLevelDecl() ast.Decl {
 		return nil
 	}
 }
-
 func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	cfn := &ast.CFuncDecl{Token: p.curToken}
 	p.nextToken() // 'cfunc' を消費
@@ -195,10 +194,38 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
 		for {
-			pName := p.parseIdentifier()
-			p.nextToken()
-			pType := p.parseTypeExpr()
-			cfn.Params = append(cfn.Params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
+			if p.curTokenIs(token.ELLIPSIS) {
+				cfn.IsVariadic = true
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				pName := p.parseIdentifier()
+				p.nextToken()
+				paramIsVariadic := false
+				if p.curTokenIs(token.ELLIPSIS) {
+					paramIsVariadic = true
+					cfn.IsVariadic = true
+					p.nextToken()
+					elemType := p.parseTypeExpr()
+					pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
+					cfn.Params = append(cfn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: paramIsVariadic,
+					})
+				} else {
+					pType := p.parseTypeExpr()
+					cfn.Params = append(cfn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: false,
+					})
+				}
+			}
 
 			if p.peekTokenIs(token.COMMA) {
 				p.nextToken()
@@ -213,7 +240,7 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	}
 	p.expectPeek(token.RPAREN)
 
-	// 2. 戻り値型の解析（'=' や '{' の直前にある型定義を取得）
+	// 2. 戻り値型の解析
 	cfn.ReturnTypes = []ast.TypeExpr{}
 	if p.peekToken.Line == p.curToken.Line &&
 		!p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) &&
@@ -239,13 +266,13 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 		}
 	}
 
-	// 3. 終端判定: '='（エイリアス記法）または '{'（手書きブロック記法）
+	// 3. 終端判定
 	if p.peekTokenIs(token.ASSIGN) {
-		p.nextToken() // '=' へ進む
-		p.nextToken() // 右辺の C 関数識別子へ進む
+		p.nextToken()
+		p.nextToken()
 		cfn.TargetCName = p.parseIdentifier()
 	} else if p.peekTokenIs(token.LBRACE) {
-		p.nextToken() // '{' へ進む
+		p.nextToken()
 		cfn.Body = p.parseBlockStmt()
 	} else if p.curTokenIs(token.LBRACE) {
 		cfn.Body = p.parseBlockStmt()
@@ -548,6 +575,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		p.nextToken()
 		for {
 			if p.curTokenIs(token.ELLIPSIS) {
+				// C 言語スタイル型なし可変長: func f(...)
 				fn.IsVariadic = true
 				if p.peekTokenIs(token.RPAREN) {
 					break
@@ -556,12 +584,28 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 			} else {
 				pName := p.parseIdentifier()
 				p.nextToken()
+				paramIsVariadic := false
 				if p.curTokenIs(token.ELLIPSIS) {
+					paramIsVariadic = true
 					fn.IsVariadic = true
 					p.nextToken()
+					elemType := p.parseTypeExpr()
+					pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
+					fn.Params = append(fn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: paramIsVariadic,
+					})
+				} else {
+					pType := p.parseTypeExpr()
+					fn.Params = append(fn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: false,
+					})
 				}
-				pType := p.parseTypeExpr()
-				fn.Params = append(fn.Params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
 			}
 
 			if p.peekTokenIs(token.COMMA) {
@@ -610,7 +654,12 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 }
 
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
-	if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface" && p.peekTokenIs(token.LBRACE)) {
+	if p.curTokenIs(token.ELLIPSIS) {
+		tok := p.curToken
+		p.nextToken()
+		elem := p.parseTypeExpr()
+		return &ast.EllipsisType{Token: tok, Elem: elem}
+	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface" && p.peekTokenIs(token.LBRACE)) {
 		tok := p.curToken
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken() // '{' へ
@@ -624,11 +673,26 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			methodName := p.parseIdentifier()
 			p.expectPeek(token.LPAREN)
 			paramTypes := []ast.TypeExpr{}
+			isVariadic := false
 			if !p.peekTokenIs(token.RPAREN) {
 				p.nextToken()
 				for {
+					if p.curTokenIs(token.ELLIPSIS) {
+						isVariadic = true
+						p.nextToken()
+						elem := p.parseTypeExpr()
+						paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
+						break
+					}
 					if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
 						p.nextToken()
+					}
+					if p.curTokenIs(token.ELLIPSIS) {
+						isVariadic = true
+						p.nextToken()
+						elem := p.parseTypeExpr()
+						paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
+						break
 					}
 					paramTypes = append(paramTypes, p.parseTypeExpr())
 					if p.peekTokenIs(token.COMMA) {
@@ -667,6 +731,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 				Token:       methodName.Token,
 				Name:        methodName,
 				ParamTypes:  paramTypes,
+				IsVariadic:  isVariadic,
 				ReturnTypes: returnTypes,
 			})
 		}
@@ -736,9 +801,18 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		}
 
 		paramTypes := []ast.TypeExpr{}
+		isVariadic := false
 		if !p.peekTokenIs(token.RPAREN) {
 			p.nextToken()
 			for {
+				if p.curTokenIs(token.ELLIPSIS) {
+					isVariadic = true
+					p.nextToken()
+					elem := p.parseTypeExpr()
+					paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
+					break
+				}
+
 				firstType := p.parseTypeExpr()
 				if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.LBRACKET) || p.peekTokenIs(token.MAP) || p.peekTokenIs(token.FUNC) {
 					p.nextToken()
@@ -781,7 +855,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 				returnTypes = append(returnTypes, p.parseTypeExpr())
 			}
 		}
-		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, ReturnTypes: returnTypes}
+		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, IsVariadic: isVariadic, ReturnTypes: returnTypes}
 	} else if p.curTokenIs(token.MAP) {
 		tok := p.curToken
 		p.nextToken() // 'map' の次へ
@@ -793,9 +867,8 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		valType := p.parseTypeExpr()
 		return &ast.MapType{Token: tok, Key: keyType, Value: valType}
 	} else if p.curTokenIs(token.CHAN) {
-		// 追加: chan T チャネル型のパース
 		tok := p.curToken
-		p.nextToken() // 'chan' を消費して要素型へ
+		p.nextToken()
 		elem := p.parseTypeExpr()
 		return &ast.ChanType{Token: tok, Elem: elem}
 	}
@@ -1392,13 +1465,32 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		}
 
 		params := []*ast.ParamDecl{}
+		isVariadic := false
 		if !p.peekTokenIs(token.RPAREN) {
 			p.nextToken()
 			for {
-				pName := p.parseIdentifier()
-				p.nextToken()
-				pType := p.parseTypeExpr()
-				params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType})
+				if p.curTokenIs(token.ELLIPSIS) {
+					isVariadic = true
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+				} else {
+					pName := p.parseIdentifier()
+					p.nextToken()
+					paramIsVariadic := false
+					if p.curTokenIs(token.ELLIPSIS) {
+						paramIsVariadic = true
+						isVariadic = true
+						p.nextToken()
+						elemType := p.parseTypeExpr()
+						pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
+						params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType, IsVariadic: paramIsVariadic})
+					} else {
+						pType := p.parseTypeExpr()
+						params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType, IsVariadic: false})
+					}
+				}
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()
 					if p.peekTokenIs(token.RPAREN) {
@@ -1437,18 +1529,20 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			return nil
 		}
 		body := p.parseBlockStmt()
-		leftExp = &ast.FuncLit{Token: tok, Params: params, ReturnTypes: returnTypes, Body: body}
+		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
 
 	case token.MAP:
 		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
 			leftExp = expr
 		}
 
-	// ★追加: 式の文脈（make の引数等）で chan T 型式をパース可能にする
 	case token.CHAN:
 		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
 			leftExp = expr
 		}
+
+	case token.ELLIPSIS:
+		leftExp = &ast.Identifier{Token: p.curToken, Value: "..."}
 
 	case token.LBRACKET:
 		tok := p.curToken
@@ -1610,11 +1704,29 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
 		for {
+			if p.curTokenIs(token.ELLIPSIS) {
+				// 単独の "..." (可変長パススルー転送)
+				args = append(args, &ast.Identifier{Token: p.curToken, Value: "..."})
+				hasEllipsis = true
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+				}
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+				continue
+			}
+
 			arg := p.parseExpression(LOWEST)
 			if p.peekTokenIs(token.ELLIPSIS) {
+				// Go スタイルのスライス展開: f(arg...)
 				p.nextToken()
 				hasEllipsis = true
 				args = append(args, arg)
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+				}
 				break
 			}
 			args = append(args, arg)

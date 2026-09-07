@@ -23,6 +23,7 @@ declare i32 @SetEvent(i8*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
 declare void @Sleep(i32)
+declare i64 @GetTickCount64()
 
 ; ------------------------------------------------------------------------------
 ; Memory Management Types
@@ -31,7 +32,7 @@ declare void @Sleep(i32)
 %struct.Allocator = type { i8*, i8* }
 
 ; ------------------------------------------------------------------------------
-; Standard OS Native Sleep Binding (std/time)
+; Standard OS Native Sleep & Time Binding (std/time)
 ; ------------------------------------------------------------------------------
 
 define internal void @c_os_sleep_ms(i32 %ms) {
@@ -44,6 +45,20 @@ define internal void @os_sleep_ms(i32 %ms) {
 entry:
   call void @Sleep(i32 %ms)
   ret void
+}
+
+define internal i64 @c_os_now_ns() {
+entry:
+  %ms = call i64 @GetTickCount64()
+  %ns = mul i64 %ms, 1000000
+  ret i64 %ns
+}
+
+define internal i64 @os_now_ns() {
+entry:
+  %ms = call i64 @GetTickCount64()
+  %ns = mul i64 %ms, 1000000
+  ret i64 %ns
 }
 
 ; ------------------------------------------------------------------------------

@@ -8,6 +8,10 @@ import (
 	"hikec-go/pkg/token"
 )
 
+// -----------------------------------------------------------------------------
+// 型システム基本定義
+// -----------------------------------------------------------------------------
+
 type Type interface {
 	TypeName() string
 	LLVMType() string
@@ -41,15 +45,11 @@ var (
 	TypeFloat32 = &BasicType{Name: "float32", ByteSize: 4, LLVM: "float"}
 	TypeFloat64 = &BasicType{Name: "float64", ByteSize: 8, LLVM: "double"}
 	TypeString  = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"}
-	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"} // C文字列型 (char*)
+	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"}
 	TypeVoid    = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
 
-// -----------------------------------------------------------------------------
-// 組み込み型テーブル（将来の int128 や SIMD 型もここへの追加だけで対応可能）
-// -----------------------------------------------------------------------------
 var BuiltinTypes = map[string]Type{
-	// 整数型
 	"int":     TypeInt,
 	"int64":   TypeInt64,
 	"int32":   TypeInt32,
@@ -62,25 +62,15 @@ var BuiltinTypes = map[string]Type{
 	"uint8":   TypeUint8,
 	"uintptr": TypeUintptr,
 	"byte":    TypeByte,
-
-	// 浮動小数点数型
 	"float":   TypeFloat64,
 	"float32": TypeFloat32,
 	"float64": TypeFloat64,
-
-	// その他基本型
 	"bool":    TypeBool,
 	"string":  TypeString,
 	"cstring": TypeCString,
 	"void":    TypeVoid,
-
-	// 将来の拡張枠（SIMD / 128bit 等）
-	// "int128":  &BasicType{Name: "int128", ByteSize: 16, LLVM: "i128"},
-	// "v256":    &BasicType{Name: "v256", ByteSize: 32, LLVM: "<8 x float>"},
-	// "v512":    &BasicType{Name: "v512", ByteSize: 64, LLVM: "<16 x float>"},
 }
 
-// IsBuiltinType は指定された識別子名が言語組み込み型であるかを高速判定する
 func IsBuiltinType(name string) bool {
 	if _, ok := BuiltinTypes[name]; ok {
 		return true
@@ -88,7 +78,6 @@ func IsBuiltinType(name string) bool {
 	return name == "any" || name == "error"
 }
 
-// LookupBuiltinType は組み込み型マップから型を取得する
 func LookupBuiltinType(name string) (Type, bool) {
 	t, ok := BuiltinTypes[name]
 	return t, ok
@@ -162,9 +151,11 @@ func (t *StructType) Size() int {
 }
 
 type Method struct {
-	Name        string
-	ParamTypes  []Type
-	ReturnTypes []Type
+	Name         string
+	ParamTypes   []Type
+	IsVariadic   bool
+	VariadicElem Type
+	ReturnTypes  []Type
 }
 
 type InterfaceType struct {
@@ -203,6 +194,7 @@ type FuncType struct {
 	ParamTypes      []Type
 	ReturnTypes     []Type
 	IsVariadic      bool
+	VariadicElem    Type // Go スタイルの可変長引数要素型
 	IsExtern        bool
 	Template        *ast.FuncDecl
 	IsSpecialized   bool
@@ -210,10 +202,9 @@ type FuncType struct {
 	Emitted         bool
 	Specializations map[string]*FuncType
 
-	// --- CFunc 用フィールド（追加） ---
-	IsCFunc     bool           // cfunc 宣言フラグ
-	CFuncTarget string         // エイリアス形式の場合の呼び出し先C関数名
-	CFuncAst    *ast.CFuncDecl // 紐づく AST ノード
+	IsCFunc     bool
+	CFuncTarget string
+	CFuncAst    *ast.CFuncDecl
 }
 
 func (t *FuncType) TypeName() string { return "func" }
@@ -278,123 +269,9 @@ func (t *FutureType) TypeName() string {
 func (t *FutureType) LLVMType() string { return "i8*" }
 func (t *FutureType) Size() int        { return 8 }
 
-type Context struct {
-	Structs        map[string]*StructType
-	Interfaces     map[string]*InterfaceType
-	Functions      map[string]*FuncType
-	Globals        map[string]Type
-	Constants      map[string]int64
-	FloatConstants map[string]float64
-	Aliases        map[string]Type
-	GenericTypes   map[string]*ast.TypeDecl
-	GenericFuncs   map[string]*ast.FuncDecl
-	TypeParams     map[string]*TypeParamType
-	typeIDs        map[string]int64
-	nextTypeID     int64
-	HasMapImport   bool
-	Verbose        bool
-}
-
-func NewContext() *Context {
-	ctx := &Context{
-		Structs:        make(map[string]*StructType),
-		Interfaces:     make(map[string]*InterfaceType),
-		Functions:      make(map[string]*FuncType),
-		Globals:        make(map[string]Type),
-		Constants:      make(map[string]int64),
-		FloatConstants: make(map[string]float64),
-		Aliases:        make(map[string]Type),
-		GenericTypes:   make(map[string]*ast.TypeDecl),
-		GenericFuncs:   make(map[string]*ast.FuncDecl),
-		TypeParams:     make(map[string]*TypeParamType),
-		typeIDs:        make(map[string]int64),
-		nextTypeID:     1,
-		Verbose:        false,
-	}
-	ctx.typeIDs["int"] = 1
-	ctx.typeIDs["byte"] = 2
-	ctx.typeIDs["bool"] = 3
-	ctx.typeIDs["string"] = 4
-	ctx.typeIDs["float32"] = 5
-	ctx.typeIDs["float64"] = 6
-	ctx.typeIDs["cstring"] = 7
-	ctx.nextTypeID = 8
-
-	errorIface := &InterfaceType{
-		Name:            "error",
-		Specializations: make(map[string]*InterfaceType),
-		Methods: []Method{
-			{Name: "Error", ParamTypes: []Type{}, ReturnTypes: []Type{TypeString}},
-		},
-	}
-	ctx.Interfaces["error"] = errorIface
-	ctx.Aliases["error"] = errorIface
-
-	// 追加: time パッケージのビルトイン型と定数
-	ctx.Aliases["time_Duration"] = TypeInt
-	ctx.Constants["time_Nanosecond"] = 1
-	ctx.Constants["time_Microsecond"] = 1000
-	ctx.Constants["time_Millisecond"] = 1000000
-	ctx.Constants["time_Second"] = 1000000000
-
-	return ctx
-}
-
-func (c *Context) log(msg string) {
-	if c.Verbose {
-		fmt.Printf("[SEMA] %s\n", msg)
-	}
-}
-
-func (c *Context) GetTypeID(t Type) int64 {
-	if t == nil {
-		return 0
-	}
-	name := t.TypeName()
-	if id, exists := c.typeIDs[name]; exists {
-		return id
-	}
-	id := c.nextTypeID
-	c.nextTypeID++
-	c.typeIDs[name] = id
-	return id
-}
-
-func (c *Context) LookupStruct(name string) (*StructType, string) {
-	if st, ok := c.Structs[name]; ok {
-		return st, name
-	}
-	for k, v := range c.Structs {
-		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
-			return v, k
-		}
-	}
-	return nil, ""
-}
-
-func (c *Context) LookupInterface(name string) (*InterfaceType, string) {
-	if iface, ok := c.Interfaces[name]; ok {
-		return iface, name
-	}
-	for k, v := range c.Interfaces {
-		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
-			return v, k
-		}
-	}
-	return nil, ""
-}
-
-func (c *Context) LookupFunction(name string) (*FuncType, string) {
-	if fn, ok := c.Functions[name]; ok {
-		return fn, name
-	}
-	for k, v := range c.Functions {
-		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
-			return v, k
-		}
-	}
-	return nil, ""
-}
+// -----------------------------------------------------------------------------
+// 型ヘルパー関数
+// -----------------------------------------------------------------------------
 
 func getBaseTypeName(t ast.TypeExpr) string {
 	if t == nil {
@@ -406,6 +283,8 @@ func getBaseTypeName(t ast.TypeExpr) string {
 	case *ast.SliceType:
 		return getBaseTypeName(node.Elem)
 	case *ast.ArrayType:
+		return getBaseTypeName(node.Elem)
+	case *ast.EllipsisType:
 		return getBaseTypeName(node.Elem)
 	case *ast.NamedType:
 		if node.Package != nil {
@@ -436,6 +315,8 @@ func collectTypeParamsFromNode(t ast.TypeExpr, out map[string]bool) {
 		collectTypeParamsFromNode(node.Elem, out)
 	case *ast.ArrayType:
 		collectTypeParamsFromNode(node.Elem, out)
+	case *ast.EllipsisType:
+		collectTypeParamsFromNode(node.Elem, out)
 	case *ast.MapType:
 		collectTypeParamsFromNode(node.Key, out)
 		collectTypeParamsFromNode(node.Value, out)
@@ -444,7 +325,6 @@ func collectTypeParamsFromNode(t ast.TypeExpr, out map[string]bool) {
 			collectTypeParamsFromNode(ta, out)
 		}
 		name := node.Name.Value
-		// ★ 組み込み型なら型パラメータではない
 		if IsBuiltinType(name) {
 			return
 		}
@@ -454,358 +334,22 @@ func collectTypeParamsFromNode(t ast.TypeExpr, out map[string]bool) {
 	}
 }
 
-func (c *Context) ResolveType(expr ast.TypeExpr) Type {
-	if expr == nil {
-		return TypeVoid
-	}
-
-	switch t := expr.(type) {
-	case *ast.NamedType:
-		name := t.Name.Value
-		if t.Package != nil {
-			name = t.Package.Value + "_" + t.Name.Value
-		}
-
-		if strings.HasPrefix(name, "*") {
-			baseName := strings.TrimPrefix(name, "*")
-			return &PointerType{Base: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: baseName}})}
-		}
-		if strings.HasPrefix(name, "[]") {
-			elemName := strings.TrimPrefix(name, "[]")
-			return &SliceType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
-		}
-
-		if tp, ok := c.TypeParams[name]; ok {
-			return tp
-		}
-		if tp, ok := c.TypeParams[t.Name.Value]; ok && t.Package == nil {
-			return tp
-		}
-
-		// ★ 組み込み型マップからO(1)で即座に解決
-		if builtinT, ok := LookupBuiltinType(name); ok {
-			return builtinT
-		}
-		if name == "any" {
-			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
-		}
-		if name == "error" {
-			return c.Interfaces["error"]
-		}
-
-		if st, canonicalName := c.LookupStruct(name); st != nil {
-			// (以降のジェネリクス・構造体解決ロジックへ)
-			if st.IsGeneric() {
-				if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
-					return st
-				}
-
-				if len(t.TypeArgs) == 0 {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' requires type arguments (e.g. %s[...])",
-						t.Token.Line, t.Token.Col, name, name))
-				}
-				if len(t.TypeArgs) != len(st.TypeParams) {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' expects %d type arguments, got %d",
-						t.Token.Line, t.Token.Col, name, len(st.TypeParams), len(t.TypeArgs)))
-				}
-
-				resolvedArgs := make([]Type, len(t.TypeArgs))
-				argNames := []string{}
-				typeMap := make(map[string]Type)
-				for i, arg := range t.TypeArgs {
-					resolvedArg := c.ResolveType(arg)
-					resolvedArgs[i] = resolvedArg
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
-					typeMap[st.TypeParams[i]] = resolvedArg
-				}
-
-				specKey := strings.Join(argNames, "_")
-				if existingSt, ok := st.Specializations[specKey]; ok {
-					return existingSt
-				}
-
-				specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
-				if existingSt, ok := c.Structs[specializedName]; ok {
-					st.Specializations[specKey] = existingSt
-					return existingSt
-				}
-
-				newSt := &StructType{
-					Name:            specializedName,
-					TypeParams:      st.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Fields:          []Field{},
-					Template:        st.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*StructType),
-				}
-				c.Structs[specializedName] = newSt
-				st.Specializations[specKey] = newSt
-
-				if st.Template != nil {
-					if stAst, ok := st.Template.Type.(*ast.StructType); ok {
-						for _, f := range stAst.Fields {
-							fType := c.ResolveTypeWithSubst(f.Type, typeMap)
-							newSt.Fields = append(newSt.Fields, Field{
-								Name:       f.Name.Value,
-								Type:       fType,
-								IsEmbedded: f.IsEmbedded,
-							})
-						}
-					}
-				}
-				return newSt
-			}
-
-			if len(t.TypeArgs) > 0 {
-				panic(fmt.Sprintf("[Sema Error] line %d:%d: non-generic struct '%s' cannot have type arguments",
-					t.Token.Line, t.Token.Col, name))
-			}
-			return st
-		}
-
-		if iface, canonicalName := c.LookupInterface(name); iface != nil {
-			if iface.IsGeneric() {
-				if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
-					return iface
-				}
-
-				if len(t.TypeArgs) == 0 {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic interface '%s' requires type arguments",
-						t.Token.Line, t.Token.Col, name))
-				}
-				if len(t.TypeArgs) != len(iface.TypeParams) {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic interface '%s' expects %d type arguments, got %d",
-						t.Token.Line, t.Token.Col, name, len(iface.TypeParams), len(t.TypeArgs)))
-				}
-
-				resolvedArgs := make([]Type, len(t.TypeArgs))
-				argNames := []string{}
-				typeMap := make(map[string]Type)
-				for i, arg := range t.TypeArgs {
-					resolvedArg := c.ResolveType(arg)
-					resolvedArgs[i] = resolvedArg
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
-					typeMap[iface.TypeParams[i]] = resolvedArg
-				}
-
-				specKey := strings.Join(argNames, "_")
-				if existingIface, ok := iface.Specializations[specKey]; ok {
-					return existingIface
-				}
-
-				specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
-				if existingIface, ok := c.Interfaces[specializedName]; ok {
-					iface.Specializations[specKey] = existingIface
-					return existingIface
-				}
-
-				newIface := &InterfaceType{
-					Name:            specializedName,
-					TypeParams:      iface.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Methods:         []Method{},
-					Template:        iface.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*InterfaceType),
-				}
-				c.Interfaces[specializedName] = newIface
-				iface.Specializations[specKey] = newIface
-
-				if iface.Template != nil {
-					if itAst, ok := iface.Template.Type.(*ast.InterfaceType); ok {
-						for _, m := range itAst.Methods {
-							pts := []Type{}
-							for _, p := range m.ParamTypes {
-								pts = append(pts, c.ResolveTypeWithSubst(p, typeMap))
-							}
-							rts := []Type{}
-							for _, r := range m.ReturnTypes {
-								rts = append(rts, c.ResolveTypeWithSubst(r, typeMap))
-							}
-							newIface.Methods = append(newIface.Methods, Method{
-								Name:        m.Name.Value,
-								ParamTypes:  pts,
-								ReturnTypes: rts,
-							})
-						}
-					}
-				}
-				return newIface
-			}
-
-			if len(t.TypeArgs) > 0 {
-				panic(fmt.Sprintf("[Sema Error] line %d:%d: non-generic interface '%s' cannot have type arguments",
-					t.Token.Line, t.Token.Col, name))
-			}
-			return iface
-		}
-
-		if alias, ok := c.Aliases[name]; ok {
-			return alias
-		}
-
-		panic(fmt.Sprintf("[Sema Error] line %d:%d: undefined type '%s'",
-			t.Token.Line, t.Token.Col, name))
-
-	case *ast.PointerType:
-		return &PointerType{Base: c.ResolveType(t.Base)}
-	case *ast.SliceType:
-		return &SliceType{Elem: c.ResolveType(t.Elem)}
-	case *ast.ArrayType:
-		return &ArrayType{Len: int(t.Len), Elem: c.ResolveType(t.Elem)}
-	case *ast.MapType:
-		return &MapType{Key: c.ResolveType(t.Key), Value: c.ResolveType(t.Value)}
-	case *ast.ChanType:
-		return &ChanType{Elem: c.ResolveType(t.Elem)}
-	case *ast.FutureType:
-		rts := make([]Type, len(t.ReturnTypes))
-		for i, rt := range t.ReturnTypes {
-			rts[i] = c.ResolveType(rt)
-		}
-		return &FutureType{ReturnTypes: rts}
-	case *ast.InterfaceType:
-		methods := []Method{}
-		for _, m := range t.Methods {
-			pts := []Type{}
-			for _, p := range m.ParamTypes {
-				pts = append(pts, c.ResolveType(p))
-			}
-			rts := []Type{}
-			for _, r := range m.ReturnTypes {
-				rts = append(rts, c.ResolveType(r))
-			}
-			methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, ReturnTypes: rts})
-		}
-		return &InterfaceType{Name: "", Methods: methods, Specializations: make(map[string]*InterfaceType)}
-	case *ast.FuncType:
-		fnType := &FuncType{
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			Specializations: make(map[string]*FuncType),
-		}
-		for _, pt := range t.ParamTypes {
-			fnType.ParamTypes = append(fnType.ParamTypes, c.ResolveType(pt))
-		}
-		for _, rt := range t.ReturnTypes {
-			fnType.ReturnTypes = append(fnType.ReturnTypes, c.ResolveType(rt))
-		}
-		return fnType
-	}
-
-	panic(fmt.Sprintf("[Sema Error] unknown type expression node %T", expr))
-}
-
-func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Type {
+func typeToTypeExpr(t Type) ast.TypeExpr {
 	if t == nil {
-		return TypeVoid
+		return nil
 	}
-	switch node := t.(type) {
-	case *ast.NamedType:
-		if node.Package == nil && len(node.TypeArgs) == 0 {
-			if replacement, ok := subst[node.Name.Value]; ok {
-				return replacement
-			}
-		}
-
-		name := node.Name.Value
-		if node.Package != nil {
-			name = node.Package.Value + "_" + node.Name.Value
-		}
-
-		if st, canonicalName := c.LookupStruct(name); st != nil && st.IsGeneric() {
-			var argNames []string
-			var resolvedArgs []Type
-			typeMap := make(map[string]Type)
-
-			if len(node.TypeArgs) > 0 {
-				for i, arg := range node.TypeArgs {
-					resolvedArg := c.ResolveTypeWithSubst(arg, subst)
-					resolvedArgs = append(resolvedArgs, resolvedArg)
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
-					if i < len(st.TypeParams) {
-						typeMap[st.TypeParams[i]] = resolvedArg
-					}
-				}
-			} else if len(subst) > 0 {
-				for _, tp := range st.TypeParams {
-					if resolvedArg, ok := subst[tp]; ok {
-						resolvedArgs = append(resolvedArgs, resolvedArg)
-						argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
-						typeMap[tp] = resolvedArg
-					}
-				}
-			}
-
-			if len(argNames) == len(st.TypeParams) {
-				specKey := strings.Join(argNames, "_")
-				if existingSt, ok := st.Specializations[specKey]; ok {
-					return existingSt
-				}
-
-				specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
-				if existingSt, ok := c.Structs[specializedName]; ok {
-					st.Specializations[specKey] = existingSt
-					return existingSt
-				}
-
-				newSt := &StructType{
-					Name:            specializedName,
-					TypeParams:      st.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Fields:          []Field{},
-					Template:        st.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*StructType),
-				}
-				c.Structs[specializedName] = newSt
-				st.Specializations[specKey] = newSt
-
-				if st.Template != nil {
-					if stAst, ok := st.Template.Type.(*ast.StructType); ok {
-						for _, f := range stAst.Fields {
-							fType := c.ResolveTypeWithSubst(f.Type, typeMap)
-							newSt.Fields = append(newSt.Fields, Field{
-								Name:       f.Name.Value,
-								Type:       fType,
-								IsEmbedded: f.IsEmbedded,
-							})
-						}
-					}
-				}
-				return newSt
-			}
-		}
-
-		return c.ResolveType(node)
-	case *ast.FuncType:
-		fnType := &FuncType{
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			Specializations: make(map[string]*FuncType),
-		}
-		for _, pt := range node.ParamTypes {
-			fnType.ParamTypes = append(fnType.ParamTypes, c.ResolveTypeWithSubst(pt, subst))
-		}
-		for _, rt := range node.ReturnTypes {
-			fnType.ReturnTypes = append(fnType.ReturnTypes, c.ResolveTypeWithSubst(rt, subst))
-		}
-		return fnType
-	case *ast.PointerType:
-		return &PointerType{Base: c.ResolveTypeWithSubst(node.Base, subst)}
-	case *ast.SliceType:
-		return &SliceType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
-	case *ast.ArrayType:
-		return &ArrayType{Len: int(node.Len), Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
-	case *ast.MapType:
-		return &MapType{
-			Key:   c.ResolveTypeWithSubst(node.Key, subst),
-			Value: c.ResolveTypeWithSubst(node.Value, subst),
-		}
-	case *ast.ChanType:
-		return &ChanType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+	switch v := t.(type) {
+	case *PointerType:
+		return &ast.PointerType{Base: typeToTypeExpr(v.Base)}
+	case *SliceType:
+		return &ast.SliceType{Elem: typeToTypeExpr(v.Elem)}
+	case *ArrayType:
+		return &ast.ArrayType{Len: int64(v.Len), Elem: typeToTypeExpr(v.Elem)}
+	case *MapType:
+		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value)}
+	default:
+		return &ast.NamedType{Name: &ast.Identifier{Value: v.TypeName()}}
 	}
-	return c.ResolveType(t)
 }
 
 func DetermineCast(from, to Type) (ast.CastKind, bool) {
@@ -856,340 +400,62 @@ func DetermineCast(from, to Type) (ast.CastKind, bool) {
 	return 0, false
 }
 
-func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Type {
-	if expr == nil {
-		return TypeVoid
-	}
-
-	switch e := expr.(type) {
-	case *ast.IntegerLiteral:
-		return TypeInt
-	case *ast.FloatLiteral:
-		return TypeFloat64
-	case *ast.StringLiteral:
-		return TypeString
-	case *ast.NilLiteral:
-		return &PointerType{Base: TypeByte}
-	case *ast.Identifier:
-		switch e.Value {
-		case "true", "false":
-			return TypeBool
-		}
-		if t, ok := locals[e.Value]; ok {
-			return t
-		}
-		if t, ok := c.Globals[e.Value]; ok {
-			return t
-		}
-		if _, ok := c.Constants[e.Value]; ok {
-			return TypeInt
-		}
-		if _, ok := c.FloatConstants[e.Value]; ok {
-			return TypeFloat64
-		}
-		if fn, ok := c.Functions[e.Value]; ok {
-			return fn
-		}
-		return TypeInt
-
-	case *ast.ImplicitCastExpr:
-		return c.ResolveType(e.TargetType)
-
-	case *ast.AsyncExpr:
-		fnType := c.InferExprType(e.Fn, locals)
-		if ft, ok := fnType.(*FuncType); ok {
-			return &FutureType{ReturnTypes: ft.ReturnTypes}
-		}
-		return &FutureType{ReturnTypes: []Type{TypeVoid}}
-
-	case *ast.ReceiveExpr:
-		innerType := c.InferExprType(e.Expr, locals)
-		if fut, ok := innerType.(*FutureType); ok {
-			if len(fut.ReturnTypes) == 1 {
-				return fut.ReturnTypes[0]
-			} else if len(fut.ReturnTypes) > 1 {
-				return &TupleType{Types: fut.ReturnTypes}
-			}
-			return TypeVoid
-		}
-		if ch, ok := innerType.(*ChanType); ok {
-			return ch.Elem
-		}
-		return innerType
-
-	case *ast.PrefixExpr:
-		base := c.InferExprType(e.Right, locals)
-		switch e.Operator {
-		case "&":
-			return &PointerType{Base: base}
-		case "*":
-			if pt, ok := base.(*PointerType); ok {
-				return pt.Base
-			}
-			return TypeInt
-		case "!":
-			return TypeBool
-		case "-", "^":
-			return base
-		}
-
-	case *ast.BinaryExpr:
-		switch e.Operator {
-		case "==", "!=", "<", "<=", ">", ">=":
-			return TypeBool
-		case "&&", "||":
-			return TypeBool
-		case "+":
-			lt := c.InferExprType(e.Left, locals)
-			rt := c.InferExprType(e.Right, locals)
-			if lt == TypeString || rt == TypeString {
-				return TypeString
-			}
-			if lt == TypeFloat64 || rt == TypeFloat64 {
-				return TypeFloat64
-			}
-			return lt
-		default:
-			lt := c.InferExprType(e.Left, locals)
-			rt := c.InferExprType(e.Right, locals)
-			if lt == TypeFloat64 || rt == TypeFloat64 {
-				return TypeFloat64
-			}
-			return lt
-		}
-
-	case *ast.MemberExpr:
-		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
-			qualified := pkgId.Value + "_" + e.Field.Value
-			if t, ok := c.Globals[qualified]; ok {
-				return t
-			}
-			if _, ok := c.Constants[qualified]; ok {
-				return TypeInt
-			}
-			if _, ok := c.FloatConstants[qualified]; ok {
-				return TypeFloat64
-			}
-			if fn, ok := c.Functions[qualified]; ok {
-				return fn
-			}
-		}
-		objType := c.InferExprType(e.Object, locals)
-		if pt, ok := objType.(*PointerType); ok {
-			objType = pt.Base
-		}
-		if st, ok := objType.(*StructType); ok {
-			for _, f := range st.Fields {
-				if f.Name == e.Field.Value {
-					return f.Type
-				}
-			}
-		}
-
-	case *ast.IndexExpr:
-		lt := c.InferExprType(e.Left, locals)
-		if t, err := c.ResolveIndexExprType(lt, e.Index); err == nil {
-			return t
-		}
-
-	case *ast.SliceExpr:
-		lt := c.InferExprType(e.Left, locals)
-		if lt == TypeString {
-			return TypeString
-		}
-		if sl, ok := lt.(*SliceType); ok {
-			return sl
-		}
-		if ar, ok := lt.(*ArrayType); ok {
-			return &SliceType{Elem: ar.Elem}
-		}
-		return lt
-
-	case *ast.TypeAssertExpr:
-		if e.Target != nil {
-			return c.ResolveType(e.Target)
-		}
-		return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
-
-	case *ast.CallExpr:
-		if len(e.Args) == 1 {
-			if castT := c.resolveTypeFromExpr(e.Function); castT != nil && castT != TypeVoid {
-				if _, isFn := castT.(*FuncType); !isFn {
-					return castT
-				}
-			}
-		}
-		if id, ok := e.Function.(*ast.Identifier); ok {
-			switch id.Value {
-			case "len", "cap":
-				return TypeInt
-			case "string":
-				return TypeString
-			case "make":
-				if len(e.Args) > 0 {
-					return c.ResolveType(e.Args[0].(ast.TypeExpr))
-				}
-			case "append":
-				if len(e.Args) > 0 {
-					return c.InferExprType(e.Args[0], locals)
-				}
-			}
-		}
-		fnType := c.InferExprType(e.Function, locals)
-		if ft, ok := fnType.(*FuncType); ok {
-			if len(ft.ReturnTypes) == 1 {
-				return ft.ReturnTypes[0]
-			} else if len(ft.ReturnTypes) > 1 {
-				return &TupleType{Types: ft.ReturnTypes}
-			}
-			return TypeVoid
-		}
-
-	case *ast.StructLiteral:
-		return c.ResolveType(e.Type)
-
-	case *ast.ArrayLiteral:
-		return c.ResolveType(e.Type)
-
-	case *ast.SliceLiteral:
-		return c.ResolveType(e.Type)
-
-	case *ast.FuncLit:
-		ft := &FuncType{
-			ParamTypes:      make([]Type, len(e.Params)),
-			ReturnTypes:     make([]Type, len(e.ReturnTypes)),
-			IsVariadic:      e.IsVariadic,
-			Specializations: make(map[string]*FuncType),
-		}
-		for i, p := range e.Params {
-			ft.ParamTypes[i] = c.ResolveType(p.Type)
-		}
-		for i, rt := range e.ReturnTypes {
-			ft.ReturnTypes[i] = c.ResolveType(rt)
-		}
-		return ft
-	}
-
-	return TypeInt
-}
-
-func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
-	if e == nil {
-		return nil
-	}
-	if te, ok := e.(ast.TypeExpr); ok {
-		return c.ResolveType(te)
-	}
-	if id, ok := e.(*ast.Identifier); ok {
-		switch id.Value {
-		case "int":
-			return TypeInt
-		case "int64":
-			return TypeInt64
-		case "int32":
-			return TypeInt32
-		case "int16":
-			return TypeInt16
-		case "int8":
-			return TypeInt8
-		case "uint":
-			return TypeUint
-		case "uint64":
-			return TypeUint64
-		case "uint32":
-			return TypeUint32
-		case "uint16":
-			return TypeUint16
-		case "uint8":
-			return TypeUint8
-		case "uintptr":
-			return TypeUintptr
-		case "byte":
-			return TypeByte
-		case "bool":
-			return TypeBool
-		case "float32":
-			return TypeFloat32
-		case "float64", "float":
-			return TypeFloat64
-		case "string":
-			return TypeString
-		case "cstring":
-			return TypeCString
-		case "void":
-			return TypeVoid
-		case "any":
-			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
-		}
-		if st, _ := c.LookupStruct(id.Value); st != nil {
-			return st
-		}
-		if iface, _ := c.LookupInterface(id.Value); iface != nil {
-			return iface
-		}
-	}
-	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
-		base := c.resolveTypeFromExpr(pref.Right)
-		if base != nil && base != TypeVoid {
-			return &PointerType{Base: base}
-		}
-	}
-	return nil
-}
-
-func typeToTypeExpr(t Type) ast.TypeExpr {
+func isTypeParamExpr(t ast.TypeExpr) bool {
 	if t == nil {
-		return nil
+		return false
 	}
-	switch v := t.(type) {
-	case *PointerType:
-		return &ast.PointerType{
-			Base: typeToTypeExpr(v.Base),
+	switch node := t.(type) {
+	case *ast.NamedType:
+		if node.Package == nil && len(node.TypeArgs) == 0 {
+			name := node.Name.Value
+			if IsBuiltinType(name) {
+				return false
+			}
+			if len(name) <= 2 {
+				return true
+			}
 		}
-	case *SliceType:
-		return &ast.SliceType{
-			Elem: typeToTypeExpr(v.Elem),
+		for _, ta := range node.TypeArgs {
+			if isTypeParamExpr(ta) {
+				return true
+			}
 		}
-	case *ArrayType:
-		return &ast.ArrayType{
-			Len:  int64(v.Len),
-			Elem: typeToTypeExpr(v.Elem),
-		}
-	case *MapType:
-		return &ast.MapType{
-			Key:   typeToTypeExpr(v.Key),
-			Value: typeToTypeExpr(v.Value),
-		}
-	default:
-		return &ast.NamedType{
-			Name: &ast.Identifier{Value: v.TypeName()},
-		}
+	case *ast.PointerType:
+		return isTypeParamExpr(node.Base)
+	case *ast.SliceType:
+		return isTypeParamExpr(node.Elem)
+	case *ast.EllipsisType:
+		return isTypeParamExpr(node.Elem)
 	}
+	return false
 }
 
-func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[string]Type) ast.Expression {
-	if expr == nil || targetType == nil {
-		return expr
+func IsGenericFuncDecl(fd *ast.FuncDecl) bool {
+	if fd == nil {
+		return false
 	}
-	actualType := c.InferExprType(expr, locals)
-	kind, needed := DetermineCast(actualType, targetType)
-	if !needed {
-		return expr
+	if len(fd.TypeParams) > 0 {
+		return true
 	}
-
-	targetNode := typeToTypeExpr(targetType)
-
-	return &ast.ImplicitCastExpr{
-		Token: token.Token{
-			Type:    token.IMPLICIT_CAST,
-			Literal: "cast",
-		},
-		Expr:       expr,
-		Kind:       kind,
-		TargetType: targetNode,
+	if fd.Receiver != nil {
+		t := fd.Receiver.Type
+		if pt, ok := t.(*ast.PointerType); ok {
+			t = pt.Base
+		}
+		if nt, ok := t.(*ast.NamedType); ok {
+			for _, ta := range nt.TypeArgs {
+				if isTypeParamExpr(ta) {
+					return true
+				}
+			}
+		}
 	}
+	return false
 }
 
+// -----------------------------------------------------------------------------
+// 意味解析メインパイプライン (Analyze)
+// -----------------------------------------------------------------------------
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
@@ -1264,6 +530,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				if len(tParams) > 0 {
 					ctx.GenericTypes[td.Name.Value] = td
 				}
+			} else {
+				// 基本型エイリアス (typedef) の先行登録
+				ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
 			}
 		} else if fd, ok := decl.(*ast.FuncDecl); ok {
 			fnName := fd.Name.Value
@@ -1273,20 +542,18 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				tpSet[tp.Name.Value] = true
 			}
 
+			var origRecvName string = ""
 			if fd.Receiver != nil {
 				collectTypeParamsFromNode(fd.Receiver.Type, tpSet)
-				t := fd.Receiver.Type
-				if pt, ok := t.(*ast.PointerType); ok {
-					t = pt.Base
+				origRecvName = getBaseTypeName(fd.Receiver.Type)
+				recvTypeName := origRecvName
+				if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
+					recvTypeName = canonical
+				} else if alias, _ := ctx.LookupAlias(recvTypeName); alias != nil {
+					recvTypeName = alias.TypeName()
 				}
-				if nt, ok := t.(*ast.NamedType); ok {
-					recvName := nt.Name.Value
-					if nt.Package != nil {
-						recvName = nt.Package.Value + "_" + nt.Name.Value
-					}
-					if !strings.Contains(fnName, recvName) {
-						fnName = recvName + "_" + fnName
-					}
+				if recvTypeName != "" {
+					fnName = CanonicalMethodName(recvTypeName, fnName)
 				}
 			}
 			for _, p := range fd.Params {
@@ -1324,11 +591,17 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				Specializations: make(map[string]*FuncType),
 			}
 			ctx.Functions[fnName] = fnType
+			if origRecvName != "" {
+				aliasMethodName := CanonicalMethodName(origRecvName, fd.Name.Value)
+				if aliasMethodName != fnName {
+					ctx.Functions[aliasMethodName] = fnType
+				}
+			}
 			if len(tParams) > 0 {
 				ctx.GenericFuncs[fnName] = fd
 				ctx.GenericFuncs[fd.Name.Value] = fd
 			}
-		} else if cfd, ok := decl.(*ast.CFuncDecl); ok { // 追加: cfunc の仮登録
+		} else if cfd, ok := decl.(*ast.CFuncDecl); ok {
 			targetC := ""
 			if cfd.TargetCName != nil {
 				targetC = cfd.TargetCName.Value
@@ -1337,6 +610,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				Name:            cfd.Name.Value,
 				ParamTypes:      []Type{},
 				ReturnTypes:     []Type{},
+				IsVariadic:      cfd.IsVariadic,
 				IsCFunc:         true,
 				CFuncTarget:     targetC,
 				CFuncAst:        cfd,
@@ -1453,14 +727,28 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				methods := []Method{}
 				for _, m := range it.Methods {
 					pts := []Type{}
-					for _, p := range m.ParamTypes {
-						pts = append(pts, ctx.ResolveType(p))
+					var varElem Type = nil
+					for i, p := range m.ParamTypes {
+						resolved := ctx.ResolveType(p)
+						if m.IsVariadic && i == len(m.ParamTypes)-1 {
+							if _, isSl := resolved.(*SliceType); !isSl {
+								resolved = &SliceType{Elem: resolved}
+							}
+							varElem = resolved.(*SliceType).Elem
+						}
+						pts = append(pts, resolved)
 					}
 					rts := []Type{}
 					for _, r := range m.ReturnTypes {
 						rts = append(rts, ctx.ResolveType(r))
 					}
-					methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, ReturnTypes: rts})
+					methods = append(methods, Method{
+						Name:         m.Name.Value,
+						ParamTypes:   pts,
+						IsVariadic:   m.IsVariadic,
+						VariadicElem: varElem,
+						ReturnTypes:  rts,
+					})
 				}
 				ctx.Interfaces[td.Name.Value].Methods = methods
 			} else if st, ok := td.Type.(*ast.StructType); ok {
@@ -1480,21 +768,35 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	}
 
 	// Pass 2: 定数、グローバル変数、非ジェネリック関数の確定
+	unresolvedConsts := []*ast.ConstDecl{}
+	for _, decl := range prog.Decls {
+		if cd, ok := decl.(*ast.ConstDecl); ok {
+			unresolvedConsts = append(unresolvedConsts, cd)
+		}
+	}
+
+	for len(unresolvedConsts) > 0 {
+		progress := false
+		remaining := []*ast.ConstDecl{}
+		for _, cd := range unresolvedConsts {
+			if iVal, ok := ctx.evalConstInt(cd.Value); ok {
+				ctx.Constants[cd.Name.Value] = iVal
+				progress = true
+			} else if fVal, ok := ctx.evalConstFloat(cd.Value); ok {
+				ctx.FloatConstants[cd.Name.Value] = fVal
+				progress = true
+			} else {
+				remaining = append(remaining, cd)
+			}
+		}
+		if !progress {
+			break
+		}
+		unresolvedConsts = remaining
+	}
+
 	for _, decl := range prog.Decls {
 		switch d := decl.(type) {
-		case *ast.ConstDecl:
-			if il, ok := d.Value.(*ast.IntegerLiteral); ok {
-				ctx.Constants[d.Name.Value] = il.Value
-			} else if fl, ok := d.Value.(*ast.FloatLiteral); ok {
-				ctx.FloatConstants[d.Name.Value] = fl.Value
-			} else if pe, ok := d.Value.(*ast.PrefixExpr); ok && pe.Operator == "-" {
-				if il, ok := pe.Right.(*ast.IntegerLiteral); ok {
-					ctx.Constants[d.Name.Value] = -il.Value
-				} else if fl, ok := pe.Right.(*ast.FloatLiteral); ok {
-					ctx.FloatConstants[d.Name.Value] = -fl.Value
-				}
-			}
-
 		case *ast.VarDecl:
 			var gType Type = TypeInt
 			if d.Type != nil {
@@ -1505,20 +807,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		case *ast.FuncDecl:
 			fnName := d.Name.Value
 			if d.Receiver != nil {
-				recvTypeName := ""
-				t := d.Receiver.Type
-				if pt, ok := t.(*ast.PointerType); ok {
-					t = pt.Base
-				}
-				if nt, ok := t.(*ast.NamedType); ok {
-					recvTypeName = nt.Name.Value
-					if nt.Package != nil {
-						recvTypeName = nt.Package.Value + "_" + nt.Name.Value
-					}
-				}
-				if recvTypeName != "" && !strings.Contains(fnName, recvTypeName) {
-					fnName = recvTypeName + "_" + fnName
-				}
+				recvType := ctx.ResolveType(d.Receiver.Type)
+				recvTypeName := strings.TrimPrefix(recvType.TypeName(), "*")
+				fnName = CanonicalMethodName(recvTypeName, fnName)
 			}
 
 			fnType := ctx.Functions[fnName]
@@ -1537,8 +828,16 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				paramTypes = append(paramTypes, recvType)
 			}
 
+			var variadicElem Type = nil
 			for _, p := range d.Params {
-				paramTypes = append(paramTypes, ctx.ResolveType(p.Type))
+				pType := ctx.ResolveType(p.Type)
+				if p.IsVariadic {
+					if _, isSlice := pType.(*SliceType); !isSlice {
+						pType = &SliceType{Elem: pType}
+					}
+					variadicElem = pType.(*SliceType).Elem
+				}
+				paramTypes = append(paramTypes, pType)
 			}
 
 			returnTypes := []Type{}
@@ -1549,8 +848,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			fnType.IsMethod = isMethod
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
+			fnType.IsVariadic = d.IsVariadic
+			fnType.VariadicElem = variadicElem
 
-		case *ast.CFuncDecl: // 追加: cfunc の引数・戻り値型の確定
+		case *ast.CFuncDecl:
 			fnType := ctx.Functions[d.Name.Value]
 			if fnType == nil {
 				continue
@@ -1565,6 +866,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			}
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
+			fnType.IsVariadic = d.IsVariadic
 		}
 	}
 
@@ -1577,11 +879,53 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	return ctx, nil
 }
 
+// CanonicalMethodName はレシーバ型名と関数名から一意のメソッドシンボル名を生成する
+func CanonicalMethodName(recvTypeName, fnName string) string {
+	rawRecv := strings.TrimPrefix(recvTypeName, "*")
+	cleanMethod := fnName
+
+	if strings.HasPrefix(cleanMethod, rawRecv+"_") {
+		cleanMethod = strings.TrimPrefix(cleanMethod, rawRecv+"_")
+	}
+
+	if strings.Contains(rawRecv, "_") {
+		pkg := strings.Split(rawRecv, "_")[0]
+		if strings.HasPrefix(cleanMethod, pkg+"_") {
+			cleanMethod = strings.TrimPrefix(cleanMethod, pkg+"_")
+		}
+	} else if idx := strings.LastIndex(cleanMethod, "_"); idx != -1 {
+		cleanMethod = cleanMethod[idx+1:]
+	}
+
+	return rawRecv + "_" + cleanMethod
+}
+
+// -----------------------------------------------------------------------------
+// エスケープ解析 & 暗黙キャスト挿入
+// -----------------------------------------------------------------------------
+
 func runEscapeAnalysis(prog *ast.Program) {
 	for _, decl := range prog.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-			// ... 既存の FuncDecl 解析 ...
-		} else if cfd, ok := decl.(*ast.CFuncDecl); ok && cfd.Body != nil { // 追加
+			varDecls := make(map[string]*ast.VarDecl)
+			paramDecls := make(map[string]*ast.ParamDecl)
+
+			for _, p := range fn.Params {
+				paramDecls[p.Name.Value] = p
+			}
+
+			collectDeclsInBlock(fn.Body, varDecls)
+			capturedNames := CollectAllCapturesInBlock(fn.Body)
+
+			for name := range capturedNames {
+				if vd, ok := varDecls[name]; ok {
+					vd.IsEscaped = true
+				}
+				if pd, ok := paramDecls[name]; ok {
+					pd.IsEscaped = true
+				}
+			}
+		} else if cfd, ok := decl.(*ast.CFuncDecl); ok && cfd.Body != nil {
 			varDecls := make(map[string]*ast.VarDecl)
 			paramDecls := make(map[string]*ast.ParamDecl)
 
@@ -1739,7 +1083,6 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			}
 		case *ast.ExprStmt:
 			walkExpr(st.Expr)
-		// 追加: チャネル送信文の子ノード走査
 		case *ast.SendStmt:
 			walkExpr(st.Chan)
 			walkExpr(st.Value)
@@ -1999,7 +1342,6 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 		return
 	}
 
-	// ブロックスコープの分離（親スコープの locals をシャドーイング可能に複製）
 	blockLocals := make(map[string]Type)
 	for k, v := range locals {
 		blockLocals[k] = v
@@ -2026,7 +1368,6 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 				(s.Token.Type == token.VAR) || (s.Token.Literal == "var") || (s.Type != nil)
 
 			if isDefine {
-				// 短縮変数定義 (:=) の場合: 右辺の推論型を左辺の変数として登録
 				for i, left := range s.Left {
 					var actualType Type = TypeInt
 					if s.Type != nil {
@@ -2047,7 +1388,6 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 					}
 				}
 			} else {
-				// 通常代入 (=) の場合: 既存変数の型に合わせて右辺をキャスト
 				for i, r := range s.Right {
 					if i < len(s.Left) {
 						targetType := ctx.InferExprType(s.Left[i], blockLocals)
@@ -2128,9 +1468,33 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 	case *ast.CallExpr:
 		fnType := ctx.InferExprType(expr.Function, locals)
 		if ft, ok := fnType.(*FuncType); ok {
-			for i, arg := range expr.Args {
-				if i < len(ft.ParamTypes) {
-					expr.Args[i] = ctx.CoerceExpr(arg, ft.ParamTypes[i], locals)
+			if ft.IsVariadic && !ft.IsCFunc && len(ft.ParamTypes) > 0 {
+				fixedCount := len(ft.ParamTypes) - 1
+				for i := 0; i < fixedCount && i < len(expr.Args); i++ {
+					expr.Args[i] = ctx.CoerceExpr(expr.Args[i], ft.ParamTypes[i], locals)
+				}
+				if expr.HasEllipsis {
+					if len(expr.Args) > fixedCount {
+						expr.Args[fixedCount] = ctx.CoerceExpr(expr.Args[fixedCount], ft.ParamTypes[fixedCount], locals)
+					}
+				} else {
+					elemType := ft.VariadicElem
+					if elemType == nil {
+						if sl, isSl := ft.ParamTypes[fixedCount].(*SliceType); isSl {
+							elemType = sl.Elem
+						}
+					}
+					if elemType != nil {
+						for i := fixedCount; i < len(expr.Args); i++ {
+							expr.Args[i] = ctx.CoerceExpr(expr.Args[i], elemType, locals)
+						}
+					}
+				}
+			} else {
+				for i, arg := range expr.Args {
+					if i < len(ft.ParamTypes) {
+						expr.Args[i] = ctx.CoerceExpr(arg, ft.ParamTypes[i], locals)
+					}
 				}
 			}
 		}
@@ -2148,13 +1512,6 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 	case *ast.AsyncExpr:
 		insertCastsInExpr(expr.Fn, locals, ctx)
 	}
-}
-
-func (c *Context) EnsureMapSupported(line, col int) error {
-	if !c.HasMapImport {
-		return fmt.Errorf("line %d:%d: map syntax requires importing 'std/maps'", line, col)
-	}
-	return nil
 }
 
 func validateMapUsage(node ast.Node, ctx *Context) error {
@@ -2188,6 +1545,9 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		}
 		if sl, ok := t.(*ast.SliceType); ok {
 			return checkType(sl.Elem)
+		}
+		if el, ok := t.(*ast.EllipsisType); ok {
+			return checkType(el.Elem)
 		}
 		if ar, ok := t.(*ast.ArrayType); ok {
 			return checkType(ar.Elem)
@@ -2300,7 +1660,6 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 					return err
 				}
 			}
-		// 追加: チャネル送信文の妥当性検査
 		case *ast.SendStmt:
 			if err := checkExpr(st.Chan); err != nil {
 				return err
@@ -2399,147 +1758,4 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		return checkStmt(vd)
 	}
 	return nil
-}
-
-func (c *Context) CheckMapBehavior(t Type) (Type, Type, bool) {
-	if t == nil {
-		return nil, nil, false
-	}
-
-	typeName := t.TypeName()
-	typeName = strings.TrimPrefix(typeName, "*")
-
-	baseTypeName := typeName
-	if idx := strings.Index(typeName, "__"); idx != -1 {
-		baseTypeName = typeName[:idx]
-	}
-
-	st, _ := c.LookupStruct(typeName)
-	if st == nil {
-		st, _ = c.LookupStruct(baseTypeName)
-	}
-	if st == nil {
-		return nil, nil, false
-	}
-
-	if len(st.TypeArgs) >= 2 {
-		return st.TypeArgs[0], st.TypeArgs[1], true
-	}
-
-	setFn, _ := c.LookupFunction(typeName + "_Set")
-	if setFn == nil {
-		setFn, _ = c.LookupFunction(baseTypeName + "_Set")
-	}
-	getFn, _ := c.LookupFunction(typeName + "_Get")
-	if getFn == nil {
-		getFn, _ = c.LookupFunction(baseTypeName + "_Get")
-	}
-	delFn, _ := c.LookupFunction(typeName + "_Delete")
-	if delFn == nil {
-		delFn, _ = c.LookupFunction(baseTypeName + "_Delete")
-	}
-	lenFn, _ := c.LookupFunction(typeName + "_Len")
-	if lenFn == nil {
-		lenFn, _ = c.LookupFunction(baseTypeName + "_Len")
-	}
-
-	if setFn == nil || getFn == nil || delFn == nil || lenFn == nil {
-		return nil, nil, false
-	}
-
-	keyIdx := 1
-	valIdx := 2
-	if !setFn.IsMethod && len(setFn.ParamTypes) == 2 {
-		keyIdx = 0
-		valIdx = 1
-	}
-
-	if len(setFn.ParamTypes) <= valIdx {
-		return nil, nil, false
-	}
-	keyType := setFn.ParamTypes[keyIdx]
-	valType := setFn.ParamTypes[valIdx]
-
-	return keyType, valType, true
-}
-
-func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) (Type, error) {
-	if leftType == nil {
-		return TypeVoid, fmt.Errorf("cannot index nil type")
-	}
-
-	if mp, ok := leftType.(*MapType); ok {
-		return mp.Value, nil
-	}
-
-	if _, valType, ok := c.CheckMapBehavior(leftType); ok {
-		return valType, nil
-	}
-
-	if sl, ok := leftType.(*SliceType); ok {
-		return sl.Elem, nil
-	}
-	if ar, ok := leftType.(*ArrayType); ok {
-		return ar.Elem, nil
-	}
-	if pt, ok := leftType.(*PointerType); ok {
-		return pt.Base, nil
-	}
-	if leftType == TypeString {
-		return TypeByte, nil
-	}
-
-	return TypeVoid, fmt.Errorf("type '%s' does not support indexing or MapBehavior interface", leftType.TypeName())
-}
-
-func isTypeParamExpr(t ast.TypeExpr) bool {
-	if t == nil {
-		return false
-	}
-	switch node := t.(type) {
-	case *ast.NamedType:
-		if node.Package == nil && len(node.TypeArgs) == 0 {
-			name := node.Name.Value
-			// ★ 組み込み型なら型パラメータではない
-			if IsBuiltinType(name) {
-				return false
-			}
-			if len(name) <= 2 {
-				return true
-			}
-		}
-		for _, ta := range node.TypeArgs {
-			if isTypeParamExpr(ta) {
-				return true
-			}
-		}
-	case *ast.PointerType:
-		return isTypeParamExpr(node.Base)
-	case *ast.SliceType:
-		return isTypeParamExpr(node.Elem)
-	}
-	return false
-}
-
-func IsGenericFuncDecl(fd *ast.FuncDecl) bool {
-	if fd == nil {
-		return false
-	}
-	if len(fd.TypeParams) > 0 {
-		return true
-	}
-	if fd.Receiver != nil {
-		t := fd.Receiver.Type
-		if pt, ok := t.(*ast.PointerType); ok {
-			t = pt.Base
-		}
-		if nt, ok := t.(*ast.NamedType); ok {
-			for _, ta := range nt.TypeArgs {
-				if isTypeParamExpr(ta) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }

@@ -8,29 +8,64 @@ const (
 	Microsecond          = 1000 * Nanosecond
 	Millisecond          = 1000 * Microsecond
 	Second               = 1000 * Millisecond
+	Minute               = 60 * Second
+	Hour                 = 60 * Minute
 )
 
-// OSネイティブAPIバインディング（libcフリー）
-// Windows: Kernel32.dll Sleep(DWORD dwMilliseconds)
-// System V (Linux/macOS): nanosleep システムコールラッパー
+// Time は特定の時刻を表す型
+type Time struct {
+	nsec int64
+}
+
+// OSネイティブAPI / C標準関数の宣言
+func os_now_ns() int64
 func os_sleep_ms(ms uint32)
 
-// Sleep は指定した期間、現在のスレッドをブロックして待機する
+// Now は現在時刻を返します
+func Now() Time {
+	return Time{nsec: os_now_ns()}
+}
+
+// Sub は時刻 t と u の差分（t - u）を Duration として返します
+func Sub(t Time, u Time) Duration {
+	return Duration(t.nsec - u.nsec)
+}
+
+func (t Time) Sub(u Time) Duration {
+	return Duration(t.nsec - u.nsec)
+}
+
+// Since は指定した時刻からの経過時間を返します
+// メソッドチェーンを経由せず直接ナノ秒差分を計算
+func Since(t Time) Duration {
+	return Duration(os_now_ns() - t.nsec)
+}
+
+// Sleep は指定した期間、現在のスレッドをブロックして待機します
 func Sleep(d Duration) {
 	if d <= 0 {
 		return
 	}
 
-	// ナノ秒からミリ秒へ丸め計算
 	ms := uint32(d / Millisecond)
 	if ms == 0 && d > 0 {
-		ms = 1 // 1ms未満の正の値は最低1ms待機
+		ms = 1
 	}
 
 	os_sleep_ms(ms)
 }
 
-// Since は指定した時刻からの経過時間を返す（必要に応じた拡張用）
+// Milliseconds は Duration をミリ秒単位の数値として返します
 func (d Duration) Milliseconds() int64 {
 	return int64(d / Millisecond)
+}
+
+// Seconds は Duration を秒単位の浮動小数点数として返します
+func (d Duration) Seconds() float64 {
+	return float64(d) / float64(Second)
+}
+
+// Nanoseconds は Duration をナノ秒単位の数値として返します
+func (d Duration) Nanoseconds() int64 {
+	return int64(d)
 }

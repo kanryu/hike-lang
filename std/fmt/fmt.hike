@@ -1,6 +1,12 @@
 package fmt
 
-func printf(format *byte, ...) int
+// 非公開のC標準関数宣言 (C ABI 可変長)
+func printf(format string, ...) int
+
+// 外部公開する Printf 関数
+func Printf(format string, ...) int {
+	return printf(format, ...)
+}
 
 // PrintStr: 文字列を出力します
 func PrintStr(s *byte) {
@@ -29,7 +35,7 @@ func PrintLn(s *byte) {
 	printf("%s\n", s)
 }
 
-// Println: Go標準互換の改行付き文字列出力 (string 版)
+// Println: 改行付き文字列出力 (string 版)
 func Println(s string) {
 	printf("%s\n", s)
 }
