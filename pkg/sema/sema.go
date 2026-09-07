@@ -124,6 +124,7 @@ type Field struct {
 
 type StructType struct {
 	Name            string
+	InternalKey     string
 	TypeParams      []string
 	TypeArgs        []Type
 	Fields          []Field
@@ -152,6 +153,7 @@ func (t *StructType) Size() int {
 
 type Method struct {
 	Name         string
+	InternalKey  string
 	ParamTypes   []Type
 	IsVariadic   bool
 	VariadicElem Type
@@ -160,6 +162,7 @@ type Method struct {
 
 type InterfaceType struct {
 	Name            string
+	InternalKey     string
 	TypeParams      []string
 	TypeArgs        []Type
 	Methods         []Method
@@ -188,13 +191,15 @@ func (t *InterfaceType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.Is
 
 type FuncType struct {
 	Name            string
+	InternalKey     string
+	IRName          string
 	TypeParams      []string
 	TypeArgs        []Type
 	IsMethod        bool
 	ParamTypes      []Type
 	ReturnTypes     []Type
 	IsVariadic      bool
-	VariadicElem    Type // Go スタイルの可変長引数要素型
+	VariadicElem    Type
 	IsExtern        bool
 	Template        *ast.FuncDecl
 	IsSpecialized   bool
@@ -268,6 +273,79 @@ func (t *FutureType) TypeName() string {
 }
 func (t *FutureType) LLVMType() string { return "i8*" }
 func (t *FutureType) Size() int        { return 8 }
+
+// -----------------------------------------------------------------------------
+// 内部シンボルキー生成 & マングリング変換ヘルパー
+// -----------------------------------------------------------------------------
+
+func BuildInternalKey(pkg string, ident string, structName string) string {
+	base := ident
+	if pkg != "" {
+		base = pkg + "." + ident
+	}
+	if structName != "" {
+		return base + "@" + structName
+	}
+	return base
+}
+
+func MangleInternalKeyToIR(key string) string {
+	if key == "" {
+		return ""
+	}
+	if strings.Contains(key, "@") {
+		parts := strings.SplitN(key, "@", 2)
+		fnPart := parts[0]
+		structPart := parts[1]
+
+		isPtr := strings.HasPrefix(structPart, "*")
+		rawStruct := strings.TrimPrefix(structPart, "*")
+
+		var pkg, fn string
+		if dot := strings.LastIndex(fnPart, "."); dot != -1 {
+			pkg = fnPart[:dot]
+			fn = fnPart[dot+1:]
+		} else {
+			fn = fnPart
+		}
+
+		ptrSuffix := ""
+		if isPtr {
+			ptrSuffix = "_ptr"
+		}
+
+		if pkg != "" && pkg != "main" {
+			return fmt.Sprintf("%s_%s%s_%s", pkg, rawStruct, ptrSuffix, fn)
+		}
+		return fmt.Sprintf("%s%s_%s", rawStruct, ptrSuffix, fn)
+	}
+
+	clean := strings.ReplaceAll(key, ".", "_")
+	clean = strings.ReplaceAll(clean, "*", "_ptr")
+	clean = strings.ReplaceAll(clean, "(", "")
+	clean = strings.ReplaceAll(clean, ")", "")
+	return clean
+}
+
+func CanonicalMethodName(recvTypeName, fnName string) string {
+	rawRecv := strings.TrimPrefix(recvTypeName, "*")
+	cleanMethod := fnName
+
+	if strings.HasPrefix(cleanMethod, rawRecv+"_") {
+		cleanMethod = strings.TrimPrefix(cleanMethod, rawRecv+"_")
+	}
+
+	if strings.Contains(rawRecv, "_") {
+		pkg := strings.Split(rawRecv, "_")[0]
+		if strings.HasPrefix(cleanMethod, pkg+"_") {
+			cleanMethod = strings.TrimPrefix(cleanMethod, pkg+"_")
+		}
+	} else if idx := strings.LastIndex(cleanMethod, "_"); idx != -1 {
+		cleanMethod = cleanMethod[idx+1:]
+	}
+
+	return rawRecv + "_" + cleanMethod
+}
 
 // -----------------------------------------------------------------------------
 // 型ヘルパー関数
@@ -471,7 +549,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// Pass 1: 全ての型宣言と関数宣言を登録
+	// Pass 1: 全ての型宣言と関数宣言を登録 (単一キーで登録しLLVM IRの型再定義を防止)
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
 			tpSet := make(map[string]bool)
@@ -504,9 +582,13 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				}
 			}
 
+			internalKey := BuildInternalKey(prog.Package, td.Name.Value, "")
+			td.InternalKey = internalKey
+
 			if _, ok := td.Type.(*ast.InterfaceType); ok {
 				iface := &InterfaceType{
 					Name:            td.Name.Value,
+					InternalKey:     internalKey,
 					TypeParams:      tParams,
 					Methods:         []Method{},
 					Template:        td,
@@ -520,6 +602,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			} else if _, ok := td.Type.(*ast.StructType); ok {
 				structType := &StructType{
 					Name:            td.Name.Value,
+					InternalKey:     internalKey,
 					TypeParams:      tParams,
 					Fields:          []Field{},
 					Template:        td,
@@ -531,8 +614,8 @@ func Analyze(prog *ast.Program) (*Context, error) {
 					ctx.GenericTypes[td.Name.Value] = td
 				}
 			} else {
-				// 基本型エイリアス (typedef) の先行登録
-				ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
+				resolvedAlias := ctx.ResolveType(td.Type)
+				ctx.Aliases[td.Name.Value] = resolvedAlias
 			}
 		} else if fd, ok := decl.(*ast.FuncDecl); ok {
 			fnName := fd.Name.Value
@@ -543,6 +626,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			}
 
 			var origRecvName string = ""
+			var structNameWithPtr string = ""
 			if fd.Receiver != nil {
 				collectTypeParamsFromNode(fd.Receiver.Type, tpSet)
 				origRecvName = getBaseTypeName(fd.Receiver.Type)
@@ -554,6 +638,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				}
 				if recvTypeName != "" {
 					fnName = CanonicalMethodName(recvTypeName, fnName)
+				}
+				structNameWithPtr = recvTypeName
+				if _, isPtr := fd.Receiver.Type.(*ast.PointerType); isPtr {
+					structNameWithPtr = "*" + recvTypeName
 				}
 			}
 			for _, p := range fd.Params {
@@ -579,8 +667,17 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				}
 			}
 
+			internalKey := BuildInternalKey(prog.Package, fd.Name.Value, structNameWithPtr)
+			fd.InternalKey = internalKey
+			irName := MangleInternalKeyToIR(internalKey)
+			if !isMethod && (prog.Package == "" || prog.Package == "main") {
+				irName = fd.Name.Value
+			}
+
 			fnType := &FuncType{
 				Name:            fnName,
+				InternalKey:     internalKey,
+				IRName:          irName,
 				TypeParams:      tParams,
 				IsMethod:        isMethod,
 				ParamTypes:      []Type{},
@@ -605,9 +702,15 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			targetC := ""
 			if cfd.TargetCName != nil {
 				targetC = cfd.TargetCName.Value
+			} else {
+				targetC = "c_" + cfd.Name.Value
 			}
+			internalKey := BuildInternalKey("", cfd.Name.Value, "")
+			cfd.InternalKey = internalKey
 			fnType := &FuncType{
 				Name:            cfd.Name.Value,
+				InternalKey:     internalKey,
+				IRName:          targetC,
 				ParamTypes:      []Type{},
 				ReturnTypes:     []Type{},
 				IsVariadic:      cfd.IsVariadic,
@@ -742,8 +845,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 					for _, r := range m.ReturnTypes {
 						rts = append(rts, ctx.ResolveType(r))
 					}
+					methodKey := BuildInternalKey(prog.Package, m.Name.Value, td.Name.Value)
 					methods = append(methods, Method{
 						Name:         m.Name.Value,
+						InternalKey:  methodKey,
 						ParamTypes:   pts,
 						IsVariadic:   m.IsVariadic,
 						VariadicElem: varElem,
@@ -877,27 +982,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	insertImplicitCasts(prog, ctx)
 
 	return ctx, nil
-}
-
-// CanonicalMethodName はレシーバ型名と関数名から一意のメソッドシンボル名を生成する
-func CanonicalMethodName(recvTypeName, fnName string) string {
-	rawRecv := strings.TrimPrefix(recvTypeName, "*")
-	cleanMethod := fnName
-
-	if strings.HasPrefix(cleanMethod, rawRecv+"_") {
-		cleanMethod = strings.TrimPrefix(cleanMethod, rawRecv+"_")
-	}
-
-	if strings.Contains(rawRecv, "_") {
-		pkg := strings.Split(rawRecv, "_")[0]
-		if strings.HasPrefix(cleanMethod, pkg+"_") {
-			cleanMethod = strings.TrimPrefix(cleanMethod, pkg+"_")
-		}
-	} else if idx := strings.LastIndex(cleanMethod, "_"); idx != -1 {
-		cleanMethod = cleanMethod[idx+1:]
-	}
-
-	return rawRecv + "_" + cleanMethod
 }
 
 // -----------------------------------------------------------------------------
@@ -1368,7 +1452,6 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 				(s.Token.Type == token.VAR) || (s.Token.Literal == "var") || (s.Type != nil)
 
 			if isDefine {
-				// 右辺が1つのタプル式で左辺が複数のアンパック代入 (例: sum, mul := <-async ...)
 				if len(s.Left) > 1 && len(s.Right) == 1 {
 					rhsType := ctx.InferExprType(s.Right[0], blockLocals)
 					if tup, ok := rhsType.(*TupleType); ok {
@@ -1404,7 +1487,6 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 					}
 				}
 			} else {
-				// 通常代入 (sum, mul = <-async ...)
 				if len(s.Left) > 1 && len(s.Right) == 1 {
 					rhsType := ctx.InferExprType(s.Right[0], blockLocals)
 					if _, ok := rhsType.(*TupleType); ok {

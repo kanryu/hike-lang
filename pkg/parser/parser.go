@@ -38,7 +38,7 @@ var precedences = map[token.TokenType]int{
 	token.MINUS:     SUM,
 	token.SLASH:     PRODUCT,
 	token.ASTERISK:  PRODUCT,
-	token.PERCENT:   PRODUCT, // token.PERCENT のみ登録
+	token.PERCENT:   PRODUCT,
 	token.AMPERSAND: PRODUCT,
 	token.SHL:       PRODUCT,
 	token.SHR:       PRODUCT,
@@ -47,25 +47,67 @@ var precedences = map[token.TokenType]int{
 	token.DOT:       INDEX,
 }
 
+// -----------------------------------------------------------------------------
+// FIFO パースタスク定義
+// -----------------------------------------------------------------------------
+
+type ParseTask struct {
+	Parent ast.Node      // *ast.FuncDecl, *ast.CFuncDecl, *ast.TypeDecl, *ast.FuncLit
+	Tokens []token.Token // 波括弧を含む本体ブロックのトークン列スライス
+}
+
+// -----------------------------------------------------------------------------
+// パーサー構造体
+// -----------------------------------------------------------------------------
+
 type Parser struct {
-	l              *lexer.Lexer
+	tokens         []token.Token
+	pos            int
 	curToken       token.Token
 	peekToken      token.Token
 	errors         []string
 	verbose        bool
 	allowStructLit bool
+	queue          []*ParseTask
 }
 
 func New(l *lexer.Lexer) *Parser {
+	tokens := []token.Token{}
+	for {
+		tok := l.NextToken()
+		tokens = append(tokens, tok)
+		if tok.Type == token.EOF {
+			break
+		}
+	}
+	return NewFromTokens(tokens)
+}
+
+func NewFromTokens(tokens []token.Token) *Parser {
 	p := &Parser{
-		l:              l,
+		tokens:         tokens,
+		pos:            0,
 		errors:         []string{},
 		verbose:        false,
 		allowStructLit: true,
+		queue:          make([]*ParseTask, 0),
 	}
 	p.nextToken()
 	p.nextToken()
 	return p
+}
+
+func (p *Parser) newSubParser(tokens []token.Token) *Parser {
+	sp := NewFromTokens(tokens)
+	sp.verbose = p.verbose
+	sp.allowStructLit = true
+	// サブパーサーは独自の「空のキュー」を持つ（親キューを複製・混同させない）
+	sp.queue = make([]*ParseTask, 0)
+	return sp
+}
+
+func (p *Parser) enqueue(task *ParseTask) {
+	p.queue = append(p.queue, task)
 }
 
 func (p *Parser) SetVerbose(v bool) {
@@ -84,7 +126,23 @@ func (p *Parser) Errors() []string {
 
 func (p *Parser) nextToken() {
 	p.curToken = p.peekToken
-	p.peekToken = p.l.NextToken()
+	if p.pos < len(p.tokens) {
+		p.peekToken = p.tokens[p.pos]
+		p.pos++
+	} else {
+		p.peekToken = token.Token{Type: token.EOF, Literal: ""}
+	}
+}
+
+// curIdx は現在の curToken が大元スライスのどのインデックスにあるかを返す
+func (p *Parser) curIdx() int {
+	return p.pos - 2
+}
+
+func (p *Parser) jumpTo(targetIdx int) {
+	p.pos = targetIdx
+	p.nextToken()
+	p.nextToken()
 }
 
 func (p *Parser) curTokenIs(t token.TokenType) bool {
@@ -126,11 +184,47 @@ func (p *Parser) curPrecedence() int {
 	return LOWEST
 }
 
+// cutBraceBlock は startIdx（'{'）から対応する '}' までのスライスと次のトークン位置を返す
+func (p *Parser) cutBraceBlock(startIdx int) ([]token.Token, int) {
+	if startIdx < 0 || startIdx >= len(p.tokens) {
+		return nil, startIdx
+	}
+	// 万が一開始位置が '{' でない場合は '{' を探索
+	if p.tokens[startIdx].Type != token.LBRACE {
+		for startIdx < len(p.tokens) && p.tokens[startIdx].Type != token.LBRACE {
+			startIdx++
+		}
+		if startIdx >= len(p.tokens) {
+			return nil, len(p.tokens)
+		}
+	}
+
+	depth := 0
+	for i := startIdx; i < len(p.tokens); i++ {
+		tok := p.tokens[i]
+		if tok.Type == token.LBRACE {
+			depth++
+		} else if tok.Type == token.RBRACE {
+			depth--
+			if depth == 0 {
+				return p.tokens[startIdx : i+1], i + 1
+			}
+		}
+	}
+	return p.tokens[startIdx:], len(p.tokens)
+}
+
+// -----------------------------------------------------------------------------
+// FIFO駆動メインループ (ParseProgram)
+// -----------------------------------------------------------------------------
+
 func (p *Parser) ParseProgram() *ast.Program {
 	prog := &ast.Program{
 		Decls:   []ast.Decl{},
 		Imports: []*ast.ImportDecl{},
 	}
+
+	// Pass 1: トップレベル宣言の骨格（シグネチャ）のみを走査・登録
 	for !p.curTokenIs(token.EOF) {
 		switch p.curToken.Type {
 		case token.PACKAGE:
@@ -139,57 +233,108 @@ func (p *Parser) ParseProgram() *ast.Program {
 				prog.Package = p.curToken.Literal
 				p.log(fmt.Sprintf("[%d:%d] Declared package '%s'", p.curToken.Line, p.curToken.Col, prog.Package))
 			}
+			p.nextToken()
+
 		case token.IMPORT:
 			imports := p.parseImportDecl()
 			prog.Imports = append(prog.Imports, imports...)
+			p.nextToken()
+
 		case token.CONST:
 			constDecls := p.parseConstDecl()
 			prog.Decls = append(prog.Decls, constDecls...)
+			p.nextToken()
+
+		case token.FUNC:
+			fn := p.parseFuncDecl()
+			if fn != nil {
+				prog.Decls = append(prog.Decls, fn)
+			}
+			// parseFuncDecl 内で jumpTo されているため、ここでは nextToken() を呼ばない
+
+		case token.PASSTHROUGH:
+			p.nextToken()
+			if !p.curTokenIs(token.CFUNC) {
+				p.errors = append(p.errors, fmt.Sprintf("line %d:%d: expected 'cfunc' after 'passthrough'", p.curToken.Line, p.curToken.Col))
+				p.nextToken()
+				continue
+			}
+			cfn := p.parseCFuncDecl()
+			if cfn != nil {
+				cfn.IsPassThrough = true
+				prog.Decls = append(prog.Decls, cfn)
+			}
+
+		case token.CFUNC:
+			cfn := p.parseCFuncDecl()
+			if cfn != nil {
+				prog.Decls = append(prog.Decls, cfn)
+			}
+
+		case token.TYPE:
+			td := p.parseTypeDecl()
+			if td != nil {
+				prog.Decls = append(prog.Decls, td)
+			}
+
+		case token.VAR:
+			vd := p.parseVarDecl()
+			if vd != nil {
+				prog.Decls = append(prog.Decls, vd)
+			}
+			p.nextToken()
+
 		default:
-			decl := p.parseTopLevelDecl()
-			if decl != nil {
-				prog.Decls = append(prog.Decls, decl)
+			p.nextToken()
+		}
+	}
+
+	// Pass 2: FIFOキューからタスクを取り出し、確定した親ノードの文脈で内容物をパース
+	for len(p.queue) > 0 {
+		task := p.queue[0]
+		p.queue = p.queue[1:]
+
+		subParser := p.newSubParser(task.Tokens)
+
+		switch node := task.Parent.(type) {
+		case *ast.FuncDecl:
+			node.Body = subParser.parseBlockStmt()
+		case *ast.CFuncDecl:
+			node.Body = subParser.parseBlockStmt()
+		case *ast.FuncLit:
+			node.Body = subParser.parseBlockStmt()
+		case *ast.TypeDecl:
+			if st, ok := node.Type.(*ast.StructType); ok {
+				subParser.parseStructFields(st)
+			} else if it, ok := node.Type.(*ast.InterfaceType); ok {
+				subParser.parseInterfaceMethods(it)
 			}
 		}
-		p.nextToken()
+
+		if len(subParser.errors) > 0 {
+			p.errors = append(p.errors, subParser.errors...)
+		}
+		// サブパーサー内で新しく見つかった子タスク（クロージャ等）だけをキューに合流
+		if len(subParser.queue) > 0 {
+			p.queue = append(p.queue, subParser.queue...)
+		}
 	}
+
 	return prog
 }
 
-func (p *Parser) parseTopLevelDecl() ast.Decl {
-	switch p.curToken.Type {
-	case token.FUNC:
-		return p.parseFuncDecl()
-	case token.PASSTHROUGH:
-		p.nextToken()
-		if !p.curTokenIs(token.CFUNC) {
-			p.errors = append(p.errors, fmt.Sprintf("line %d:%d: expected 'cfunc' after 'passthrough'", p.curToken.Line, p.curToken.Col))
-			return nil
-		}
-		cfn := p.parseCFuncDecl()
-		if cfn != nil {
-			cfn.IsPassThrough = true
-		}
-		return cfn
-	case token.CFUNC:
-		return p.parseCFuncDecl()
-	case token.TYPE:
-		return p.parseTypeDecl()
-	case token.VAR:
-		return p.parseVarDecl()
-	default:
-		return nil
-	}
-}
+// -----------------------------------------------------------------------------
+// トップレベル宣言パース (ヘッダー確定 + スライスカット + エンキュー)
+// -----------------------------------------------------------------------------
+
 func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	cfn := &ast.CFuncDecl{Token: p.curToken}
-	p.nextToken() // 'cfunc' を消費
+	p.nextToken()
 
 	cfn.Name = p.parseIdentifier()
 	p.log(fmt.Sprintf("[%d:%d] Parsing cfunc: %s", cfn.Token.Line, cfn.Token.Col, cfn.Name.Value))
-	p.nextToken() // 関数名を消費して '(' へ
+	p.nextToken()
 
-	// 1. 引数リストの解析
 	cfn.Params = []*ast.ParamDecl{}
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
@@ -240,7 +385,6 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	}
 	p.expectPeek(token.RPAREN)
 
-	// 2. 戻り値型の解析
 	cfn.ReturnTypes = []ast.TypeExpr{}
 	if p.peekToken.Line == p.curToken.Line &&
 		!p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) &&
@@ -266,18 +410,23 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 		}
 	}
 
-	// 3. 終端判定
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
 		p.nextToken()
 		cfn.TargetCName = p.parseIdentifier()
-	} else if p.peekTokenIs(token.LBRACE) {
 		p.nextToken()
-		cfn.Body = p.parseBlockStmt()
-	} else if p.curTokenIs(token.LBRACE) {
-		cfn.Body = p.parseBlockStmt()
+	} else if p.peekTokenIs(token.LBRACE) || p.curTokenIs(token.LBRACE) {
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+		}
+		startIdx := p.curIdx()
+		bodyTokens, nextIdx := p.cutBraceBlock(startIdx)
+		cfn.BodyTokens = bodyTokens
+		p.enqueue(&ParseTask{Parent: cfn, Tokens: bodyTokens})
+		p.jumpTo(nextIdx)
 	} else {
 		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected '=' or '{' in cfunc declaration", p.curToken.Line, p.curToken.Col))
+		p.nextToken()
 		return nil
 	}
 
@@ -328,7 +477,7 @@ func (p *Parser) parseTypeParams() []*ast.TypeParam {
 	if !p.curTokenIs(token.LBRACKET) {
 		return nil
 	}
-	p.nextToken() // '[' を消費して最初の識別子へ
+	p.nextToken()
 	params := []*ast.TypeParam{}
 	for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
 		if p.curTokenIs(token.IDENT) {
@@ -339,8 +488,8 @@ func (p *Parser) parseTypeParams() []*ast.TypeParam {
 			})
 		}
 		if p.peekTokenIs(token.COMMA) {
-			p.nextToken() // ',' へ
-			p.nextToken() // 次の識別子へ
+			p.nextToken()
+			p.nextToken()
 		} else {
 			break
 		}
@@ -355,7 +504,6 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	stmt.Name = p.parseIdentifier()
 	p.nextToken()
 
-	// 型パラメータ [T, U] の判定
 	if p.curTokenIs(token.LBRACKET) {
 		stmt.TypeParams = p.parseTypeParams()
 		p.nextToken()
@@ -363,95 +511,28 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 
 	if p.curTokenIs(token.STRUCT) {
 		st := &ast.StructType{Token: p.curToken, Fields: []*ast.FieldDecl{}}
-		if p.expectPeek(token.LBRACE) {
-			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-				p.nextToken()
-				if p.curTokenIs(token.SEMICOLON) {
-					continue
-				}
-				if p.curTokenIs(token.ASTERISK) {
-					p.nextToken()
-					embIdent := p.parseIdentifier()
-					pt := &ast.PointerType{Token: embIdent.Token, Base: &ast.NamedType{Token: embIdent.Token, Name: embIdent}}
-					st.Fields = append(st.Fields, &ast.FieldDecl{Token: embIdent.Token, Name: embIdent, Type: pt, IsEmbedded: true})
-				} else if p.curTokenIs(token.IDENT) {
-					firstIdent := p.parseIdentifier()
-					if p.peekToken.Line == p.curToken.Line && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
-						p.nextToken()
-						fType := p.parseTypeExpr()
-						st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: fType, IsEmbedded: false})
-					} else {
-						namedType := &ast.NamedType{Token: firstIdent.Token, Name: firstIdent}
-						st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: namedType, IsEmbedded: true})
-					}
-				}
-			}
-			p.expectPeek(token.RBRACE)
-		}
 		stmt.Type = st
+		if p.expectPeek(token.LBRACE) {
+			startIdx := p.curIdx()
+			fieldTokens, nextIdx := p.cutBraceBlock(startIdx)
+			st.FieldTokens = fieldTokens
+			p.enqueue(&ParseTask{Parent: stmt, Tokens: fieldTokens})
+			p.jumpTo(nextIdx)
+		}
 	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface") {
 		it := &ast.InterfaceType{Token: p.curToken, Methods: []*ast.MethodSig{}}
+		stmt.Type = it
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
-			for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-				p.nextToken()
-				if p.curTokenIs(token.SEMICOLON) {
-					continue
-				}
-				methodName := p.parseIdentifier()
-				p.expectPeek(token.LPAREN)
-				paramTypes := []ast.TypeExpr{}
-				if !p.peekTokenIs(token.RPAREN) {
-					p.nextToken()
-					for {
-						if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
-							p.nextToken()
-						}
-						paramTypes = append(paramTypes, p.parseTypeExpr())
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-							if p.peekTokenIs(token.RPAREN) {
-								break
-							}
-							p.nextToken()
-						} else {
-							break
-						}
-					}
-				}
-				p.expectPeek(token.RPAREN)
-				returnTypes := []ast.TypeExpr{}
-				if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-					if p.peekTokenIs(token.LPAREN) {
-						p.nextToken()
-						p.nextToken()
-						for {
-							returnTypes = append(returnTypes, p.parseTypeExpr())
-							if p.peekTokenIs(token.COMMA) {
-								p.nextToken()
-								p.nextToken()
-							} else {
-								break
-							}
-						}
-						p.expectPeek(token.RPAREN)
-					} else {
-						p.nextToken()
-						returnTypes = append(returnTypes, p.parseTypeExpr())
-					}
-				}
-				it.Methods = append(it.Methods, &ast.MethodSig{
-					Token:       methodName.Token,
-					Name:        methodName,
-					ParamTypes:  paramTypes,
-					ReturnTypes: returnTypes,
-				})
-			}
-			p.expectPeek(token.RBRACE)
+			startIdx := p.curIdx()
+			methodTokens, nextIdx := p.cutBraceBlock(startIdx)
+			it.MethodTokens = methodTokens
+			p.enqueue(&ParseTask{Parent: stmt, Tokens: methodTokens})
+			p.jumpTo(nextIdx)
 		}
-		stmt.Type = it
 	} else {
 		stmt.Type = p.parseTypeExpr()
+		p.nextToken()
 	}
 	p.log(fmt.Sprintf("[%d:%d] Parsed type declaration: %s", stmt.Token.Line, stmt.Token.Col, stmt.Name.Value))
 	return stmt
@@ -475,7 +556,6 @@ func (p *Parser) parseConstDecl() []ast.Decl {
 				name := p.parseIdentifier()
 				var valExpr ast.Expression = nil
 
-				// 型注釈 (例: TypeNull int = 0) がある場合は型式として消費
 				if !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
 					p.nextToken()
 					_ = p.parseTypeExpr()
@@ -564,7 +644,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	p.log(fmt.Sprintf("[%d:%d] Parsing function: %s", fn.Token.Line, fn.Token.Col, fn.Name.Value))
 	p.nextToken()
 
-	// 型パラメータ [T, U] の判定
 	if p.curTokenIs(token.LBRACKET) {
 		fn.TypeParams = p.parseTypeParams()
 		p.nextToken()
@@ -575,7 +654,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		p.nextToken()
 		for {
 			if p.curTokenIs(token.ELLIPSIS) {
-				// C 言語スタイル型なし可変長: func f(...)
 				fn.IsVariadic = true
 				if p.peekTokenIs(token.RPAREN) {
 					break
@@ -622,7 +700,6 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	p.expectPeek(token.RPAREN)
 
 	fn.ReturnTypes = []ast.TypeExpr{}
-	// 引数末尾の ')' と同じ行にある場合のみ戻り値の型定義をパースする
 	if p.peekToken.Line == p.curToken.Line && !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken()
@@ -643,15 +720,117 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 		}
 	}
 
-	if p.peekTokenIs(token.LBRACE) {
-		p.nextToken()
-		fn.Body = p.parseBlockStmt()
-	} else if p.curTokenIs(token.LBRACE) {
-		fn.Body = p.parseBlockStmt()
+	if p.peekTokenIs(token.LBRACE) || p.curTokenIs(token.LBRACE) {
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+		}
+		startIdx := p.curIdx()
+		bodyTokens, nextIdx := p.cutBraceBlock(startIdx)
+		fn.BodyTokens = bodyTokens
+		p.enqueue(&ParseTask{Parent: fn, Tokens: bodyTokens})
+		p.jumpTo(nextIdx)
 	}
 
 	return fn
 }
+
+// -------------------------------------------------------------
+// サブパーサーによる構造体フィールド・インターフェースメソッドパース
+// -------------------------------------------------------------
+
+func (p *Parser) parseStructFields(st *ast.StructType) {
+	if p.curTokenIs(token.LBRACE) {
+		p.nextToken()
+	}
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+			continue
+		}
+		if p.curTokenIs(token.ASTERISK) {
+			p.nextToken()
+			embIdent := p.parseIdentifier()
+			pt := &ast.PointerType{Token: embIdent.Token, Base: &ast.NamedType{Token: embIdent.Token, Name: embIdent}}
+			st.Fields = append(st.Fields, &ast.FieldDecl{Token: embIdent.Token, Name: embIdent, Type: pt, IsEmbedded: true})
+		} else if p.curTokenIs(token.IDENT) {
+			firstIdent := p.parseIdentifier()
+			if p.peekToken.Line == p.curToken.Line && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
+				p.nextToken()
+				fType := p.parseTypeExpr()
+				st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: fType, IsEmbedded: false})
+			} else {
+				namedType := &ast.NamedType{Token: firstIdent.Token, Name: firstIdent}
+				st.Fields = append(st.Fields, &ast.FieldDecl{Token: firstIdent.Token, Name: firstIdent, Type: namedType, IsEmbedded: true})
+			}
+		}
+		p.nextToken()
+	}
+}
+
+func (p *Parser) parseInterfaceMethods(it *ast.InterfaceType) {
+	if p.curTokenIs(token.LBRACE) {
+		p.nextToken()
+	}
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+			continue
+		}
+		methodName := p.parseIdentifier()
+		p.expectPeek(token.LPAREN)
+		paramTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.RPAREN) {
+			p.nextToken()
+			for {
+				if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
+					p.nextToken()
+				}
+				paramTypes = append(paramTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+		}
+		p.expectPeek(token.RPAREN)
+		returnTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken()
+				p.nextToken()
+				for {
+					returnTypes = append(returnTypes, p.parseTypeExpr())
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+				p.expectPeek(token.RPAREN)
+			} else {
+				p.nextToken()
+				returnTypes = append(returnTypes, p.parseTypeExpr())
+			}
+		}
+		it.Methods = append(it.Methods, &ast.MethodSig{
+			Token:       methodName.Token,
+			Name:        methodName,
+			ParamTypes:  paramTypes,
+			ReturnTypes: returnTypes,
+		})
+		p.nextToken()
+	}
+}
+
+// -----------------------------------------------------------------------------
+// 型式パース (TypeExpr)
+// -----------------------------------------------------------------------------
 
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	if p.curTokenIs(token.ELLIPSIS) {
@@ -662,7 +841,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface" && p.peekTokenIs(token.LBRACE)) {
 		tok := p.curToken
 		if p.peekTokenIs(token.LBRACE) {
-			p.nextToken() // '{' へ
+			p.nextToken()
 		}
 		it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
 		for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
@@ -740,7 +919,6 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	} else if p.curTokenIs(token.IDENT) {
 		ident := p.parseIdentifier()
 
-		// パッケージ修飾（例: calc.Vector）
 		var pkgIdent *ast.Identifier = nil
 		targetIdent := ident
 
@@ -752,16 +930,15 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			targetIdent = field
 		}
 
-		// ジェネリクス型引数（例: Box[int] や pkg.Pair[int, string]）
 		typeArgs := []ast.TypeExpr{}
 		if p.peekTokenIs(token.LBRACKET) {
-			p.nextToken() // '[' へ
-			p.nextToken() // 最初の型引数へ
+			p.nextToken()
+			p.nextToken()
 			for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
 				typeArgs = append(typeArgs, p.parseTypeExpr())
 				if p.peekTokenIs(token.COMMA) {
-					p.nextToken() // ',' へ
-					p.nextToken() // 次の型引数へ
+					p.nextToken()
+					p.nextToken()
 				} else {
 					break
 				}
@@ -858,7 +1035,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, IsVariadic: isVariadic, ReturnTypes: returnTypes}
 	} else if p.curTokenIs(token.MAP) {
 		tok := p.curToken
-		p.nextToken() // 'map' の次へ
+		p.nextToken()
 		p.expectCurrent(token.LBRACKET)
 		p.nextToken()
 		keyType := p.parseTypeExpr()
@@ -875,6 +1052,10 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
 
+// -----------------------------------------------------------------------------
+// 文パース (Statement)
+// -----------------------------------------------------------------------------
+
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.curToken.Type {
 	case token.VAR:
@@ -890,11 +1071,9 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.DEFER:
 		return p.parseDeferStmt()
 	case token.BREAK:
-		stmt := &ast.BreakStmt{Token: p.curToken}
-		return stmt
+		return &ast.BreakStmt{Token: p.curToken}
 	case token.CONTINUE:
-		stmt := &ast.ContinueStmt{Token: p.curToken}
-		return stmt
+		return &ast.ContinueStmt{Token: p.curToken}
 	default:
 		return p.parseAssignOrExprStmt()
 	}
@@ -902,17 +1081,16 @@ func (p *Parser) parseStatement() ast.Statement {
 
 func (p *Parser) parseVarStmt() ast.Statement {
 	varTok := p.curToken
-	p.nextToken() // 'var' の次 (最初の識別子)
+	p.nextToken()
 
 	idents := []*ast.Identifier{p.parseIdentifier()}
 
-	// カンマ区切りの複数変数宣言 (例: var a, b int)
 	for p.peekTokenIs(token.COMMA) {
-		p.nextToken() // ','
-		p.nextToken() // 次の識別子
+		p.nextToken()
+		p.nextToken()
 		idents = append(idents, p.parseIdentifier())
 	}
-	p.nextToken() // 最後の識別子の次へ (型注釈、'='、または ';'/EOF)
+	p.nextToken()
 
 	var typeExpr ast.TypeExpr = nil
 	if !p.curTokenIs(token.ASSIGN) && !p.curTokenIs(token.SEMICOLON) && !p.curTokenIs(token.EOF) {
@@ -928,11 +1106,11 @@ func (p *Parser) parseVarStmt() ast.Statement {
 	}
 
 	if p.curTokenIs(token.ASSIGN) {
-		p.nextToken() // '=' の次 (最初の右辺式)
+		p.nextToken()
 		rights := []ast.Expression{p.parseExpression(LOWEST)}
 		for p.peekTokenIs(token.COMMA) {
-			p.nextToken() // ','
-			p.nextToken() // 次の右辺式
+			p.nextToken()
+			p.nextToken()
 			rights = append(rights, p.parseExpression(LOWEST))
 		}
 		return &ast.AssignStmt{
@@ -943,7 +1121,6 @@ func (p *Parser) parseVarStmt() ast.Statement {
 		}
 	}
 
-	// 初期化式が省略された場合、全変数にデフォルトのゼロ値を割り当てる
 	rights := make([]ast.Expression, len(idents))
 	for i := range rights {
 		rights[i] = &ast.IntegerLiteral{Token: varTok, Value: 0}
@@ -1133,7 +1310,6 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 	var typeSwitchVar *ast.Identifier = nil
 	var typeSwitchExpr ast.Expression = nil
 
-	// 1. switch 直後に波括弧が現れた場合 (例: switch { case ... })
 	if p.curTokenIs(token.LBRACE) {
 		condExpr = &ast.Identifier{
 			Token: token.Token{Type: token.IDENT, Literal: "true", Line: switchTok.Line, Col: switchTok.Col},
@@ -1148,9 +1324,8 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 
 		if p.peekTokenIs(token.SEMICOLON) {
 			initStmt = firstStmt
-			p.nextToken() // ';'
+			p.nextToken()
 			if p.peekTokenIs(token.LBRACE) {
-				// switch init; { ... } の形式
 				condExpr = &ast.Identifier{
 					Token: token.Token{Type: token.IDENT, Literal: "true", Line: switchTok.Line, Col: switchTok.Col},
 					Value: "true",
@@ -1185,7 +1360,6 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 		}
 	}
 
-	// 型スイッチ (Type Switch)
 	if isTypeSwitch {
 		stmt := &ast.TypeSwitchStmt{
 			Token:    switchTok,
@@ -1232,7 +1406,6 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 		return stmt
 	}
 
-	// 通常の値スイッチ (Expression Switch)
 	stmt := &ast.SwitchStmt{
 		Token: switchTok,
 		Init:  initStmt,
@@ -1311,11 +1484,10 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	startTok := p.curToken
 	leftExpr := p.parseExpression(LOWEST)
 
-	// 追加: チャネル送信文 (channel <- value)
 	if p.peekTokenIs(token.ARROW) {
-		p.nextToken() // '<-' へ進む
+		p.nextToken()
 		arrowTok := p.curToken
-		p.nextToken() // 送信値の先頭へ進む
+		p.nextToken()
 		val := p.parseExpression(LOWEST)
 		return &ast.SendStmt{
 			Token: arrowTok,
@@ -1389,6 +1561,10 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
 }
 
+// -----------------------------------------------------------------------------
+// 式パース (Expression / Pratt Parsing)
+// -----------------------------------------------------------------------------
+
 func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
 
@@ -1438,14 +1614,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
 
-	// 前置受信演算子 (<-expr)
 	case token.ARROW:
 		tok := p.curToken
 		p.nextToken()
 		right := p.parseExpression(PREFIX)
 		leftExp = &ast.ReceiveExpr{Token: tok, Expr: right}
 
-	// Async(fn) スレッドプール非同期タスク投入式
 	case token.ASYNC:
 		tok := p.curToken
 		if !p.expectPeek(token.LPAREN) {
@@ -1528,6 +1702,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		if !p.expectPeek(token.LBRACE) {
 			return nil
 		}
+
+		// クロージャ本体を直接ブロックパースして構文木を完成
 		body := p.parseBlockStmt()
 		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
 
@@ -1705,7 +1881,6 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 		p.nextToken()
 		for {
 			if p.curTokenIs(token.ELLIPSIS) {
-				// 単独の "..." (可変長パススルー転送)
 				args = append(args, &ast.Identifier{Token: p.curToken, Value: "..."})
 				hasEllipsis = true
 				if p.peekTokenIs(token.COMMA) {
@@ -1720,7 +1895,6 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 
 			arg := p.parseExpression(LOWEST)
 			if p.peekTokenIs(token.ELLIPSIS) {
-				// Go スタイルのスライス展開: f(arg...)
 				p.nextToken()
 				hasEllipsis = true
 				args = append(args, arg)
@@ -1769,7 +1943,7 @@ func (p *Parser) parseGenericStructLiteral(genExpr *ast.GenericInstExpr) ast.Exp
 		return genExpr
 	}
 
-	p.nextToken() // '{' へ進む
+	p.nextToken()
 	fields := []*ast.StructFieldValue{}
 	if !p.peekTokenIs(token.RBRACE) {
 		p.nextToken()
@@ -1838,10 +2012,9 @@ func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
 }
 
 func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
-	tok := p.curToken // '['
+	tok := p.curToken
 	p.nextToken()
 
-	// 1. スライス式: arr[:high]
 	if p.curTokenIs(token.COLON) {
 		p.nextToken()
 		var high ast.Expression = nil
@@ -1855,14 +2028,13 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 
 	indexOrLow := p.parseExpression(LOWEST)
 
-	// 2. 複数型引数: fn[int, string] や Pair[int, string]{...}
 	if p.peekTokenIs(token.COMMA) {
 		args := []ast.TypeExpr{}
 		if tArg := exprToTypeExpr(indexOrLow); tArg != nil {
 			args = append(args, tArg)
 		}
 		for p.peekTokenIs(token.COMMA) {
-			p.nextToken() // ','
+			p.nextToken()
 			p.nextToken()
 			args = append(args, p.parseTypeExpr())
 		}
@@ -1875,9 +2047,8 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 		return genExpr
 	}
 
-	// 3. スライス式: arr[low:high]
 	if p.peekTokenIs(token.COLON) {
-		p.nextToken() // ':'
+		p.nextToken()
 		p.nextToken()
 		var high ast.Expression = nil
 		if !p.curTokenIs(token.RBRACKET) {
@@ -1890,7 +2061,6 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 
 	p.expectPeek(token.RBRACKET)
 
-	// 4. 単一型引数のジェネリック構造体リテラル: Box[int]{Val: 10}
 	if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
 		if typeArg := exprToTypeExpr(indexOrLow); typeArg != nil {
 			genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
@@ -1898,20 +2068,19 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 		}
 	}
 
-	// 5. 通常のインデックス式: arr[i] または 単一型引数の関数呼び出し前段 Min[int]
 	return &ast.IndexExpr{Token: tok, Left: left, Index: indexOrLow}
 }
 
 func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
-	tok := p.curToken // '.'
+	tok := p.curToken
 	if p.peekTokenIs(token.LPAREN) {
-		p.nextToken() // '('
+		p.nextToken()
 		if p.peekTokenIs(token.TYPE) {
-			p.nextToken() // 'type'
+			p.nextToken()
 			p.expectPeek(token.RPAREN)
 			return &ast.TypeAssertExpr{Token: tok, Expr: obj, Target: nil}
 		}
-		p.nextToken() // 型名
+		p.nextToken()
 		targetType := p.parseTypeExpr()
 		p.expectPeek(token.RPAREN)
 		return &ast.TypeAssertExpr{Token: tok, Expr: obj, Target: targetType}
@@ -1919,10 +2088,9 @@ func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
 	p.nextToken()
 	field := p.parseIdentifier()
 
-	// パッケージ修飾構造体リテラル (例: calc.Vector{X: 3, Y: 4}) の判定
 	if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
 		if pkgIdent, ok := obj.(*ast.Identifier); ok {
-			p.nextToken() // '{' へ進む
+			p.nextToken()
 			namedType := &ast.NamedType{
 				Token:   pkgIdent.Token,
 				Package: pkgIdent,

@@ -57,6 +57,22 @@ func (ice *ImplicitCastExpr) expressionNode()      {}
 func (ice *ImplicitCastExpr) TokenLiteral() string { return ice.Token.Literal }
 
 // -----------------------------------------------------------------------------
+// 内部シンボルキー生成ヘルパー (Package.Identifier@StructName)
+// -----------------------------------------------------------------------------
+
+// BuildInternalKey はマングリング前の論理キーを構築する
+func BuildInternalKey(pkg string, ident string, structName string) string {
+	base := ident
+	if pkg != "" {
+		base = pkg + "." + ident
+	}
+	if structName != "" {
+		return base + "@" + structName
+	}
+	return base
+}
+
+// -----------------------------------------------------------------------------
 // 宣言ノード
 // -----------------------------------------------------------------------------
 
@@ -124,7 +140,7 @@ type ParamDecl struct {
 	Token      token.Token
 	Name       *Identifier
 	Type       TypeExpr
-	IsVariadic bool // 追加: 可変長引数フラグ (...T)
+	IsVariadic bool // 可変長引数フラグ (...T)
 	IsEscaped  bool // クロージャにキャプチャされヒープ退避が必要かどうかの決定フラグ
 }
 
@@ -136,10 +152,11 @@ func (pd *ParamDecl) TokenLiteral() string {
 }
 
 type TypeDecl struct {
-	Token      token.Token
-	Name       *Identifier
-	TypeParams []*TypeParam
-	Type       TypeExpr
+	Token       token.Token
+	Name        *Identifier
+	TypeParams  []*TypeParam
+	Type        TypeExpr
+	InternalKey string // 内部論理識別子キー (例: pkg.TypeName)
 }
 
 func (td *TypeDecl) declNode()            {}
@@ -153,7 +170,9 @@ type FuncDecl struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
-	Body        *BlockStmt
+	BodyTokens  []token.Token // 第1段階で切り出される本体ブロックの未パース・トークン列スライス
+	Body        *BlockStmt    // 第2段階で確定するAST文ブロック
+	InternalKey string        // 内部論理識別子キー (例: pkg.MethodName@StructName)
 }
 
 func (fd *FuncDecl) declNode()            {}
@@ -165,10 +184,12 @@ type CFuncDecl struct {
 	IsPassThrough bool // passthrough 修飾子フラグ
 	Name          *Identifier
 	Params        []*ParamDecl
-	IsVariadic    bool // 追加: C 言語可変長引数フラグ
+	IsVariadic    bool // C 言語可変長引数フラグ
 	ReturnTypes   []TypeExpr
-	TargetCName   *Identifier // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
-	Body          *BlockStmt  // 手書きブロック形式 ({ ... }) の場合の本体ブロック
+	TargetCName   *Identifier   // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
+	BodyTokens    []token.Token // 手書きブロック形式の場合の未パース・トークン列スライス
+	Body          *BlockStmt    // 手書きブロック形式 ({ ... }) の場合の本体ブロック
+	InternalKey   string        // 内部論理識別子キー
 }
 
 func (cfd *CFuncDecl) declNode()            {}
@@ -351,7 +372,7 @@ type MethodSig struct {
 	Token       token.Token
 	Name        *Identifier
 	ParamTypes  []TypeExpr
-	IsVariadic  bool // 追加: インターフェースメソッドの可変長引数フラグ
+	IsVariadic  bool // インターフェースメソッドの可変長引数フラグ
 	ReturnTypes []TypeExpr
 }
 
@@ -372,7 +393,8 @@ type FuncLit struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
-	Body        *BlockStmt
+	BodyTokens  []token.Token // クロージャ本体の未パース・トークン列スライス
+	Body        *BlockStmt    // 第2段階で解決される本体AST
 }
 
 func (fl *FuncLit) expressionNode()      {}
@@ -403,8 +425,9 @@ func (pt *PointerType) expressionNode()      {}
 func (pt *PointerType) TokenLiteral() string { return pt.Token.Literal }
 
 type StructType struct {
-	Token  token.Token
-	Fields []*FieldDecl
+	Token       token.Token
+	FieldTokens []token.Token // 第1段階で切り出されるフィールド定義の未パース・トークン列スライス
+	Fields      []*FieldDecl  // 第2段階で解決されるフィールド定義
 }
 
 func (st *StructType) typeExprNode()        {}
@@ -498,8 +521,9 @@ func (tp *TypeParam) typeExprNode()        {}
 func (tp *TypeParam) TokenLiteral() string { return tp.Token.Literal }
 
 type InterfaceType struct {
-	Token   token.Token
-	Methods []*MethodSig
+	Token        token.Token
+	MethodTokens []token.Token // 第1段階で切り出されるメソッド定義の未パース・トークン列スライス
+	Methods      []*MethodSig  // 第2段階で解決されるメソッド定義
 }
 
 func (it *InterfaceType) typeExprNode()        {}

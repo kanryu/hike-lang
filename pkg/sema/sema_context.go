@@ -23,6 +23,9 @@ type Context struct {
 	nextTypeID     int64
 	HasMapImport   bool
 	Verbose        bool
+
+	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
+	ResolvedCalls map[*ast.CallExpr]*FuncType
 }
 
 func NewContext() *Context {
@@ -40,6 +43,7 @@ func NewContext() *Context {
 		typeIDs:        make(map[string]int64),
 		nextTypeID:     1,
 		Verbose:        false,
+		ResolvedCalls:  make(map[*ast.CallExpr]*FuncType),
 	}
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2
@@ -111,13 +115,77 @@ func (c *Context) LookupInterface(name string) (*InterfaceType, string) {
 	return nil, ""
 }
 
+// LookupMethod はレシーバ型名とメソッド名から内部論理キー (@StructName) を基に対象メソッドを探索する
+func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncType, string) {
+	isPtr := strings.HasPrefix(recvTypeName, "*")
+	rawRecv := strings.TrimPrefix(recvTypeName, "*")
+
+	// 1. 完全一致する内部キーを優先探索
+	exactKey := fmt.Sprintf("%s@%s", methodName, recvTypeName)
+	if fn, ok := c.Functions[exactKey]; ok {
+		return fn, exactKey
+	}
+
+	keyRaw := fmt.Sprintf("%s@%s", methodName, rawRecv)
+	if fn, ok := c.Functions[keyRaw]; ok {
+		return fn, keyRaw
+	}
+
+	keyPtr := fmt.Sprintf("%s@*%s", methodName, rawRecv)
+	if fn, ok := c.Functions[keyPtr]; ok {
+		return fn, keyPtr
+	}
+
+	// 2. パッケージ修飾付きの内部キーを走査 (例: net.Close@Socket)
+	for k, fn := range c.Functions {
+		if strings.Contains(k, "@") {
+			parts := strings.SplitN(k, "@", 2)
+			fnPart := parts[0]
+			stPart := parts[1]
+
+			cleanSt := strings.TrimPrefix(stPart, "*")
+			if cleanSt == rawRecv {
+				cleanFn := fnPart
+				if dot := strings.LastIndex(fnPart, "."); dot != -1 {
+					cleanFn = fnPart[dot+1:]
+				}
+				if cleanFn == methodName {
+					return fn, k
+				}
+			}
+		}
+	}
+
+	// 3. 従来のアンダースコア連結名での探索 (後方互換性)
+	legacyName := CanonicalMethodName(rawRecv, methodName)
+	if fn, ok := c.Functions[legacyName]; ok {
+		return fn, legacyName
+	}
+	if isPtr {
+		ptrLegacy := CanonicalMethodName(rawRecv+"_ptr", methodName)
+		if fn, ok := c.Functions[ptrLegacy]; ok {
+			return fn, ptrLegacy
+		}
+	}
+
+	return nil, ""
+}
+
 func (c *Context) LookupFunction(name string) (*FuncType, string) {
 	if fn, ok := c.Functions[name]; ok {
 		return fn, name
 	}
+	// @ を含む内部キーから関数名部分のみの一致もサポート
 	for k, v := range c.Functions {
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
 			return v, k
+		}
+		if strings.Contains(k, "@") {
+			parts := strings.SplitN(k, "@", 2)
+			fnPart := parts[0]
+			if fnPart == name || strings.HasSuffix(fnPart, "."+name) {
+				return v, k
+			}
 		}
 	}
 	return nil, ""
@@ -727,6 +795,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 
 	case *ast.MemberExpr:
+		// パッケージ関数またはパッケージレベル変数の探索
 		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
 			qualified := pkgId.Value + "_" + e.Field.Value
 			if t, ok := c.Globals[qualified]; ok {
@@ -738,15 +807,24 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			if _, ok := c.LookupFloatConstant(qualified); ok {
 				return TypeFloat64
 			}
-			if fn, ok := c.Functions[qualified]; ok {
+			if fn, _ := c.LookupFunction(qualified); fn != nil {
 				return fn
 			}
 		}
+
 		objType := c.InferExprType(e.Object, locals)
+		rawObjType := objType
 		if pt, ok := objType.(*PointerType); ok {
-			objType = pt.Base
+			rawObjType = pt.Base
 		}
-		if st, ok := objType.(*StructType); ok {
+
+		// メソッドであるか探索
+		if fn, _ := c.LookupMethod(objType.TypeName(), e.Field.Value); fn != nil {
+			return fn
+		}
+
+		// 構造体フィールドであるか探索
+		if st, ok := rawObjType.(*StructType); ok {
 			for _, f := range st.Fields {
 				if f.Name == e.Field.Value {
 					return f.Type
@@ -803,8 +881,25 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 				}
 			}
 		}
+
+		// メンバーメソッド呼び出しの事前解決
+		if mem, ok := e.Function.(*ast.MemberExpr); ok {
+			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+				targetName := pkgId.Value + "_" + mem.Field.Value
+				if fn, _ := c.LookupFunction(targetName); fn != nil {
+					c.ResolvedCalls[e] = fn
+				}
+			} else {
+				objType := c.InferExprType(mem.Object, locals)
+				if fn, _ := c.LookupMethod(objType.TypeName(), mem.Field.Value); fn != nil {
+					c.ResolvedCalls[e] = fn
+				}
+			}
+		}
+
 		fnType := c.InferExprType(e.Function, locals)
 		if ft, ok := fnType.(*FuncType); ok {
+			c.ResolvedCalls[e] = ft
 			if len(ft.ReturnTypes) == 1 {
 				return ft.ReturnTypes[0]
 			} else if len(ft.ReturnTypes) > 1 {
