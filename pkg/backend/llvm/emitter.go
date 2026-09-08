@@ -695,7 +695,11 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 	toLLVM := i.ToType.LLVMType()
 	val := e.formatVal(i.Val)
 
+	// 同一型の場合
 	if fromLLVM == toLLVM {
+		if strings.HasPrefix(fromLLVM, "{") || strings.HasPrefix(fromLLVM, "[") {
+			panic(fmt.Sprintf("[Emitter Panic] invalid cast: cannot bitcast aggregate type '%s'", fromLLVM))
+		}
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
@@ -740,7 +744,7 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 6. ポインタ -> 整数 (ptrtoint) - i32, i16, i8, i1 にも完全対応
+	// 6. ポインタ -> 整数 (ptrtoint)
 	if isFromPtr && rTo > 0 {
 		e.b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
@@ -750,8 +754,16 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		e.b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
+	// 8. 同一ビット幅の整数と浮動小数点の相互変換 (bitcast)
+	if (rFrom == 64 && toLLVM == "double") || (fromLLVM == "double" && rTo == 64) ||
+		(rFrom == 32 && toLLVM == "float") || (fromLLVM == "float" && rTo == 32) {
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+		return
+	}
 
-	e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+	// ビットサイズ不一致や集約型（構造体・タプル）に対する不正なキャストは即座にパニック
+	panic(fmt.Sprintf("[Emitter Panic] invalid cast operation: cannot cast '%s' to '%s' (val: %s, dst: %s)",
+		fromLLVM, toLLVM, val, i.Dst))
 }
 
 func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
