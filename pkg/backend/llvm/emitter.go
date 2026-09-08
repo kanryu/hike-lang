@@ -136,7 +136,6 @@ func (e *Emitter) emitItabs() {
 			}
 			rawParams := []string{"i8*"}
 
-			// 構造体が存在する場合のみ %struct.xxx* とし、それ以外は LLVMType を採用
 			concreteRecv := fmt.Sprintf("%%struct.%s*", sName)
 			if e.semaCtx != nil {
 				if st, _ := e.semaCtx.LookupStruct(sName); st == nil {
@@ -178,7 +177,6 @@ func (e *Emitter) emitFunctions() {
 
 	for _, fn := range e.prog.Functions {
 		if fn.IsExtern {
-			// runtime.ll 内で宣言・定義済み、またはすでに declare 出力済みのシンボルは重複出力しない
 			if e.declaredSymbols[fn.Name] {
 				continue
 			}
@@ -187,7 +185,6 @@ func (e *Emitter) emitFunctions() {
 				continue
 			}
 
-			// 出力済みとしてマーク
 			e.declaredSymbols[fn.Name] = true
 
 			retTypeStr := "void"
@@ -205,7 +202,6 @@ func (e *Emitter) emitFunctions() {
 			continue
 		}
 
-		// 定義済み関数としても登録（同名の外部 declare が後から来てもスキップできるようにする）
 		e.declaredSymbols[fn.Name] = true
 		e.emitFunction(fn)
 	}
@@ -673,37 +669,85 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", i.Dst, t1, itabPtr))
 }
 
+func intRank(llvm string) int {
+	switch llvm {
+	case "i64":
+		return 64
+	case "i32":
+		return 32
+	case "i16":
+		return 16
+	case "i8":
+		return 8
+	case "i1":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func isFloatType(llvm string) bool {
+	return llvm == "double" || llvm == "float"
+}
+
 func (e *Emitter) emitCast(i *hir.InstrCast) {
 	fromLLVM := i.Val.Type().LLVMType()
 	toLLVM := i.ToType.LLVMType()
 	val := e.formatVal(i.Val)
 
-	if (fromLLVM == "double" || fromLLVM == "float") && (toLLVM == "i64" || toLLVM == "i32") {
-		e.b.WriteString(fmt.Sprintf("  %s = fptosi %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
-		return
-	}
-	if (fromLLVM == "i64" || fromLLVM == "i32") && (toLLVM == "double" || toLLVM == "float") {
-		e.b.WriteString(fmt.Sprintf("  %s = sitofp %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
-		return
-	}
-	if fromLLVM == "i64" && (toLLVM == "i32" || toLLVM == "i8" || toLLVM == "i1") {
-		e.b.WriteString(fmt.Sprintf("  %s = trunc i64 %s to %s\n", i.Dst, val, toLLVM))
-		return
-	}
-	if (fromLLVM == "i32" || fromLLVM == "i8" || fromLLVM == "i1") && toLLVM == "i64" {
-		e.b.WriteString(fmt.Sprintf("  %s = zext %s %s to i64\n", i.Dst, fromLLVM, val))
-		return
-	}
-	if strings.HasSuffix(fromLLVM, "*") && strings.HasSuffix(toLLVM, "*") {
+	if fromLLVM == toLLVM {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	if strings.HasSuffix(fromLLVM, "*") && toLLVM == "i64" {
-		e.b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to i64\n", i.Dst, fromLLVM, val))
+
+	rFrom := intRank(fromLLVM)
+	rTo := intRank(toLLVM)
+	isFromPtr := strings.HasSuffix(fromLLVM, "*")
+	isToPtr := strings.HasSuffix(toLLVM, "*")
+
+	// 1. 浮動小数点数 -> 整数 (fptosi)
+	if isFloatType(fromLLVM) && rTo > 0 {
+		e.b.WriteString(fmt.Sprintf("  %s = fptosi %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	if fromLLVM == "i64" && strings.HasSuffix(toLLVM, "*") {
-		e.b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", i.Dst, val, toLLVM))
+	// 2. 整数 -> 浮動小数点数 (sitofp)
+	if rFrom > 0 && isFloatType(toLLVM) {
+		e.b.WriteString(fmt.Sprintf("  %s = sitofp %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+		return
+	}
+	// 3. 浮動小数点数間の変換
+	if fromLLVM == "double" && toLLVM == "float" {
+		e.b.WriteString(fmt.Sprintf("  %s = fptrunc double %s to float\n", i.Dst, val))
+		return
+	}
+	if fromLLVM == "float" && toLLVM == "double" {
+		e.b.WriteString(fmt.Sprintf("  %s = fpext float %s to double\n", i.Dst, val))
+		return
+	}
+	// 4. 整数間の拡縮 (Trunc / ZExt)
+	if rFrom > 0 && rTo > 0 {
+		if rFrom > rTo {
+			e.b.WriteString(fmt.Sprintf("  %s = trunc %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			return
+		}
+		if rFrom < rTo {
+			e.b.WriteString(fmt.Sprintf("  %s = zext %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			return
+		}
+	}
+	// 5. ポインタ同士の変換 (bitcast)
+	if isFromPtr && isToPtr {
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+		return
+	}
+	// 6. ポインタ -> 整数 (ptrtoint) - i32, i16, i8, i1 にも完全対応
+	if isFromPtr && rTo > 0 {
+		e.b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+		return
+	}
+	// 7. 整数 -> ポインタ (inttoptr)
+	if rFrom > 0 && isToPtr {
+		e.b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
 
@@ -790,9 +834,13 @@ func (e *Emitter) emitTerminator(term hir.Terminator, isMain bool) {
 			val := e.formatVal(t.Vals[0])
 			typStr := t.Vals[0].Type().LLVMType()
 			if isMain {
-				truncReg := e.nextTmp()
-				e.b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i32\n", truncReg, typStr, val))
-				e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", truncReg))
+				if typStr == "i32" {
+					e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", val))
+				} else {
+					truncReg := e.nextTmp()
+					e.b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i32\n", truncReg, typStr, val))
+					e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", truncReg))
+				}
 			} else {
 				e.b.WriteString(fmt.Sprintf("  ret %s %s\n", typStr, val))
 			}

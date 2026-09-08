@@ -1,0 +1,501 @@
+package sprintf
+
+// -----------------------------------------------------------------------------
+// フォーマット制御フラグ
+// -----------------------------------------------------------------------------
+
+type fmtFlags struct {
+	plus     bool
+	minus    bool
+	hash     bool
+	space    bool
+	zero     bool
+	hasWidth bool
+	width    int
+	hasPrec  bool
+	prec     int
+}
+
+// -----------------------------------------------------------------------------
+// 内部バッファ・数値変換ユーティリティ (Pure Hike)
+// -----------------------------------------------------------------------------
+
+func appendStr(buf []byte, s string) []byte {
+	slen := len(s)
+	for i := 0; i < slen; i = i + 1 {
+		buf = append(buf, s[i])
+	}
+	return buf
+}
+
+func padBuffer(buf []byte, content []byte, flags fmtFlags) []byte {
+	clen := len(content)
+	if !flags.hasWidth || clen >= flags.width {
+		for i := 0; i < clen; i = i + 1 {
+			buf = append(buf, content[i])
+		}
+		return buf
+	}
+
+	padLen := flags.width - clen
+	padChar := byte(32) // ' '
+	if flags.zero && !flags.minus {
+		padChar = byte(48) // '0'
+	}
+
+	if flags.minus {
+		for i := 0; i < clen; i = i + 1 {
+			buf = append(buf, content[i])
+		}
+		for i := 0; i < padLen; i = i + 1 {
+			buf = append(buf, byte(32)) // ' '
+		}
+	} else {
+		hasSign := false
+		signChar := byte(0)
+		if clen > 0 && (int(content[0]) == 45 || int(content[0]) == 43) { // '-' or '+'
+			hasSign = true
+			signChar = content[0]
+		}
+
+		if flags.zero && hasSign {
+			buf = append(buf, signChar)
+			for i := 0; i < padLen; i = i + 1 {
+				buf = append(buf, padChar)
+			}
+			for i := 1; i < clen; i = i + 1 {
+				buf = append(buf, content[i])
+			}
+		} else {
+			for i := 0; i < padLen; i = i + 1 {
+				buf = append(buf, padChar)
+			}
+			for i := 0; i < clen; i = i + 1 {
+				buf = append(buf, content[i])
+			}
+		}
+	}
+	return buf
+}
+
+func formatIntBase(val int64, base int, upper bool, flags fmtFlags) []byte {
+	out := make([]byte, 0)
+	isNeg := val < 0
+	uval := val
+	if isNeg {
+		uval = -val
+	}
+
+	if isNeg {
+		out = append(out, byte(45)) // '-'
+	} else if flags.plus {
+		out = append(out, byte(43)) // '+'
+	} else if flags.space {
+		out = append(out, byte(32)) // ' '
+	}
+
+	if flags.hash {
+		if base == 16 {
+			if upper {
+				out = append(out, byte(48)) // '0'
+				out = append(out, byte(88)) // 'X'
+			} else {
+				out = append(out, byte(48))  // '0'
+				out = append(out, byte(120)) // 'x'
+			}
+		} else if base == 8 {
+			out = append(out, byte(48))  // '0'
+			out = append(out, byte(111)) // 'o'
+		} else if base == 2 {
+			out = append(out, byte(48)) // '0'
+			out = append(out, byte(98)) // 'b'
+		}
+	}
+
+	if uval == 0 {
+		out = append(out, byte(48)) // '0'
+		return out
+	}
+
+	digits := make([]byte, 64)
+	pos := 0
+	b := int64(base)
+	for uval > 0 {
+		rem := uval % b
+		if rem < 10 {
+			digits[pos] = byte(48 + rem) // '0' + rem
+		} else {
+			if upper {
+				digits[pos] = byte(65 + rem - 10) // 'A' + rem - 10
+			} else {
+				digits[pos] = byte(97 + rem - 10) // 'a' + rem - 10
+			}
+		}
+		pos = pos + 1
+		uval = uval / b
+	}
+
+	for pos > 0 {
+		pos = pos - 1
+		out = append(out, digits[pos])
+	}
+	return out
+}
+
+func formatFloat(f float64, flags fmtFlags) []byte {
+	out := make([]byte, 0)
+	if f < 0.0 {
+		out = append(out, byte(45)) // '-'
+		f = -f
+	} else if flags.plus {
+		out = append(out, byte(43)) // '+'
+	} else if flags.space {
+		out = append(out, byte(32)) // ' '
+	}
+
+	prec := 6
+	if flags.hasPrec {
+		prec = flags.prec
+	}
+
+	intPart := int64(f)
+	intBytes := formatIntBase(intPart, 10, false, fmtFlags{})
+	for i := 0; i < len(intBytes); i = i + 1 {
+		out = append(out, intBytes[i])
+	}
+
+	if prec > 0 {
+		out = append(out, byte(46)) // '.'
+		frac := f - float64(intPart)
+		for p := 0; p < prec; p = p + 1 {
+			frac = frac * 10.0
+			digit := int64(frac)
+			out = append(out, byte(48+digit)) // '0' + digit
+			frac = frac - float64(digit)
+		}
+	}
+	return out
+}
+
+func formatQuoted(s string) []byte {
+	out := make([]byte, 0)
+	out = append(out, byte(34)) // '"'
+	slen := len(s)
+	for i := 0; i < slen; i = i + 1 {
+		ch := int(s[i])
+		if ch == 34 { // '"'
+			out = append(out, byte(92)) // '\'
+			out = append(out, byte(34)) // '"'
+		} else if ch == 92 { // '\'
+			out = append(out, byte(92)) // '\'
+			out = append(out, byte(92)) // '\'
+		} else if ch == 10 { // '\n'
+			out = append(out, byte(92))  // '\'
+			out = append(out, byte(110)) // 'n'
+		} else if ch == 9 { // '\t'
+			out = append(out, byte(92))  // '\'
+			out = append(out, byte(116)) // 't'
+		} else if ch == 13 { // '\r'
+			out = append(out, byte(92))  // '\'
+			out = append(out, byte(114)) // 'r'
+		} else {
+			out = append(out, s[i])
+		}
+	}
+	out = append(out, byte(34)) // '"'
+	return out
+}
+
+// -----------------------------------------------------------------------------
+// Sprintf 実装本体
+// -----------------------------------------------------------------------------
+
+func Sprintf(format string, args ...any) string {
+	buf := make([]byte, 0)
+	flen := len(format)
+	argIdx := 0
+	i := 0
+
+	for i < flen {
+		ch := int(format[i])
+		if ch != 37 { // '%'
+			buf = append(buf, format[i])
+			i = i + 1
+			continue
+		}
+
+		i = i + 1
+		if i >= flen {
+			buf = append(buf, byte(37)) // '%'
+			break
+		}
+
+		if int(format[i]) == 37 { // '%'
+			buf = append(buf, byte(37)) // '%'
+			i = i + 1
+			continue
+		}
+
+		flags := fmtFlags{
+			plus:     false,
+			minus:    false,
+			hash:     false,
+			space:    false,
+			zero:     false,
+			hasWidth: false,
+			width:    0,
+			hasPrec:  false,
+			prec:     0,
+		}
+
+		// 1. フラグ解析 (+: 43, -: 45, #: 35, ' ': 32, 0: 48)
+		for i < flen {
+			fc := int(format[i])
+			if fc == 43 { // '+'
+				flags.plus = true
+			} else if fc == 45 { // '-'
+				flags.minus = true
+			} else if fc == 35 { // '#'
+				flags.hash = true
+			} else if fc == 32 { // ' '
+				flags.space = true
+			} else if fc == 48 { // '0'
+				flags.zero = true
+			} else {
+				break
+			}
+			i = i + 1
+		}
+
+		// 2. 幅 (Width) 解析 ('0': 48, '9': 57)
+		if i < flen && int(format[i]) >= 48 && int(format[i]) <= 57 {
+			w := 0
+			for i < flen && int(format[i]) >= 48 && int(format[i]) <= 57 {
+				w = w*10 + int(format[i]-byte(48))
+				i = i + 1
+			}
+			flags.hasWidth = true
+			flags.width = w
+		}
+
+		// 3. 精度 (Precision) 解析 ('.': 46)
+		if i < flen && int(format[i]) == 46 {
+			i = i + 1
+			p := 0
+			for i < flen && int(format[i]) >= 48 && int(format[i]) <= 57 {
+				p = p*10 + int(format[i]-byte(48))
+				i = i + 1
+			}
+			flags.hasPrec = true
+			flags.prec = p
+		}
+
+		if i >= flen {
+			break
+		}
+
+		verb := int(format[i])
+		i = i + 1
+
+		if argIdx >= len(args) {
+			buf = append(buf, byte(37)) // '%'
+			buf = append(buf, byte(33)) // '!'
+			buf = append(buf, byte(verb))
+			buf = appendStr(buf, "(MISSING)")
+			continue
+		}
+
+		val := args[argIdx]
+		argIdx = argIdx + 1
+		formatted := make([]byte, 0)
+
+		switch verb {
+		case 100: // 'd'
+			v := int64(0)
+			switch n := val.(type) {
+			case int:
+				v = int64(n)
+			case int64:
+				v = n
+			case int32:
+				v = int64(n)
+			case byte:
+				v = int64(n)
+			}
+			formatted = formatIntBase(v, 10, false, flags)
+
+		case 98: // 'b'
+			v := int64(0)
+			switch n := val.(type) {
+			case int:
+				v = int64(n)
+			case int64:
+				v = n
+			case int32:
+				v = int64(n)
+			case byte:
+				v = int64(n)
+			}
+			formatted = formatIntBase(v, 2, false, flags)
+
+		case 111, 79: // 'o', 'O'
+			v := int64(0)
+			switch n := val.(type) {
+			case int:
+				v = int64(n)
+			case int64:
+				v = n
+			case int32:
+				v = int64(n)
+			case byte:
+				v = int64(n)
+			}
+			formatted = formatIntBase(v, 8, false, flags)
+
+		case 120: // 'x'
+			v := int64(0)
+			switch n := val.(type) {
+			case int:
+				v = int64(n)
+			case int64:
+				v = n
+			case int32:
+				v = int64(n)
+			case byte:
+				v = int64(n)
+			}
+			formatted = formatIntBase(v, 16, false, flags)
+
+		case 88: // 'X'
+			v := int64(0)
+			switch n := val.(type) {
+			case int:
+				v = int64(n)
+			case int64:
+				v = n
+			case int32:
+				v = int64(n)
+			case byte:
+				v = int64(n)
+			}
+			formatted = formatIntBase(v, 16, true, flags)
+
+		case 99: // 'c'
+			c := byte(63) // '?'
+			switch n := val.(type) {
+			case byte:
+				c = n
+			case int:
+				c = byte(n)
+			}
+			formatted = append(formatted, c)
+
+		case 115: // 's'
+			s := ""
+			switch str := val.(type) {
+			case string:
+				s = str
+			}
+			slen := len(s)
+			if flags.hasPrec && flags.prec < slen {
+				slen = flags.prec
+			}
+			for si := 0; si < slen; si = si + 1 {
+				formatted = append(formatted, s[si])
+			}
+
+		case 113: // 'q'
+			s := ""
+			switch str := val.(type) {
+			case string:
+				s = str
+			}
+			formatted = formatQuoted(s)
+
+		case 102: // 'f'
+			f := 0.0
+			switch fl := val.(type) {
+			case float64:
+				f = fl
+			case float32:
+				f = float64(fl)
+			}
+			formatted = formatFloat(f, flags)
+
+		case 116: // 't'
+			b := false
+			switch bl := val.(type) {
+			case bool:
+				b = bl
+			}
+			if b {
+				formatted = appendStr(formatted, "true")
+			} else {
+				formatted = appendStr(formatted, "false")
+			}
+
+		case 112: // 'p'
+			pFlags := flags
+			pFlags.hash = true
+			formatted = formatIntBase(int64(val.(int)), 16, false, pFlags)
+
+		case 84: // 'T'
+			switch val.(type) {
+			case int:
+				formatted = appendStr(formatted, "int")
+			case int64:
+				formatted = appendStr(formatted, "int64")
+			case int32:
+				formatted = appendStr(formatted, "int32")
+			case string:
+				formatted = appendStr(formatted, "string")
+			case bool:
+				formatted = appendStr(formatted, "bool")
+			case byte:
+				formatted = appendStr(formatted, "byte")
+			case float64:
+				formatted = appendStr(formatted, "float64")
+			case float32:
+				formatted = appendStr(formatted, "float32")
+			default:
+				formatted = appendStr(formatted, "any")
+			}
+
+		case 118: // 'v'
+			switch v := val.(type) {
+			case int:
+				formatted = formatIntBase(int64(v), 10, false, flags)
+			case int64:
+				formatted = formatIntBase(v, 10, false, flags)
+			case int32:
+				formatted = formatIntBase(int64(v), 10, false, flags)
+			case string:
+				slen := len(v)
+				for si := 0; si < slen; si = si + 1 {
+					formatted = append(formatted, v[si])
+				}
+			case bool:
+				if v {
+					formatted = appendStr(formatted, "true")
+				} else {
+					formatted = appendStr(formatted, "false")
+				}
+			case float64:
+				formatted = formatFloat(v, flags)
+			case float32:
+				formatted = formatFloat(float64(v), flags)
+			default:
+				formatted = appendStr(formatted, "<value>")
+			}
+
+		default:
+			buf = append(buf, byte(37)) // '%'
+			buf = append(buf, byte(verb))
+			continue
+		}
+
+		buf = padBuffer(buf, formatted, flags)
+	}
+
+	return string(buf)
+}

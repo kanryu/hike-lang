@@ -1,31 +1,28 @@
 package fmt
 
-// 非公開のC標準関数宣言 (C ABI)
+import "std/fmt/sprintf"
+
+// 画面出力用のC標準関数宣言 (ネイティブ環境用)
 func printf(format string, ...) int
-func sprintf(buf *byte, format string, ...) int
-func malloc(size int) *byte
-func free(ptr *byte)
-func strlen(s *byte) int
-func memcpy(dst *byte, src *byte, n int) *byte
 
-// 外部公開する Printf 関数
-func Printf(format string, ...) int {
-	return printf(format, ...)
+// Sprintf は std/fmt/sprintf に定義された純粋実装を委譲呼び出しします
+func Sprintf(format string, args ...any) string {
+	return sprintf.Sprintf(format, args...)
 }
 
-// 外部公開する Sprintf 関数
-// 1024バイトの一時バッファでフォーマットした後、実サイズ分だけ確保して即座に一時バッファを解放する
-func Sprintf(format string, ...) string {
-	buf := malloc(1024)
-	sprintf(buf, format, ...)
-	l := strlen(buf)
-	res := malloc(l + 1)
-	memcpy(res, buf, l + 1)
-	free(buf)
-	return string(res)
+// Printf は Sprintf で文字列を組み立てた後に標準出力へ出力します
+func Printf(format string, args ...any) int {
+	s := Sprintf(format, args...)
+	printf("%s", s)
+	return len(s)
 }
 
-// PrintStr: 文字列を出力します
+// Println は改行付きで文字列を出力します
+func Println(s string) {
+	printf("%s\n", s)
+}
+
+// PrintStr はバイトポインタ文字列を出力します
 func PrintStr(s *byte) {
 	if s == nil {
 		return
@@ -33,17 +30,17 @@ func PrintStr(s *byte) {
 	printf("%s", s)
 }
 
-// PrintInt: 整数を出力します
+// PrintInt は整数を出力します
 func PrintInt(v int) {
 	printf("%d", v)
 }
 
-// PrintFloat: 浮動小数点数を出力します
+// PrintFloat は浮動小数点数を出力します
 func PrintFloat(f float64) {
 	printf("%f", f)
 }
 
-// PrintLn: 改行付きで文字列を出力します (*byte 版)
+// PrintLn は改行付きでバイトポインタ文字列を出力します
 func PrintLn(s *byte) {
 	if s == nil {
 		printf("\n")
@@ -52,12 +49,7 @@ func PrintLn(s *byte) {
 	printf("%s\n", s)
 }
 
-// Println: 改行付き文字列出力 (string 版)
-func Println(s string) {
-	printf("%s\n", s)
-}
-
-// ErrorLn: コンパイルエラー表示用プレフィックス付き出力
+// ErrorLn はエラープレフィックス付きで出力します
 func ErrorLn(msg *byte) {
 	printf("[ERROR] %s\n", msg)
 }

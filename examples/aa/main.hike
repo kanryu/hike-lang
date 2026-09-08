@@ -1,14 +1,10 @@
-
 package main
-
-import "std/fmt"
 
 func printf(format string, ...) int
 
 func main() int {
-    id := 42
-    name := "Hike"
-    formatted := fmt.Sprintf("ID:%d,NAME:%s", id, name)
-    printf("RES=%s\n", formatted)
+    var a any = 1234
+    val, ok := a.(int)
+    printf("VAL=%d,OK=%d\n", val, ok)
     return 0
 }

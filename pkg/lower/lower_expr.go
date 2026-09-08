@@ -43,6 +43,14 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.ImplicitCastExpr:
 		val := e.LowerExpr(node.Expr)
 		targetT := e.root.semaCtx.ResolveType(node.TargetType)
+
+		// 右辺がタプルの場合、第0要素を取り出す
+		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+			elem0 := e.root.nextReg(tup.Types[0])
+			e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: val, Index: 0})
+			val = elem0
+		}
+
 		if val.Type().LLVMType() == targetT.LLVMType() {
 			return val
 		}
@@ -70,7 +78,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		if node.Value == "false" {
 			return &hir.ConstBool{Val: false, Typ: sema.TypeBool}
 		}
-		// 修正: LookupConstant / LookupFloatConstant を使用
 		if c, ok := e.root.semaCtx.LookupConstant(node.Value); ok {
 			return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
 		}
@@ -283,7 +290,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.MemberExpr:
 		if pkgId, okPkg := node.Object.(*ast.Identifier); okPkg {
 			qualified := pkgId.Value + "_" + node.Field.Value
-			// 修正: LookupConstant / LookupFloatConstant を使用
 			if c, ok := e.root.semaCtx.LookupConstant(qualified); ok {
 				return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
 			}
@@ -364,7 +370,12 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		panic(fmt.Sprintf("[Lower Error] unsupported index target type: %s", baseVal.Type().TypeName()))
 
 	case *ast.TypeAssertExpr:
-		return e.LowerTypeAssertExpr(node)
+		// 単一値コンテキストでの評価: タプルから第0要素（実値）を抽出して返す
+		tup := e.LowerTypeAssertExpr(node)
+		targetType := e.root.semaCtx.ResolveType(node.Target)
+		valReg := e.root.nextReg(targetType)
+		e.root.emit(&hir.InstrExtractValue{Dst: valReg, Agg: tup, Index: 0})
+		return valReg
 
 	case *ast.FuncLit:
 		return e.root.Call.LowerFuncLit(node)

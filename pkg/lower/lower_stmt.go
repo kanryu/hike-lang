@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"strings"
+
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
@@ -130,9 +132,16 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
 		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-	// 多値アンパック代入 (例: sum, mul := <-async ... または a, b := fn())
+	// 多値アンパック代入 (例: sum, mul := <-async ... または a, b := fn() または val, ok := a.(T))
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
-		rhsVal := s.root.Expr.LowerExpr(stmt.Right[0])
+		var rhsVal hir.Value
+		// 型アサーション式の場合は、タプル（値, ok）を返す専用関数を呼ぶ
+		if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
+			rhsVal = s.root.Expr.LowerTypeAssertExpr(tae)
+		} else {
+			rhsVal = s.root.Expr.LowerExpr(stmt.Right[0])
+		}
+
 		if tup, ok := rhsVal.Type().(*sema.TupleType); ok {
 			for i, left := range stmt.Left {
 				if i >= len(tup.Types) {
@@ -273,7 +282,6 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 		}
 
-		// ターゲットポインタの解決: ローカル変数の場合は symbols から取得、それ以外は LowerLValue
 		var targetPtr hir.Value
 		if ident, ok := left.(*ast.Identifier); ok {
 			targetPtr = s.root.symbols[ident.Value]
@@ -295,7 +303,6 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 			val = s.root.emitValueCoerce(val, elemType)
 
-			// 演算子に応じた計算処理
 			switch op {
 			case "+=", "++":
 				curVal := s.root.nextReg(elemType)
@@ -403,7 +410,6 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	xVal := s.root.Expr.LowerExpr(fr.X)
 	xType := xVal.Type()
 
-	// 1. MapBehavior (イテレータインターフェース)
 	if _, _, isBeh := s.root.semaCtx.CheckMapBehavior(xType); isBeh {
 		objPtr := s.root.Expr.LowerStructPtr(fr.X)
 		initFnName, initFn, finalRecv, hasInit := s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
@@ -480,7 +486,6 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		}
 	}
 
-	// 2. 言語標準マップ (MapType)
 	if mp, isMap := xType.(*sema.MapType); isMap {
 		bIdxAlloca := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "maprange.bidx")
 		s.root.emit(&hir.InstrAlloca{Dst: bIdxAlloca, AllocType: sema.TypeInt})
@@ -599,7 +604,6 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		return
 	}
 
-	// 3. スライス / 配列 / 文字列
 	var elemType sema.Type = sema.TypeByte
 	var lenVal hir.Value = nil
 	var dataPtr hir.Value = nil
@@ -793,6 +797,14 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		s.root.emit(&hir.InstrExtractValue{Dst: actualTypeIDReg, Agg: exprVal, Index: 1})
 	}
 
+	var oldSym hir.Value
+	var oldTyp sema.Type
+	var hasOld bool
+	if tss.Variable != nil {
+		oldSym, hasOld = s.root.symbols[tss.Variable.Value]
+		oldTyp = s.root.symbolTypes[tss.Variable.Value]
+	}
+
 	var defaultCase *ast.TypeCaseClause = nil
 
 	for _, c := range tss.Cases {
@@ -828,9 +840,17 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 			var valToStore hir.Value
 			if len(c.Types) == 1 {
 				targetType := s.root.semaCtx.ResolveType(c.Types[0])
-				castVal := s.root.nextReg(targetType)
-				s.root.emit(&hir.InstrCast{Dst: castVal, Val: dataPtrReg, ToType: targetType})
-				valToStore = castVal
+				if strings.HasSuffix(targetType.LLVMType(), "*") {
+					castVal := s.root.nextReg(targetType)
+					s.root.emit(&hir.InstrCast{Dst: castVal, Val: dataPtrReg, ToType: targetType})
+					valToStore = castVal
+				} else {
+					typedPtr := s.root.nextReg(&sema.PointerType{Base: targetType})
+					s.root.emit(&hir.InstrCast{Dst: typedPtr, Val: dataPtrReg, ToType: &sema.PointerType{Base: targetType}})
+					unpackedVal := s.root.nextReg(targetType)
+					s.root.emit(&hir.InstrLoad{Dst: unpackedVal, Ptr: typedPtr})
+					valToStore = unpackedVal
+				}
 			} else {
 				valToStore = exprVal
 			}
@@ -867,6 +887,16 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		s.root.terminate(&hir.InstrJump{Target: endBB.Label})
 	}
 
+	if tss.Variable != nil {
+		if hasOld {
+			s.root.symbols[tss.Variable.Value] = oldSym
+			s.root.symbolTypes[tss.Variable.Value] = oldTyp
+		} else {
+			delete(s.root.symbols, tss.Variable.Value)
+			delete(s.root.symbolTypes, tss.Variable.Value)
+		}
+	}
+
 	s.root.setBlock(endBB)
 }
 
@@ -875,12 +905,10 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 // -------------------------------------------------------------
 
 func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
-	// 可変長関数のインライン展開中は、親関数のブロックを exit させない
 	if s.root.Call.currentVarArgs != nil {
 		return
 	}
 
-	// 多値戻り値のアンパック: 関数の戻り値が複数あり、return 式が 1 つで TupleType の場合
 	if len(rs.Values) == 1 && s.root.curFunc != nil && len(s.root.curFunc.ReturnTypes) > 1 {
 		rhsVal := s.root.Expr.LowerExpr(rs.Values[0])
 		if tup, ok := rhsVal.Type().(*sema.TupleType); ok {

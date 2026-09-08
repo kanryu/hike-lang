@@ -1,4 +1,4 @@
-package e2e_test
+package e2e_test  // ← package e2e から修正
 
 import "testing"
 

@@ -453,25 +453,56 @@ func DetermineCast(from, to Type) (ast.CastKind, bool) {
 		return 0, false
 	}
 
-	if (fromLLVM == "double" || fromLLVM == "float") && (toLLVM == "i64" || toLLVM == "i32") {
+	intRank := func(llvm string) int {
+		switch llvm {
+		case "i64":
+			return 64
+		case "i32":
+			return 32
+		case "i16":
+			return 16
+		case "i8":
+			return 8
+		case "i1":
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	rFrom := intRank(fromLLVM)
+	rTo := intRank(toLLVM)
+
+	// 浮動小数点数と整数の相互変換
+	if (fromLLVM == "double" || fromLLVM == "float") && rTo > 0 {
 		return ast.CastFloatToInt, true
 	}
-	if (fromLLVM == "i64" || fromLLVM == "i32") && (toLLVM == "double" || toLLVM == "float") {
+	if rFrom > 0 && (toLLVM == "double" || toLLVM == "float") {
 		return ast.CastIntToFloat, true
 	}
-	if fromLLVM == "i64" && (toLLVM == "i32" || toLLVM == "i8" || toLLVM == "i1") {
-		return ast.CastTrunc, true
+
+	// 整数間の拡縮 (Trunc / ZExt)
+	if rFrom > 0 && rTo > 0 {
+		if rFrom > rTo {
+			return ast.CastTrunc, true
+		}
+		if rFrom < rTo {
+			return ast.CastZExt, true
+		}
 	}
-	if (fromLLVM == "i32" || fromLLVM == "i8" || fromLLVM == "i1") && toLLVM == "i64" {
-		return ast.CastZExt, true
-	}
-	if strings.HasSuffix(fromLLVM, "*") && strings.HasSuffix(toLLVM, "*") {
+
+	// ポインタ同士の変換
+	isFromPtr := strings.HasSuffix(fromLLVM, "*")
+	isToPtr := strings.HasSuffix(toLLVM, "*")
+	if isFromPtr && isToPtr {
 		return ast.CastBitcast, true
 	}
-	if strings.HasSuffix(fromLLVM, "*") && toLLVM == "i64" {
+
+	// ポインタと整数の相互変換 (ptrtoint / inttoptr)
+	if isFromPtr && rTo > 0 {
 		return ast.CastPtrToInt, true
 	}
-	if fromLLVM == "i64" && strings.HasSuffix(toLLVM, "*") {
+	if rFrom > 0 && isToPtr {
 		return ast.CastIntToPtr, true
 	}
 
