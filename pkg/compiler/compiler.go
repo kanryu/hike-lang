@@ -33,10 +33,15 @@ func (c *Compiler) SetVerbose(v bool) {
 	c.verbose = v
 }
 
-// CompileToHIR はフロントエンド・ミドルエンドを実行し、ターゲット非依存の HIR を生成します
+// CompileToHIR はフロントエンド・ミドルエンドを実行し、ターゲットに応じた HIR を生成します
 func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Context, *ast.Program, error) {
 	if len(entryPaths) == 0 {
 		return nil, nil, nil, fmt.Errorf("no input files provided")
+	}
+
+	// ターゲットアーキテクチャの型システム初期化
+	if c.target != nil {
+		sema.SetTargetArchitecture(c.target.Triple)
 	}
 
 	rootDir := filepath.Dir(entryPaths[0])
@@ -44,7 +49,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		rootDir = "."
 	}
 
-	// 1. パッケージ探索・構文解析・名前マングリング・AST統合
+	// 1. パッケージ探索・構文解析
 	ld := loader.New(rootDir)
 	ld.SetVerbose(c.verbose)
 	rawProg, err := ld.Load(entryPaths...)
@@ -52,21 +57,23 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil, nil, nil, fmt.Errorf("loader error: %w", err)
 	}
 
-	// 2. 意味解析・型検査・エスケープ解析・暗黙キャスト挿入
+	// 2. 意味解析・型検査
 	semaCtx, err := sema.Analyze(rawProg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("semantic error: %w", err)
 	}
 
-	// 3. ジェネリクス単相化（Monomorphization）
+	// 3. ジェネリクス単相化
 	tf := transform.New(rawProg, semaCtx)
 	concreteProg, err := tf.Transform()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("transform error: %w", err)
 	}
 
-	// 4. ターゲット非依存 HIR への Lowering
+	// 4. HIR への Lowering (Compiler が保持するターゲット情報を Lowerer に直接教える)
+	is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4))
 	lw := lower.New(concreteProg, semaCtx)
+	lw.Set32Bit(is32Bit)
 	hirProg := lw.Lower()
 
 	return hirProg, semaCtx, concreteProg, nil
@@ -86,7 +93,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	return llvmIR, semaCtx, concreteProg, nil
 }
 
-// CompileFile は単一ファイルのコンパイル用ショートカット（後方互換性）
+// CompileFile は単一ファイルのコンパイル用ショートカット
 func (c *Compiler) CompileFile(entryPath string) (string, error) {
 	ir, _, _, err := c.CompileToLLVM(entryPath)
 	return ir, err

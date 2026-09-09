@@ -298,7 +298,7 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 
 	elemSize := elemType.Size()
 	if elemSize <= 0 {
-		elemSize = 8
+		elemSize = sema.PointerSize
 	}
 	totalBytes := count * elemSize
 
@@ -733,7 +733,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					dst := c.root.nextReg(sema.TypeString)
 					c.root.emit(&hir.InstrCallStatic{
 						Dst:        dst,
-						CalleeName: "__hike_slice_to_str",
+						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
 						Args:       []hir.Value{rawPtr, rawLen},
 					})
 					return dst
@@ -839,7 +839,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 			if fnId.Value == "len" && argVal.Type() == sema.TypeString {
 				dst := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "strlen", Args: []hir.Value{argVal}})
+				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
 				return dst
 			}
 			if _, isMap := argVal.Type().(*sema.MapType); isMap {
@@ -861,7 +861,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				dst := c.root.nextReg(sema.TypeString)
 				c.root.emit(&hir.InstrCallStatic{
 					Dst:        dst,
-					CalleeName: "__hike_slice_to_str",
+					CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
 					Args:       []hir.Value{rawPtr, rawLen},
 				})
 				return dst
@@ -1198,7 +1198,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 
 	memcpyTmp := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrCallStatic{Dst: memcpyTmp, CalleeName: "memcpy", Args: []hir.Value{newRawPtr, oldRawBytePtr, oldBytes}})
+	c.root.emit(&hir.InstrCallStatic{Dst: memcpyTmp, CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{newRawPtr, oldRawBytePtr, oldBytes}})
 
 	c.root.emit(&hir.InstrStore{Val: newTypedPtr, Ptr: finalPtrAlloca})
 	c.root.emit(&hir.InstrStore{Val: newCap, Ptr: finalCapAlloca})

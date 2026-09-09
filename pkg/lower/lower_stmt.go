@@ -624,7 +624,7 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		dataPtr = s.root.Expr.LowerLValue(fr.X)
 	} else {
 		lenReg := s.root.nextReg(sema.TypeInt)
-		s.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: "strlen", Args: []hir.Value{xVal}})
+		s.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{xVal}})
 		dataPtr = xVal
 		lenVal = lenReg
 		elemType = sema.TypeByte
@@ -728,7 +728,7 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 			var cmpReg *hir.Reg
 			if vVal.Type() == sema.TypeString {
 				cmpReg = s.root.nextReg(sema.TypeBool)
-				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: "hike_streq", Args: []hir.Value{switchVal, vVal}})
+				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{switchVal, vVal}})
 			} else {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: switchVal, R: vVal})
@@ -787,11 +787,12 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 
 	if it, ok := exprType.(*sema.InterfaceType); ok && !it.IsAny() {
 		itabRawReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		s.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
-		s.root.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: exprVal, Index: 1})
+		e := s.root
+		e.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
+		e.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: exprVal, Index: 1})
 		typeIDPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-		s.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt}})
-		s.root.emit(&hir.InstrLoad{Dst: actualTypeIDReg, Ptr: typeIDPtr})
+		e.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt}})
+		e.emit(&hir.InstrLoad{Dst: actualTypeIDReg, Ptr: typeIDPtr})
 	} else {
 		s.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
 		s.root.emit(&hir.InstrExtractValue{Dst: actualTypeIDReg, Agg: exprVal, Index: 1})

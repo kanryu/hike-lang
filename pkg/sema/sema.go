@@ -29,6 +29,8 @@ func (t *BasicType) LLVMType() string { return t.LLVM }
 func (t *BasicType) Size() int        { return t.ByteSize }
 
 var (
+	PointerSize = 8
+
 	TypeInt     = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
 	TypeInt64   = &BasicType{Name: "int64", ByteSize: 8, LLVM: "i64"}
 	TypeInt32   = &BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"}
@@ -71,6 +73,32 @@ var BuiltinTypes = map[string]Type{
 	"void":    TypeVoid,
 }
 
+// SetTargetArchitecture はターゲットアーキテクチャに応じて基本型の幅（32bit / 64bit）を設定する
+func SetTargetArchitecture(arch string) {
+	arch = strings.ToLower(arch)
+	if arch == "wasm32" || arch == "386" || arch == "arm" || strings.HasPrefix(arch, "wasm32") {
+		TypeInt.ByteSize = 4
+		TypeInt.LLVM = "i32"
+		TypeUint.ByteSize = 4
+		TypeUint.LLVM = "i32"
+		TypeUintptr.ByteSize = 4
+		TypeUintptr.LLVM = "i32"
+		TypeString.ByteSize = 4
+		TypeCString.ByteSize = 4
+		PointerSize = 4
+	} else {
+		TypeInt.ByteSize = 8
+		TypeInt.LLVM = "i64"
+		TypeUint.ByteSize = 8
+		TypeUint.LLVM = "i64"
+		TypeUintptr.ByteSize = 8
+		TypeUintptr.LLVM = "i64"
+		TypeString.ByteSize = 8
+		TypeCString.ByteSize = 8
+		PointerSize = 8
+	}
+}
+
 func IsBuiltinType(name string) bool {
 	if _, ok := BuiltinTypes[name]; ok {
 		return true
@@ -89,7 +117,7 @@ type TypeParamType struct {
 
 func (t *TypeParamType) TypeName() string { return t.Name }
 func (t *TypeParamType) LLVMType() string { return "i8*" }
-func (t *TypeParamType) Size() int        { return 8 }
+func (t *TypeParamType) Size() int        { return PointerSize }
 
 type PointerType struct {
 	Base Type
@@ -97,15 +125,17 @@ type PointerType struct {
 
 func (t *PointerType) TypeName() string { return "*" + t.Base.TypeName() }
 func (t *PointerType) LLVMType() string { return t.Base.LLVMType() + "*" }
-func (t *PointerType) Size() int        { return 8 }
+func (t *PointerType) Size() int        { return PointerSize }
 
 type SliceType struct {
 	Elem Type
 }
 
 func (t *SliceType) TypeName() string { return "[]" + t.Elem.TypeName() }
-func (t *SliceType) LLVMType() string { return "{ i8*, i64, i64 }" }
-func (t *SliceType) Size() int        { return 24 }
+func (t *SliceType) LLVMType() string {
+	return fmt.Sprintf("{ i8*, %s, %s }", TypeInt.LLVMType(), TypeInt.LLVMType())
+}
+func (t *SliceType) Size() int { return PointerSize + TypeInt.Size()*2 }
 
 type ArrayType struct {
 	Len  int
@@ -141,12 +171,12 @@ func (t *StructType) Size() int {
 	for _, f := range t.Fields {
 		fsz := f.Type.Size()
 		if fsz <= 0 {
-			fsz = 8
+			fsz = PointerSize
 		}
 		sz += fsz
 	}
 	if sz == 0 {
-		return 8
+		return PointerSize
 	}
 	return sz
 }
@@ -180,12 +210,12 @@ func (t *InterfaceType) TypeName() string {
 
 func (t *InterfaceType) LLVMType() string {
 	if t.IsAny() {
-		return "{ i8*, i64 }"
+		return fmt.Sprintf("{ i8*, %s }", TypeInt.LLVMType())
 	}
 	return "{ i8*, i8* }"
 }
 
-func (t *InterfaceType) Size() int       { return 16 }
+func (t *InterfaceType) Size() int       { return PointerSize * 2 }
 func (t *InterfaceType) IsAny() bool     { return len(t.Methods) == 0 }
 func (t *InterfaceType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
@@ -214,7 +244,7 @@ type FuncType struct {
 
 func (t *FuncType) TypeName() string { return "func" }
 func (t *FuncType) LLVMType() string { return "{ i8*, i8* }" }
-func (t *FuncType) Size() int        { return 16 }
+func (t *FuncType) Size() int        { return PointerSize * 2 }
 func (t *FuncType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 type TupleType struct {
@@ -249,7 +279,7 @@ func (t *MapType) LLVMType() string {
 	return "%struct.__hike_map*"
 }
 func (t *MapType) Size() int {
-	return 8
+	return PointerSize
 }
 
 type ChanType struct {
@@ -258,7 +288,7 @@ type ChanType struct {
 
 func (t *ChanType) TypeName() string { return "chan " + t.Elem.TypeName() }
 func (t *ChanType) LLVMType() string { return "i8*" }
-func (t *ChanType) Size() int        { return 8 }
+func (t *ChanType) Size() int        { return PointerSize }
 
 type FutureType struct {
 	ReturnTypes []Type
@@ -272,11 +302,11 @@ func (t *FutureType) TypeName() string {
 	return fmt.Sprintf("future<(%s)>", strings.Join(types, ", "))
 }
 func (t *FutureType) LLVMType() string { return "i8*" }
-func (t *FutureType) Size() int        { return 8 }
+func (t *FutureType) Size() int        { return PointerSize }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 内部シンボルキー生成 & マングリング変換ヘルパー
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func BuildInternalKey(pkg string, ident string, structName string) string {
 	base := ident
@@ -347,9 +377,9 @@ func CanonicalMethodName(recvTypeName, fnName string) string {
 	return rawRecv + "_" + cleanMethod
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 型ヘルパー関数
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func getBaseTypeName(t ast.TypeExpr) string {
 	if t == nil {
@@ -562,9 +592,9 @@ func IsGenericFuncDecl(fd *ast.FuncDecl) bool {
 	return false
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 意味解析メインパイプライン (Analyze)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
@@ -1096,9 +1126,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 	return ctx, nil
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // エスケープ解析 & 暗黙キャスト挿入
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func runEscapeAnalysis(prog *ast.Program) {
 	for _, decl := range prog.Decls {

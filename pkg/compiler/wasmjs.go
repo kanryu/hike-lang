@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-// GenerateWasmJSRuntime はブラウザ用ランタイムブリッジ (runtime.js) のソースコード文字列を生成します
+// GenerateWasmJSRuntime はブラウザおよび Node.js 用ランタイムブリッジ (runtime.js) のソースコード文字列を生成します
 func GenerateWasmJSRuntime() string {
 	return `/**
  * Hike Language WebAssembly Runtime Bridge
@@ -20,7 +20,7 @@ class HikeRuntime {
         this.textEncoder = new TextEncoder();
     }
 
-    // Wasm メモリ上のポインタと長さから JS 文字列を取得 (BigInt を Number へ変換)
+    // Wasm メモリ上のポインタと長さから JS 文字列を取得 (Number / BigInt 両対応)
     getString(ptr, len) {
         const p = Number(ptr);
         const l = Number(len);
@@ -58,25 +58,35 @@ class HikeRuntime {
                 // --- DOM & コンソール操作 API ---
                 js_log: (ptr, len) => {
                     const msg = this.getString(ptr, len);
-                    console.log(` + "`%c[Hike Wasm]%c ${msg}`, \"color: #3b82f6; font-weight: bold;\", \"color: inherit;\"" + `);
+                    if (typeof document !== 'undefined') {
+                        console.log(` + "`%c[Hike Wasm]%c ${msg}`, \"color: #3b82f6; font-weight: bold;\", \"color: inherit;\"" + `);
+                    } else {
+                        console.log(` + "`[Hike Wasm] ${msg}`" + `);
+                    }
                 },
                 js_set_text: (idPtr, idLen, textPtr, textLen) => {
                     const id = this.getString(idPtr, idLen);
                     const text = this.getString(textPtr, textLen);
-                    const el = document.getElementById(id);
-                    if (el) el.innerText = text;
+                    if (typeof document !== 'undefined') {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText = text;
+                    }
                 },
                 js_append_text: (idPtr, idLen, textPtr, textLen) => {
                     const id = this.getString(idPtr, idLen);
                     const text = this.getString(textPtr, textLen);
-                    const el = document.getElementById(id);
-                    if (el) el.innerText += text;
+                    if (typeof document !== 'undefined') {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText += text;
+                    }
                 },
                 js_set_badge_color: (idPtr, idLen, colorPtr, colorLen) => {
                     const id = this.getString(idPtr, idLen);
                     const color = this.getString(colorPtr, colorLen);
-                    const el = document.getElementById(id);
-                    if (el) el.style.backgroundColor = color;
+                    if (typeof document !== 'undefined') {
+                        const el = document.getElementById(id);
+                        if (el) el.style.backgroundColor = color;
+                    }
                 },
 
                 // シングルスレッド Wasm 向けのスタブ
@@ -91,20 +101,57 @@ class HikeRuntime {
         };
     }
 
-    async load(wasmPath) {
-        const response = await fetch(wasmPath);
+    // ブラウザ (fetch) と Node.js (fs) の両方に対応したユニバーサルローダー
+    async load(wasmSource) {
         const importObject = this.getImportObject();
-        
-        const { instance } = await WebAssembly.instantiateStreaming(response, importObject);
+        let instance = null;
+
+        const isNode = typeof process !== 'undefined' && process.versions != null && process.versions.node != null;
+
+        if (isNode && typeof wasmSource === 'string') {
+            const fs = await import('fs/promises');
+            const buffer = await fs.readFile(wasmSource);
+            const result = await WebAssembly.instantiate(buffer, importObject);
+            instance = result.instance;
+        } else if (typeof fetch === 'function' && typeof wasmSource === 'string') {
+            if (typeof WebAssembly.instantiateStreaming === 'function') {
+                try {
+                    const response = await fetch(wasmSource);
+                    const result = await WebAssembly.instantiateStreaming(response, importObject);
+                    instance = result.instance;
+                } catch (e) {
+                    const response = await fetch(wasmSource);
+                    const buffer = await response.arrayBuffer();
+                    const result = await WebAssembly.instantiate(buffer, importObject);
+                    instance = result.instance;
+                }
+            } else {
+                const response = await fetch(wasmSource);
+                const buffer = await response.arrayBuffer();
+                const result = await WebAssembly.instantiate(buffer, importObject);
+                instance = result.instance;
+            }
+        } else if (wasmSource instanceof ArrayBuffer || ArrayBuffer.isView(wasmSource)) {
+            const result = await WebAssembly.instantiate(wasmSource, importObject);
+            instance = result.instance;
+        } else {
+            throw new Error('[HikeRuntime] Unsupported wasm source format');
+        }
+
         this.wasmInstance = instance;
         this.memory = instance.exports.memory || importObject.env.memory;
 
-        // Wasm 側の InitApp 関数が存在すれば自動実行
+        // Wasm 側の InitApp 関数が存在すれば自動初期化
         if (typeof this.wasmInstance.exports.InitApp === 'function') {
             this.wasmInstance.exports.InitApp();
         }
         return this.wasmInstance.exports;
     }
+}
+
+// Node.js (CommonJS) 環境へのエクスポート対応
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { HikeRuntime };
 }
 `
 }

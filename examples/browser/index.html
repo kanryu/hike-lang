@@ -95,8 +95,8 @@
         <div class="button-group">
             <button onclick="handleFibClick()">Run Fib(35) in Wasm</button>
             <button onclick="handleAddClick()">Compute 1234 + 5678</button>
-            <button class="secondary" onclick="wasmExports.AppendLogMessage(1n)">Send Action A</button>
-            <button class="secondary" onclick="wasmExports.AppendLogMessage(2n)">Send Action B</button>
+            <button class="secondary" onclick="wasmExports.AppendLogMessage(1)">Send Action A</button>
+            <button class="secondary" onclick="wasmExports.AppendLogMessage(2)">Send Action B</button>
         </div>
     </div>
 
@@ -117,28 +117,17 @@
         }
 
         function handleFibClick() {
+            if (!wasmExports) return;
             const start = performance.now();
-            const res = wasmExports.RunComputation(35n);
+            const res = wasmExports.RunComputation(35);
             const elapsed = (performance.now() - start).toFixed(2);
-            runtime.getImportObject().env.js_append_text(
-                ...encodeString("wasm-log-box"),
-                ...encodeString(`\n[Fibonacci] Fib(35) = ${res} (Calculated in ${elapsed}ms)`)
-            );
+            document.getElementById('wasm-log-box').innerText += `\n[Fibonacci] Fib(35) = ${res} (Calculated in ${elapsed}ms)`;
         }
 
         function handleAddClick() {
-            const sum = wasmExports.AddNumbers(1234n, 5678n);
-            runtime.getImportObject().env.js_append_text(
-                ...encodeString("wasm-log-box"),
-                ...encodeString(`\n[Math] AddNumbers(1234, 5678) = ${sum}`)
-            );
-        }
-
-        function encodeString(str) {
-            const bytes = new TextEncoder().encode(str);
-            const ptr = runtime.getImportObject().env.malloc(BigInt(bytes.length));
-            new Uint8Array(runtime.memory.buffer, Number(ptr), bytes.length).set(bytes);
-            return [BigInt(ptr), BigInt(bytes.length)];
+            if (!wasmExports) return;
+            const sum = wasmExports.AddNumbers(1234, 5678);
+            document.getElementById('wasm-log-box').innerText += `\n[Math] AddNumbers(1234, 5678) = ${sum}`;
         }
 
         window.addEventListener('DOMContentLoaded', init);

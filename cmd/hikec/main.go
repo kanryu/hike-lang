@@ -30,13 +30,13 @@ func printUsage() {
 	fmt.Println("  go          Compile all .go.hike files in directory into a single .syso object")
 	fmt.Println("  emit-ir     Generate LLVM IR from Hike source (default)")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary via Clang")
-	fmt.Println("  run         Build and immediately execute the Hike program")
+	fmt.Println("  run         Build and immediately execute the Hike program (supports native and Wasm via Node.js)")
 	fmt.Println("\nOptions for go:")
 	fmt.Println("  -o <path>        Output .syso file path")
-	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin)")
+	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32)")
 	fmt.Println("  -v               Enable verbose logging")
-	fmt.Println("\nOptions for emit-ir:")
-	fmt.Println("  -o <path>        Output LLVM IR file path (default: <source>.ll)")
+	fmt.Println("\nOptions for emit-ir / build / run:")
+	fmt.Println("  -o <path>        Output file path (default: <source>.ll, <source>.wasm, or executable)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
@@ -205,6 +205,7 @@ func runBuild(args []string) {
 	targetName := getDefaultTargetName()
 	extraCflags := ""
 	debugInfo := false
+	verbose := false
 	var passThroughArgs []string
 	var sourceFiles []string
 
@@ -215,13 +216,13 @@ func runBuild(args []string) {
 			i++
 		} else if strings.HasPrefix(arg, "-o=") {
 			outputBin = strings.TrimPrefix(arg, "-o=")
-		} else if arg == "-target" && i+1 < len(args) {
+		} else if (arg == "-target" || arg == "--target") && i+1 < len(args) {
 			targetName = args[i+1]
 			passThroughArgs = append(passThroughArgs, "-target", targetName)
 			i++
-		} else if strings.HasPrefix(arg, "-target=") {
-			targetName = strings.TrimPrefix(arg, "-target=")
-			passThroughArgs = append(passThroughArgs, arg)
+		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
+			targetName = strings.SplitN(arg, "=", 2)[1]
+			passThroughArgs = append(passThroughArgs, "-target", targetName)
 		} else if arg == "-cflags" && i+1 < len(args) {
 			extraCflags = args[i+1]
 			i++
@@ -230,6 +231,9 @@ func runBuild(args []string) {
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
+		} else if arg == "-v" || arg == "--verbose" {
+			verbose = true
+			passThroughArgs = append(passThroughArgs, "-v")
 		} else if !strings.HasPrefix(arg, "-") {
 			sourceFiles = append(sourceFiles, arg)
 			passThroughArgs = append(passThroughArgs, arg)
@@ -304,7 +308,7 @@ func runBuild(args []string) {
 		runtimePath := filepath.Join(filepath.Dir(outputBin), "runtime.js")
 		if err := compiler.WriteWasmJSRuntime(runtimePath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to generate runtime.js: %v\n", err)
-		} else {
+		} else if !strings.Contains(outputBin, "hike_run_") && verbose {
 			fmt.Printf("Generated Wasm JS Runtime -> %s\n", runtimePath)
 		}
 	}
@@ -315,9 +319,67 @@ func runBuild(args []string) {
 }
 
 // -------------------------------------------------------------
-// run: ビルドして即時実行する
+// run: ビルドして即時実行する (Native / Wasm 両対応)
 // -------------------------------------------------------------
 func runRun(args []string) {
+	targetName := getDefaultTargetName()
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "-target" || arg == "--target") && i+1 < len(args) {
+			targetName = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
+			targetName = strings.SplitN(arg, "=", 2)[1]
+		}
+	}
+
+	tgt, err := target.ParseTarget(targetName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 1. WebAssembly ターゲットの場合は Node.js 上で自動実行
+	if tgt.IsWasm {
+		tempWasm := filepath.Join(os.TempDir(), fmt.Sprintf("hike_run_%d.wasm", os.Getpid()))
+		defer os.Remove(tempWasm)
+		runtimeJS := filepath.Join(os.TempDir(), "runtime.js")
+		defer os.Remove(runtimeJS)
+
+		buildArgs := append([]string{"-o", tempWasm}, args...)
+		runBuild(buildArgs)
+
+		nodeScript := fmt.Sprintf(`
+const { HikeRuntime } = require(%q);
+const rt = new HikeRuntime();
+rt.load(%q).then(exports => {
+    if (typeof exports.main === 'function') {
+        const res = exports.main();
+        if (typeof res === 'number' && res !== 0) {
+            process.exit(res);
+        }
+    }
+}).catch(err => {
+    console.error(err);
+    process.exit(1);
+});
+`, filepath.ToSlash(runtimeJS), filepath.ToSlash(tempWasm))
+
+		cmd := exec.Command("node", "-e", nodeScript)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			fmt.Fprintf(os.Stderr, "failed to run wasm with node: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// 2. ネイティブバイナリの即時実行
 	tempExe := filepath.Join(os.TempDir(), fmt.Sprintf("hike_run_%d.exe", os.Getpid()))
 	defer os.Remove(tempExe)
 

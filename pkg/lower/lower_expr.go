@@ -221,10 +221,10 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			if node.High != nil {
 				highVal = e.LowerExpr(node.High)
 			} else {
-				e.root.emit(&hir.InstrCallStatic{Dst: highVal.(*hir.Reg), CalleeName: "strlen", Args: []hir.Value{baseVal}})
+				e.root.emit(&hir.InstrCallStatic{Dst: highVal.(*hir.Reg), CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 			}
 			subRes := e.root.nextReg(sema.TypeString)
-			e.root.emit(&hir.InstrCallStatic{Dst: subRes, CalleeName: "hike_substr", Args: []hir.Value{baseVal, lowVal, highVal}})
+			e.root.emit(&hir.InstrCallStatic{Dst: subRes, CalleeName: e.root.BuiltinName("hike_substr"), Args: []hir.Value{baseVal, lowVal, highVal}})
 			return subRes
 		}
 
@@ -485,7 +485,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 		if ptr, ok := e.root.symbols[node.Value]; ok {
 			return ptr
 		}
-		// semaCtx.Globals の値 g はそれ自体が sema.Type
 		if g, ok := e.root.semaCtx.Globals[node.Value]; ok {
 			return &hir.GlobalVar{Name: node.Value, Typ: &sema.PointerType{Base: g}}
 		}
@@ -670,7 +669,8 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	if pt, isPtr := leftVal.Type().(*sema.PointerType); isPtr && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte) {
+	// ポインタ加算 (ptr + offset)
+	if pt, isPtr := leftVal.Type().(*sema.PointerType); isPtr && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte || rightVal.Type() == sema.TypeInt32 || rightVal.Type() == sema.TypeInt64 || rightVal.Type() == sema.TypeUint || rightVal.Type() == sema.TypeUint32 || rightVal.Type() == sema.TypeUint64) {
 		if node.Operator == "+" {
 			dst := e.root.nextReg(pt)
 			e.root.emit(&hir.InstrGetElemPtr{Dst: dst, BasePtr: leftVal, Index: rightVal})
@@ -681,12 +681,12 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	if leftVal.Type() == sema.TypeString || rightVal.Type() == sema.TypeString {
 		if node.Operator == "+" {
 			res := e.root.nextReg(sema.TypeString)
-			e.root.emit(&hir.InstrCallStatic{Dst: res, CalleeName: "hike_strcat", Args: []hir.Value{leftVal, rightVal}})
+			e.root.emit(&hir.InstrCallStatic{Dst: res, CalleeName: e.root.BuiltinName("hike_strcat"), Args: []hir.Value{leftVal, rightVal}})
 			return res
 		}
 		if node.Operator == "==" || node.Operator == "!=" {
 			eqRes := e.root.nextReg(sema.TypeBool)
-			e.root.emit(&hir.InstrCallStatic{Dst: eqRes, CalleeName: "hike_streq", Args: []hir.Value{leftVal, rightVal}})
+			e.root.emit(&hir.InstrCallStatic{Dst: eqRes, CalleeName: e.root.BuiltinName("hike_streq"), Args: []hir.Value{leftVal, rightVal}})
 			if node.Operator == "!=" {
 				notRes := e.root.nextReg(sema.TypeBool)
 				e.root.emit(&hir.InstrUnary{Dst: notRes, Op: hir.OpNot, Val: eqRes})

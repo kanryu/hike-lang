@@ -31,6 +31,7 @@ type Lowerer struct {
 	deferStack    []*ast.CallExpr
 	itabs         map[string]*hir.ItabDef
 	escapedVars   map[string]bool
+	is32Bit       bool // Compiler から伝播される 32bit ターゲットフラグ
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -50,6 +51,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 		deferStack:  []*ast.CallExpr{},
 		itabs:       make(map[string]*hir.ItabDef),
 		escapedVars: make(map[string]bool),
+		is32Bit:     false,
 	}
 
 	// 各サブローワーの初期化
@@ -58,6 +60,19 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l.Call = NewCallLowerer(l)
 
 	return l
+}
+
+// Set32Bit はターゲットが 32bit (wasm32 等) であるかを設定します
+func (l *Lowerer) Set32Bit(is32 bool) {
+	l.is32Bit = is32
+}
+
+// BuiltinName はターゲットアーキテクチャ（32bit/64bit）に応じた組み込み関数名を解決します
+func (l *Lowerer) BuiltinName(baseName string) string {
+	if l.is32Bit {
+		return baseName + "32"
+	}
+	return baseName
 }
 
 // -----------------------------------------------------------------------------
@@ -86,7 +101,7 @@ func (l *Lowerer) Lower() *hir.Program {
 			l.Call.LowerExternFunc(d)
 
 		case *ast.JFuncDecl:
-			// WASMモード用インラインJS関数（グルーコード生成器側で収集・管理）
+			// WASMモード用インラインJS関数
 		}
 	}
 
@@ -248,7 +263,7 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 }
 
 func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
-	if fromType == sema.TypeInt {
+	if fromType.LLVMType() == sema.TypeInt.LLVMType() {
 		return v
 	}
 	dst := l.nextReg(sema.TypeInt)
@@ -257,12 +272,20 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 }
 
 func (l *Lowerer) coerceFromI64(v hir.Value, toType sema.Type) hir.Value {
-	if toType == sema.TypeInt {
+	if toType.LLVMType() == sema.TypeInt.LLVMType() {
 		return v
 	}
 	dst := l.nextReg(toType)
 	l.emit(&hir.InstrCast{Dst: dst, Val: v, ToType: toType})
 	return dst
+}
+
+func (l *Lowerer) coerceToInt(v hir.Value, fromType sema.Type) hir.Value {
+	return l.coerceToI64(v, fromType)
+}
+
+func (l *Lowerer) coerceFromInt(v hir.Value, toType sema.Type) hir.Value {
+	return l.coerceFromI64(v, toType)
 }
 
 func isNilValue(v hir.Value) bool {

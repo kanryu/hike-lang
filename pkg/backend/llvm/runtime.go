@@ -20,8 +20,11 @@ var RuntimeLLVMSymbols = map[string]bool{
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
 
-	// 純粋メモリ & 文字列操作内部実装 (define internal)
+	// 純粋メモリ & 文字列操作内部実装 (64-bit) (define internal)
 	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
+
+	// 純粋メモリ & 文字列操作内部実装 (32-bit / wasm32) (define internal)
+	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
 
 	// OS ネイティブ API (declare)
 	"QueueUserWorkItem": true, "CreateEventA": true, "SetEvent": true,
@@ -45,11 +48,17 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_chan_recv":   true,
 	"__hike_chan_close":  true,
 
-	// 文字列ランタイム (define internal)
+	// 文字列ランタイム (64-bit) (define internal)
 	"hike_streq":          true,
 	"hike_substr":         true,
 	"hike_strcat":         true,
 	"__hike_slice_to_str": true,
+
+	// 文字列ランタイム (32-bit / wasm32) (define internal)
+	"hike_streq32":          true,
+	"hike_substr32":         true,
+	"hike_strcat32":         true,
+	"__hike_slice_to_str32": true,
 
 	// マップランタイム (define internal)
 	"__hike_hash_str":   true,

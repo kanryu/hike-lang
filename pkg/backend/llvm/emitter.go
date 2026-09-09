@@ -67,6 +67,11 @@ func (e *Emitter) isWindowsTarget() bool {
 	return strings.Contains(t, "windows") || strings.Contains(t, "win32") || strings.Contains(t, "msvc")
 }
 
+func (e *Emitter) isWasmTarget() bool {
+	t := strings.ToLower(e.targetTriple)
+	return strings.Contains(t, "wasm32") || strings.Contains(t, "wasm")
+}
+
 func (e *Emitter) nextTmp() string {
 	e.regCount++
 	return fmt.Sprintf("%%.b%d", e.regCount)
@@ -89,6 +94,7 @@ func (e *Emitter) emitPrologue() {
 	e.b.WriteString(fmt.Sprintf("source_filename = \"%s.hike\"\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", e.targetTriple))
 
+	// 並列実装された組み込みランタイムIRをそのまま出力
 	e.b.WriteString(builtinRuntimeIR)
 	e.b.WriteString("\n\n")
 }
@@ -122,8 +128,9 @@ func (e *Emitter) emitConstants() {
 }
 
 func (e *Emitter) emitGlobals() {
+	align := sema.PointerSize
 	for _, g := range e.prog.Globals {
-		e.b.WriteString(fmt.Sprintf("@%s = global %s zeroinitializer, align 8\n", g.Name, g.Typ.LLVMType()))
+		e.b.WriteString(fmt.Sprintf("@%s = global %s zeroinitializer, align %d\n", g.Name, g.Typ.LLVMType(), align))
 	}
 	if len(e.prog.Globals) > 0 {
 		e.b.WriteString("\n")
@@ -132,10 +139,11 @@ func (e *Emitter) emitGlobals() {
 
 func (e *Emitter) emitItabs() {
 	emittedTypes := make(map[string]bool)
+	intLLVM := sema.TypeInt.LLVMType()
 
 	for _, itab := range e.prog.Itabs {
 		if !emittedTypes[itab.ItabStructName] {
-			methodSigs := []string{"i64"}
+			methodSigs := []string{intLLVM}
 			for _, m := range itab.Methods {
 				retTypeStr := "void"
 				if len(m.MethodType.ReturnTypes) == 1 {
@@ -151,7 +159,7 @@ func (e *Emitter) emitItabs() {
 			emittedTypes[itab.ItabStructName] = true
 		}
 
-		fieldValues := []string{fmt.Sprintf("i64 %d", itab.TypeID)}
+		fieldValues := []string{fmt.Sprintf("%s %d", intLLVM, itab.TypeID)}
 		sName := strings.TrimPrefix(itab.ConcreteType.TypeName(), "*")
 
 		for _, m := range itab.Methods {
@@ -256,7 +264,6 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 	}
 
 	storageClass := ""
-	// Windows環境でCFunc公開関数（トランポリン）を出力する場合、DLLエクスポート属性を付加
 	if fn.IsCFunc && e.isWindowsTarget() {
 		storageClass = "dllexport "
 	}
@@ -305,7 +312,7 @@ func (e *Emitter) getRetSize(retTypes []sema.Type) int64 {
 	if len(retTypes) == 1 {
 		sz := int64(retTypes[0].Size())
 		if sz <= 0 {
-			sz = 8
+			sz = int64(sema.PointerSize)
 		}
 		return sz
 	}
@@ -313,7 +320,7 @@ func (e *Emitter) getRetSize(retTypes []sema.Type) int64 {
 	for _, rt := range retTypes {
 		s := int64(rt.Size())
 		if s <= 0 {
-			s = 8
+			s = int64(sema.PointerSize)
 		}
 		sz += s
 	}
@@ -355,9 +362,9 @@ func (e *Emitter) emitAsyncThunks() {
 		e.b.WriteString(fmt.Sprintf("define internal void @%s(i8* %%wrapper_env, i8* %%buf) {\n", thunk.name))
 		e.b.WriteString("entry:\n")
 		e.b.WriteString("  %env_arr = bitcast i8* %wrapper_env to i8**\n")
-		e.b.WriteString("  %p_fn = getelementptr inbounds i8*, i8** %env_arr, i64 0\n")
+		e.b.WriteString("  %p_fn = getelementptr inbounds i8*, i8** %env_arr, i32 0\n")
 		e.b.WriteString("  %fn_raw = load i8*, i8** %p_fn\n")
-		e.b.WriteString("  %p_env = getelementptr inbounds i8*, i8** %env_arr, i64 1\n")
+		e.b.WriteString("  %p_env = getelementptr inbounds i8*, i8** %env_arr, i32 1\n")
 		e.b.WriteString("  %real_env = load i8*, i8** %p_env\n\n")
 
 		if thunk.retLLVMType == "void" {
@@ -377,16 +384,27 @@ func (e *Emitter) emitAsyncThunks() {
 }
 
 func (e *Emitter) emitInstruction(inst hir.Instruction) {
+	intLLVM := sema.TypeInt.LLVMType()
+
 	switch i := inst.(type) {
 	case *hir.InstrAlloca:
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", i.Dst, i.AllocType.LLVMType()))
 
 	case *hir.InstrAllocaDynamic:
-		e.b.WriteString(fmt.Sprintf("  %s = alloca %s, i64 %s, align 8\n", i.Dst, i.AllocType.LLVMType(), e.formatVal(i.Size)))
+		sizeLLVM := intLLVM
+		if i.Size != nil && i.Size.Type() != nil {
+			sizeLLVM = i.Size.Type().LLVMType()
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = alloca %s, %s %s, align %d\n",
+			i.Dst, i.AllocType.LLVMType(), sizeLLVM, e.formatVal(i.Size), sema.PointerSize))
 
 	case *hir.InstrHeapAlloc:
+		sizeLLVM := intLLVM
+		if i.Size != nil && i.Size.Type() != nil {
+			sizeLLVM = i.Size.Type().LLVMType()
+		}
 		rawPtr := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 %s)\n", rawPtr, e.formatVal(i.Size)))
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %s)\n", rawPtr, sizeLLVM, e.formatVal(i.Size)))
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, rawPtr, i.AllocType.LLVMType()))
 
 	case *hir.InstrLoad:
@@ -425,11 +443,15 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 
 	case *hir.InstrGetElemPtr:
 		baseType := i.BasePtr.Type()
+		idxLLVM := intLLVM
+		if i.Index != nil && i.Index.Type() != nil {
+			idxLLVM = i.Index.Type().LLVMType()
+		}
 
 		if pt, ok := baseType.(*sema.PointerType); ok {
 			if ar, okArr := pt.Base.(*sema.ArrayType); okArr {
-				e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 0, i64 %s\n",
-					i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), e.formatVal(i.Index)))
+				e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, %s %s\n",
+					i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), idxLLVM, e.formatVal(i.Index)))
 				return
 			}
 		}
@@ -443,8 +465,8 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			elemLLVM = "i8"
 		}
 
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i64 %s\n",
-			i.Dst, elemLLVM, baseType.LLVMType(), e.formatVal(i.BasePtr), e.formatVal(i.Index)))
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, %s %s\n",
+			i.Dst, elemLLVM, baseType.LLVMType(), e.formatVal(i.BasePtr), idxLLVM, e.formatVal(i.Index)))
 
 	case *hir.InstrCallStatic:
 		args := make([]string, len(i.Args))
@@ -481,13 +503,14 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		retSize := e.getRetSize(i.RetTypes)
 		thunkName := e.getOrCreateAsyncThunk(retLLVM)
 
+		envSize := sema.PointerSize * 2
 		rawEnv := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(i64 16)\n", rawEnv))
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %d)\n", rawEnv, intLLVM, envSize))
 		arrEnv := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i8**\n", arrEnv, rawEnv))
 
 		pFn := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i64 0\n", pFn, arrEnv))
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 0\n", pFn, arrEnv))
 		fnVal := e.formatVal(i.FnPtr)
 		if i.FnPtr.Type().LLVMType() != "i8*" {
 			castFn := e.nextTmp()
@@ -497,7 +520,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", fnVal, pFn))
 
 		pEnv := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i64 1\n", pEnv, arrEnv))
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 1\n", pEnv, arrEnv))
 		envVal := e.formatVal(i.EnvPtr)
 		if i.EnvPtr.Type().LLVMType() != "i8*" {
 			castEnv := e.nextTmp()
@@ -509,8 +532,8 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		thunkPtr := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast void (i8*, i8*)* @%s to i8*\n", thunkPtr, thunkName))
 		taskPtr := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_task* @__hike_async(i8* %s, i8* %s, i64 %d)\n",
-			taskPtr, thunkPtr, rawEnv, retSize))
+		e.b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_task* @__hike_async(i8* %s, i8* %s, %s %d)\n",
+			taskPtr, thunkPtr, rawEnv, intLLVM, retSize))
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__hike_task* %s to i8*\n", i.Dst, taskPtr))
 
 	case *hir.InstrTaskWait:
@@ -521,14 +544,18 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 	case *hir.InstrChanMake:
 		elemSize := int64(i.ElemType.Size())
 		if elemSize <= 0 {
-			elemSize = 8
+			elemSize = int64(sema.PointerSize)
 		}
 		capVal := e.formatVal(i.Cap)
+		capLLVM := intLLVM
+		if i.Cap != nil && i.Cap.Type() != nil {
+			capLLVM = i.Cap.Type().LLVMType()
+		}
 		if i.Cap == nil {
 			capVal = "0"
 		}
-		e.b.WriteString(fmt.Sprintf("  %s = call i8* @__hike_chan_make(i64 %d, i64 %s)\n",
-			i.Dst, elemSize, capVal))
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @__hike_chan_make(%s %d, %s %s)\n",
+			i.Dst, intLLVM, elemSize, capLLVM, capVal))
 
 	case *hir.InstrChanSend:
 		valLLVM := i.Val.Type().LLVMType()
@@ -687,9 +714,11 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 
 	if i.Iface.IsAny() {
 		typeID := e.semaCtx.GetTypeID(i.Val.Type())
+		intLLVM := sema.TypeInt.LLVMType()
+		anyLLVM := fmt.Sprintf("{ i8*, %s }", intLLVM)
 		t1 := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64 } undef, i8* %s, 0\n", t1, dataPtr))
-		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i64 } %s, i64 %d, 1\n", i.Dst, t1, typeID))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, anyLLVM, dataPtr))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %d, 1\n", i.Dst, anyLLVM, t1, intLLVM, typeID))
 		return
 	}
 
@@ -908,13 +937,14 @@ func (e *Emitter) formatVal(v hir.Value) string {
 	if v == nil {
 		return "0"
 	}
+	intLLVM := sema.TypeInt.LLVMType()
 	switch val := v.(type) {
 	case *hir.ConstZero:
 		return "zeroinitializer"
 	case *hir.ConstString:
 		tmp := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, i64 0, i64 0\n",
-			tmp, val.Length, val.Length, val.Label))
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, %s 0, %s 0\n",
+			tmp, val.Length, val.Length, val.Label, intLLVM, intLLVM))
 		return tmp
 	case *hir.ConstNil:
 		return "null"
