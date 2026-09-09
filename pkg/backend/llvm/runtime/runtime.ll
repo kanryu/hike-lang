@@ -3,16 +3,117 @@
 ; ==============================================================================
 
 ; ------------------------------------------------------------------------------
-; External C Standard Library Declarations
+; External C Standard Library Declarations (Allocators Only)
 ; ------------------------------------------------------------------------------
 declare noalias i8* @malloc(i64)
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)
-declare i32 @strcmp(i8*, i8*)
-declare i64 @strlen(i8*)
-declare i8* @memcpy(i8*, i8*, i64)
-declare i32 @memcmp(i8*, i8*, i64)
-declare i64 @printf(i8*, ...)
+
+; ------------------------------------------------------------------------------
+; Pure Memory & String Builtin Implementations (Libc-Free)
+; ------------------------------------------------------------------------------
+
+; メモリブロックの複製
+define internal i8* @memcpy(i8* %dst, i8* %src, i64 %n) {
+entry:
+  %cmp = icmp eq i64 %n, 0
+  br i1 %cmp, label %exit, label %loop.body
+loop.body:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %loop.body ]
+  %p_src = getelementptr inbounds i8, i8* %src, i64 %i
+  %val = load i8, i8* %p_src, align 1
+  %p_dst = getelementptr inbounds i8, i8* %dst, i64 %i
+  store i8 %val, i8* %p_dst, align 1
+  %i.next = add i64 %i, 1
+  %cont = icmp ult i64 %i.next, %n
+  br i1 %cont, label %loop.body, label %exit
+exit:
+  ret i8* %dst
+}
+
+; メモリブロックの比較
+define internal i32 @memcmp(i8* %s1, i8* %s2, i64 %n) {
+entry:
+  %cmp = icmp eq i64 %n, 0
+  br i1 %cmp, label %ret_zero, label %loop.body
+loop.body:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %loop.inc ]
+  %p1 = getelementptr inbounds i8, i8* %s1, i64 %i
+  %b1 = load i8, i8* %p1, align 1
+  %p2 = getelementptr inbounds i8, i8* %s2, i64 %i
+  %b2 = load i8, i8* %p2, align 1
+  %diff = icmp ne i8 %b1, %b2
+  br i1 %diff, label %calc_diff, label %loop.inc
+loop.inc:
+  %i.next = add i64 %i, 1
+  %cont = icmp ult i64 %i.next, %n
+  br i1 %cont, label %loop.body, label %ret_zero
+calc_diff:
+  %u1 = zext i8 %b1 to i32
+  %u2 = zext i8 %b2 to i32
+  %res = sub i32 %u1, %u2
+  ret i32 %res
+ret_zero:
+  ret i32 0
+}
+
+; 文字列長の算出
+define internal i64 @strlen(i8* %s) {
+entry:
+  %is_null = icmp eq i8* %s, null
+  br i1 %is_null, label %ret_zero, label %loop.body
+loop.body:
+  %len = phi i64 [ 0, %entry ], [ %len.next, %loop.body ]
+  %p = getelementptr inbounds i8, i8* %s, i64 %len
+  %c = load i8, i8* %p, align 1
+  %is_end = icmp eq i8 %c, 0
+  %len.next = add i64 %len, 1
+  br i1 %is_end, label %ret_len, label %loop.body
+ret_len:
+  ret i64 %len
+ret_zero:
+  ret i64 0
+}
+
+; 文字列の辞書順比較
+define internal i32 @strcmp(i8* %s1, i8* %s2) {
+entry:
+  %eq_ptr = icmp eq i8* %s1, %s2
+  br i1 %eq_ptr, label %ret_zero, label %check_null
+check_null:
+  %n1 = icmp eq i8* %s1, null
+  %n2 = icmp eq i8* %s2, null
+  br i1 %n1, label %s1_is_null, label %check_s2
+s1_is_null:
+  br i1 %n2, label %ret_zero, label %ret_neg
+check_s2:
+  br i1 %n2, label %ret_pos, label %loop.body
+ret_neg:
+  ret i32 -1
+ret_pos:
+  ret i32 1
+ret_zero:
+  ret i32 0
+loop.body:
+  %idx = phi i64 [ 0, %check_s2 ], [ %idx.next, %loop.inc ]
+  %p1 = getelementptr inbounds i8, i8* %s1, i64 %idx
+  %c1 = load i8, i8* %p1, align 1
+  %p2 = getelementptr inbounds i8, i8* %s2, i64 %idx
+  %c2 = load i8, i8* %p2, align 1
+  %diff = icmp ne i8 %c1, %c2
+  br i1 %diff, label %calc_diff, label %check_end
+check_end:
+  %is_end = icmp eq i8 %c1, 0
+  br i1 %is_end, label %ret_zero, label %loop.inc
+loop.inc:
+  %idx.next = add i64 %idx, 1
+  br label %loop.body
+calc_diff:
+  %u1 = zext i8 %c1 to i32
+  %u2 = zext i8 %c2 to i32
+  %res = sub i32 %u1, %u2
+  ret i32 %res
+}
 
 ; ------------------------------------------------------------------------------
 ; OS Native Threading & Synchronization (Kernel32 / Libc-Free)

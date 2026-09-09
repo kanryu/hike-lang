@@ -17,10 +17,11 @@ func GetBuiltinRuntimeIR() string {
 
 // RuntimeLLVMSymbols は runtime.ll 内で既に宣言・定義されているシンボル群
 var RuntimeLLVMSymbols = map[string]bool{
-	// 外部 C 標準ライブラリ (declare)
+	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
-	"strcmp": true, "strlen": true, "memcpy": true, "memcmp": true,
-	"printf": true, "snprintf": true, "sprintf": true,
+
+	// 純粋メモリ & 文字列操作内部実装 (define internal)
+	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
 
 	// OS ネイティブ API (declare)
 	"QueueUserWorkItem": true, "CreateEventA": true, "SetEvent": true,
