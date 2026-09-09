@@ -166,55 +166,15 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return dst
 
 	case *ast.StructLiteral:
-		stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
-		allocaReg := e.root.nextReg(&sema.PointerType{Base: stType})
-		e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: stType})
-
-		for i, fVal := range node.Fields {
-			val := e.LowerExpr(fVal.Value)
-			fieldIdx := i
-			var fName string
-			var fieldType sema.Type
-			if fVal.Name != nil {
-				fName = fVal.Name.Value
-				for idx, sf := range stType.Fields {
-					if sf.Name == fName {
-						fieldIdx = idx
-						fieldType = sf.Type
-						break
-					}
-				}
-			} else {
-				fName = stType.Fields[i].Name
-				fieldType = stType.Fields[i].Type
-			}
-			if fieldType != nil {
-				val = e.root.emitValueCoerce(val, fieldType)
-			} else {
-				fieldType = val.Type()
-			}
-			fPtrReg := e.root.nextReg(&sema.PointerType{Base: fieldType})
-			e.root.emit(&hir.InstrGetFieldPtr{Dst: fPtrReg, BasePtr: allocaReg, FieldIndex: fieldIdx, FieldName: fName})
-			e.root.emit(&hir.InstrStore{Val: val, Ptr: fPtrReg})
-		}
-
+		allocaReg := e.lowerStructLiteralPtr(node)
+		stType := allocaReg.Type().(*sema.PointerType).Base
 		resReg := e.root.nextReg(stType)
 		e.root.emit(&hir.InstrLoad{Dst: resReg, Ptr: allocaReg})
 		return resReg
 
 	case *ast.ArrayLiteral:
-		arType := e.root.semaCtx.ResolveType(node.Type).(*sema.ArrayType)
-		allocaReg := e.root.nextReg(&sema.PointerType{Base: arType})
-		e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: arType})
-
-		for i, el := range node.Elements {
-			val := e.LowerExpr(el)
-			val = e.root.emitValueCoerce(val, arType.Elem)
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: arType.Elem})
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: allocaReg, Index: &hir.ConstInt{Val: int64(i), Typ: sema.TypeInt}})
-			e.root.emit(&hir.InstrStore{Val: val, Ptr: elemPtr})
-		}
-
+		allocaReg := e.lowerArrayLiteralPtr(node)
+		arType := allocaReg.Type().(*sema.PointerType).Base
 		resReg := e.root.nextReg(arType)
 		e.root.emit(&hir.InstrLoad{Dst: resReg, Ptr: allocaReg})
 		return resReg
@@ -432,6 +392,58 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 }
 
+// lowerStructLiteralPtr は構造体リテラルのスタック領域を確保・初期化し、そのポインタ (Alloca) を返す
+func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
+	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	allocaReg := e.root.nextReg(&sema.PointerType{Base: stType})
+	e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: stType})
+
+	for i, fVal := range node.Fields {
+		val := e.LowerExpr(fVal.Value)
+		fieldIdx := i
+		var fName string
+		var fieldType sema.Type
+		if fVal.Name != nil {
+			fName = fVal.Name.Value
+			for idx, sf := range stType.Fields {
+				if sf.Name == fName {
+					fieldIdx = idx
+					fieldType = sf.Type
+					break
+				}
+			}
+		} else {
+			fName = stType.Fields[i].Name
+			fieldType = stType.Fields[i].Type
+		}
+		if fieldType != nil {
+			val = e.root.emitValueCoerce(val, fieldType)
+		} else {
+			fieldType = val.Type()
+		}
+		fPtrReg := e.root.nextReg(&sema.PointerType{Base: fieldType})
+		e.root.emit(&hir.InstrGetFieldPtr{Dst: fPtrReg, BasePtr: allocaReg, FieldIndex: fieldIdx, FieldName: fName})
+		e.root.emit(&hir.InstrStore{Val: val, Ptr: fPtrReg})
+	}
+	return allocaReg
+}
+
+// lowerArrayLiteralPtr は配列リテラルのスタック領域を確保・初期化し、そのポインタ (Alloca) を返す
+func (e *ExprLowerer) lowerArrayLiteralPtr(node *ast.ArrayLiteral) hir.Value {
+	arType := e.root.semaCtx.ResolveType(node.Type).(*sema.ArrayType)
+	allocaReg := e.root.nextReg(&sema.PointerType{Base: arType})
+	e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: arType})
+
+	for i, el := range node.Elements {
+		val := e.LowerExpr(el)
+		val = e.root.emitValueCoerce(val, arType.Elem)
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: arType.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: allocaReg, Index: &hir.ConstInt{Val: int64(i), Typ: sema.TypeInt}})
+		e.root.emit(&hir.InstrStore{Val: val, Ptr: elemPtr})
+	}
+	return allocaReg
+}
+
 // -------------------------------------------------------------
 // 左辺値 (LValue) のポインタ解決
 // -------------------------------------------------------------
@@ -497,6 +509,12 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return e.LowerExpr(node.Right)
 		}
 		panic(fmt.Sprintf("[Lower Error] invalid prefix operator for lvalue: %s", node.Operator))
+
+	case *ast.StructLiteral:
+		return e.lowerStructLiteralPtr(node)
+
+	case *ast.ArrayLiteral:
+		return e.lowerArrayLiteralPtr(node)
 
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
