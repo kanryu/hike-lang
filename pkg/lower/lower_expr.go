@@ -466,72 +466,90 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 	return allocaTmp
 }
 
+// LowerLValue は代入先やアドレス取得（&）の対象となるメモリアドレス（ポインタ）を取得する
 func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	switch node := expr.(type) {
 	case *ast.Identifier:
 		if ptr, ok := e.root.symbols[node.Value]; ok {
 			return ptr
 		}
+		// semaCtx.Globals の値 g はそれ自体が sema.Type
 		if g, ok := e.root.semaCtx.Globals[node.Value]; ok {
 			return &hir.GlobalVar{Name: node.Value, Typ: &sema.PointerType{Base: g}}
 		}
-		panic(fmt.Sprintf("[Lower Error] undefined identifier for LValue: %s", node.Value))
+		panic(fmt.Sprintf("[Lower Error] undefined identifier for lvalue: %s", node.Value))
+
+	case *ast.MemberExpr:
+		basePtr := e.LowerStructPtr(node.Object)
+		baseType := basePtr.Type().(*sema.PointerType).Base
+		st, sName := e.root.findStruct(baseType)
+		if st == nil {
+			panic(fmt.Sprintf("[Lower Error] type '%s' has no fields", baseType.TypeName()))
+		}
+		fieldPtr, _, _, found := e.ResolveFieldPath(st, sName, basePtr, node.Field.Value)
+		if !found {
+			panic(fmt.Sprintf("[Lower Error] field '%s' not found on struct '%s'", node.Field.Value, sName))
+		}
+		return fieldPtr
 
 	case *ast.PrefixExpr:
 		if node.Operator == "*" {
 			return e.LowerExpr(node.Right)
 		}
-
-	case *ast.StructLiteral:
-		val := e.LowerExpr(node)
-		allocaTmp := e.root.nextReg(&sema.PointerType{Base: val.Type()})
-		e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: val.Type()})
-		e.root.emit(&hir.InstrStore{Val: val, Ptr: allocaTmp})
-		return allocaTmp
-
-	case *ast.MemberExpr:
-		if pkgId, okPkg := node.Object.(*ast.Identifier); okPkg {
-			qualified := pkgId.Value + "_" + node.Field.Value
-			if g, ok := e.root.semaCtx.Globals[qualified]; ok {
-				return &hir.GlobalVar{Name: qualified, Typ: &sema.PointerType{Base: g}}
-			}
-		}
-		objPtr := e.LowerStructPtr(node.Object)
-		objType := objPtr.Type().(*sema.PointerType).Base
-		st, sName := e.root.findStruct(objType)
-		if st != nil {
-			fieldPtr, _, _, found := e.ResolveFieldPath(st, sName, objPtr, node.Field.Value)
-			if found {
-				return fieldPtr
-			}
-		}
-		panic(fmt.Sprintf("[Lower Error] member '%s' not found on type '%s' for LValue", node.Field.Value, objType.TypeName()))
+		panic(fmt.Sprintf("[Lower Error] invalid prefix operator for lvalue: %s", node.Operator))
 
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
-		baseVal := e.LowerExpr(node.Left)
+		leftVal := e.LowerExpr(node.Left)
+		leftType := leftVal.Type()
 
-		if sl, ok := baseVal.Type().(*sema.SliceType); ok {
-			rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
-			typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-			e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: sl.Elem}})
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		// 1. スライス ([]T)
+		if slType, ok := leftType.(*sema.SliceType); ok {
+			elemPtrType := &sema.PointerType{Base: slType.Elem}
+			rawPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: leftVal, Index: 0})
+			typedPtr := e.root.nextReg(elemPtrType)
+			e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawPtr, ToType: elemPtrType})
+			elemPtr := e.root.nextReg(elemPtrType)
 			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
 			return elemPtr
-		} else if pt, ok := baseVal.Type().(*sema.PointerType); ok {
-			elemPtr := e.root.nextReg(pt)
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+		}
+
+		// 2. 文字列 (string)
+		if leftType == sema.TypeString || (leftType != nil && leftType.TypeName() == "string") {
+			elemPtrType := &sema.PointerType{Base: sema.TypeByte}
+			elemPtr := e.root.nextReg(elemPtrType)
+			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: leftVal, Index: idxVal})
 			return elemPtr
-		} else if ar, ok := baseVal.Type().(*sema.ArrayType); ok {
+		}
+
+		// 3. ポインタ (*T または *[N]T)
+		if pt, ok := leftType.(*sema.PointerType); ok {
+			if arrType, isArr := pt.Base.(*sema.ArrayType); isArr {
+				elemPtrType := &sema.PointerType{Base: arrType.Elem}
+				elemPtr := e.root.nextReg(elemPtrType)
+				e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: leftVal, Index: idxVal})
+				return elemPtr
+			}
+			elemPtr := e.root.nextReg(pt)
+			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: leftVal, Index: idxVal})
+			return elemPtr
+		}
+
+		// 4. 配列 ([N]T)
+		if arrType, ok := leftType.(*sema.ArrayType); ok {
 			basePtr := e.LowerLValue(node.Left)
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: ar.Elem})
+			elemPtrType := &sema.PointerType{Base: arrType.Elem}
+			elemPtr := e.root.nextReg(elemPtrType)
 			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: basePtr, Index: idxVal})
 			return elemPtr
 		}
-	}
 
-	panic(fmt.Sprintf("[Lower Error] expression is not an lvalue: %T", expr))
+		panic(fmt.Sprintf("[Lower Error] cannot index type '%s' as lvalue", leftType.TypeName()))
+
+	default:
+		panic(fmt.Sprintf("[Lower Error] expression is not an lvalue: %T", expr))
+	}
 }
 
 // -------------------------------------------------------------

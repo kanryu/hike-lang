@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hike Language - WebAssembly Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { margin-top: 0; color: #38bdf8; font-size: 1.75rem; }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border-radius: 9999px;
+            background: #64748b;
+            color: #fff;
+            margin-bottom: 1.5rem;
+        }
+        .card {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .card-title {
+            font-weight: 600;
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.95rem;
+            color: #e2e8f0;
+        }
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.15s;
+        }
+        button:hover { background: #1d4ed8; }
+        button.secondary { background: #475569; }
+        button.secondary:hover { background: #334155; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Hike WebAssembly Browser Showcase</h1>
+        <div id="status-badge" class="badge">Initializing...</div>
+
+        <div class="card">
+            <div class="card-title">Status Output (Controlled by Hike Wasm)</div>
+            <pre id="wasm-output">Loading WebAssembly binary...</pre>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Event & DOM Append Stream</div>
+            <pre id="wasm-log-box">[System Ready]</pre>
+        </div>
+
+        <div class="button-group">
+            <button onclick="handleFibClick()">Run Fib(35) in Wasm</button>
+            <button onclick="handleAddClick()">Compute 1234 + 5678</button>
+            <button class="secondary" onclick="wasmExports.AppendLogMessage(1n)">Send Action A</button>
+            <button class="secondary" onclick="wasmExports.AppendLogMessage(2n)">Send Action B</button>
+        </div>
+    </div>
+
+    <script src="runtime.js"></script>
+    <script>
+        const runtime = new HikeRuntime();
+        let wasmExports = null;
+
+        async function init() {
+            try {
+                wasmExports = await runtime.load('main.wasm');
+            } catch (err) {
+                console.error("Failed to load Wasm:", err);
+                document.getElementById('status-badge').innerText = "Load Failed";
+                document.getElementById('status-badge').style.backgroundColor = "#ef4444";
+                document.getElementById('wasm-output').innerText = err.toString();
+            }
+        }
+
+        function handleFibClick() {
+            const start = performance.now();
+            const res = wasmExports.RunComputation(35n);
+            const elapsed = (performance.now() - start).toFixed(2);
+            runtime.getImportObject().env.js_append_text(
+                ...encodeString("wasm-log-box"),
+                ...encodeString(`\n[Fibonacci] Fib(35) = ${res} (Calculated in ${elapsed}ms)`)
+            );
+        }
+
+        function handleAddClick() {
+            const sum = wasmExports.AddNumbers(1234n, 5678n);
+            runtime.getImportObject().env.js_append_text(
+                ...encodeString("wasm-log-box"),
+                ...encodeString(`\n[Math] AddNumbers(1234, 5678) = ${sum}`)
+            );
+        }
+
+        function encodeString(str) {
+            const bytes = new TextEncoder().encode(str);
+            const ptr = runtime.getImportObject().env.malloc(BigInt(bytes.length));
+            new Uint8Array(runtime.memory.buffer, Number(ptr), bytes.length).set(bytes);
+            return [BigInt(ptr), BigInt(bytes.length)];
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

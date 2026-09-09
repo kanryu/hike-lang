@@ -1,0 +1,65 @@
+package main
+
+// --- JavaScript からインポートする DOM / システム API ---
+extern func js_log(msg string, len int)
+extern func js_set_text(id string, id_len int, text string, text_len int)
+extern func js_append_text(id string, id_len int, text string, text_len int)
+extern func js_set_badge_color(id string, id_len int, color string, color_len int)
+
+// --- 内部ヘルパー: 文字列ポインタと長さの受け渡し ---
+func Log(msg string) {
+	js_log(msg, len(msg))
+}
+
+func SetText(elementId string, text string) {
+	js_set_text(elementId, len(elementId), text, len(text))
+}
+
+func AppendText(elementId string, text string) {
+	js_append_text(elementId, len(elementId), text, len(text))
+}
+
+func SetBadgeColor(elementId string, color string) {
+	js_set_badge_color(elementId, len(elementId), color, len(color))
+}
+
+// 内部ロジック: フィボナッチ計算 (Wasm 実行性能デモ用)
+func Fib(n int) int {
+	if n <= 1 {
+		return n
+	}
+	return Fib(n-1) + Fib(n-2)
+}
+
+// --- Wasm からブラウザへエクスポートする API (cfunc) ---
+
+// ページロード時の初期化ルーチン
+cfunc InitApp() {
+	Log("Hike WebAssembly core initialized successfully.")
+	SetText("status-badge", "Running (Wasm Active)")
+	SetBadgeColor("status-badge", "#10b981")
+	SetText("wasm-output", "Hike Language Wasm Runtime is online.\nClick the buttons below to trigger native computations.")
+}
+
+// 単純な数値計算 API
+cfunc AddNumbers(a int, b int) int {
+	return a + b
+}
+
+// ボタンクリック時のイベントハンドラ: フィボナッチ計算
+cfunc RunComputation(n int) int {
+	Log("Executing RunComputation inside WebAssembly...")
+	result := Fib(n)
+	return result
+}
+
+// DOM テキスト追加デモ
+cfunc AppendLogMessage(msgCode int) {
+	if msgCode == 1 {
+		AppendText("wasm-log-box", "\n[Wasm Event] User clicked Action A: Memory layout validated.")
+	} else if msgCode == 2 {
+		AppendText("wasm-log-box", "\n[Wasm Event] User clicked Action B: Slice buffer manipulation complete.")
+	} else {
+		AppendText("wasm-log-box", "\n[Wasm Event] Heartbeat tick received from browser.")
+	}
+}

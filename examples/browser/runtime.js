@@ -1,0 +1,98 @@
+/**
+ * Hike Language WebAssembly Runtime Bridge
+ */
+class HikeRuntime {
+    constructor() {
+        this.wasmInstance = null;
+        this.memory = null;
+        this.heapPtr = 65536; // スタック領域を避けて 64KB 以降をヒープ初期値とする
+        this.textDecoder = new TextDecoder('utf-8');
+        this.textEncoder = new TextEncoder();
+    }
+
+    // Wasm メモリ上のポインタと長さから JS 文字列を取得 (BigInt を Number へ変換)
+    getString(ptr, len) {
+        const p = Number(ptr);
+        const l = Number(len);
+        const bytes = new Uint8Array(this.memory.buffer, p, l);
+        return this.textDecoder.decode(bytes);
+    }
+
+    // Wasm に渡すインポートオブジェクトの構築
+    getImportObject() {
+        return {
+            env: {
+                // --- 最小限のアロケータ実装 (Libc フリー) ---
+                malloc: (size) => {
+                    const s = Number(size);
+                    const allocated = this.heapPtr;
+                    this.heapPtr += (s + 7) & ~7; // 8 バイト境界アラインメント
+
+                    // メモリ不足時は 64KB 単位でページ拡張
+                    if (this.heapPtr > this.memory.buffer.byteLength) {
+                        const neededPages = Math.ceil((this.heapPtr - this.memory.buffer.byteLength) / 65536);
+                        this.memory.grow(neededPages);
+                    }
+                    return allocated;
+                },
+                calloc: (num, size) => {
+                    const total = Number(num) * Number(size);
+                    const ptr = this.getImportObject().env.malloc(total);
+                    new Uint8Array(this.memory.buffer, ptr, total).fill(0);
+                    return ptr;
+                },
+                free: (ptr) => {
+                    // バンプアロケータのため即時解放はスキップ
+                },
+
+                // --- DOM & コンソール操作 API ---
+                js_log: (ptr, len) => {
+                    const msg = this.getString(ptr, len);
+                    console.log(`%c[Hike Wasm]%c ${msg}`, "color: #3b82f6; font-weight: bold;", "color: inherit;");
+                },
+                js_set_text: (idPtr, idLen, textPtr, textLen) => {
+                    const id = this.getString(idPtr, idLen);
+                    const text = this.getString(textPtr, textLen);
+                    const el = document.getElementById(id);
+                    if (el) el.innerText = text;
+                },
+                js_append_text: (idPtr, idLen, textPtr, textLen) => {
+                    const id = this.getString(idPtr, idLen);
+                    const text = this.getString(textPtr, textLen);
+                    const el = document.getElementById(id);
+                    if (el) el.innerText += text;
+                },
+                js_set_badge_color: (idPtr, idLen, colorPtr, colorLen) => {
+                    const id = this.getString(idPtr, idLen);
+                    const color = this.getString(colorPtr, colorLen);
+                    const el = document.getElementById(id);
+                    if (el) el.style.backgroundColor = color;
+                },
+
+                // シングルスレッド Wasm 向けのスタブ
+                Sleep: (ms) => {},
+                GetTickCount64: () => BigInt(Date.now()),
+                QueueUserWorkItem: () => 0,
+                CreateEventA: () => 0,
+                SetEvent: () => 0,
+                WaitForSingleObject: () => 0,
+                CloseHandle: () => 0
+            }
+        };
+    }
+
+    async load(wasmPath) {
+        const response = await fetch(wasmPath);
+        const importObject = this.getImportObject();
+        
+        const { instance } = await WebAssembly.instantiateStreaming(response, importObject);
+        this.wasmInstance = instance;
+        this.memory = instance.exports.memory || importObject.env.memory;
+
+        // Wasm 側の InitApp 関数を実行
+        if (typeof this.wasmInstance.exports.InitApp === 'function') {
+            this.wasmInstance.exports.InitApp();
+        }
+        return this.wasmInstance.exports;
+    }
+}
