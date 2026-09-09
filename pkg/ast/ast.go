@@ -60,7 +60,6 @@ func (ice *ImplicitCastExpr) TokenLiteral() string { return ice.Token.Literal }
 // 内部シンボルキー生成ヘルパー (Package.Identifier@StructName)
 // -----------------------------------------------------------------------------
 
-// BuildInternalKey はマングリング前の論理キーを構築する
 func BuildInternalKey(pkg string, ident string, structName string) string {
 	base := ident
 	if pkg != "" {
@@ -93,13 +92,12 @@ type ConstDecl struct {
 func (cd *ConstDecl) declNode()            {}
 func (cd *ConstDecl) TokenLiteral() string { return cd.Token.Literal }
 
-// トップレベルおよびローカルの変数宣言ノード
 type VarDecl struct {
 	Token     token.Token
 	Name      *Identifier
 	Type      TypeExpr
 	Value     Expression
-	IsEscaped bool // エスケープ解析によりヒープ昇格が必要かどうかの決定フラグ
+	IsEscaped bool
 }
 
 func (vd *VarDecl) declNode()            {}
@@ -140,8 +138,8 @@ type ParamDecl struct {
 	Token      token.Token
 	Name       *Identifier
 	Type       TypeExpr
-	IsVariadic bool // 可変長引数フラグ (...T)
-	IsEscaped  bool // クロージャにキャプチャされヒープ退避が必要かどうかの決定フラグ
+	IsVariadic bool
+	IsEscaped  bool
 }
 
 func (pd *ParamDecl) TokenLiteral() string {
@@ -156,7 +154,7 @@ type TypeDecl struct {
 	Name        *Identifier
 	TypeParams  []*TypeParam
 	Type        TypeExpr
-	InternalKey string // 内部論理識別子キー (例: pkg.TypeName)
+	InternalKey string
 }
 
 func (td *TypeDecl) declNode()            {}
@@ -170,35 +168,61 @@ type FuncDecl struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
-	BodyTokens  []token.Token // 第1段階で切り出される本体ブロックの未パース・トークン列スライス
-	Body        *BlockStmt    // 第2段階で確定するAST文ブロック
-	InternalKey string        // 内部論理識別子キー (例: pkg.MethodName@StructName)
+	BodyTokens  []token.Token
+	Body        *BlockStmt
+	InternalKey string
 }
 
 func (fd *FuncDecl) declNode()            {}
 func (fd *FuncDecl) TokenLiteral() string { return fd.Token.Literal }
 
-// CFuncDecl は Go 連携用の cfunc 宣言を表すノード
+// CFuncDecl は C ABI エクスポート用の cfunc 宣言を表すノード
 type CFuncDecl struct {
 	Token         token.Token
-	IsPassThrough bool // passthrough 修飾子フラグ
+	IsPassThrough bool
 	Name          *Identifier
 	Params        []*ParamDecl
-	IsVariadic    bool // C 言語可変長引数フラグ
+	IsVariadic    bool
 	ReturnTypes   []TypeExpr
-	TargetCName   *Identifier   // 簡易形式 (= c_func_name) の場合に指定される C 側関数識別子
-	BodyTokens    []token.Token // 手書きブロック形式の場合の未パース・トークン列スライス
-	Body          *BlockStmt    // 手書きブロック形式 ({ ... }) の場合の本体ブロック
-	InternalKey   string        // 内部論理識別子キー
+	TargetCName   *Identifier
+	BodyTokens    []token.Token
+	Body          *BlockStmt
+	InternalKey   string
 }
 
 func (cfd *CFuncDecl) declNode()            {}
 func (cfd *CFuncDecl) TokenLiteral() string { return cfd.Token.Literal }
 
-// IsAlias はエイリアス簡易記法かどうかを判定します
 func (cfd *CFuncDecl) IsAlias() bool {
 	return cfd.TargetCName != nil
 }
+
+// ExternFuncDecl は外部C関数宣言（extern func）を表すノード
+type ExternFuncDecl struct {
+	Token       token.Token
+	Name        *Identifier
+	Params      []*ParamDecl
+	IsVariadic  bool
+	ReturnTypes []TypeExpr
+	TargetCName *Identifier // 外部シンボル名が識別子と異なる場合に指定
+	InternalKey string
+}
+
+func (efd *ExternFuncDecl) declNode()            {}
+func (efd *ExternFuncDecl) TokenLiteral() string { return efd.Token.Literal }
+
+// JFuncDecl は WASM 向けのインライン JavaScript 関数（jfunc）を表すノード
+type JFuncDecl struct {
+	Token       token.Token
+	Name        *Identifier
+	Params      []*ParamDecl
+	ReturnTypes []TypeExpr
+	JSBody      string // 波括弧内の未パース raw JavaScript 文字列
+	InternalKey string
+}
+
+func (jfd *JFuncDecl) declNode()            {}
+func (jfd *JFuncDecl) TokenLiteral() string { return jfd.Token.Literal }
 
 // -----------------------------------------------------------------------------
 // 式ノード
@@ -253,19 +277,17 @@ type PrefixExpr struct {
 func (pe *PrefixExpr) expressionNode()      {}
 func (pe *PrefixExpr) TokenLiteral() string { return pe.Token.Literal }
 
-// ReceiveExpr はチャネルまたは Future からの受信用式 (<-expr) を表すノード
 type ReceiveExpr struct {
-	Token token.Token // '<-' トークン
+	Token token.Token
 	Expr  Expression
 }
 
 func (re *ReceiveExpr) expressionNode()      {}
 func (re *ReceiveExpr) TokenLiteral() string { return re.Token.Literal }
 
-// AsyncExpr は Async(fn) によるスレッドプール非同期タスク投入式を表すノード
 type AsyncExpr struct {
-	Token token.Token // 'Async' トークン
-	Fn    Expression  // 実行対象の関数（FuncLit, Identifier, CallExpr 等）
+	Token token.Token
+	Fn    Expression
 }
 
 func (ae *AsyncExpr) expressionNode()      {}
@@ -312,7 +334,7 @@ type CallExpr struct {
 	Token       token.Token
 	Function    Expression
 	Args        []Expression
-	HasEllipsis bool // スライス展開呼び出しフラグ (expr...)
+	HasEllipsis bool
 }
 
 func (ce *CallExpr) expressionNode()      {}
@@ -372,7 +394,7 @@ type MethodSig struct {
 	Token       token.Token
 	Name        *Identifier
 	ParamTypes  []TypeExpr
-	IsVariadic  bool // インターフェースメソッドの可変長引数フラグ
+	IsVariadic  bool
 	ReturnTypes []TypeExpr
 }
 
@@ -393,8 +415,8 @@ type FuncLit struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
-	BodyTokens  []token.Token // クロージャ本体の未パース・トークン列スライス
-	Body        *BlockStmt    // 第2段階で解決される本体AST
+	BodyTokens  []token.Token
+	Body        *BlockStmt
 }
 
 func (fl *FuncLit) expressionNode()      {}
@@ -426,8 +448,8 @@ func (pt *PointerType) TokenLiteral() string { return pt.Token.Literal }
 
 type StructType struct {
 	Token       token.Token
-	FieldTokens []token.Token // 第1段階で切り出されるフィールド定義の未パース・トークン列スライス
-	Fields      []*FieldDecl  // 第2段階で解決されるフィールド定義
+	FieldTokens []token.Token
+	Fields      []*FieldDecl
 }
 
 func (st *StructType) typeExprNode()        {}
@@ -452,9 +474,8 @@ func (s *SliceType) typeExprNode()        {}
 func (s *SliceType) expressionNode()      {}
 func (s *SliceType) TokenLiteral() string { return s.Token.Literal }
 
-// EllipsisType は Go スタイルの可変長パラメータ型 (...T) を表すノード
 type EllipsisType struct {
-	Token token.Token // '...'
+	Token token.Token
 	Elem  TypeExpr
 }
 
@@ -482,7 +503,6 @@ func (mt *MapType) typeExprNode()        {}
 func (mt *MapType) expressionNode()      {}
 func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
 
-// ChanType は Go スタイルのチャネル型を表すノード
 type ChanType struct {
 	Token token.Token
 	Elem  TypeExpr
@@ -492,17 +512,15 @@ func (ct *ChanType) typeExprNode()        {}
 func (ct *ChanType) expressionNode()      {}
 func (ct *ChanType) TokenLiteral() string { return ct.Token.Literal }
 
-// SendStmt はチャネルへの値送信文 (channel <- value) を表すノード
 type SendStmt struct {
-	Token token.Token // '<-' トークン
-	Chan  Expression  // 送信先チャネル式
-	Value Expression  // 送信する値の式
+	Token token.Token
+	Chan  Expression
+	Value Expression
 }
 
 func (ss *SendStmt) statementNode()       {}
 func (ss *SendStmt) TokenLiteral() string { return ss.Token.Literal }
 
-// FutureType は Async(fn) が生成するスレッドプール待機用ハンドル型を表す内部型ノード
 type FutureType struct {
 	Token       token.Token
 	ReturnTypes []TypeExpr
@@ -522,8 +540,8 @@ func (tp *TypeParam) TokenLiteral() string { return tp.Token.Literal }
 
 type InterfaceType struct {
 	Token        token.Token
-	MethodTokens []token.Token // 第1段階で切り出されるメソッド定義の未パース・トークン列スライス
-	Methods      []*MethodSig  // 第2段階で解決されるメソッド定義
+	MethodTokens []token.Token
+	Methods      []*MethodSig
 }
 
 func (it *InterfaceType) typeExprNode()        {}

@@ -580,7 +580,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// Pass 1: 全ての型宣言と関数宣言を登録 (単一キーで登録しLLVM IRの型再定義を防止)
+	// Pass 1: 全ての型宣言と関数宣言を登録
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
 			tpSet := make(map[string]bool)
@@ -729,19 +729,58 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				ctx.GenericFuncs[fnName] = fd
 				ctx.GenericFuncs[fd.Name.Value] = fd
 			}
+		} else if efd, ok := decl.(*ast.ExternFuncDecl); ok {
+			cName := efd.Name.Value
+			if efd.TargetCName != nil {
+				cName = efd.TargetCName.Value
+			}
+			internalKey := BuildInternalKey("", efd.Name.Value, "")
+			efd.InternalKey = internalKey
+			fnType := &FuncType{
+				Name:            efd.Name.Value,
+				InternalKey:     internalKey,
+				IRName:          cName,
+				ParamTypes:      []Type{},
+				ReturnTypes:     []Type{},
+				IsVariadic:      efd.IsVariadic,
+				IsExtern:        true,
+				Specializations: make(map[string]*FuncType),
+			}
+			ctx.Functions[efd.Name.Value] = fnType
+		} else if jfd, ok := decl.(*ast.JFuncDecl); ok {
+			jsBridgeName := "__hike_js_" + jfd.Name.Value
+			internalKey := BuildInternalKey("", jfd.Name.Value, "")
+			jfd.InternalKey = internalKey
+			fnType := &FuncType{
+				Name:            jfd.Name.Value,
+				InternalKey:     internalKey,
+				IRName:          jsBridgeName,
+				ParamTypes:      []Type{},
+				ReturnTypes:     []Type{},
+				IsExtern:        true,
+				Specializations: make(map[string]*FuncType),
+			}
+			ctx.Functions[jfd.Name.Value] = fnType
 		} else if cfd, ok := decl.(*ast.CFuncDecl); ok {
 			targetC := ""
 			if cfd.TargetCName != nil {
 				targetC = cfd.TargetCName.Value
 			} else {
-				targetC = "c_" + cfd.Name.Value
+				targetC = cfd.Name.Value
 			}
-			internalKey := BuildInternalKey("", cfd.Name.Value, "")
+			internalKey := BuildInternalKey(prog.Package, cfd.Name.Value, "")
 			cfd.InternalKey = internalKey
+
+			irName := cfd.Name.Value
+			if !cfd.IsAlias() {
+				// 手書きブロックを持つ cfunc は、Hike 内部用実体シンボルとして __hike_impl_<Name> を割り当て
+				irName = "__hike_impl_" + cfd.Name.Value
+			}
+
 			fnType := &FuncType{
 				Name:            cfd.Name.Value,
 				InternalKey:     internalKey,
-				IRName:          targetC,
+				IRName:          irName,
 				ParamTypes:      []Type{},
 				ReturnTypes:     []Type{},
 				IsVariadic:      cfd.IsVariadic,
@@ -987,6 +1026,48 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			fnType.IsVariadic = d.IsVariadic
 			fnType.VariadicElem = variadicElem
 
+		case *ast.ExternFuncDecl:
+			fnType := ctx.Functions[d.Name.Value]
+			if fnType == nil {
+				continue
+			}
+			paramTypes := []Type{}
+			var variadicElem Type = nil
+			for _, p := range d.Params {
+				pType := ctx.ResolveType(p.Type)
+				if p.IsVariadic {
+					if _, isSlice := pType.(*SliceType); !isSlice {
+						pType = &SliceType{Elem: pType}
+					}
+					variadicElem = pType.(*SliceType).Elem
+				}
+				paramTypes = append(paramTypes, pType)
+			}
+			returnTypes := []Type{}
+			for _, rt := range d.ReturnTypes {
+				returnTypes = append(returnTypes, ctx.ResolveType(rt))
+			}
+			fnType.ParamTypes = paramTypes
+			fnType.ReturnTypes = returnTypes
+			fnType.IsVariadic = d.IsVariadic
+			fnType.VariadicElem = variadicElem
+
+		case *ast.JFuncDecl:
+			fnType := ctx.Functions[d.Name.Value]
+			if fnType == nil {
+				continue
+			}
+			paramTypes := []Type{}
+			for _, p := range d.Params {
+				paramTypes = append(paramTypes, ctx.ResolveType(p.Type))
+			}
+			returnTypes := []Type{}
+			for _, rt := range d.ReturnTypes {
+				returnTypes = append(returnTypes, ctx.ResolveType(rt))
+			}
+			fnType.ParamTypes = paramTypes
+			fnType.ReturnTypes = returnTypes
+
 		case *ast.CFuncDecl:
 			fnType := ctx.Functions[d.Name.Value]
 			if fnType == nil {
@@ -1147,6 +1228,8 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			return
 		}
 		switch n := e.(type) {
+		case *ast.GenericInstExpr:
+			walkExpr(n.Left)
 		case *ast.BinaryExpr:
 			walkExpr(n.Left)
 			walkExpr(n.Right)
@@ -1302,6 +1385,8 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 				seen[name] = true
 				captured = append(captured, name)
 			}
+		case *ast.GenericInstExpr:
+			walkExpr(node.Left)
 		case *ast.BinaryExpr:
 			walkExpr(node.Left)
 			walkExpr(node.Right)
@@ -1606,6 +1691,8 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 		return
 	}
 	switch expr := e.(type) {
+	case *ast.GenericInstExpr:
+		insertCastsInExpr(expr.Left, locals, ctx)
 	case *ast.CallExpr:
 		fnType := ctx.InferExprType(expr.Function, locals)
 		if ft, ok := fnType.(*FuncType); ok {
@@ -1716,6 +1803,17 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return checkType(te)
 		}
 		switch n := e.(type) {
+		case *ast.GenericInstExpr:
+			if err := checkExpr(n.Left); err != nil {
+				return err
+			}
+			for _, ta := range n.TypeArgs {
+				if err := checkType(ta); err != nil {
+					return err
+				}
+			}
+			return nil
+
 		case *ast.FuncLit:
 			for _, p := range n.Params {
 				if err := checkType(p.Type); err != nil {
@@ -1878,6 +1976,30 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		}
 		if fd.Body != nil {
 			return checkStmt(fd.Body)
+		}
+	}
+	if efd, ok := node.(*ast.ExternFuncDecl); ok {
+		for _, p := range efd.Params {
+			if err := checkType(p.Type); err != nil {
+				return err
+			}
+		}
+		for _, rt := range efd.ReturnTypes {
+			if err := checkType(rt); err != nil {
+				return err
+			}
+		}
+	}
+	if jfd, ok := node.(*ast.JFuncDecl); ok {
+		for _, p := range jfd.Params {
+			if err := checkType(p.Type); err != nil {
+				return err
+			}
+		}
+		for _, rt := range jfd.ReturnTypes {
+			if err := checkType(rt); err != nil {
+				return err
+			}
 		}
 	}
 	if cfd, ok := node.(*ast.CFuncDecl); ok {

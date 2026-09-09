@@ -346,12 +346,11 @@ func (i *InstrCallIface) String() string {
 // スレッドプール非同期処理用命令
 // -----------------------------------------------------------------------------
 
-// InstrAsync はスレッドプールへのタスク投入命令
 type InstrAsync struct {
-	Dst      *Reg        // 生成された Future / Task ハンドル
-	FnPtr    Value       // 実行対象の関数ポインタまたはスタブ
-	EnvPtr   Value       // クロージャ環境または引数コンテキストポインタ（不要な場合は nil）
-	RetTypes []sema.Type // 関数の戻り値型リスト
+	Dst      *Reg
+	FnPtr    Value
+	EnvPtr   Value
+	RetTypes []sema.Type
 }
 
 func (i *InstrAsync) Result() *Reg { return i.Dst }
@@ -363,10 +362,9 @@ func (i *InstrAsync) String() string {
 	return fmt.Sprintf("  %s = async %s, env: %s", i.Dst, i.FnPtr, envStr)
 }
 
-// InstrTaskWait は Future / Task の完了待機命令（OSネイティブ同期待ちを実行し結果バッファを返す）
 type InstrTaskWait struct {
-	Dst  *Reg  // 完了後に結果を取り出すためのバッファポインタ
-	Task Value // 待機対象の Future / Task ハンドル
+	Dst  *Reg
+	Task Value
 }
 
 func (i *InstrTaskWait) Result() *Reg { return i.Dst }
@@ -375,10 +373,9 @@ func (i *InstrTaskWait) String() string {
 }
 
 // -----------------------------------------------------------------------------
-// チャネル・並行キュー処理用命令（追加）
+// チャネル・並行キュー処理用命令
 // -----------------------------------------------------------------------------
 
-// InstrChanMake はチャネルの生成命令 (make(chan T, cap))
 type InstrChanMake struct {
 	Dst      *Reg
 	ElemType sema.Type
@@ -394,7 +391,6 @@ func (i *InstrChanMake) String() string {
 	return fmt.Sprintf("  %s = chan_make %s, cap: %s", i.Dst, i.ElemType.TypeName(), capStr)
 }
 
-// InstrChanSend はチャネルへの値送信命令 (ch <- val)
 type InstrChanSend struct {
 	Chan Value
 	Val  Value
@@ -405,7 +401,6 @@ func (i *InstrChanSend) String() string {
 	return fmt.Sprintf("  chan_send %s, %s %s", i.Chan, i.Val.Type().TypeName(), i.Val)
 }
 
-// InstrChanRecv はチャネルからの値受信命令 (<-ch)
 type InstrChanRecv struct {
 	Dst  *Reg
 	Chan Value
@@ -416,7 +411,6 @@ func (i *InstrChanRecv) String() string {
 	return fmt.Sprintf("  %s = chan_recv %s", i.Dst, i.Chan)
 }
 
-// InstrChanClose はチャネルのクローズ命令 (close(ch))
 type InstrChanClose struct {
 	Chan Value
 }
@@ -535,11 +529,11 @@ type Function struct {
 	IsExtern    bool
 
 	// -------------------------------------------------------------------------
-	// CFunc / Go 連携用フィールド
+	// CFunc / C ABI 連携用フィールド
 	// -------------------------------------------------------------------------
-	IsCFunc       bool   // cfunc 宣言であるかどうかのフラグ
-	IsPassThrough bool   // 追加: passthrough 修飾子フラグ (NOSPLIT 生成用)
-	CFuncTarget   string // エイリアス形式の場合の呼び出し先Cシンボル名（空文字列なら手書きブロック）
+	IsCFunc       bool
+	IsPassThrough bool
+	CFuncTarget   string
 }
 
 func (f *Function) String() string {
@@ -564,11 +558,19 @@ func (f *Function) String() string {
 	}
 
 	if f.IsExtern {
-		sb.WriteString(fmt.Sprintf("extern func @%s(%s) %s\n", f.Name, strings.Join(params, ", "), retTypeStr))
+		prefix := "extern func"
+		if f.IsCFunc {
+			prefix = "extern cfunc"
+		}
+		sb.WriteString(fmt.Sprintf("%s @%s(%s) %s\n", prefix, f.Name, strings.Join(params, ", "), retTypeStr))
 		return sb.String()
 	}
 
-	sb.WriteString(fmt.Sprintf("func @%s(%s) %s {\n", f.Name, strings.Join(params, ", "), retTypeStr))
+	prefix := "func"
+	if f.IsCFunc {
+		prefix = "cfunc"
+	}
+	sb.WriteString(fmt.Sprintf("%s @%s(%s) %s {\n", prefix, f.Name, strings.Join(params, ", "), retTypeStr))
 	for _, bb := range f.Blocks {
 		sb.WriteString(bb.String())
 	}
@@ -613,10 +615,12 @@ func (p *Program) Dump() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("; --- Functions ---\n")
-	for _, fn := range p.Functions {
-		sb.WriteString(fn.String())
-		sb.WriteString("\n")
+	if len(p.Functions) > 0 {
+		sb.WriteString("; --- Functions ---\n")
+		for _, fn := range p.Functions {
+			sb.WriteString(fn.String())
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String()

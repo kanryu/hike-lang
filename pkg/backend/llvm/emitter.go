@@ -2,6 +2,7 @@ package llvm
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"hikec-go/pkg/hir"
@@ -19,13 +20,33 @@ type Emitter struct {
 	targetTriple    string
 	b               strings.Builder
 	regCount        int
-	asyncThunks     map[string]*asyncThunk // 戻り値型ごとのサンク関数キャッシュ
+	asyncThunks     map[string]*asyncThunk
 	declaredSymbols map[string]bool
+}
+
+func defaultTargetTriple() string {
+	switch runtime.GOOS {
+	case "windows":
+		if runtime.GOARCH == "arm64" {
+			return "aarch64-pc-windows-msvc"
+		}
+		return "x86_64-pc-windows-msvc"
+	case "darwin":
+		if runtime.GOARCH == "arm64" {
+			return "arm64-apple-macosx"
+		}
+		return "x86_64-apple-macosx"
+	default:
+		if runtime.GOARCH == "arm64" {
+			return "aarch64-unknown-linux-gnu"
+		}
+		return "x86_64-unknown-linux-gnu"
+	}
 }
 
 func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter {
 	if targetTriple == "" {
-		targetTriple = "x86_64-unknown-linux-gnu"
+		targetTriple = defaultTargetTriple()
 	}
 	e := &Emitter{
 		prog:            prog,
@@ -35,11 +56,15 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter
 		declaredSymbols: make(map[string]bool),
 	}
 
-	// 初期状態として runtime.ll のシンボルをすべて登録済みにしておく
 	for sym := range RuntimeLLVMSymbols {
 		e.declaredSymbols[sym] = true
 	}
 	return e
+}
+
+func (e *Emitter) isWindowsTarget() bool {
+	t := strings.ToLower(e.targetTriple)
+	return strings.Contains(t, "windows") || strings.Contains(t, "win32") || strings.Contains(t, "msvc")
 }
 
 func (e *Emitter) nextTmp() string {
@@ -181,7 +206,7 @@ func (e *Emitter) emitFunctions() {
 				continue
 			}
 
-			if fn.IsCFunc && !referencedExterns[fn.Name] {
+			if fn.IsCFunc && fn.CFuncTarget != "" && !referencedExterns[fn.Name] && !referencedExterns[fn.CFuncTarget] {
 				continue
 			}
 
@@ -230,7 +255,13 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 		params = append(params, "...")
 	}
 
-	e.b.WriteString(fmt.Sprintf("define %s @%s(%s) {\n", retTypeStr, fn.Name, strings.Join(params, ", ")))
+	storageClass := ""
+	// Windows環境でCFunc公開関数（トランポリン）を出力する場合、DLLエクスポート属性を付加
+	if fn.IsCFunc && e.isWindowsTarget() {
+		storageClass = "dllexport "
+	}
+
+	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s) {\n", storageClass, retTypeStr, fn.Name, strings.Join(params, ", ")))
 
 	for _, bb := range fn.Blocks {
 		e.b.WriteString(fmt.Sprintf("%s:\n", bb.Label))
@@ -695,7 +726,6 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 	toLLVM := i.ToType.LLVMType()
 	val := e.formatVal(i.Val)
 
-	// 同一型の場合
 	if fromLLVM == toLLVM {
 		if strings.HasPrefix(fromLLVM, "{") || strings.HasPrefix(fromLLVM, "[") {
 			panic(fmt.Sprintf("[Emitter Panic] invalid cast: cannot bitcast aggregate type '%s'", fromLLVM))
@@ -761,7 +791,6 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		return
 	}
 
-	// ビットサイズ不一致や集約型（構造体・タプル）に対する不正なキャストは即座にパニック
 	panic(fmt.Sprintf("[Emitter Panic] invalid cast operation: cannot cast '%s' to '%s' (val: %s, dst: %s)",
 		fromLLVM, toLLVM, val, i.Dst))
 }

@@ -42,7 +42,7 @@ const (
 	SHL   = "<<"
 	SHR   = ">>"
 
-	ARROW = "<-" // 追加: 受信・チャネル演算子
+	ARROW = "<-" // 受信・チャネル演算子
 
 	INC             = "++"
 	DEC             = "--"
@@ -75,10 +75,12 @@ const (
 	IMPORT      = "IMPORT"
 	FUNC        = "FUNC"
 	CFUNC       = "CFUNC"
+	EXTERN      = "EXTERN" // 追加: 外部C言語等の関数宣言用 (extern func)
+	JFUNC       = "JFUNC"  // 追加: WASM向けインラインJavaScript関数用 (jfunc)
 	PASSTHROUGH = "PASSTHROUGH"
 	MAP         = "MAP"
-	CHAN        = "CHAN"  // 追加: チャネル型用
-	ASYNC       = "ASYNC" // 追加: スレッドプール非同期キーワード
+	CHAN        = "CHAN"
+	ASYNC       = "ASYNC"
 	RETURN      = "RETURN"
 	TYPE        = "TYPE"
 	STRUCT      = "STRUCT"
@@ -107,6 +109,8 @@ var keywords = map[string]TokenType{
 	"import":      IMPORT,
 	"func":        FUNC,
 	"cfunc":       CFUNC,
+	"extern":      EXTERN, // 追加
+	"jfunc":       JFUNC,  // 追加
 	"passthrough": PASSTHROUGH,
 	"var":         VAR,
 	"const":       CONST,
@@ -114,9 +118,9 @@ var keywords = map[string]TokenType{
 	"struct":      STRUCT,
 	"interface":   INTERFACE,
 	"map":         MAP,
-	"chan":        CHAN,  // 追加
-	"Async":       ASYNC, // 追加: Hike非同期呼び出し構文用
-	"async":       ASYNC, // 追加
+	"chan":        CHAN,
+	"Async":       ASYNC,
+	"async":       ASYNC,
 	"if":          IF,
 	"else":        ELSE,
 	"for":         FOR,

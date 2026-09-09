@@ -199,6 +199,20 @@ func (p *Parser) ParseProgram() *ast.Program {
 			}
 			// parseFuncDecl 内で jumpTo されているため、ここでは nextToken() を呼ばない
 
+		case token.EXTERN:
+			efn := p.parseExternFuncDecl()
+			if efn != nil {
+				prog.Decls = append(prog.Decls, efn)
+			}
+			// parseExternFuncDecl 内で次の宣言まで進めているため nextToken() は呼ばない
+
+		case token.JFUNC:
+			jfn := p.parseJFuncDecl()
+			if jfn != nil {
+				prog.Decls = append(prog.Decls, jfn)
+			}
+			// parseJFuncDecl 内で jumpTo されているため nextToken() は呼ばない
+
 		case token.PASSTHROUGH:
 			p.nextToken()
 			if !p.curTokenIs(token.CFUNC) {
@@ -273,6 +287,192 @@ func (p *Parser) ParseProgram() *ast.Program {
 // -----------------------------------------------------------------------------
 // トップレベル宣言パース (ヘッダー確定 + スライスカット + エンキュー)
 // -----------------------------------------------------------------------------
+
+func (p *Parser) parseExternFuncDecl() *ast.ExternFuncDecl {
+	efn := &ast.ExternFuncDecl{Token: p.curToken}
+	p.nextToken() // 'extern' を消費
+
+	if !p.curTokenIs(token.FUNC) {
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected 'func' after 'extern', got %s", p.curToken.Line, p.curToken.Col, p.curToken.Type))
+		return nil
+	}
+	p.nextToken() // 'func' を消費
+
+	efn.Name = p.parseIdentifier()
+	p.log(fmt.Sprintf("[%d:%d] Parsing extern func: %s", efn.Token.Line, efn.Token.Col, efn.Name.Value))
+	p.nextToken()
+
+	efn.Params = []*ast.ParamDecl{}
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		for {
+			if p.curTokenIs(token.ELLIPSIS) {
+				efn.IsVariadic = true
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				pName := p.parseIdentifier()
+				p.nextToken()
+				paramIsVariadic := false
+				if p.curTokenIs(token.ELLIPSIS) {
+					paramIsVariadic = true
+					efn.IsVariadic = true
+					p.nextToken()
+					elemType := p.parseTypeExpr()
+					pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
+					efn.Params = append(efn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: paramIsVariadic,
+					})
+				} else {
+					pType := p.parseTypeExpr()
+					efn.Params = append(efn.Params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: false,
+					})
+				}
+			}
+
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RPAREN)
+
+	efn.ReturnTypes = []ast.TypeExpr{}
+	if p.peekToken.Line == p.curToken.Line &&
+		!p.curTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.SEMICOLON) &&
+		!p.curTokenIs(token.ASSIGN) && !p.peekTokenIs(token.ASSIGN) &&
+		!p.curTokenIs(token.EOF) && !p.peekTokenIs(token.EOF) {
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken()
+			p.nextToken()
+			for {
+				efn.ReturnTypes = append(efn.ReturnTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+			p.expectPeek(token.RPAREN)
+		} else {
+			p.nextToken()
+			efn.ReturnTypes = append(efn.ReturnTypes, p.parseTypeExpr())
+		}
+	}
+
+	if p.peekTokenIs(token.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		efn.TargetCName = p.parseIdentifier()
+	}
+
+	p.nextToken()
+	if p.curTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return efn
+}
+
+func (p *Parser) parseJFuncDecl() *ast.JFuncDecl {
+	jfn := &ast.JFuncDecl{Token: p.curToken}
+	p.nextToken() // 'jfunc' を消費
+
+	jfn.Name = p.parseIdentifier()
+	p.log(fmt.Sprintf("[%d:%d] Parsing jfunc: %s", jfn.Token.Line, jfn.Token.Col, jfn.Name.Value))
+	p.nextToken()
+
+	jfn.Params = []*ast.ParamDecl{}
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		for {
+			pName := p.parseIdentifier()
+			p.nextToken()
+			pType := p.parseTypeExpr()
+			jfn.Params = append(jfn.Params, &ast.ParamDecl{
+				Token:      pName.Token,
+				Name:       pName,
+				Type:       pType,
+				IsVariadic: false,
+			})
+
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RPAREN) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RPAREN)
+
+	jfn.ReturnTypes = []ast.TypeExpr{}
+	if p.peekToken.Line == p.curToken.Line &&
+		!p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) &&
+		!p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken()
+			p.nextToken()
+			for {
+				jfn.ReturnTypes = append(jfn.ReturnTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+			p.expectPeek(token.RPAREN)
+		} else {
+			p.nextToken()
+			jfn.ReturnTypes = append(jfn.ReturnTypes, p.parseTypeExpr())
+		}
+	}
+
+	if p.peekTokenIs(token.LBRACE) || p.curTokenIs(token.LBRACE) {
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+		}
+		startIdx := p.curIdx()
+		bodyTokens, nextIdx := p.cutBraceBlock(startIdx)
+		var jsCode string
+		for i := 1; i < len(bodyTokens)-1; i++ {
+			tok := bodyTokens[i]
+			if tok.Type == token.STRING {
+				jsCode += "\"" + tok.Literal + "\" "
+			} else {
+				jsCode += tok.Literal + " "
+			}
+		}
+		jfn.JSBody = jsCode
+		p.jumpTo(nextIdx)
+	} else {
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected '{' in jfunc declaration", p.curToken.Line, p.curToken.Col))
+		p.nextToken()
+		return nil
+	}
+
+	return jfn
+}
 
 func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 	cfn := &ast.CFuncDecl{Token: p.curToken}
@@ -755,9 +955,9 @@ func (p *Parser) parseInterfaceMethods(it *ast.InterfaceType) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 文パース (Statement)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.curToken.Type {

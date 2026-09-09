@@ -43,8 +43,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		}
 	}
 
-	// C言語スタイルの可変長引数 (...T スライスではなく ...) を持ち、本体を持つ関数は
-	// 呼び出し側でインライン展開されるため、独立した関数定義 (define ...) の生成をスキップする
+	// C言語スタイルの可変長引数を持ち、本体を持つ関数は呼び出し側でインライン展開
 	if fn.Body != nil && fn.IsVariadic {
 		hasTypedVariadic := false
 		for _, p := range fn.Params {
@@ -58,7 +57,6 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		}
 	}
 
-	// Go 仕様の関数本体を持つ関数は LLVM IR 上では通常スライス引数を受け取るため、本体なしの extern 宣言のみ IR 可変長フラグを有効にする
 	isIRVariadic := (fn.Body == nil && fn.IsVariadic)
 
 	hirFn := &hir.Function{
@@ -72,9 +70,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	c.root.curFunc = hirFn
 	c.root.hirProg.Functions = append(c.root.hirProg.Functions, hirFn)
 
-	// 本体を持たない外部関数宣言 (extern) の場合
 	if fn.Body == nil {
-		// ランタイム内部ですでに define されている OS 組み込み関数は declare 出力対象から除外する
 		switch fn.Name.Value {
 		case "os_now_ns", "os_sleep_ms":
 			return
@@ -171,7 +167,6 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 
 		for _, p := range fn.Params {
 			pType := c.root.semaCtx.ResolveType(p.Type)
-			// Go 仕様: パラメータ自身が可変長 (...T) の場合のみスライス []T として扱う
 			if p.IsVariadic {
 				if _, isSlice := pType.(*sema.SliceType); !isSlice {
 					pType = &sema.SliceType{Elem: pType}
@@ -217,15 +212,50 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 }
 
 // -----------------------------------------------------------------------------
-// C 連携関数 (CFunc Declaration) の変換
+// 外部 C 関数宣言 (ExternFunc Declaration) の変換
+// -----------------------------------------------------------------------------
+
+func (c *CallLowerer) LowerExternFunc(efn *ast.ExternFuncDecl) {
+	cName := efn.Name.Value
+	if efn.TargetCName != nil {
+		cName = efn.TargetCName.Value
+	}
+
+	returnTypes := []sema.Type{}
+	if fnType := c.root.semaCtx.Functions[efn.Name.Value]; fnType != nil && len(fnType.ReturnTypes) > 0 {
+		returnTypes = fnType.ReturnTypes
+	} else {
+		for _, rt := range efn.ReturnTypes {
+			returnTypes = append(returnTypes, c.root.semaCtx.ResolveType(rt))
+		}
+	}
+
+	params := []*hir.Reg{}
+	for i, p := range efn.Params {
+		pType := c.root.semaCtx.ResolveType(p.Type)
+		params = append(params, &hir.Reg{ID: i + 1, Typ: pType, Name: p.Name.Value})
+	}
+
+	hirFn := &hir.Function{
+		Name:        cName,
+		Params:      params,
+		ReturnTypes: returnTypes,
+		Blocks:      nil,
+		IsVariadic:  efn.IsVariadic,
+		IsExtern:    true,
+		IsCFunc:     true,
+	}
+	c.root.hirProg.Functions = append(c.root.hirProg.Functions, hirFn)
+}
+
+// -----------------------------------------------------------------------------
+// C 連携関数 (CFunc Declaration) の変換 (Dual ABI: 実体 + トランポリン)
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
-	targetCName := ""
+	targetCName := cfn.Name.Value
 	if cfn.TargetCName != nil {
 		targetCName = cfn.TargetCName.Value
-	} else {
-		targetCName = "c_" + cfn.Name.Value
 	}
 
 	returnTypes := []sema.Type{}
@@ -237,7 +267,8 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 		}
 	}
 
-	if cfn.Body == nil {
+	// 1. 外部シンボル参照エイリアス (= c_func_name) の場合
+	if cfn.IsAlias() || cfn.Body == nil {
 		params := []*hir.Reg{}
 		for i, p := range cfn.Params {
 			pType := c.root.semaCtx.ResolveType(p.Type)
@@ -259,33 +290,39 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 		return
 	}
 
+	// 2. 手書きブロックを持つ具象 cfunc の場合
+	// ① Hike 内部用実体関数 (__hike_impl_<Name>) をコンパイル
+	implName := "__hike_impl_" + cfn.Name.Value
+
 	c.root.symbols = make(map[string]hir.Value)
 	c.root.symbolTypes = make(map[string]sema.Type)
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.regCount = 0
 	c.root.escapedVars = sema.CollectAllCapturesInBlock(cfn.Body)
 
-	hirFn := &hir.Function{
-		Name:          targetCName,
+	implFn := &hir.Function{
+		Name:          implName,
 		Params:        []*hir.Reg{},
 		ReturnTypes:   returnTypes,
 		Blocks:        []*hir.BasicBlock{},
 		IsVariadic:    cfn.IsVariadic,
 		IsExtern:      false,
-		IsCFunc:       true,
+		IsCFunc:       false,
 		IsPassThrough: cfn.IsPassThrough,
-		CFuncTarget:   targetCName,
 	}
-	c.root.curFunc = hirFn
-	c.root.hirProg.Functions = append(c.root.hirProg.Functions, hirFn)
+	c.root.curFunc = implFn
+	c.root.hirProg.Functions = append(c.root.hirProg.Functions, implFn)
 
 	entryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(entryBB)
 
+	trampolineParamTypes := []sema.Type{}
 	for _, p := range cfn.Params {
 		pType := c.root.semaCtx.ResolveType(p.Type)
+		trampolineParamTypes = append(trampolineParamTypes, pType)
+
 		paramReg := c.root.nextReg(pType, p.Name.Value+"_arg")
-		hirFn.Params = append(hirFn.Params, paramReg)
+		implFn.Params = append(implFn.Params, paramReg)
 
 		ptrReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
 		if p.IsEscaped || c.root.escapedVars[p.Name.Value] {
@@ -318,11 +355,56 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 			c.root.terminate(&hir.InstrReturn{Vals: defaults})
 		}
 	}
+
+	// ② 外部公開用トランポリン関数 (<TargetCName>) を生成
+	c.root.regCount = 0
+	trampolineFn := &hir.Function{
+		Name:          targetCName,
+		Params:        []*hir.Reg{},
+		ReturnTypes:   returnTypes,
+		Blocks:        []*hir.BasicBlock{},
+		IsVariadic:    cfn.IsVariadic,
+		IsExtern:      false,
+		IsCFunc:       true,
+		IsPassThrough: cfn.IsPassThrough,
+		CFuncTarget:   targetCName,
+	}
+	c.root.curFunc = trampolineFn
+	c.root.hirProg.Functions = append(c.root.hirProg.Functions, trampolineFn)
+
+	tEntryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	c.root.setBlock(tEntryBB)
+
+	callArgs := []hir.Value{}
+	for i, pType := range trampolineParamTypes {
+		pReg := c.root.nextReg(pType, fmt.Sprintf("arg_%d", i))
+		trampolineFn.Params = append(trampolineFn.Params, pReg)
+		callArgs = append(callArgs, pReg)
+	}
+
+	var callDst *hir.Reg = nil
+	if len(returnTypes) == 1 {
+		callDst = c.root.nextReg(returnTypes[0])
+	} else if len(returnTypes) > 1 {
+		callDst = c.root.nextReg(&sema.TupleType{Types: returnTypes})
+	}
+
+	c.root.emit(&hir.InstrCallStatic{
+		Dst:        callDst,
+		CalleeName: implName,
+		Args:       callArgs,
+	})
+
+	if callDst != nil {
+		c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{callDst}})
+	} else {
+		c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
+	}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // クロージャ (FuncLit) の Lowering
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.anonFuncCount++

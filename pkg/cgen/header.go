@@ -91,43 +91,95 @@ func GenerateHeader(prog *ast.Program, semaCtx *sema.Context, outputFileName str
 
 	if prog != nil {
 		for _, decl := range prog.Decls {
-			fnDecl, ok := decl.(*ast.FuncDecl)
-			if !ok || fnDecl.Name == nil {
-				continue
-			}
-			fnName := fnDecl.Name.Value
-			if isInternalFunc(fnName) || len(fnDecl.TypeParams) > 0 || fnDecl.Receiver != nil || emittedFuncs[fnName] {
-				continue
-			}
-
-			var fnMeta *sema.FuncType
-			if semaCtx != nil {
-				fnMeta = semaCtx.Functions[fnName]
-			}
-
-			retTypeStr := "void"
-			if fnMeta != nil && len(fnMeta.ReturnTypes) == 1 {
-				retTypeStr = toCType(fnMeta.ReturnTypes[0])
-			} else if len(fnDecl.ReturnTypes) == 1 && semaCtx != nil {
-				retTypeStr = toCType(semaCtx.ResolveType(fnDecl.ReturnTypes[0]))
-			}
-
-			params := []string{}
-			for i, p := range fnDecl.Params {
-				var pType sema.Type = sema.TypeInt
-				if fnMeta != nil && i < len(fnMeta.ParamTypes) {
-					pType = fnMeta.ParamTypes[i]
-				} else if semaCtx != nil {
-					pType = semaCtx.ResolveType(p.Type)
+			switch fn := decl.(type) {
+			case *ast.CFuncDecl:
+				if fn.Name == nil {
+					continue
 				}
-				params = append(params, fmt.Sprintf("%s %s", toCType(pType), p.Name.Value))
-			}
-			if len(params) == 0 {
-				params = append(params, "void")
-			}
+				fnName := fn.Name.Value
+				if fn.TargetCName != nil && fn.TargetCName.Value != "" {
+					fnName = fn.TargetCName.Value
+				}
+				if isInternalFunc(fnName) || emittedFuncs[fnName] {
+					continue
+				}
 
-			b.WriteString(fmt.Sprintf("HIKE_API %s %s(%s);\n", retTypeStr, fnName, strings.Join(params, ", ")))
-			emittedFuncs[fnName] = true
+				var fnMeta *sema.FuncType
+				if semaCtx != nil {
+					fnMeta = semaCtx.Functions[fn.Name.Value]
+					if fnMeta == nil {
+						fnMeta = semaCtx.Functions[fnName]
+					}
+				}
+
+				retTypeStr := "void"
+				if fnMeta != nil && len(fnMeta.ReturnTypes) == 1 {
+					retTypeStr = toCType(fnMeta.ReturnTypes[0])
+				} else if len(fn.ReturnTypes) == 1 && semaCtx != nil {
+					retTypeStr = toCType(semaCtx.ResolveType(fn.ReturnTypes[0]))
+				}
+
+				params := []string{}
+				for i, p := range fn.Params {
+					var pType sema.Type = sema.TypeInt
+					if fnMeta != nil && i < len(fnMeta.ParamTypes) {
+						pType = fnMeta.ParamTypes[i]
+					} else if semaCtx != nil {
+						pType = semaCtx.ResolveType(p.Type)
+					}
+					params = append(params, fmt.Sprintf("%s %s", toCType(pType), p.Name.Value))
+				}
+				if fn.IsVariadic {
+					params = append(params, "...")
+				}
+				if len(params) == 0 {
+					params = append(params, "void")
+				}
+
+				b.WriteString(fmt.Sprintf("HIKE_API %s %s(%s);\n", retTypeStr, fnName, strings.Join(params, ", ")))
+				emittedFuncs[fnName] = true
+
+			case *ast.FuncDecl:
+				if fn.Name == nil {
+					continue
+				}
+				fnName := fn.Name.Value
+				if isInternalFunc(fnName) || len(fn.TypeParams) > 0 || fn.Receiver != nil || emittedFuncs[fnName] {
+					continue
+				}
+
+				var fnMeta *sema.FuncType
+				if semaCtx != nil {
+					fnMeta = semaCtx.Functions[fnName]
+				}
+
+				retTypeStr := "void"
+				if fnMeta != nil && len(fnMeta.ReturnTypes) == 1 {
+					retTypeStr = toCType(fnMeta.ReturnTypes[0])
+				} else if len(fn.ReturnTypes) == 1 && semaCtx != nil {
+					retTypeStr = toCType(semaCtx.ResolveType(fn.ReturnTypes[0]))
+				}
+
+				params := []string{}
+				for i, p := range fn.Params {
+					var pType sema.Type = sema.TypeInt
+					if fnMeta != nil && i < len(fnMeta.ParamTypes) {
+						pType = fnMeta.ParamTypes[i]
+					} else if semaCtx != nil {
+						pType = semaCtx.ResolveType(p.Type)
+					}
+					params = append(params, fmt.Sprintf("%s %s", toCType(pType), p.Name.Value))
+				}
+				if fn.IsVariadic {
+					params = append(params, "...")
+				}
+				if len(params) == 0 {
+					params = append(params, "void")
+				}
+
+				b.WriteString(fmt.Sprintf("HIKE_API %s %s(%s);\n", retTypeStr, fnName, strings.Join(params, ", ")))
+				emittedFuncs[fnName] = true
+			}
 		}
 	}
 
@@ -165,9 +217,21 @@ func toCType(t sema.Type) string {
 	switch v := t.(type) {
 	case *sema.BasicType:
 		switch v.Name {
-		case "int":
+		case "int", "int64":
 			return "int64_t"
-		case "byte":
+		case "int32":
+			return "int32_t"
+		case "int16":
+			return "int16_t"
+		case "int8":
+			return "int8_t"
+		case "uint", "uint64", "uintptr":
+			return "uint64_t"
+		case "uint32":
+			return "uint32_t"
+		case "uint16":
+			return "uint16_t"
+		case "uint8", "byte":
 			return "uint8_t"
 		case "bool":
 			return "bool"
@@ -175,7 +239,7 @@ func toCType(t sema.Type) string {
 			return "float"
 		case "float64", "float":
 			return "double"
-		case "string":
+		case "string", "cstring":
 			return "const char*"
 		case "void":
 			return "void"

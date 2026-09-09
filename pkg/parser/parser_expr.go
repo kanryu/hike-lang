@@ -84,6 +84,44 @@ func replaceIota(expr ast.Expression, iotaVal int64) ast.Expression {
 	return expr
 }
 
+func isBasicTypeName(name string) bool {
+	switch name {
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64",
+		"string", "bool", "byte", "rune", "any", "error":
+		return true
+	}
+	return false
+}
+
+func isTypeLikeExpr(e ast.Expression) bool {
+	if e == nil {
+		return false
+	}
+	switch expr := e.(type) {
+	case *ast.Identifier:
+		if isBasicTypeName(expr.Value) {
+			return true
+		}
+		if len(expr.Value) > 0 && expr.Value[0] >= 'A' && expr.Value[0] <= 'Z' {
+			return true
+		}
+		return false
+	case *ast.PointerType, *ast.SliceType, *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
+		return true
+	case *ast.PrefixExpr:
+		if expr.Operator == "*" {
+			return isTypeLikeExpr(expr.Right)
+		}
+	case *ast.MemberExpr:
+		if len(expr.Field.Value) > 0 && expr.Field.Value[0] >= 'A' && expr.Field.Value[0] <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
 // -----------------------------------------------------------------------------
 // 型式パース (TypeExpr)
 // -----------------------------------------------------------------------------
@@ -450,7 +488,6 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			return nil
 		}
 
-		// クロージャ本体を直接ブロックパースして構文木を完成
 		body := p.parseBlockStmt()
 		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
 
@@ -818,6 +855,13 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 		if typeArg := exprToTypeExpr(indexOrLow); typeArg != nil {
 			genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
 			return p.parseGenericStructLiteral(genExpr)
+		}
+	}
+
+	// 単一型引数のジェネリクス適用 (例: Add[float64], MyFunc[int](a, b), Container[*Node])
+	if isTypeLikeExpr(indexOrLow) {
+		if typeArg := exprToTypeExpr(indexOrLow); typeArg != nil {
+			return &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
 		}
 	}
 

@@ -183,11 +183,9 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 				t.transformStmt(bs)
 			}
 		}
-	// 追加: チャネル送信 (ch <- val) の走査
 	case *ast.SendStmt:
 		stmt.Chan = t.transformExpr(stmt.Chan)
 		stmt.Value = t.transformExpr(stmt.Value)
-	// 追加: 型スイッチ (switch v := x.(type)) の走査
 	case *ast.TypeSwitchStmt:
 		if stmt.Init != nil {
 			t.transformStmt(stmt.Init)
@@ -231,6 +229,10 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 
 	case *ast.AsyncExpr:
 		expr.Fn = t.transformExpr(expr.Fn)
+		return expr
+
+	case *ast.GenericInstExpr:
+		expr.Left = t.transformExpr(expr.Left)
 		return expr
 
 	case *ast.IndexExpr:
@@ -415,7 +417,10 @@ func (t *Transformer) resolveTargetName(e ast.Expression) string {
 
 func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 	switch name {
-	case "int", "byte", "bool", "float32", "float64", "float", "string", "void", "any", "error":
+	case "int", "int64", "int32", "int16", "int8",
+		"uint", "uint64", "uint32", "uint16", "uint8", "uintptr",
+		"byte", "bool", "float32", "float64", "float",
+		"string", "cstring", "void", "any", "error":
 		return nil
 	}
 
@@ -651,7 +656,6 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 		return &ast.SliceType{Token: node.Token, Elem: t.substituteAstType(node.Elem, typeMap, orderedTypeArgs)}
 	case *ast.ArrayType:
 		return &ast.ArrayType{Token: node.Token, Len: node.Len, Elem: t.substituteAstType(node.Elem, typeMap, orderedTypeArgs)}
-	// 追加: 可変長引数 (...T) の型置換
 	case *ast.EllipsisType:
 		return &ast.EllipsisType{Token: node.Token, Elem: t.substituteAstType(node.Elem, typeMap, orderedTypeArgs)}
 	case *ast.MapType:
@@ -763,14 +767,12 @@ func (t *Transformer) substituteAstStmt(s ast.Statement, typeMap map[string]ast.
 			X:     t.substituteAstExpr(st.X, typeMap, orderedTypeArgs),
 			Body:  t.substituteAstBlock(st.Body, typeMap, orderedTypeArgs),
 		}
-	// 追加: チャネル送信文の複製
 	case *ast.SendStmt:
 		return &ast.SendStmt{
 			Token: st.Token,
 			Chan:  t.substituteAstExpr(st.Chan, typeMap, orderedTypeArgs),
 			Value: t.substituteAstExpr(st.Value, typeMap, orderedTypeArgs),
 		}
-	// 追加: defer 文の複製
 	case *ast.DeferStmt:
 		var newCall *ast.CallExpr = nil
 		if st.Call != nil {
@@ -969,7 +971,6 @@ func getBaseTypeName(typ ast.TypeExpr) string {
 		return getBaseTypeName(node.Elem)
 	case *ast.ArrayType:
 		return getBaseTypeName(node.Elem)
-	// 追加: 可変長型からの要素名取得
 	case *ast.EllipsisType:
 		return getBaseTypeName(node.Elem)
 	case *ast.NamedType:

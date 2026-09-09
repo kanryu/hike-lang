@@ -443,10 +443,279 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 }
 
 // -----------------------------------------------------------------------------
+// ジェネリクス関数のオンデマンド特殊化 (Monomorphization)
+// -----------------------------------------------------------------------------
+
+func (c *CallLowerer) getOrSpecializeFunc(baseName string, typeArgs []sema.Type) (string, *sema.FuncType) {
+	var typeSuffixes []string
+	for _, t := range typeArgs {
+		cleanName := strings.ReplaceAll(t.TypeName(), "*", "ptr_")
+		cleanName = strings.ReplaceAll(cleanName, "[]", "slice_")
+		typeSuffixes = append(typeSuffixes, cleanName)
+	}
+	specName := baseName + "_" + strings.Join(typeSuffixes, "_")
+
+	if fn, _ := c.root.semaCtx.LookupFunction(specName); fn != nil {
+		return specName, fn
+	}
+
+	tmplDecl := c.root.semaCtx.GenericFuncs[baseName]
+	if tmplDecl == nil {
+		if fn, _ := c.root.semaCtx.LookupFunction(baseName); fn != nil && fn.Template != nil {
+			tmplDecl = fn.Template
+		}
+	}
+
+	if tmplDecl == nil {
+		return "", nil
+	}
+
+	subst := make(map[string]sema.Type)
+	for i, tp := range tmplDecl.TypeParams {
+		if i < len(typeArgs) {
+			subst[tp.Name.Value] = typeArgs[i]
+		}
+	}
+
+	specAst := c.substFuncDecl(tmplDecl, specName, subst)
+
+	paramTypes := make([]sema.Type, len(specAst.Params))
+	for i, p := range specAst.Params {
+		paramTypes[i] = c.root.semaCtx.ResolveType(p.Type)
+	}
+	returnTypes := make([]sema.Type, len(specAst.ReturnTypes))
+	for i, rt := range specAst.ReturnTypes {
+		returnTypes[i] = c.root.semaCtx.ResolveType(rt)
+	}
+
+	specFnType := &sema.FuncType{
+		Name:            specName,
+		InternalKey:     sema.BuildInternalKey(c.root.prog.Package, specName, ""),
+		IRName:          specName,
+		ParamTypes:      paramTypes,
+		ReturnTypes:     returnTypes,
+		IsSpecialized:   true,
+		SpecializedAst:  specAst,
+		Specializations: make(map[string]*sema.FuncType),
+	}
+
+	c.root.semaCtx.Functions[specName] = specFnType
+
+	prevCurFunc := c.root.curFunc
+	c.LowerFunc(specAst)
+	c.root.curFunc = prevCurFunc
+
+	return specName, specFnType
+}
+
+func (c *CallLowerer) substFuncDecl(tmpl *ast.FuncDecl, newName string, subst map[string]sema.Type) *ast.FuncDecl {
+	newParams := make([]*ast.ParamDecl, len(tmpl.Params))
+	for i, p := range tmpl.Params {
+		newParams[i] = &ast.ParamDecl{
+			Token:      p.Token,
+			Name:       p.Name,
+			Type:       substTypeExpr(p.Type, subst),
+			IsVariadic: p.IsVariadic,
+			IsEscaped:  p.IsEscaped,
+		}
+	}
+
+	newReturns := make([]ast.TypeExpr, len(tmpl.ReturnTypes))
+	for i, rt := range tmpl.ReturnTypes {
+		newReturns[i] = substTypeExpr(rt, subst)
+	}
+
+	newBody := substBlockStmt(tmpl.Body, subst)
+
+	return &ast.FuncDecl{
+		Token:       tmpl.Token,
+		Name:        &ast.Identifier{Token: tmpl.Name.Token, Value: newName},
+		Params:      newParams,
+		IsVariadic:  tmpl.IsVariadic,
+		ReturnTypes: newReturns,
+		Body:        newBody,
+		InternalKey: sema.BuildInternalKey(c.root.prog.Package, newName, ""),
+	}
+}
+
+func substTypeExpr(t ast.TypeExpr, subst map[string]sema.Type) ast.TypeExpr {
+	if t == nil {
+		return nil
+	}
+	switch node := t.(type) {
+	case *ast.NamedType:
+		if node.Package == nil && len(node.TypeArgs) == 0 {
+			if concreteT, ok := subst[node.Name.Value]; ok {
+				return semaTypeToTypeExpr(concreteT)
+			}
+		}
+		newArgs := make([]ast.TypeExpr, len(node.TypeArgs))
+		for i, ta := range node.TypeArgs {
+			newArgs[i] = substTypeExpr(ta, subst)
+		}
+		return &ast.NamedType{
+			Token:    node.Token,
+			Package:  node.Package,
+			Name:     node.Name,
+			TypeArgs: newArgs,
+		}
+	case *ast.PointerType:
+		return &ast.PointerType{Token: node.Token, Base: substTypeExpr(node.Base, subst)}
+	case *ast.SliceType:
+		return &ast.SliceType{Token: node.Token, Elem: substTypeExpr(node.Elem, subst)}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Token: node.Token, Len: node.Len, Elem: substTypeExpr(node.Elem, subst)}
+	case *ast.EllipsisType:
+		return &ast.EllipsisType{Token: node.Token, Elem: substTypeExpr(node.Elem, subst)}
+	case *ast.MapType:
+		return &ast.MapType{Token: node.Token, Key: substTypeExpr(node.Key, subst), Value: substTypeExpr(node.Value, subst)}
+	}
+	return t
+}
+
+func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
+	if t == nil {
+		return nil
+	}
+	switch v := t.(type) {
+	case *sema.PointerType:
+		return &ast.PointerType{Base: semaTypeToTypeExpr(v.Base)}
+	case *sema.SliceType:
+		return &ast.SliceType{Elem: semaTypeToTypeExpr(v.Elem)}
+	case *sema.ArrayType:
+		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
+	default:
+		return &ast.NamedType{Name: &ast.Identifier{Value: v.TypeName()}}
+	}
+}
+
+func substBlockStmt(b *ast.BlockStmt, subst map[string]sema.Type) *ast.BlockStmt {
+	if b == nil {
+		return nil
+	}
+	newStmts := make([]ast.Statement, len(b.Statements))
+	for i, s := range b.Statements {
+		newStmts[i] = substStmt(s, subst)
+	}
+	return &ast.BlockStmt{Token: b.Token, Statements: newStmts}
+}
+
+func substStmt(s ast.Statement, subst map[string]sema.Type) ast.Statement {
+	if s == nil {
+		return nil
+	}
+	switch stmt := s.(type) {
+	case *ast.ReturnStmt:
+		newVals := make([]ast.Expression, len(stmt.Values))
+		for i, v := range stmt.Values {
+			newVals[i] = substExpr(v, subst)
+		}
+		return &ast.ReturnStmt{Token: stmt.Token, Values: newVals}
+	case *ast.AssignStmt:
+		newLefts := make([]ast.Expression, len(stmt.Left))
+		for i, l := range stmt.Left {
+			newLefts[i] = substExpr(l, subst)
+		}
+		newRights := make([]ast.Expression, len(stmt.Right))
+		for i, r := range stmt.Right {
+			newRights[i] = substExpr(r, subst)
+		}
+		return &ast.AssignStmt{Token: stmt.Token, Left: newLefts, Right: newRights, Type: substTypeExpr(stmt.Type, subst)}
+	case *ast.VarDecl:
+		return &ast.VarDecl{
+			Token:     stmt.Token,
+			Name:      stmt.Name,
+			Type:      substTypeExpr(stmt.Type, subst),
+			Value:     substExpr(stmt.Value, subst),
+			IsEscaped: stmt.IsEscaped,
+		}
+	case *ast.ExprStmt:
+		return &ast.ExprStmt{Token: stmt.Token, Expr: substExpr(stmt.Expr, subst)}
+	case *ast.BlockStmt:
+		return substBlockStmt(stmt, subst)
+	}
+	return s
+}
+
+func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
+	if e == nil {
+		return nil
+	}
+	switch expr := e.(type) {
+	case *ast.BinaryExpr:
+		return &ast.BinaryExpr{
+			Token:    expr.Token,
+			Left:     substExpr(expr.Left, subst),
+			Operator: expr.Operator,
+			Right:    substExpr(expr.Right, subst),
+		}
+	case *ast.CallExpr:
+		newArgs := make([]ast.Expression, len(expr.Args))
+		for i, a := range expr.Args {
+			newArgs[i] = substExpr(a, subst)
+		}
+		return &ast.CallExpr{
+			Token:       expr.Token,
+			Function:    substExpr(expr.Function, subst),
+			Args:        newArgs,
+			HasEllipsis: expr.HasEllipsis,
+		}
+	case *ast.GenericInstExpr:
+		newArgs := make([]ast.TypeExpr, len(expr.TypeArgs))
+		for i, ta := range expr.TypeArgs {
+			newArgs[i] = substTypeExpr(ta, subst)
+		}
+		return &ast.GenericInstExpr{
+			Token:    expr.Token,
+			Left:     substExpr(expr.Left, subst),
+			TypeArgs: newArgs,
+		}
+	}
+	return e
+}
+
+// -----------------------------------------------------------------------------
 // 関数・メソッド呼び出し (Call)
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
+	// 0. ジェネリクス関数の明示的型引数適用呼び出し (例: Add[float64](a, b))
+	if genInst, ok := call.Function.(*ast.GenericInstExpr); ok {
+		var baseName string
+		if id, okId := genInst.Left.(*ast.Identifier); okId {
+			baseName = id.Value
+		} else if mem, okMem := genInst.Left.(*ast.MemberExpr); okMem {
+			baseName = mem.Field.Value
+		}
+
+		if baseName != "" {
+			typeArgs := make([]sema.Type, len(genInst.TypeArgs))
+			for i, ta := range genInst.TypeArgs {
+				typeArgs[i] = c.root.semaCtx.ResolveType(ta)
+			}
+
+			specName, specFn := c.getOrSpecializeFunc(baseName, typeArgs)
+			if specFn != nil {
+				isCVarArg := specFn.IsCFunc || (specFn.IsVariadic && specFn.VariadicElem == nil)
+				args := c.lowerArgs(call.Args, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)
+
+				var retType sema.Type = sema.TypeVoid
+				if len(specFn.ReturnTypes) == 1 {
+					retType = specFn.ReturnTypes[0]
+				} else if len(specFn.ReturnTypes) > 1 {
+					retType = &sema.TupleType{Types: specFn.ReturnTypes}
+				}
+
+				var dst *hir.Reg = nil
+				if retType != sema.TypeVoid {
+					dst = c.root.nextReg(retType)
+				}
+				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: specName, Args: args})
+				return dst
+			}
+		}
+	}
+
 	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(bytes))
 	if len(call.Args) == 1 {
 		targetType := c.ResolveTypeFromExpr(call.Function)
@@ -638,10 +907,18 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 
 			callee := canonicalName
-			if targetFn.IsCFunc && targetFn.CFuncTarget != "" {
-				callee = targetFn.CFuncTarget
-			} else if targetFn.IsCFunc {
-				callee = "c_" + canonicalName
+			if targetFn.IsCFunc {
+				if targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
+					callee = "__hike_impl_" + targetFn.Name
+				} else if targetFn.CFuncTarget != "" {
+					callee = targetFn.CFuncTarget
+				} else {
+					callee = "c_" + canonicalName
+				}
+			} else if targetFn.IsExtern {
+				if targetFn.IRName != "" {
+					callee = targetFn.IRName
+				}
 			}
 
 			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
@@ -782,10 +1059,18 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					dst = c.root.nextReg(retType)
 				}
 				callee := canonicalName
-				if targetFn.IsCFunc && targetFn.CFuncTarget != "" {
-					callee = targetFn.CFuncTarget
-				} else if targetFn.IsCFunc {
-					callee = "c_" + canonicalName
+				if targetFn.IsCFunc {
+					if targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
+						callee = "__hike_impl_" + targetFn.Name
+					} else if targetFn.CFuncTarget != "" {
+						callee = targetFn.CFuncTarget
+					} else {
+						callee = "c_" + canonicalName
+					}
+				} else if targetFn.IsExtern {
+					if targetFn.IRName != "" {
+						callee = targetFn.IRName
+					}
 				}
 				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
 				return dst

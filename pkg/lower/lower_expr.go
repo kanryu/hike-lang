@@ -71,6 +71,34 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		e.root.emit(&hir.InstrCast{Dst: dst, Val: val, ToType: targetT})
 		return dst
 
+	case *ast.GenericInstExpr:
+		var baseName string
+		if id, ok := node.Left.(*ast.Identifier); ok {
+			baseName = id.Value
+		} else if mem, ok := node.Left.(*ast.MemberExpr); ok {
+			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+				baseName = pkgId.Value + "_" + mem.Field.Value
+			} else {
+				baseName = mem.Field.Value
+			}
+		}
+		if baseName != "" {
+			typeArgs := make([]sema.Type, len(node.TypeArgs))
+			for i, ta := range node.TypeArgs {
+				typeArgs[i] = e.root.semaCtx.ResolveType(ta)
+			}
+			specName, specFn := e.root.Call.getOrSpecializeFunc(baseName, typeArgs)
+			if specFn != nil {
+				fatType := specFn
+				t1 := e.root.nextReg(fatType)
+				e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: specName, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
+				t2 := e.root.nextReg(fatType)
+				e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
+				return t2
+			}
+		}
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+
 	case *ast.Identifier:
 		if node.Value == "true" {
 			return &hir.ConstBool{Val: true, Typ: sema.TypeBool}
@@ -97,11 +125,20 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		}
 		if fn, ok := e.root.semaCtx.Functions[node.Value]; ok {
 			fatType := fn
+			callee := fn.Name
+			if fn.IsCFunc && fn.CFuncAst != nil && !fn.CFuncAst.IsAlias() {
+				callee = "__hike_impl_" + fn.Name
+			} else if fn.IsExtern && fn.IRName != "" {
+				callee = fn.IRName
+			}
 			t1 := e.root.nextReg(fatType)
-			e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: fn.Name, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
+			e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: callee, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
 			t2 := e.root.nextReg(fatType)
 			e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
 			return t2
+		}
+		if sema.IsBuiltinType(node.Value) {
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
 		panic(fmt.Sprintf("[Lower Error] undefined identifier: %s", node.Value))
 
@@ -303,8 +340,14 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			}
 			if fn, canonical := e.root.semaCtx.LookupFunction(qualified); fn != nil {
 				fatType := fn
+				callee := canonical
+				if fn.IsCFunc && fn.CFuncAst != nil && !fn.CFuncAst.IsAlias() {
+					callee = "__hike_impl_" + fn.Name
+				} else if fn.IsExtern && fn.IRName != "" {
+					callee = fn.IRName
+				}
 				t1 := e.root.nextReg(fatType)
-				e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: canonical, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
+				e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: callee, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
 				t2 := e.root.nextReg(fatType)
 				e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
 				return t2
@@ -370,7 +413,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		panic(fmt.Sprintf("[Lower Error] unsupported index target type: %s", baseVal.Type().TypeName()))
 
 	case *ast.TypeAssertExpr:
-		// 単一値コンテキストでの評価: タプルから第0要素（実値）を抽出して返す
 		tup := e.LowerTypeAssertExpr(node)
 		targetType := e.root.semaCtx.ResolveType(node.Target)
 		valReg := e.root.nextReg(targetType)

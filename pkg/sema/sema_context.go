@@ -676,6 +676,26 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 			return alias
 		}
 	}
+	if gen, ok := e.(*ast.GenericInstExpr); ok {
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := gen.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := gen.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+		if typeId != nil {
+			return c.ResolveType(&ast.NamedType{
+				Token:    gen.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: gen.TypeArgs,
+			})
+		}
+	}
 	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		base := c.resolveTypeFromExpr(pref.Right)
 		if base != nil && base != TypeVoid {
@@ -725,6 +745,60 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 		if fn, ok := c.Functions[e.Value]; ok {
 			return fn
+		}
+		return TypeInt
+
+	case *ast.GenericInstExpr:
+		var baseName string
+		if id, ok := e.Left.(*ast.Identifier); ok {
+			baseName = id.Value
+		} else if mem, ok := e.Left.(*ast.MemberExpr); ok {
+			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+				baseName = pkgId.Value + "_" + mem.Field.Value
+			} else {
+				baseName = mem.Field.Value
+			}
+		}
+		if baseName != "" {
+			var tmpl *ast.FuncDecl = c.GenericFuncs[baseName]
+			if tmpl == nil {
+				if fn, _ := c.LookupFunction(baseName); fn != nil && fn.Template != nil {
+					tmpl = fn.Template
+				}
+			}
+			if tmpl != nil {
+				typeArgs := make([]Type, len(e.TypeArgs))
+				for i, ta := range e.TypeArgs {
+					typeArgs[i] = c.ResolveType(ta)
+				}
+				subst := make(map[string]Type)
+				for i, tp := range tmpl.TypeParams {
+					if i < len(typeArgs) {
+						subst[tp.Name.Value] = typeArgs[i]
+					}
+				}
+				rts := make([]Type, len(tmpl.ReturnTypes))
+				for i, rt := range tmpl.ReturnTypes {
+					rts[i] = c.ResolveTypeWithSubst(rt, subst)
+				}
+				pts := make([]Type, len(tmpl.Params))
+				for i, p := range tmpl.Params {
+					pts[i] = c.ResolveTypeWithSubst(p.Type, subst)
+				}
+				return &FuncType{
+					Name:          baseName,
+					ParamTypes:    pts,
+					ReturnTypes:   rts,
+					IsSpecialized: true,
+				}
+			}
+			if st, _ := c.LookupStruct(baseName); st != nil && st.IsGeneric() {
+				return c.ResolveType(&ast.NamedType{
+					Token:    e.Token,
+					Name:     &ast.Identifier{Token: e.Token, Value: baseName},
+					TypeArgs: e.TypeArgs,
+				})
+			}
 		}
 		return TypeInt
 
@@ -795,7 +869,6 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 
 	case *ast.MemberExpr:
-		// パッケージ関数またはパッケージレベル変数の探索
 		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
 			qualified := pkgId.Value + "_" + e.Field.Value
 			if t, ok := c.Globals[qualified]; ok {
@@ -818,12 +891,10 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			rawObjType = pt.Base
 		}
 
-		// メソッドであるか探索
 		if fn, _ := c.LookupMethod(objType.TypeName(), e.Field.Value); fn != nil {
 			return fn
 		}
 
-		// 構造体フィールドであるか探索
 		if st, ok := rawObjType.(*StructType); ok {
 			for _, f := range st.Fields {
 				if f.Name == e.Field.Value {
@@ -882,7 +953,6 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			}
 		}
 
-		// メンバーメソッド呼び出しの事前解決
 		if mem, ok := e.Function.(*ast.MemberExpr); ok {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				targetName := pkgId.Value + "_" + mem.Field.Value

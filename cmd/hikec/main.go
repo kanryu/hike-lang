@@ -5,12 +5,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"hikec-go/pkg/cgen"
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/target"
 )
+
+func getDefaultTargetName() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "x86_64-w64-windows-gnu"
+	case "darwin":
+		return "arm64-apple-darwin"
+	default:
+		return "x86_64-unknown-linux-gnu"
+	}
+}
 
 func printUsage() {
 	fmt.Println("Usage: hikec <command> [options] <source.hike... | directory>")
@@ -67,7 +79,8 @@ func main() {
 // -----------------------------------------------------------------------------
 func runGo(args []string) {
 	opts := compiler.GoBuildOptions{
-		Dir: ".",
+		Dir:        ".",
+		TargetName: getDefaultTargetName(),
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -101,7 +114,7 @@ func runGo(args []string) {
 func runEmitIR(args []string) {
 	outputLL := ""
 	outputHeader := ""
-	targetName := ""
+	targetName := getDefaultTargetName()
 	verbose := false
 	var sourceFiles []string
 
@@ -125,13 +138,13 @@ func runEmitIR(args []string) {
 			parts := strings.SplitN(arg, "=", 2)
 			targetName = parts[1]
 		} else if arg == "-cflags" && i+1 < len(args) {
-			i++ // emit-ir では Clang フラグはスキップ
+			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
 			// スキップ
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 		} else if strings.HasPrefix(arg, "-") {
-			// 未知または未対応のフラグはスキップ
+			// 未知フラグはスキップ
 		} else {
 			sourceFiles = append(sourceFiles, arg)
 		}
@@ -169,7 +182,7 @@ func runEmitIR(args []string) {
 		os.Exit(1)
 	}
 	if verbose {
-		fmt.Printf("Compiled [%d target(s)] -> %s\n", len(sourceFiles), outputLL)
+		fmt.Printf("Compiled [%d target(s)] -> %s (Target: %s)\n", len(sourceFiles), outputLL, tgt.Triple)
 	}
 
 	if outputHeader != "" {
@@ -189,7 +202,7 @@ func runEmitIR(args []string) {
 // -----------------------------------------------------------------------------
 func runBuild(args []string) {
 	outputBin := ""
-	targetName := ""
+	targetName := getDefaultTargetName()
 	extraCflags := ""
 	debugInfo := false
 	var passThroughArgs []string
@@ -270,12 +283,10 @@ func runBuild(args []string) {
 		clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 	}
 
-	// 1. ターゲットプリセットに設定されている Cflags を適用
 	if tgt.Cflags != "" {
 		clangArgs = append(clangArgs, strings.Fields(tgt.Cflags)...)
 	}
 
-	// 2. コマンドライン引数 -cflags から渡された追加フラグを適用
 	if extraCflags != "" {
 		clangArgs = append(clangArgs, strings.Fields(extraCflags)...)
 	}

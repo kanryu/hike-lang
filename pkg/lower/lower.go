@@ -65,38 +65,60 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 // -----------------------------------------------------------------------------
 
 func (l *Lowerer) Lower() *hir.Program {
-	// グローバル変数の登録
+	// 1. グローバル変数の登録
 	for name, typ := range l.semaCtx.Globals {
 		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{Name: name, Typ: typ})
 	}
 
-	// 外部 extern 関数の登録
+	// 2. トップレベル宣言の変換
+	for _, decl := range l.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if sema.IsGenericFuncDecl(d) {
+				continue
+			}
+			l.Call.LowerFunc(d)
+
+		case *ast.CFuncDecl:
+			l.Call.LowerCFunc(d)
+
+		case *ast.ExternFuncDecl:
+			l.Call.LowerExternFunc(d)
+
+		case *ast.JFuncDecl:
+			// WASMモード用インラインJS関数（グルーコード生成器側で収集・管理）
+		}
+	}
+
+	// 3. ランタイム内部や標準ライブラリで登録された未定義の外部 extern 関数の補完登録
+	definedNames := make(map[string]bool)
+	for _, fn := range l.hirProg.Functions {
+		definedNames[fn.Name] = true
+	}
+
 	for _, fn := range l.semaCtx.Functions {
 		if fn.IsExtern && !fn.IsCFunc {
+			irName := fn.Name
+			if fn.IRName != "" {
+				irName = fn.IRName
+			}
+			if definedNames[irName] {
+				continue
+			}
+			definedNames[irName] = true
+
 			params := []*hir.Reg{}
 			for i, pt := range fn.ParamTypes {
 				params = append(params, &hir.Reg{ID: i + 1, Typ: pt})
 			}
 			l.hirProg.Functions = append(l.hirProg.Functions, &hir.Function{
-				Name:        fn.Name,
+				Name:        irName,
 				Params:      params,
 				ReturnTypes: fn.ReturnTypes,
 				Blocks:      nil,
 				IsVariadic:  fn.IsVariadic,
 				IsExtern:    true,
 			})
-		}
-	}
-
-	// トップレベル宣言の変換
-	for _, decl := range l.prog.Decls {
-		if fnDecl, ok := decl.(*ast.FuncDecl); ok && fnDecl.Body != nil {
-			if sema.IsGenericFuncDecl(fnDecl) {
-				continue
-			}
-			l.Call.LowerFunc(fnDecl)
-		} else if cfnDecl, ok := decl.(*ast.CFuncDecl); ok {
-			l.Call.LowerCFunc(cfnDecl)
 		}
 	}
 
@@ -256,9 +278,9 @@ func isNilValue(v hir.Value) bool {
 	return v.String() == "nil" || v.String() == "null"
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 構造体検索ユーティリティ
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (l *Lowerer) findStructByName(name string) (*sema.StructType, string) {
 	if st, canonical := l.semaCtx.LookupStruct(name); st != nil {

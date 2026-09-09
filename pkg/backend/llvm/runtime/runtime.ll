@@ -13,8 +13,6 @@ declare i64 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i32 @memcmp(i8*, i8*, i64)
 declare i64 @printf(i8*, ...)
-declare i32 @sprintf(i8*, i8*, ...)
-declare i32 @snprintf(i8*, i64, i8*, ...)
 
 ; ------------------------------------------------------------------------------
 ; OS Native Threading & Synchronization (Kernel32 / Libc-Free)

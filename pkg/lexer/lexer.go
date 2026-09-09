@@ -192,7 +192,6 @@ func (l *Lexer) NextToken() token.Token {
 				tok = token.Token{Type: token.SHL, Literal: "<<", Line: startLine, Col: startCol}
 			}
 		} else if l.peekChar() == '-' {
-			// 追加: <- (ARROW) 演算子の認識
 			ch := l.ch
 			l.readChar()
 			tok = token.Token{Type: token.ARROW, Literal: string(ch) + string(l.ch), Line: startLine, Col: startCol}
@@ -290,6 +289,14 @@ func (l *Lexer) NextToken() token.Token {
 		tok.Col = startCol
 		l.log(tok)
 		return tok
+	case '`':
+		// 生文字列リテラル (`...`) の読み取り
+		tok.Type = token.STRING
+		tok.Literal = l.readRawString()
+		tok.Line = startLine
+		tok.Col = startCol
+		l.log(tok)
+		return tok
 	case 0:
 		tok.Literal = ""
 		tok.Type = token.EOF
@@ -378,6 +385,24 @@ func (l *Lexer) readString() string {
 		} else {
 			sb.WriteByte(l.ch)
 		}
+	}
+	str := sb.String()
+	l.readChar()
+	return str
+}
+
+func (l *Lexer) readRawString() string {
+	var sb strings.Builder
+	for {
+		l.readChar()
+		if l.ch == '`' || l.ch == 0 {
+			break
+		}
+		if l.ch == '\n' {
+			l.line++
+			l.col = 0
+		}
+		sb.WriteByte(l.ch)
 	}
 	str := sb.String()
 	l.readChar()
