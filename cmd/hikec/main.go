@@ -299,6 +299,16 @@ func runBuild(args []string) {
 		os.Exit(1)
 	}
 
+	// Wasm ターゲット時は runtime.js を自動生成して配置
+	if tgt.IsWasm {
+		runtimePath := filepath.Join(filepath.Dir(outputBin), "runtime.js")
+		if err := compiler.WriteWasmJSRuntime(runtimePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to generate runtime.js: %v\n", err)
+		} else {
+			fmt.Printf("Generated Wasm JS Runtime -> %s\n", runtimePath)
+		}
+	}
+
 	if !strings.Contains(outputBin, "hike_run_") {
 		fmt.Printf("Build completed -> %s\n", outputBin)
 	}

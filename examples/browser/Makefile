@@ -19,4 +19,4 @@ serve: build
 	$(PYTHON) -m http.server $(PORT)
 
 clean:
-	rm -f $(TARGET) *.ll
+	rm -f $(TARGET) *.ll runtime.js
