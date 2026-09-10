@@ -95,12 +95,8 @@ Converts an external byte stream (`cstring`) into an internal UTF-8 `string`.
 
 | Return Index | Type | Identifier | Semantics |
 | --- | --- | --- | --- |
-| **1** | `string` | `dst` | The resulting valid UTF-8 string. Returns a partial string or empty string on failure.
-
- |
-| **2** | `error` | `err` | `nil` if decoding succeeded completely; an `EncodingError` if an invalid lead/trail byte or truncated multi-byte sequence was encountered.
-
- |
+| **1** | `string` | `dst` | The resulting valid UTF-8 string. Returns a partial string or empty string on failure. |
+| **2** | `error` | `err` | `nil` if decoding succeeded completely; an `EncodingError` if an invalid lead/trail byte or truncated multi-byte sequence was encountered. |
 | **3** | `int` | **`consumed`** | **The total number of source bytes successfully consumed from `src`.**<br> |
 
 * **Role of `consumed` (3rd Return Value):**
@@ -119,12 +115,8 @@ Converts an internal UTF-8 `string` into a target-encoded byte buffer (`cstring`
 
 | Return Index | Type | Identifier | Semantics |
 | --- | --- | --- | --- |
-| **1** | `cstring` | `dst` | The allocated, target-encoded buffer (null-terminated for C safety).
-
- |
-| **2** | `error` | `err` | `nil` if all runes were converted; an `EncodingError` if an unmappable character or malformed UTF-8 sequence was encountered.
-
- |
+| **1** | `cstring` | `dst` | The allocated, target-encoded buffer (null-terminated for C safety). |
+| **2** | `error` | `err` | `nil` if all runes were converted; an `EncodingError` if an unmappable character or malformed UTF-8 sequence was encountered. |
 | **3** | `int` | **`produced`** | **The total number of encoded data bytes written to `dst` (excluding the terminating null byte).**<br> |
 
 * **Role of `produced` (3rd Return Value):**
@@ -143,7 +135,7 @@ Converts an internal UTF-8 `string` into a target-encoded byte buffer (`cstring`
 
 
 
-```hike
+```go
 package main
 
 import (
