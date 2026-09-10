@@ -34,6 +34,10 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.FloatLiteral:
 		return &hir.ConstFloat{Val: node.Value, Typ: sema.TypeFloat64}
 
+	case *ast.CharLiteral:
+		// 文字リテラルはデフォルトで UTF-8 エンコードされた 1 文字の string として評価
+		return e.root.getStringConst(node.Value)
+
 	case *ast.StringLiteral:
 		return e.root.getStringConst(node.Value)
 
@@ -41,8 +45,30 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
 
 	case *ast.ImplicitCastExpr:
-		val := e.LowerExpr(node.Expr)
 		targetT := e.root.semaCtx.ResolveType(node.TargetType)
+
+		// 文字リテラルから整数型 (uint, int 等) へのキャストはコードポイント定数へ直接展開
+		if cl, ok := node.Expr.(*ast.CharLiteral); ok {
+			intRank := func(llvm string) int {
+				switch llvm {
+				case "i64":
+					return 64
+				case "i32":
+					return 32
+				case "i16":
+					return 16
+				case "i8":
+					return 8
+				default:
+					return 0
+				}
+			}
+			if intRank(targetT.LLVMType()) > 0 {
+				return &hir.ConstInt{Val: int64(cl.CodePoint), Typ: targetT}
+			}
+		}
+
+		val := e.LowerExpr(node.Expr)
 
 		// 右辺がタプルの場合、第0要素を取り出す
 		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
@@ -212,7 +238,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.SliceExpr:
 		baseVal := e.LowerExpr(node.Left)
-		if baseVal.Type() == sema.TypeString {
+		if baseVal.Type() == sema.TypeString || baseVal.Type() == sema.TypeCString {
 			lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
 			if node.Low != nil {
 				lowVal = e.LowerExpr(node.Low)
@@ -333,7 +359,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return e.root.coerceFromI64(rawVal, mp.Value)
 		}
 
-		if baseVal.Type() == sema.TypeString {
+		if baseVal.Type() == sema.TypeString || baseVal.Type() == sema.TypeCString {
 			elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
 			elemVal := e.root.nextReg(sema.TypeByte)
@@ -532,8 +558,8 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		// 2. 文字列 (string)
-		if leftType == sema.TypeString || (leftType != nil && leftType.TypeName() == "string") {
+		// 2. 文字列 (string / cstring)
+		if leftType == sema.TypeString || leftType == sema.TypeCString || (leftType != nil && (leftType.TypeName() == "string" || leftType.TypeName() == "cstring")) {
 			elemPtrType := &sema.PointerType{Base: sema.TypeByte}
 			elemPtr := e.root.nextReg(elemPtrType)
 			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: leftVal, Index: idxVal})
@@ -669,10 +695,16 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	// ポインタ加算 (ptr + offset)
-	if pt, isPtr := leftVal.Type().(*sema.PointerType); isPtr && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte || rightVal.Type() == sema.TypeInt32 || rightVal.Type() == sema.TypeInt64 || rightVal.Type() == sema.TypeUint || rightVal.Type() == sema.TypeUint32 || rightVal.Type() == sema.TypeUint64) {
+	// ポインタ加算 (ptr + offset) または cstring 加算 (cstring + offset)
+	isPtrOrCString := false
+	if _, isPtr := leftVal.Type().(*sema.PointerType); isPtr {
+		isPtrOrCString = true
+	} else if leftVal.Type() == sema.TypeCString {
+		isPtrOrCString = true
+	}
+	if isPtrOrCString && (rightVal.Type() == sema.TypeInt || rightVal.Type() == sema.TypeByte || rightVal.Type() == sema.TypeInt32 || rightVal.Type() == sema.TypeInt64 || rightVal.Type() == sema.TypeUint || rightVal.Type() == sema.TypeUint32 || rightVal.Type() == sema.TypeUint64) {
 		if node.Operator == "+" {
-			dst := e.root.nextReg(pt)
+			dst := e.root.nextReg(leftVal.Type())
 			e.root.emit(&hir.InstrGetElemPtr{Dst: dst, BasePtr: leftVal, Index: rightVal})
 			return dst
 		}

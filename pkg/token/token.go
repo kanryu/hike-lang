@@ -17,6 +17,7 @@ const (
 	IDENT  = "IDENT"
 	INT    = "INT"
 	FLOAT  = "FLOAT"
+	CHAR   = "CHAR" // シングルクォート文字リテラル ('a', '\n', 'あ' 等)
 	STRING = "STRING"
 
 	// Operators
@@ -75,8 +76,8 @@ const (
 	IMPORT      = "IMPORT"
 	FUNC        = "FUNC"
 	CFUNC       = "CFUNC"
-	EXTERN      = "EXTERN" // 追加: 外部C言語等の関数宣言用 (extern func)
-	JFUNC       = "JFUNC"  // 追加: WASM向けインラインJavaScript関数用 (jfunc)
+	EXTERN      = "EXTERN" // 外部C言語等の関数宣言用 (extern func)
+	JFUNC       = "JFUNC"  // WASM向けインラインJavaScript関数用 (jfunc)
 	PASSTHROUGH = "PASSTHROUGH"
 	MAP         = "MAP"
 	CHAN        = "CHAN"
@@ -109,8 +110,8 @@ var keywords = map[string]TokenType{
 	"import":      IMPORT,
 	"func":        FUNC,
 	"cfunc":       CFUNC,
-	"extern":      EXTERN, // 追加
-	"jfunc":       JFUNC,  // 追加
+	"extern":      EXTERN,
+	"jfunc":       JFUNC,
 	"passthrough": PASSTHROUGH,
 	"var":         VAR,
 	"const":       CONST,

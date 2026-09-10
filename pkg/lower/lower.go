@@ -203,11 +203,20 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 // -----------------------------------------------------------------------------
 
 func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
+	if t == nil {
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+	}
 	if t == sema.TypeBool {
 		return &hir.ConstBool{Val: false, Typ: t}
 	}
 	if t == sema.TypeFloat64 || t == sema.TypeFloat32 {
 		return &hir.ConstFloat{Val: 0.0, Typ: t}
+	}
+	if t == sema.TypeString || t.TypeName() == "string" {
+		return l.getStringConst("")
+	}
+	if t == sema.TypeCString || t.TypeName() == "cstring" {
+		return &hir.ConstNil{Typ: t}
 	}
 	if strings.HasSuffix(t.LLVMType(), "*") {
 		return &hir.ConstNil{Typ: t}
@@ -237,9 +246,27 @@ func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 }
 
 func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value {
+	if val == nil || targetType == nil {
+		return val
+	}
+	if val.Type() == targetType || val.Type().TypeName() == targetType.TypeName() {
+		return val
+	}
+
+	// string -> cstring
+	if (val.Type() == sema.TypeString || val.Type().TypeName() == "string") && targetType == sema.TypeCString {
+		return l.Call.lowerStringToCString(val)
+	}
+
+	// cstring -> string
+	if (val.Type() == sema.TypeCString || val.Type().TypeName() == "cstring") && targetType == sema.TypeString {
+		return l.Call.lowerCStringToString(val)
+	}
+
 	if val.Type().LLVMType() == targetType.LLVMType() {
 		return val
 	}
+
 	if iface, ok := targetType.(*sema.InterfaceType); ok {
 		if isNilValue(val) {
 			return l.defaultConstValue(iface)

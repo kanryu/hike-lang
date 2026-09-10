@@ -90,6 +90,9 @@ func (t *Transformer) transformCFuncDecl(cfn *ast.CFuncDecl) {
 	t.localTypes = make(map[string]ast.TypeExpr)
 	for _, p := range cfn.Params {
 		t.localTypes[p.Name.Value] = p.Type
+		if p.Default != nil {
+			p.Default = t.transformExpr(p.Default)
+		}
 	}
 	t.transformBlock(cfn.Body)
 }
@@ -104,6 +107,9 @@ func (t *Transformer) transformFuncDecl(fn *ast.FuncDecl) {
 	}
 	for _, p := range fn.Params {
 		t.localTypes[p.Name.Value] = p.Type
+		if p.Default != nil {
+			p.Default = t.transformExpr(p.Default)
+		}
 	}
 	t.transformBlock(fn.Body)
 }
@@ -138,13 +144,32 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 		for i, r := range stmt.Right {
 			stmt.Right[i] = t.transformExpr(r)
 		}
+
 		if len(stmt.Left) == 1 && len(stmt.Right) == 1 {
 			if id, ok := stmt.Left[0].(*ast.Identifier); ok {
 				if inferred := t.inferExprTypeExpr(stmt.Right[0]); inferred != nil {
 					t.localTypes[id.Value] = inferred
 				}
 			}
+		} else if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
+			// 多値返却関数のアンパック代入 (text, err, n := Decode(...))
+			if call, ok := stmt.Right[0].(*ast.CallExpr); ok {
+				var targetName string
+				if id, okId := call.Function.(*ast.Identifier); okId {
+					targetName = id.Value
+				}
+				if targetName != "" {
+					if fnMeta, ok := t.semaCtx.Functions[targetName]; ok && fnMeta != nil && len(fnMeta.ReturnTypes) == len(stmt.Left) {
+						for idx, l := range stmt.Left {
+							if id, okIdent := l.(*ast.Identifier); okIdent && id.Value != "_" {
+								t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, fnMeta.ReturnTypes[idx].TypeName())
+							}
+						}
+					}
+				}
+			}
 		}
+
 	case *ast.ExprStmt:
 		stmt.Expr = t.transformExpr(stmt.Expr)
 	case *ast.BlockStmt:
@@ -273,6 +298,11 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 		return expr
 
 	case *ast.FuncLit:
+		for _, p := range expr.Params {
+			if p.Default != nil {
+				p.Default = t.transformExpr(p.Default)
+			}
+		}
 		t.transformBlock(expr.Body)
 		return expr
 
@@ -561,16 +591,20 @@ func (t *Transformer) cloneFuncDecl(fn *ast.FuncDecl, newName string, typeMap ma
 	newParams := []*ast.ParamDecl{}
 	if fn.Receiver != nil {
 		newParams = append(newParams, &ast.ParamDecl{
-			Token: fn.Receiver.Token,
-			Name:  fn.Receiver.Name,
-			Type:  t.substituteAstType(fn.Receiver.Type, typeMap, orderedTypeArgs),
+			Token:     fn.Receiver.Token,
+			Name:      fn.Receiver.Name,
+			Type:      t.substituteAstType(fn.Receiver.Type, typeMap, orderedTypeArgs),
+			IsEscaped: fn.Receiver.IsEscaped,
 		})
 	}
 	for _, p := range fn.Params {
 		newParams = append(newParams, &ast.ParamDecl{
-			Token: p.Token,
-			Name:  p.Name,
-			Type:  t.substituteAstType(p.Type, typeMap, orderedTypeArgs),
+			Token:      p.Token,
+			Name:       p.Name,
+			Type:       t.substituteAstType(p.Type, typeMap, orderedTypeArgs),
+			Default:    t.substituteAstExpr(p.Default, typeMap, orderedTypeArgs),
+			IsVariadic: p.IsVariadic,
+			IsEscaped:  p.IsEscaped,
 		})
 	}
 	newReturns := []ast.TypeExpr{}
@@ -767,6 +801,61 @@ func (t *Transformer) substituteAstStmt(s ast.Statement, typeMap map[string]ast.
 			X:     t.substituteAstExpr(st.X, typeMap, orderedTypeArgs),
 			Body:  t.substituteAstBlock(st.Body, typeMap, orderedTypeArgs),
 		}
+	case *ast.SwitchStmt:
+		var newInit ast.Statement = nil
+		if st.Init != nil {
+			newInit = t.substituteAstStmt(st.Init, typeMap, orderedTypeArgs)
+		}
+		newCases := make([]*ast.CaseClause, len(st.Cases))
+		for i, cc := range st.Cases {
+			newVals := make([]ast.Expression, len(cc.Values))
+			for j, v := range cc.Values {
+				newVals[j] = t.substituteAstExpr(v, typeMap, orderedTypeArgs)
+			}
+			newBody := make([]ast.Statement, len(cc.Body))
+			for j, bs := range cc.Body {
+				newBody[j] = t.substituteAstStmt(bs, typeMap, orderedTypeArgs)
+			}
+			newCases[i] = &ast.CaseClause{
+				Token:  cc.Token,
+				Values: newVals,
+				Body:   newBody,
+			}
+		}
+		return &ast.SwitchStmt{
+			Token: st.Token,
+			Init:  newInit,
+			Value: t.substituteAstExpr(st.Value, typeMap, orderedTypeArgs),
+			Cases: newCases,
+		}
+	case *ast.TypeSwitchStmt:
+		var newInit ast.Statement = nil
+		if st.Init != nil {
+			newInit = t.substituteAstStmt(st.Init, typeMap, orderedTypeArgs)
+		}
+		newCases := make([]*ast.TypeCaseClause, len(st.Cases))
+		for i, cc := range st.Cases {
+			newTypes := make([]ast.TypeExpr, len(cc.Types))
+			for j, te := range cc.Types {
+				newTypes[j] = t.substituteAstType(te, typeMap, orderedTypeArgs)
+			}
+			newBody := make([]ast.Statement, len(cc.Body))
+			for j, bs := range cc.Body {
+				newBody[j] = t.substituteAstStmt(bs, typeMap, orderedTypeArgs)
+			}
+			newCases[i] = &ast.TypeCaseClause{
+				Token: cc.Token,
+				Types: newTypes,
+				Body:  newBody,
+			}
+		}
+		return &ast.TypeSwitchStmt{
+			Token:    st.Token,
+			Init:     newInit,
+			Variable: st.Variable,
+			Expr:     t.substituteAstExpr(st.Expr, typeMap, orderedTypeArgs),
+			Cases:    newCases,
+		}
 	case *ast.SendStmt:
 		return &ast.SendStmt{
 			Token: st.Token,
@@ -935,10 +1024,12 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 		newParams := make([]*ast.ParamDecl, len(node.Params))
 		for i, p := range node.Params {
 			newParams[i] = &ast.ParamDecl{
-				Token:     p.Token,
-				Name:      p.Name,
-				Type:      t.substituteAstType(p.Type, typeMap, orderedTypeArgs),
-				IsEscaped: p.IsEscaped,
+				Token:      p.Token,
+				Name:       p.Name,
+				Type:       t.substituteAstType(p.Type, typeMap, orderedTypeArgs),
+				Default:    t.substituteAstExpr(p.Default, typeMap, orderedTypeArgs),
+				IsVariadic: p.IsVariadic,
+				IsEscaped:  p.IsEscaped,
 			}
 		}
 		newReturns := make([]ast.TypeExpr, len(node.ReturnTypes))
@@ -1110,6 +1201,8 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 		return expr.Type
 	case *ast.TypeAssertExpr:
 		return expr.Target
+	case *ast.CharLiteral:
+		return &ast.NamedType{Token: expr.Token, Name: &ast.Identifier{Token: expr.Token, Value: "string"}}
 	case *ast.StringLiteral:
 		return &ast.NamedType{Token: expr.Token, Name: &ast.Identifier{Token: expr.Token, Value: "string"}}
 	case *ast.IntegerLiteral:

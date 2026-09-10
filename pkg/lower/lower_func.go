@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
@@ -27,7 +28,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	var recvType sema.Type = nil
 	if fn.Receiver != nil {
 		recvType = c.root.semaCtx.ResolveType(fn.Receiver.Type)
-		recvName := stringsTrimPrefix(recvType.TypeName(), "*")
+		recvName := strings.TrimPrefix(recvType.TypeName(), "*")
 		fnName = sema.CanonicalMethodName(recvName, fnName)
 	}
 
@@ -97,12 +98,16 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		argvReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeString}, "argv")
 		hirFn.Params = append(hirFn.Params, argc32Reg, argvReg)
 
-		argcReg := c.root.nextReg(sema.TypeInt, "argc64")
+		argcReg := c.root.nextReg(sema.TypeInt, "argc.val")
 		c.root.emit(&hir.InstrCast{Dst: argcReg, Val: argc32Reg, ToType: sema.TypeInt})
 
 		if _, exists := c.root.semaCtx.Globals["os_Args"]; exists {
 			callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			c.root.emit(&hir.InstrCallStatic{Dst: callocRaw, CalleeName: "calloc", Args: []hir.Value{argcReg, &hir.ConstInt{Val: 8, Typ: sema.TypeInt}}})
+			c.root.emit(&hir.InstrCallStatic{
+				Dst:        callocRaw,
+				CalleeName: "calloc",
+				Args:       []hir.Value{argcReg, &hir.ConstInt{Val: int64(sema.PointerSize), Typ: sema.TypeInt}},
+			})
 
 			callocRes := c.root.nextReg(&sema.PointerType{Base: sema.TypeString})
 			c.root.emit(&hir.InstrCast{Dst: callocRes, Val: callocRaw, ToType: &sema.PointerType{Base: sema.TypeString}})
@@ -523,7 +528,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 
 	var envVal hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
 	if len(captures) > 0 {
-		envSize := len(captures) * 8
+		envSize := len(captures) * sema.PointerSize
 		envRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		c.root.emit(&hir.InstrHeapAlloc{Dst: envRaw, Size: &hir.ConstInt{Val: int64(envSize), Typ: sema.TypeInt}, AllocType: sema.TypeByte})
 
@@ -548,11 +553,4 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	t2 := c.root.nextReg(fatType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: envVal, Index: 1})
 	return t2
-}
-
-func stringsTrimPrefix(s, prefix string) string {
-	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
-		return s[len(prefix):]
-	}
-	return s
 }

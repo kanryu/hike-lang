@@ -428,7 +428,6 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	case *ast.SliceType:
 		return &SliceType{Elem: c.ResolveType(t.Elem)}
 	case *ast.EllipsisType:
-		// Go仕様の可変長パラメータ ...T は内部的にスライス []T として解決
 		return &SliceType{Elem: c.ResolveType(t.Elem)}
 	case *ast.ArrayType:
 		return &ArrayType{Len: int(t.Len), Elem: c.ResolveType(t.Elem)}
@@ -705,6 +704,18 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 	return nil
 }
 
+func isIntType(t Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t {
+	case TypeInt, TypeInt64, TypeInt32, TypeInt16, TypeInt8,
+		TypeUint, TypeUint64, TypeUint32, TypeUint16, TypeUint8, TypeUintptr, TypeByte:
+		return true
+	}
+	return false
+}
+
 // -----------------------------------------------------------------------------
 // 型推論 (Type Inference) & 暗黙キャスト
 // -----------------------------------------------------------------------------
@@ -719,6 +730,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return TypeInt
 	case *ast.FloatLiteral:
 		return TypeFloat64
+	case *ast.CharLiteral:
+		// 文字リテラルはデフォルトで UTF-8 標準 string 型として型推論
+		return TypeString
 	case *ast.StringLiteral:
 		return TypeString
 	case *ast.NilLiteral:
@@ -942,6 +956,8 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 				return TypeInt
 			case "string":
 				return TypeString
+			case "cstring":
+				return TypeCString
 			case "make":
 				if len(e.Args) > 0 {
 					return c.ResolveType(e.Args[0].(ast.TypeExpr))
@@ -1019,6 +1035,15 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 	if expr == nil || targetType == nil {
 		return expr
 	}
+
+	// 文字リテラルを整数型（uint, int 等）に代入・キャストする場合はコードポイントの IntegerLiteral へ直接変換
+	if cl, ok := expr.(*ast.CharLiteral); ok && isIntType(targetType) {
+		return &ast.IntegerLiteral{
+			Token: cl.Token,
+			Value: int64(cl.CodePoint),
+		}
+	}
+
 	actualType := c.InferExprType(expr, locals)
 	kind, needed := DetermineCast(actualType, targetType)
 	if !needed {
@@ -1038,9 +1063,9 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 定数評価 (Constant Folding)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 	if expr == nil {
@@ -1049,6 +1074,9 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.CharLiteral:
+		// 文字リテラルのコードポイント値を整数定数として評価
+		return int64(e.CodePoint), true
 	case *ast.Identifier:
 		if val, ok := c.LookupConstant(e.Value); ok {
 			return val, true
@@ -1127,6 +1155,8 @@ func (c *Context) evalConstFloat(expr ast.Expression) (float64, bool) {
 		return e.Value, true
 	case *ast.IntegerLiteral:
 		return float64(e.Value), true
+	case *ast.CharLiteral:
+		return float64(e.CodePoint), true
 	case *ast.Identifier:
 		if val, ok := c.LookupFloatConstant(e.Value); ok {
 			return val, true
@@ -1171,9 +1201,9 @@ func (c *Context) evalConstFloat(expr ast.Expression) (float64, bool) {
 	return 0, false
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // マップビヘイビア・インデックス解決
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *Context) EnsureMapSupported(line, col int) error {
 	if !c.HasMapImport {
@@ -1266,7 +1296,7 @@ func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) 
 	if pt, ok := leftType.(*PointerType); ok {
 		return pt.Base, nil
 	}
-	if leftType == TypeString {
+	if leftType == TypeString || leftType == TypeCString {
 		return TypeByte, nil
 	}
 

@@ -1,0 +1,9 @@
+package encoding
+
+// Encoding は各種文字コード（Shift_JIS、EUC-JP、GBK等）が
+// 実装すべき共通インターフェース
+type Encoding interface {
+	Name() string
+	Decode(src cstring, length int) (string, error, int)
+	Encode(src string, length int) (cstring, error, int)
+}

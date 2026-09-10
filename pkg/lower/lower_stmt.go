@@ -132,10 +132,9 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
 		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-	// 多値アンパック代入 (例: sum, mul := <-async ... または a, b := fn() または val, ok := a.(T))
+	// 多値アンパック代入 (例: text, err, _ := Decode(...) または sum, mul := <-async ... または val, ok := a.(T))
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
 		var rhsVal hir.Value
-		// 型アサーション式の場合は、タプル（値, ok）を返す専用関数を呼ぶ
 		if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
 			rhsVal = s.root.Expr.LowerTypeAssertExpr(tae)
 		} else {
@@ -726,7 +725,9 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 		for _, valExpr := range cc.Values {
 			vVal := s.root.Expr.LowerExpr(valExpr)
 			var cmpReg *hir.Reg
-			if vVal.Type() == sema.TypeString {
+
+			// string または cstring の比較には文字列比較関数 (hike_streq) を使用
+			if vVal.Type() == sema.TypeString || vVal.Type() == sema.TypeCString || switchVal.Type() == sema.TypeString || switchVal.Type() == sema.TypeCString {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{switchVal, vVal}})
 			} else {

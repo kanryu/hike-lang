@@ -40,6 +40,60 @@ func (c *CallLowerer) findFuncDecl(canonicalName string) *ast.FuncDecl {
 	return nil
 }
 
+// getFuncParams は対象関数の仮引数宣言リスト（ParamDecl）を取得する
+func (c *CallLowerer) getFuncParams(fnType *sema.FuncType, canonicalName string) []*ast.ParamDecl {
+	if fnType != nil {
+		if fnType.Template != nil {
+			return fnType.Template.Params
+		}
+		if fnType.SpecializedAst != nil {
+			return fnType.SpecializedAst.Params
+		}
+		if fnType.CFuncAst != nil {
+			return fnType.CFuncAst.Params
+		}
+	}
+	if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil {
+		return fnDecl.Params
+	}
+	if c.root.prog != nil {
+		for _, d := range c.root.prog.Decls {
+			switch decl := d.(type) {
+			case *ast.ExternFuncDecl:
+				if decl.Name.Value == canonicalName || (decl.TargetCName != nil && decl.TargetCName.Value == canonicalName) {
+					return decl.Params
+				}
+			case *ast.CFuncDecl:
+				if decl.Name.Value == canonicalName || (decl.TargetCName != nil && decl.TargetCName.Value == canonicalName) {
+					return decl.Params
+				}
+			case *ast.JFuncDecl:
+				if decl.Name.Value == canonicalName {
+					return decl.Params
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// fillDefaultArgs は省略された末尾引数にデフォルト値式を補完する
+func (c *CallLowerer) fillDefaultArgs(callArgs []ast.Expression, params []*ast.ParamDecl) []ast.Expression {
+	if params == nil || len(callArgs) >= len(params) {
+		return callArgs
+	}
+	filled := make([]ast.Expression, len(callArgs), len(params))
+	copy(filled, callArgs)
+	for i := len(callArgs); i < len(params); i++ {
+		if params[i].Default != nil {
+			filled = append(filled, params[i].Default)
+		} else {
+			break
+		}
+	}
+	return filled
+}
+
 // inlineVariadicCall は C スタイル可変長引数を受け取り本体を持つ Hike 関数を呼び出し箇所でインライン展開する
 func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExpr) hir.Value {
 	prevSymbols := c.root.symbols
@@ -70,6 +124,9 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 		var val hir.Value = c.root.defaultConstValue(pType)
 		if i < len(call.Args) {
 			val = c.root.Expr.LowerExpr(call.Args[i])
+			val = c.root.emitValueCoerce(val, pType)
+		} else if p.Default != nil {
+			val = c.root.Expr.LowerExpr(p.Default)
 			val = c.root.emitValueCoerce(val, pType)
 		}
 		ptrReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
@@ -111,10 +168,65 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 }
 
 // -----------------------------------------------------------------------------
+// 文字列相互変換ヘルパー (string <-> cstring)
+// -----------------------------------------------------------------------------
+
+func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
+	lenReg := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrCallStatic{
+		Dst:        lenReg,
+		CalleeName: c.root.BuiltinName("strlen"),
+		Args:       []hir.Value{strVal},
+	})
+	oneVal := &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+	sizeReg := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
+
+	bufReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
+
+	c.root.emit(&hir.InstrCallStatic{
+		CalleeName: c.root.BuiltinName("memcpy"),
+		Args:       []hir.Value{bufReg, strVal, lenReg},
+	})
+
+	endPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrGetElemPtr{Dst: endPtr, BasePtr: bufReg, Index: lenReg})
+	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeByte}, Ptr: endPtr})
+
+	dst := c.root.nextReg(sema.TypeCString)
+	c.root.emit(&hir.InstrCast{Dst: dst, Val: bufReg, ToType: sema.TypeCString})
+	return dst
+}
+
+func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
+	lenReg := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrCallStatic{
+		Dst:        lenReg,
+		CalleeName: c.root.BuiltinName("strlen"),
+		Args:       []hir.Value{cstrVal},
+	})
+	oneVal := &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+	sizeReg := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
+
+	bufReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
+
+	c.root.emit(&hir.InstrCallStatic{
+		CalleeName: c.root.BuiltinName("memcpy"),
+		Args:       []hir.Value{bufReg, cstrVal, sizeReg},
+	})
+
+	dst := c.root.nextReg(sema.TypeString)
+	c.root.emit(&hir.InstrCast{Dst: dst, Val: bufReg, ToType: sema.TypeString})
+	return dst
+}
+
+// -----------------------------------------------------------------------------
 // 型解決・型キャスト判定
 // -----------------------------------------------------------------------------
 
-// ResolveTypeFromExpr は式ノードから型を解決する（Duration(x) などの型キャスト判定に使用）
 func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 	if e == nil {
 		return nil
@@ -198,7 +310,6 @@ func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 // メソッドパス解決
 // -----------------------------------------------------------------------------
 
-// ResolveMethod はレシーバ型から対象メソッドを探索する
 func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPtr hir.Value) (string, *sema.FuncType, hir.Value, bool) {
 	if recvType == nil {
 		return "", nil, nil, false
@@ -223,7 +334,6 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		c.root.hirProg.ModuleName + "_" + shortTypeName + "_" + methodName,
 	}
 
-	// エイリアス型名（例: Duration -> int64）に基づく候補も追加
 	for aliasName, aliasType := range c.root.semaCtx.Aliases {
 		if aliasType.TypeName() == rawTypeName || aliasType.TypeName() == shortTypeName {
 			candidates = append(candidates,
@@ -282,7 +392,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 }
 
 // -----------------------------------------------------------------------------
-// 引数パッキング & ロワリングヘルパー (Go 可変長引数 & C 可変長引数)
+// 引数パッキング & ロワリングヘルパー
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Type) hir.Value {
@@ -338,7 +448,6 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 }
 
 func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Type, isVariadic bool, isCFunc bool, variadicElem sema.Type, hasEllipsis bool) []hir.Value {
-	// C 言語スタイルの可変長引数 (C ABI: スタック展開 & 型昇格)
 	if isCFunc && isVariadic {
 		args := make([]hir.Value, 0, len(callArgs))
 		for i, arg := range callArgs {
@@ -385,7 +494,6 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 		return args
 	}
 
-	// Go 言語仕様の可変長引数 (Go ABI: 末尾引数は []T スライス)
 	if isVariadic && len(paramTypes) > 0 {
 		fixedCount := len(paramTypes) - 1
 		args := make([]hir.Value, 0, fixedCount+1)
@@ -430,7 +538,6 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 		return args
 	}
 
-	// 通常の固定引数関数
 	args := make([]hir.Value, len(callArgs))
 	for i, arg := range callArgs {
 		val := c.root.Expr.LowerExpr(arg)
@@ -515,6 +622,7 @@ func (c *CallLowerer) substFuncDecl(tmpl *ast.FuncDecl, newName string, subst ma
 			Token:      p.Token,
 			Name:       p.Name,
 			Type:       substTypeExpr(p.Type, subst),
+			Default:    p.Default,
 			IsVariadic: p.IsVariadic,
 			IsEscaped:  p.IsEscaped,
 		}
@@ -584,6 +692,8 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 		return &ast.SliceType{Elem: semaTypeToTypeExpr(v.Elem)}
 	case *sema.ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
+	case *sema.MapType:
+		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value)}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: v.TypeName()}}
 	}
@@ -696,8 +806,9 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 			specName, specFn := c.getOrSpecializeFunc(baseName, typeArgs)
 			if specFn != nil {
+				callArgs := c.fillDefaultArgs(call.Args, c.getFuncParams(specFn, specName))
 				isCVarArg := specFn.IsCFunc || (specFn.IsVariadic && specFn.VariadicElem == nil)
-				args := c.lowerArgs(call.Args, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)
+				args := c.lowerArgs(callArgs, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid
 				if len(specFn.ReturnTypes) == 1 {
@@ -716,15 +827,45 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		}
 	}
 
-	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(bytes))
+	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(cs), cstring(s), uint('a'))
 	if len(call.Args) == 1 {
 		targetType := c.ResolveTypeFromExpr(call.Function)
 		if targetType != nil && targetType != sema.TypeVoid {
 			if _, isFunc := targetType.(*sema.FuncType); !isFunc {
-				argVal := c.root.Expr.LowerExpr(call.Args[0])
-				if argVal.Type().LLVMType() == targetType.LLVMType() {
-					return argVal
+				// 文字リテラルから整数型 (uint, int 等) への直接キャスト
+				if cl, ok := call.Args[0].(*ast.CharLiteral); ok {
+					intRank := func(llvm string) int {
+						switch llvm {
+						case "i64":
+							return 64
+						case "i32":
+							return 32
+						case "i16":
+							return 16
+						case "i8":
+							return 8
+						default:
+							return 0
+						}
+					}
+					if intRank(targetType.LLVMType()) > 0 {
+						return &hir.ConstInt{Val: int64(cl.CodePoint), Typ: targetType}
+					}
 				}
+
+				argVal := c.root.Expr.LowerExpr(call.Args[0])
+
+				// string -> cstring
+				if (argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string") && targetType == sema.TypeCString {
+					return c.lowerStringToCString(argVal)
+				}
+
+				// cstring -> string
+				if (argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring") && targetType == sema.TypeString {
+					return c.lowerCStringToString(argVal)
+				}
+
+				// []byte -> string
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
 					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					rawLen := c.root.nextReg(sema.TypeInt)
@@ -738,6 +879,11 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					})
 					return dst
 				}
+
+				if argVal.Type().LLVMType() == targetType.LLVMType() && argVal.Type() == targetType {
+					return argVal
+				}
+
 				dst := c.root.nextReg(targetType)
 				c.root.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: targetType})
 				return dst
@@ -745,7 +891,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		}
 	}
 
-	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string)
+	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string, cstring)
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
 		case "make":
@@ -837,7 +983,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				c.root.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: idx})
 				return dst
 			}
-			if fnId.Value == "len" && argVal.Type() == sema.TypeString {
+			if fnId.Value == "len" && (argVal.Type() == sema.TypeString || argVal.Type() == sema.TypeCString) {
 				dst := c.root.nextReg(sema.TypeInt)
 				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
 				return dst
@@ -852,27 +998,46 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			return c.LowerAppend(call)
 
 		case "string":
-			argVal := c.root.Expr.LowerExpr(call.Args[0])
-			if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
-				rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				rawLen := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
-				c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
-				dst := c.root.nextReg(sema.TypeString)
-				c.root.emit(&hir.InstrCallStatic{
-					Dst:        dst,
-					CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
-					Args:       []hir.Value{rawPtr, rawLen},
-				})
+			if len(call.Args) > 0 {
+				argVal := c.root.Expr.LowerExpr(call.Args[0])
+				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
+					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					rawLen := c.root.nextReg(sema.TypeInt)
+					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
+					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
+					dst := c.root.nextReg(sema.TypeString)
+					c.root.emit(&hir.InstrCallStatic{
+						Dst:        dst,
+						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+						Args:       []hir.Value{rawPtr, rawLen},
+					})
+					return dst
+				}
+				if argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring" {
+					return c.lowerCStringToString(argVal)
+				}
+				return argVal
+			}
+
+		case "cstring":
+			if len(call.Args) > 0 {
+				argVal := c.root.Expr.LowerExpr(call.Args[0])
+				if argVal.Type() == sema.TypeCString {
+					return argVal
+				}
+				if argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string" {
+					return c.lowerStringToCString(argVal)
+				}
+				dst := c.root.nextReg(sema.TypeCString)
+				c.root.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: sema.TypeCString})
 				return dst
 			}
-			return argVal
 		}
 	}
 
 	// 3. メンバー式経由の呼び出し (パッケージ関数呼び出し、またはオブジェクトメソッド呼び出し)
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now)
+		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, sjis.Decode)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && c.isPackageName(pkgIdent.Value) {
 			methodName := mem.Field.Value
 			targetFnName := pkgIdent.Value + "_" + methodName
@@ -885,14 +1050,22 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))
 			}
 
+			params := c.getFuncParams(targetFn, canonicalName)
+			callArgs := c.fillDefaultArgs(call.Args, params)
+
 			if targetFn.IsVariadic && targetFn.VariadicElem == nil {
 				if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
-					return c.inlineVariadicCall(fnDecl, call)
+					return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
+						Token:       call.Token,
+						Function:    call.Function,
+						Args:        callArgs,
+						HasEllipsis: call.HasEllipsis,
+					})
 				}
 			}
 
 			isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-			args := c.lowerArgs(call.Args, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+			args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 
 			var retType sema.Type = sema.TypeVoid
 			if len(targetFn.ReturnTypes) == 1 {
@@ -941,7 +1114,8 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 			}
 
-			args := c.lowerArgs(call.Args, targetMethod.ParamTypes, targetMethod.IsVariadic, false, targetMethod.VariadicElem, call.HasEllipsis)
+			callArgs := call.Args
+			args := c.lowerArgs(callArgs, targetMethod.ParamTypes, targetMethod.IsVariadic, false, targetMethod.VariadicElem, call.HasEllipsis)
 
 			var retType sema.Type = sema.TypeVoid
 			if len(targetMethod.ReturnTypes) == 1 {
@@ -992,12 +1166,15 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 			}
 
+			params := c.getFuncParams(targetFn, targetFnName)
+			callArgs := c.fillDefaultArgs(call.Args, params)
+
 			methodParamTypes := []sema.Type{}
 			if len(targetFn.ParamTypes) > 1 {
 				methodParamTypes = targetFn.ParamTypes[1:]
 			}
 			isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-			callArgVals := c.lowerArgs(call.Args, methodParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+			callArgVals := c.lowerArgs(callArgs, methodParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 			args := append([]hir.Value{recvArg}, callArgVals...)
 
 			var retType sema.Type = sema.TypeVoid
@@ -1038,14 +1215,22 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		if !isLocal && !isGlobal {
 			targetFn, canonicalName := c.root.semaCtx.LookupFunction(fnId.Value)
 			if targetFn != nil {
+				params := c.getFuncParams(targetFn, canonicalName)
+				callArgs := c.fillDefaultArgs(call.Args, params)
+
 				if targetFn.IsVariadic && targetFn.VariadicElem == nil {
 					if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
-						return c.inlineVariadicCall(fnDecl, call)
+						return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
+							Token:       call.Token,
+							Function:    call.Function,
+							Args:        callArgs,
+							HasEllipsis: call.HasEllipsis,
+						})
 					}
 				}
 
 				isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-				args := c.lowerArgs(call.Args, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+				args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid
 				if len(targetFn.ReturnTypes) == 1 {

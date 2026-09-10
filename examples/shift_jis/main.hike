@@ -1,0 +1,104 @@
+package main
+
+import (
+	"std/encoding/japanese"
+)
+
+extern func fopen(path cstring, mode cstring) *byte
+extern func fread(ptr *byte, size int, nmemb int, stream *byte) int
+extern func fwrite(ptr cstring, size int, nmemb int, stream *byte) int
+extern func fclose(stream *byte) int
+extern func fseek(stream *byte, offset int, whence int) int
+extern func ftell(stream *byte) int
+extern func malloc(size int) *byte
+extern func free(ptr *byte)
+extern func printf(fmt cstring, ...) int
+
+func readFile(path string) (cstring, int) {
+	fp := fopen(cstring(path), "rb")
+	if fp == nil {
+		return nil, 0
+	}
+
+	fseek(fp, 0, 2)
+	size := ftell(fp)
+	fseek(fp, 0, 0)
+
+	if size <= 0 {
+		fclose(fp)
+		return nil, 0
+	}
+
+	buf := malloc(size + 1)
+	readBytes := fread(buf, 1, size, fp)
+	fclose(fp)
+
+	buf[readBytes] = byte(0)
+
+	return cstring(buf), readBytes
+}
+
+func writeFile(path string, data cstring, length int) bool {
+	fp := fopen(cstring(path), "wb")
+	if fp == nil {
+		return false
+	}
+
+	fwrite(data, 1, length, fp)
+	fclose(fp)
+	return true
+}
+
+func main() int {
+	// japanese パッケージから ShiftJISEncoding インスタンスを取得
+	enc := japanese.NewShiftJIS()
+
+	printf("[Hike] Shift_JIS エンコーディング検証を開始します。\n")
+
+	// 1. 外部 Shift_JIS テキストファイル (shift_jis.txt) の読み込み
+	sjisRaw, sjisLen := readFile("shift_jis.txt")
+	if sjisRaw == nil {
+		printf("[Error] 'shift_jis.txt' の読み込みに失敗しました。\n")
+		return 1
+	}
+	printf("[Step 1] 'shift_jis.txt' 読み込み完了: %d バイト\n", sjisLen)
+
+	// 2. Shift_JIS (cstring) -> UTF-8 (string) へのデコード
+	utf8Text, decErr, consumed := enc.Decode(sjisRaw, sjisLen)
+	if decErr != nil {
+		printf("[Error] デコード失敗: %s\n", decErr.Error())
+		free((*byte)(sjisRaw))
+		return 1
+	}
+	printf("[Step 2] デコード成功 (消費: %d バイト): %s\n", consumed, utf8Text)
+
+	// 3. デコード結果を UTF-8 ファイル (utf-8_out.txt) として保存
+	if !writeFile("utf-8_out.txt", cstring(utf8Text), len(utf8Text)) {
+		printf("[Error] 'utf-8_out.txt' の書き込みに失敗しました。\n")
+		free((*byte)(sjisRaw))
+		return 1
+	}
+	printf("[Step 3] 'utf-8_out.txt' の出力が完了しました。\n")
+	free((*byte)(sjisRaw))
+
+	// 4. プログラム内部の UTF-8 文字列を Shift_JIS (cstring) へエンコード
+	internalUtf8 := "日本語文字列変換の実証。"
+	printf("[Step 4] 内部 UTF-8 文字列: %s\n", internalUtf8)
+
+	encodedSJIS, encErr, produced := enc.Encode(internalUtf8)
+	if encErr != nil {
+		printf("[Error] エンコード失敗: %s\n", encErr.Error())
+		return 1
+	}
+	printf("[Step 4] エンコード成功: %d バイト生成\n", produced)
+
+	// 5. エンコード結果を Shift_JIS ファイル (shift_jis_out.txt) として出力
+	if !writeFile("shift_jis_out.txt", encodedSJIS, produced) {
+		printf("[Error] 'shift_jis_out.txt' の書き込みに失敗しました。\n")
+		return 1
+	}
+	printf("[Step 5] 'shift_jis_out.txt' の出力が完了しました。\n")
+
+	printf("[Hike] すべての変換テストが正常に完了しました。\n")
+	return 0
+}

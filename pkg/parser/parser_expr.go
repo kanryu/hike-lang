@@ -89,7 +89,7 @@ func isBasicTypeName(name string) bool {
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
 		"float32", "float64",
-		"string", "bool", "byte", "rune", "any", "error":
+		"string", "cstring", "bool", "byte", "rune", "any", "error":
 		return true
 	}
 	return false
@@ -392,6 +392,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseIntegerLiteral()
 	case token.FLOAT:
 		leftExp = p.parseFloatLiteral()
+	case token.CHAR:
+		leftExp = p.parseCharLiteral()
 	case token.STRING:
 		leftExp = p.parseStringLiteral()
 	case token.NIL:
@@ -423,45 +425,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			return nil
 		}
 
-		params := []*ast.ParamDecl{}
-		isVariadic := false
-		if !p.peekTokenIs(token.RPAREN) {
-			p.nextToken()
-			for {
-				if p.curTokenIs(token.ELLIPSIS) {
-					isVariadic = true
-					if p.peekTokenIs(token.RPAREN) {
-						break
-					}
-					p.nextToken()
-				} else {
-					pName := p.parseIdentifier()
-					p.nextToken()
-					paramIsVariadic := false
-					if p.curTokenIs(token.ELLIPSIS) {
-						paramIsVariadic = true
-						isVariadic = true
-						p.nextToken()
-						elemType := p.parseTypeExpr()
-						pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
-						params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType, IsVariadic: paramIsVariadic})
-					} else {
-						pType := p.parseTypeExpr()
-						params = append(params, &ast.ParamDecl{Token: pName.Token, Name: pName, Type: pType, IsVariadic: false})
-					}
-				}
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					if p.peekTokenIs(token.RPAREN) {
-						break
-					}
-					p.nextToken()
-				} else {
-					break
-				}
-			}
-		}
-		p.expectPeek(token.RPAREN)
+		params, isVariadic := p.parseParameterList(false)
 
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
@@ -641,6 +605,56 @@ func (p *Parser) parseFloatLiteral() *ast.FloatLiteral {
 		return nil
 	}
 	return &ast.FloatLiteral{Token: p.curToken, Value: val}
+}
+
+func (p *Parser) parseCharLiteral() *ast.CharLiteral {
+	lit := p.curToken.Literal
+	val := lit
+	var cp uint32
+
+	// エスケープシーケンスがそのまま文字列として残っている場合のデコードフォールバック
+	if len(lit) >= 2 && lit[0] == '\\' {
+		switch lit[1] {
+		case 'n':
+			val = "\n"
+			cp = '\n'
+		case 'r':
+			val = "\r"
+			cp = '\r'
+		case 't':
+			val = "\t"
+			cp = '\t'
+		case '\'':
+			val = "'"
+			cp = '\''
+		case '"':
+			val = "\""
+			cp = '"'
+		case '\\':
+			val = "\\"
+			cp = '\\'
+		case '0':
+			val = "\x00"
+			cp = 0
+		default:
+			val = lit[1:]
+			r := []rune(val)
+			if len(r) > 0 {
+				cp = uint32(r[0])
+			}
+		}
+	} else {
+		runes := []rune(lit)
+		if len(runes) > 0 {
+			cp = uint32(runes[0])
+		}
+	}
+
+	return &ast.CharLiteral{
+		Token:     p.curToken,
+		Value:     val,
+		CodePoint: cp,
+	}
 }
 
 func (p *Parser) parseStringLiteral() *ast.StringLiteral {

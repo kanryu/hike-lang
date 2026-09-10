@@ -592,6 +592,24 @@ func IsGenericFuncDecl(fd *ast.FuncDecl) bool {
 	return false
 }
 
+// validateDefaultParams はデフォルト引数が末尾から連続しているかを検証する
+func validateDefaultParams(params []*ast.ParamDecl) error {
+	hasDefault := false
+	for _, p := range params {
+		if p.Default != nil {
+			hasDefault = true
+		} else if hasDefault {
+			paramName := ""
+			if p.Name != nil {
+				paramName = p.Name.Value
+			}
+			return fmt.Errorf("line %d:%d: non-default parameter '%s' follows default parameter; default arguments must be trailing",
+				p.Token.Line, p.Token.Col, paramName)
+		}
+	}
+	return nil
+}
+
 // -------------------------------------------------------------
 // 意味解析メインパイプライン (Analyze)
 // -------------------------------------------------------------
@@ -679,6 +697,11 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				ctx.Aliases[td.Name.Value] = resolvedAlias
 			}
 		} else if fd, ok := decl.(*ast.FuncDecl); ok {
+			// デフォルト引数の末尾規則検証
+			if err := validateDefaultParams(fd.Params); err != nil {
+				return nil, err
+			}
+
 			fnName := fd.Name.Value
 			isMethod := (fd.Receiver != nil)
 			tpSet := make(map[string]bool)
@@ -760,6 +783,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				ctx.GenericFuncs[fd.Name.Value] = fd
 			}
 		} else if efd, ok := decl.(*ast.ExternFuncDecl); ok {
+			if err := validateDefaultParams(efd.Params); err != nil {
+				return nil, err
+			}
 			cName := efd.Name.Value
 			if efd.TargetCName != nil {
 				cName = efd.TargetCName.Value
@@ -778,6 +804,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			}
 			ctx.Functions[efd.Name.Value] = fnType
 		} else if jfd, ok := decl.(*ast.JFuncDecl); ok {
+			if err := validateDefaultParams(jfd.Params); err != nil {
+				return nil, err
+			}
 			jsBridgeName := "__hike_js_" + jfd.Name.Value
 			internalKey := BuildInternalKey("", jfd.Name.Value, "")
 			jfd.InternalKey = internalKey
@@ -792,6 +821,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			}
 			ctx.Functions[jfd.Name.Value] = fnType
 		} else if cfd, ok := decl.(*ast.CFuncDecl); ok {
+			if err := validateDefaultParams(cfd.Params); err != nil {
+				return nil, err
+			}
 			targetC := ""
 			if cfd.TargetCName != nil {
 				targetC = cfd.TargetCName.Value
@@ -803,7 +835,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 
 			irName := cfd.Name.Value
 			if !cfd.IsAlias() {
-				// 手書きブロックを持つ cfunc は、Hike 内部用実体シンボルとして __hike_impl_<Name> を割り当て
 				irName = "__hike_impl_" + cfd.Name.Value
 			}
 
@@ -1252,6 +1283,11 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			for _, c := range caps {
 				capturedSet[c] = true
 			}
+			for _, p := range fl.Params {
+				if p.Default != nil {
+					walkExpr(p.Default)
+				}
+			}
 			if fl.Body != nil {
 				walkStmt(fl.Body)
 			}
@@ -1297,6 +1333,8 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			for _, sf := range n.Fields {
 				walkExpr(sf.Value)
 			}
+		case *ast.CharLiteral:
+			// 文字リテラルは識別子キャプチャなし
 		}
 	}
 
@@ -1409,7 +1447,7 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			if !params[name] && !locals[name] && !seen[name] {
 				switch name {
 				case "true", "false", "nil", "len", "cap", "append", "delete", "make",
-					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "bool", "float32", "float64", "void", "any", "error":
+					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "cstring", "bool", "float32", "float64", "void", "any", "error":
 					return
 				}
 				seen[name] = true
@@ -1454,7 +1492,14 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			for _, sf := range node.Fields {
 				walkExpr(sf.Value)
 			}
+		case *ast.CharLiteral:
+			// 文字リテラルは識別子キャプチャなし
 		case *ast.FuncLit:
+			for _, p := range node.Params {
+				if p.Default != nil {
+					walkExpr(p.Default)
+				}
+			}
 			if node.Body != nil {
 				for _, s := range node.Body.Statements {
 					walkStmt(s)
@@ -1530,9 +1575,37 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			}
 			walkExpr(st.X)
 			walkStmt(st.Body)
+		case *ast.SwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Value)
+			for _, cc := range st.Cases {
+				for _, v := range cc.Values {
+					walkExpr(v)
+				}
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			if st.Init != nil {
+				walkStmt(st.Init)
+			}
+			walkExpr(st.Expr)
+			for _, cc := range st.Cases {
+				for _, bs := range cc.Body {
+					walkStmt(bs)
+				}
+			}
 		}
 	}
 
+	for _, p := range fl.Params {
+		if p.Default != nil {
+			walkExpr(p.Default)
+		}
+	}
 	if fl.Body != nil {
 		for _, s := range fl.Body.Statements {
 			walkStmt(s)
@@ -1553,14 +1626,24 @@ func insertImplicitCasts(prog *ast.Program, ctx *Context) {
 				locals[fn.Receiver.Name.Value] = ctx.ResolveType(fn.Receiver.Type)
 			}
 			for _, p := range fn.Params {
-				locals[p.Name.Value] = ctx.ResolveType(p.Type)
+				pType := ctx.ResolveType(p.Type)
+				locals[p.Name.Value] = pType
+				if p.Default != nil {
+					p.Default = ctx.CoerceExpr(p.Default, pType, locals)
+					insertCastsInExpr(p.Default, locals, ctx)
+				}
 			}
 			insertCastsInBlock(fn.Body, locals, ctx, fn.ReturnTypes)
 
 		} else if cfd, ok := decl.(*ast.CFuncDecl); ok && cfd.Body != nil {
 			locals := make(map[string]Type)
 			for _, p := range cfd.Params {
-				locals[p.Name.Value] = ctx.ResolveType(p.Type)
+				pType := ctx.ResolveType(p.Type)
+				locals[p.Name.Value] = pType
+				if p.Default != nil {
+					p.Default = ctx.CoerceExpr(p.Default, pType, locals)
+					insertCastsInExpr(p.Default, locals, ctx)
+				}
 			}
 			insertCastsInBlock(cfd.Body, locals, ctx, cfd.ReturnTypes)
 		}
@@ -1845,7 +1928,15 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return nil
 
 		case *ast.FuncLit:
+			if err := validateDefaultParams(n.Params); err != nil {
+				return err
+			}
 			for _, p := range n.Params {
+				if p.Default != nil {
+					if err := checkExpr(p.Default); err != nil {
+						return err
+					}
+				}
 				if err := checkType(p.Type); err != nil {
 					return err
 				}
@@ -1901,6 +1992,8 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 					return err
 				}
 			}
+		case *ast.CharLiteral:
+			return nil
 		}
 		return nil
 	}
@@ -1995,6 +2088,11 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			}
 		}
 		for _, p := range fd.Params {
+			if p.Default != nil {
+				if err := checkExpr(p.Default); err != nil {
+					return err
+				}
+			}
 			if err := checkType(p.Type); err != nil {
 				return err
 			}
@@ -2010,6 +2108,11 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 	}
 	if efd, ok := node.(*ast.ExternFuncDecl); ok {
 		for _, p := range efd.Params {
+			if p.Default != nil {
+				if err := checkExpr(p.Default); err != nil {
+					return err
+				}
+			}
 			if err := checkType(p.Type); err != nil {
 				return err
 			}
@@ -2022,6 +2125,11 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 	}
 	if jfd, ok := node.(*ast.JFuncDecl); ok {
 		for _, p := range jfd.Params {
+			if p.Default != nil {
+				if err := checkExpr(p.Default); err != nil {
+					return err
+				}
+			}
 			if err := checkType(p.Type); err != nil {
 				return err
 			}
@@ -2034,6 +2142,11 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 	}
 	if cfd, ok := node.(*ast.CFuncDecl); ok {
 		for _, p := range cfd.Params {
+			if p.Default != nil {
+				if err := checkExpr(p.Default); err != nil {
+					return err
+				}
+			}
 			if err := checkType(p.Type); err != nil {
 				return err
 			}
