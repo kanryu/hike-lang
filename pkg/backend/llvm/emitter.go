@@ -148,6 +148,12 @@ func (e *Emitter) emitItabs() {
 				retTypeStr := "void"
 				if len(m.MethodType.ReturnTypes) == 1 {
 					retTypeStr = m.MethodType.ReturnTypes[0].LLVMType()
+				} else if len(m.MethodType.ReturnTypes) > 1 {
+					types := make([]string, len(m.MethodType.ReturnTypes))
+					for idx, rt := range m.MethodType.ReturnTypes {
+						types[idx] = rt.LLVMType()
+					}
+					retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 				}
 				paramTypes := []string{"i8*"}
 				for _, pt := range m.MethodType.ParamTypes {
@@ -166,24 +172,58 @@ func (e *Emitter) emitItabs() {
 			retTypeStr := "void"
 			if len(m.MethodType.ReturnTypes) == 1 {
 				retTypeStr = m.MethodType.ReturnTypes[0].LLVMType()
+			} else if len(m.MethodType.ReturnTypes) > 1 {
+				types := make([]string, len(m.MethodType.ReturnTypes))
+				for idx, rt := range m.MethodType.ReturnTypes {
+					types[idx] = rt.LLVMType()
+				}
+				retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 			}
 			rawParams := []string{"i8*"}
-
-			concreteRecv := fmt.Sprintf("%%struct.%s*", sName)
-			if e.semaCtx != nil {
-				if st, _ := e.semaCtx.LookupStruct(sName); st == nil {
-					concreteRecv = itab.ConcreteType.LLVMType()
-				}
-			}
-			concreteParams := []string{concreteRecv}
-
 			for _, pt := range m.MethodType.ParamTypes {
 				rawParams = append(rawParams, pt.LLVMType())
-				concreteParams = append(concreteParams, pt.LLVMType())
+			}
+			rawSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(rawParams, ", "))
+
+			// 実体関数の正確な LLVM シグネチャを取得
+			var targetFn *hir.Function
+			for _, fn := range e.prog.Functions {
+				if fn.Name == m.TargetFnName {
+					targetFn = fn
+					break
+				}
 			}
 
-			rawSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(rawParams, ", "))
-			concreteSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(concreteParams, ", "))
+			concreteRet := retTypeStr
+			var concreteParams []string
+
+			if targetFn != nil {
+				if len(targetFn.ReturnTypes) == 1 {
+					concreteRet = targetFn.ReturnTypes[0].LLVMType()
+				} else if len(targetFn.ReturnTypes) > 1 {
+					types := make([]string, len(targetFn.ReturnTypes))
+					for idx, rt := range targetFn.ReturnTypes {
+						types[idx] = rt.LLVMType()
+					}
+					concreteRet = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+				}
+				for _, p := range targetFn.Params {
+					concreteParams = append(concreteParams, p.Typ.LLVMType())
+				}
+			} else {
+				concreteRecv := fmt.Sprintf("%%struct.%s*", sName)
+				if e.semaCtx != nil {
+					if st, _ := e.semaCtx.LookupStruct(sName); st == nil {
+						concreteRecv = itab.ConcreteType.LLVMType()
+					}
+				}
+				concreteParams = []string{concreteRecv}
+				for _, pt := range m.MethodType.ParamTypes {
+					concreteParams = append(concreteParams, pt.LLVMType())
+				}
+			}
+
+			concreteSig := fmt.Sprintf("%s (%s)*", concreteRet, strings.Join(concreteParams, ", "))
 			fieldValues = append(fieldValues, fmt.Sprintf("%s bitcast (%s @%s to %s)", rawSig, concreteSig, m.TargetFnName, rawSig))
 		}
 
@@ -208,6 +248,13 @@ func (e *Emitter) emitFunctions() {
 		}
 	}
 
+	// itab 定数から参照されている関数も外部宣言対象に登録
+	for _, itab := range e.prog.Itabs {
+		for _, m := range itab.Methods {
+			referencedExterns[m.TargetFnName] = true
+		}
+	}
+
 	for _, fn := range e.prog.Functions {
 		if fn.IsExtern {
 			if e.declaredSymbols[fn.Name] {
@@ -223,7 +270,14 @@ func (e *Emitter) emitFunctions() {
 			retTypeStr := "void"
 			if len(fn.ReturnTypes) == 1 {
 				retTypeStr = fn.ReturnTypes[0].LLVMType()
+			} else if len(fn.ReturnTypes) > 1 {
+				types := make([]string, len(fn.ReturnTypes))
+				for i, rt := range fn.ReturnTypes {
+					types[i] = rt.LLVMType()
+				}
+				retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 			}
+
 			paramTypes := make([]string, len(fn.Params))
 			for i, p := range fn.Params {
 				paramTypes[i] = p.Typ.LLVMType()
@@ -722,8 +776,13 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 		return
 	}
 
+	ifName := strings.ReplaceAll(i.Iface.Name, ".", "_")
+	if ifName == "" {
+		ifName = "anon_iface"
+	}
+
 	itabPtr := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__itab_%s* @%s to i8*\n", itabPtr, i.Iface.Name, i.ItabName))
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__itab_%s* @%s to i8*\n", itabPtr, ifName, i.ItabName))
 	t1 := e.nextTmp()
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", t1, dataPtr))
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", i.Dst, t1, itabPtr))
@@ -868,14 +927,16 @@ func (e *Emitter) emitCallIface(i *hir.InstrCallIface) {
 	}
 	rawFnSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(paramTypes, ", "))
 
-	itabTyped := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s**\n", itabTyped, itabRaw, rawFnSig))
-	gepMethod := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s*, %s** %s, i32 %d\n",
-		gepMethod, rawFnSig, rawFnSig, itabTyped, i.MethodIndex+1))
+	itabArr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i8**\n", itabArr, itabRaw))
+	slotPtr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 %d\n",
+		slotPtr, itabArr, i.MethodIndex+1))
 
+	fnRaw := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = load i8*, i8** %s\n", fnRaw, slotPtr))
 	fnPtr := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", fnPtr, rawFnSig, rawFnSig, gepMethod))
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", fnPtr, fnRaw, rawFnSig))
 
 	if i.Dst != nil {
 		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", i.Dst, retTypeStr, fnPtr, strings.Join(callArgs, ", ")))

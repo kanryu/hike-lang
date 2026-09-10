@@ -271,6 +271,38 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		if isNilValue(val) {
 			return l.defaultConstValue(iface)
 		}
+
+		// 1. 既にインターフェース型である値の変換
+		if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
+			if iface.IsAny() {
+				dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
+				typeIDReg := l.nextReg(sema.TypeInt)
+				if !srcIface.IsAny() {
+					itabPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					l.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
+					typeIDPtr := l.nextReg(&sema.PointerType{Base: sema.TypeInt})
+					l.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt}})
+					l.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
+				} else {
+					l.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
+				}
+				dst := l.nextReg(iface)
+				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: l.defaultConstValue(iface), Val: dataPtr, Index: 0})
+				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: dst, Val: typeIDReg, Index: 1})
+				return dst
+			}
+			if srcIface.TypeName() == iface.TypeName() {
+				return val
+			}
+		} else if _, isPtr := val.Type().(*sema.PointerType); !isPtr {
+			// 2. 非ポインタ具象値をインターフェースにボクシングする場合、スタックに退避してポインタを渡す
+			allocaReg := l.nextReg(&sema.PointerType{Base: val.Type()})
+			l.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: val.Type()})
+			l.emit(&hir.InstrStore{Val: val, Ptr: allocaReg})
+			val = allocaReg
+		}
+
 		itabName := ""
 		if !iface.IsAny() {
 			itabDef := l.Call.GetOrCreateItab(val.Type(), iface)

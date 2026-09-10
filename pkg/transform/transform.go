@@ -152,18 +152,37 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 				}
 			}
 		} else if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
-			// 多値返却関数のアンパック代入 (text, err, n := Decode(...))
+			// 多値返却関数のアンパック代入 (例: text, err, consumed := enc.Decode(...) または Decode(...))
 			if call, ok := stmt.Right[0].(*ast.CallExpr); ok {
-				var targetName string
-				if id, okId := call.Function.(*ast.Identifier); okId {
-					targetName = id.Value
-				}
-				if targetName != "" {
-					if fnMeta, ok := t.semaCtx.Functions[targetName]; ok && fnMeta != nil && len(fnMeta.ReturnTypes) == len(stmt.Left) {
-						for idx, l := range stmt.Left {
-							if id, okIdent := l.(*ast.Identifier); okIdent && id.Value != "_" {
-								t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, fnMeta.ReturnTypes[idx].TypeName())
+				var retTypes []sema.Type
+
+				if fnMeta, okResolved := t.semaCtx.ResolvedCalls[call]; okResolved && fnMeta != nil {
+					retTypes = fnMeta.ReturnTypes
+				} else if id, okId := call.Function.(*ast.Identifier); okId {
+					if fnMeta, okFn := t.semaCtx.Functions[id.Value]; okFn && fnMeta != nil {
+						retTypes = fnMeta.ReturnTypes
+					}
+				} else if mem, okMem := call.Function.(*ast.MemberExpr); okMem {
+					objT := t.semaCtx.InferExprType(mem.Object, nil)
+					if objT != nil {
+						rawT := objT
+						if pt, okPt := objT.(*sema.PointerType); okPt {
+							rawT = pt.Base
+						}
+						if iface, okIface := rawT.(*sema.InterfaceType); okIface {
+							if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
+								retTypes = m.ReturnTypes
 							}
+						} else if fn, _ := t.semaCtx.LookupMethod(objT.TypeName(), mem.Field.Value); fn != nil {
+							retTypes = fn.ReturnTypes
+						}
+					}
+				}
+
+				if len(retTypes) == len(stmt.Left) {
+					for idx, l := range stmt.Left {
+						if id, okIdent := l.(*ast.Identifier); okIdent && id.Value != "_" {
+							t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, retTypes[idx].TypeName())
 						}
 					}
 				}
@@ -1233,6 +1252,24 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 			}
 		}
 	case *ast.CallExpr:
+		if fnMeta, ok := t.semaCtx.ResolvedCalls[expr]; ok && fnMeta != nil && len(fnMeta.ReturnTypes) > 0 {
+			return parseSimpleTypeExpr(expr.Token, fnMeta.ReturnTypes[0].TypeName())
+		}
+		if mem, okMem := expr.Function.(*ast.MemberExpr); okMem {
+			objT := t.semaCtx.InferExprType(mem.Object, nil)
+			if objT != nil {
+				rawT := objT
+				if pt, okPt := objT.(*sema.PointerType); okPt {
+					rawT = pt.Base
+				}
+				if iface, okIface := rawT.(*sema.InterfaceType); okIface {
+					if m, _ := iface.GetMethod(mem.Field.Value); m != nil && len(m.ReturnTypes) > 0 {
+						return parseSimpleTypeExpr(expr.Token, m.ReturnTypes[0].TypeName())
+					}
+				}
+			}
+		}
+
 		var targetName string
 		var tArgs []ast.TypeExpr
 

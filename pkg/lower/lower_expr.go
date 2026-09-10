@@ -35,7 +35,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return &hir.ConstFloat{Val: node.Value, Typ: sema.TypeFloat64}
 
 	case *ast.CharLiteral:
-		// 文字リテラルはデフォルトで UTF-8 エンコードされた 1 文字の string として評価
 		return e.root.getStringConst(node.Value)
 
 	case *ast.StringLiteral:
@@ -47,7 +46,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.ImplicitCastExpr:
 		targetT := e.root.semaCtx.ResolveType(node.TargetType)
 
-		// 文字リテラルから整数型 (uint, int 等) へのキャストはコードポイント定数へ直接展開
 		if cl, ok := node.Expr.(*ast.CharLiteral); ok {
 			intRank := func(llvm string) int {
 				switch llvm {
@@ -70,7 +68,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 		val := e.LowerExpr(node.Expr)
 
-		// 右辺がタプルの場合、第0要素を取り出す
 		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
 			elem0 := e.root.nextReg(tup.Types[0])
 			e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: val, Index: 0})
@@ -84,6 +81,32 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			if isNilValue(val) {
 				return e.root.defaultConstValue(iface)
 			}
+
+			// 1. 既にインターフェース型である値の変換
+			if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
+				if iface.IsAny() {
+					dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
+					typeIDReg := e.root.nextReg(sema.TypeInt)
+					if !srcIface.IsAny() {
+						itabPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+						e.root.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
+						typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+						e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt}})
+						e.root.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
+					} else {
+						e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
+					}
+					dst := e.root.nextReg(iface)
+					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: e.root.defaultConstValue(iface), Val: dataPtr, Index: 0})
+					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: dst, Val: typeIDReg, Index: 1})
+					return dst
+				}
+				if srcIface.TypeName() == iface.TypeName() {
+					return val
+				}
+			}
+
 			itabName := ""
 			if !iface.IsAny() {
 				itabDef := e.root.Call.GetOrCreateItab(val.Type(), iface)
@@ -504,7 +527,6 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 	return allocaTmp
 }
 
-// LowerLValue は代入先やアドレス取得（&）の対象となるメモリアドレス（ポインタ）を取得する
 func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	switch node := expr.(type) {
 	case *ast.Identifier:
@@ -546,7 +568,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 		leftVal := e.LowerExpr(node.Left)
 		leftType := leftVal.Type()
 
-		// 1. スライス ([]T)
 		if slType, ok := leftType.(*sema.SliceType); ok {
 			elemPtrType := &sema.PointerType{Base: slType.Elem}
 			rawPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -558,7 +579,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		// 2. 文字列 (string / cstring)
 		if leftType == sema.TypeString || leftType == sema.TypeCString || (leftType != nil && (leftType.TypeName() == "string" || leftType.TypeName() == "cstring")) {
 			elemPtrType := &sema.PointerType{Base: sema.TypeByte}
 			elemPtr := e.root.nextReg(elemPtrType)
@@ -566,7 +586,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		// 3. ポインタ (*T または *[N]T)
 		if pt, ok := leftType.(*sema.PointerType); ok {
 			if arrType, isArr := pt.Base.(*sema.ArrayType); isArr {
 				elemPtrType := &sema.PointerType{Base: arrType.Elem}
@@ -579,7 +598,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		// 4. 配列 ([N]T)
 		if arrType, ok := leftType.(*sema.ArrayType); ok {
 			basePtr := e.LowerLValue(node.Left)
 			elemPtrType := &sema.PointerType{Base: arrType.Elem}
@@ -648,6 +666,7 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	rightVal := e.LowerExpr(node.Right)
 
 	if node.Operator == "==" || node.Operator == "!=" {
+		// 1. インターフェース値と nil リテラルの比較
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: 0})
@@ -671,6 +690,47 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 			return cmpReg
 		}
 
+		// 2. インターフェース変数同士の直接比較 (enc1 == enc2 / enc1 != enc2)
+		if leftIface, isLeftIface := leftVal.Type().(*sema.InterfaceType); isLeftIface {
+			if rightIface, isRightIface := rightVal.Type().(*sema.InterfaceType); isRightIface {
+				data1 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				data2 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				e.root.emit(&hir.InstrExtractValue{Dst: data1, Agg: leftVal, Index: 0})
+				e.root.emit(&hir.InstrExtractValue{Dst: data2, Agg: rightVal, Index: 0})
+
+				dataEq := e.root.nextReg(sema.TypeBool)
+				e.root.emit(&hir.InstrBinary{Dst: dataEq, Op: hir.OpEq, L: data1, R: data2})
+
+				var metaEq *hir.Reg
+				if leftIface.IsAny() && rightIface.IsAny() {
+					meta1 := e.root.nextReg(sema.TypeInt)
+					meta2 := e.root.nextReg(sema.TypeInt)
+					e.root.emit(&hir.InstrExtractValue{Dst: meta1, Agg: leftVal, Index: 1})
+					e.root.emit(&hir.InstrExtractValue{Dst: meta2, Agg: rightVal, Index: 1})
+					metaEq = e.root.nextReg(sema.TypeBool)
+					e.root.emit(&hir.InstrBinary{Dst: metaEq, Op: hir.OpEq, L: meta1, R: meta2})
+				} else {
+					meta1 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					meta2 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					e.root.emit(&hir.InstrExtractValue{Dst: meta1, Agg: leftVal, Index: 1})
+					e.root.emit(&hir.InstrExtractValue{Dst: meta2, Agg: rightVal, Index: 1})
+					metaEq = e.root.nextReg(sema.TypeBool)
+					e.root.emit(&hir.InstrBinary{Dst: metaEq, Op: hir.OpEq, L: meta1, R: meta2})
+				}
+
+				allEq := e.root.nextReg(sema.TypeBool)
+				e.root.emit(&hir.InstrBinary{Dst: allEq, Op: hir.OpAnd, L: dataEq, R: metaEq})
+
+				if node.Operator == "!=" {
+					notEq := e.root.nextReg(sema.TypeBool)
+					e.root.emit(&hir.InstrUnary{Dst: notEq, Op: hir.OpNot, Val: allEq})
+					return notEq
+				}
+				return allEq
+			}
+		}
+
+		// 3. 関数値と nil の比較
 		if _, isFunc := leftVal.Type().(*sema.FuncType); isFunc && isNilValue(rightVal) {
 			fnPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrExtractValue{Dst: fnPtr, Agg: leftVal, Index: 0})

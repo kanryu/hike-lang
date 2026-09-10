@@ -219,6 +219,22 @@ func (t *InterfaceType) Size() int       { return PointerSize * 2 }
 func (t *InterfaceType) IsAny() bool     { return len(t.Methods) == 0 }
 func (t *InterfaceType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
+// GetMethod はメソッド名から定義情報と itab スロット番号（0始まり）を返す
+func (t *InterfaceType) GetMethod(name string) (*Method, int) {
+	for i := range t.Methods {
+		if t.Methods[i].Name == name {
+			return &t.Methods[i], i
+		}
+	}
+	return nil, -1
+}
+
+// HasMethod は指定された名称のメソッドがインターフェースに存在するかを返す
+func (t *InterfaceType) HasMethod(name string) bool {
+	_, idx := t.GetMethod(name)
+	return idx != -1
+}
+
 type FuncType struct {
 	Name            string
 	InternalKey     string
@@ -753,7 +769,9 @@ func Analyze(prog *ast.Program) (*Context, error) {
 
 			internalKey := BuildInternalKey(prog.Package, fd.Name.Value, structNameWithPtr)
 			fd.InternalKey = internalKey
-			irName := MangleInternalKeyToIR(internalKey)
+
+			// IRName はコンパイルされる実体関数名 fnName と一致させる
+			irName := fnName
 			if !isMethod && (prog.Package == "" || prog.Package == "main") {
 				irName = fd.Name.Value
 			}
@@ -1748,11 +1766,17 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 			insertCastsInExpr(s.Value, blockLocals, ctx)
 
 		case *ast.ReturnStmt:
+			// 多値関数の結果をそのまま 1 個の式としてパススルー返却する場合 (return enc.Decode(...))
+			if len(s.Values) == 1 && len(retTypes) > 1 {
+				insertCastsInExpr(s.Values[0], blockLocals, ctx)
+				break
+			}
 			for i, val := range s.Values {
 				if i < len(retTypes) {
 					expected := ctx.ResolveType(retTypes[i])
 					s.Values[i] = ctx.CoerceExpr(val, expected, blockLocals)
 				}
+				insertCastsInExpr(s.Values[i], blockLocals, ctx)
 			}
 
 		case *ast.ExprStmt:

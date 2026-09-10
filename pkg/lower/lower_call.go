@@ -7,6 +7,7 @@ import (
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
+	"hikec-go/pkg/token"
 )
 
 // CallLowerer は関数呼び出し、メソッド解決、型キャスト判定、引数パッキングを担当する
@@ -321,6 +322,24 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		shortTypeName = rawTypeName[idx+1:]
 	}
 
+	// 1. semaCtx.LookupMethod による正確な探索 (確定シンボル名 fn.Name を最優先)
+	if fn, _ := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
+		targetName := fn.Name
+		if targetName == "" {
+			targetName = sema.CanonicalMethodName(rawTypeName, methodName)
+		}
+		return targetName, fn, curPtr, true
+	}
+	if !strings.HasPrefix(recvType.TypeName(), "*") {
+		if fn, _ := c.root.semaCtx.LookupMethod("*"+recvType.TypeName(), methodName); fn != nil {
+			targetName := fn.Name
+			if targetName == "" {
+				targetName = sema.CanonicalMethodName(rawTypeName, methodName)
+			}
+			return targetName, fn, curPtr, true
+		}
+	}
+
 	canonicalTarget := sema.CanonicalMethodName(rawTypeName, methodName)
 	if fn, canonical := c.root.semaCtx.LookupFunction(canonicalTarget); fn != nil {
 		return canonical, fn, curPtr, true
@@ -391,9 +410,9 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 	return "", nil, nil, false
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 引数パッキング & ロワリングヘルパー
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Type) hir.Value {
 	if elemType == nil {
@@ -549,9 +568,9 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 	return args
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // ジェネリクス関数のオンデマンド特殊化 (Monomorphization)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) getOrSpecializeFunc(baseName string, typeArgs []sema.Type) (string, *sema.FuncType) {
 	var typeSuffixes []string
@@ -784,9 +803,9 @@ func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
 	return e
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 関数・メソッド呼び出し (Call)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	// 0. ジェネリクス関数の明示的型引数適用呼び出し (例: Add[float64](a, b))
@@ -832,7 +851,6 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		targetType := c.ResolveTypeFromExpr(call.Function)
 		if targetType != nil && targetType != sema.TypeVoid {
 			if _, isFunc := targetType.(*sema.FuncType); !isFunc {
-				// 文字リテラルから整数型 (uint, int 等) への直接キャスト
 				if cl, ok := call.Args[0].(*ast.CharLiteral); ok {
 					intRank := func(llvm string) int {
 						switch llvm {
@@ -855,17 +873,14 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 				argVal := c.root.Expr.LowerExpr(call.Args[0])
 
-				// string -> cstring
 				if (argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string") && targetType == sema.TypeCString {
 					return c.lowerStringToCString(argVal)
 				}
 
-				// cstring -> string
 				if (argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring") && targetType == sema.TypeString {
 					return c.lowerCStringToString(argVal)
 				}
 
-				// []byte -> string
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
 					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					rawLen := c.root.nextReg(sema.TypeInt)
@@ -1037,7 +1052,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 	// 3. メンバー式経由の呼び出し (パッケージ関数呼び出し、またはオブジェクトメソッド呼び出し)
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, sjis.Decode)
+		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, japanese.NewShiftJIS)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && c.isPackageName(pkgIdent.Value) {
 			methodName := mem.Field.Value
 			targetFnName := pkgIdent.Value + "_" + methodName
@@ -1102,19 +1117,41 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		objPtr := c.root.Expr.LowerStructPtr(mem.Object)
 		objType := objPtr.Type().(*sema.PointerType).Base
 
-		// インターフェースメソッド呼び出し
+		// インターフェースメソッド呼び出し (動的ディスパッチ)
 		if iface, isIface := objType.(*sema.InterfaceType); isIface && !iface.IsAny() {
 			methodIdx := 0
 			var targetMethod sema.Method
+			foundMethod := false
 			for idx, m := range iface.Methods {
 				if m.Name == mem.Field.Value {
 					methodIdx = idx
 					targetMethod = m
+					foundMethod = true
 					break
 				}
 			}
 
+			if !foundMethod {
+				panic(fmt.Sprintf("[Lower Error] method '%s' not found on interface '%s'", mem.Field.Value, iface.TypeName()))
+			}
+
 			callArgs := call.Args
+			if len(callArgs) < len(targetMethod.ParamTypes) {
+				if fnDecl := c.findFuncDecl(mem.Field.Value); fnDecl != nil {
+					callArgs = c.fillDefaultArgs(callArgs, fnDecl.Params)
+				}
+				if len(callArgs) < len(targetMethod.ParamTypes) {
+					for i := len(callArgs); i < len(targetMethod.ParamTypes); i++ {
+						if targetMethod.ParamTypes[i] == sema.TypeInt {
+							callArgs = append(callArgs, &ast.IntegerLiteral{
+								Token: token.Token{Type: token.INT, Literal: "-1"},
+								Value: -1,
+							})
+						}
+					}
+				}
+			}
+
 			args := c.lowerArgs(callArgs, targetMethod.ParamTypes, targetMethod.IsVariadic, false, targetMethod.VariadicElem, call.HasEllipsis)
 
 			var retType sema.Type = sema.TypeVoid
@@ -1192,7 +1229,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			return dst
 		}
 
-		// 3C. 構造体フィールドに関数ポインタが格納されている場合 (クロージャフィールド呼び出し)
+		// 3C. 構造体フィールドに関数ポインタが格納されている場合
 		st, sName := c.root.findStruct(objType)
 		if st != nil {
 			fieldPtr, fieldType, _, fieldFound := c.root.Expr.ResolveFieldPath(st, sName, objPtr, mem.Field.Value)
@@ -1423,10 +1460,12 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 
 func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.InterfaceType) *hir.ItabDef {
 	sName := strings.TrimPrefix(concreteType.TypeName(), "*")
+	sName = strings.ReplaceAll(sName, ".", "_")
 	ifName := iface.Name
 	if ifName == "" {
 		ifName = "anon_iface"
 	}
+	ifName = strings.ReplaceAll(ifName, ".", "_")
 	key := fmt.Sprintf("%s_%s", sName, ifName)
 	if existing, ok := c.root.itabs[key]; ok {
 		return existing
@@ -1439,9 +1478,14 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 	methods := []hir.ItabMethodEntry{}
 
 	for _, m := range iface.Methods {
-		targetFnName, _, _, found := c.ResolveMethod(concreteType, m.Name, nil)
-		if !found {
-			targetFnName = fmt.Sprintf("%s_%s", sName, m.Name)
+		targetFnName, fnMeta, _, found := c.ResolveMethod(concreteType, m.Name, nil)
+		if !found && !strings.HasPrefix(concreteType.TypeName(), "*") {
+			targetFnName, fnMeta, _, found = c.ResolveMethod(&sema.PointerType{Base: concreteType}, m.Name, nil)
+		}
+		if found && fnMeta != nil {
+			targetFnName = fnMeta.Name
+		} else if !found {
+			targetFnName = sema.CanonicalMethodName(sName, m.Name)
 		}
 		methods = append(methods, hir.ItabMethodEntry{
 			MethodName:   m.Name,

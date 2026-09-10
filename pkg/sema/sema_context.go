@@ -96,7 +96,8 @@ func (c *Context) LookupStruct(name string) (*StructType, string) {
 		return st, name
 	}
 	for k, v := range c.Structs {
-		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
+		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) ||
+			strings.HasSuffix(k, "."+name) || strings.HasSuffix(name, "."+k) {
 			return v, k
 		}
 	}
@@ -108,7 +109,8 @@ func (c *Context) LookupInterface(name string) (*InterfaceType, string) {
 		return iface, name
 	}
 	for k, v := range c.Interfaces {
-		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
+		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) ||
+			strings.HasSuffix(k, "."+name) || strings.HasSuffix(name, "."+k) {
 			return v, k
 		}
 	}
@@ -144,7 +146,8 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 			stPart := parts[1]
 
 			cleanSt := strings.TrimPrefix(stPart, "*")
-			if cleanSt == rawRecv {
+			if cleanSt == rawRecv || strings.HasSuffix(cleanSt, "_"+rawRecv) || strings.HasSuffix(cleanSt, "."+rawRecv) ||
+				strings.HasSuffix(rawRecv, "_"+cleanSt) || strings.HasSuffix(rawRecv, "."+cleanSt) {
 				cleanFn := fnPart
 				if dot := strings.LastIndex(fnPart, "."); dot != -1 {
 					cleanFn = fnPart[dot+1:]
@@ -175,7 +178,6 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 	if fn, ok := c.Functions[name]; ok {
 		return fn, name
 	}
-	// @ を含む内部キーから関数名部分のみの一致もサポート
 	for k, v := range c.Functions {
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
 			return v, k
@@ -225,6 +227,98 @@ func (c *Context) LookupFloatConstant(name string) (float64, bool) {
 		}
 	}
 	return 0.0, false
+}
+
+// -----------------------------------------------------------------------------
+// インターフェース充足性検査 (Interface Conformance)
+// -----------------------------------------------------------------------------
+
+// Implements は concrete 型が iface インターフェースを満たしているかを判定する
+func (c *Context) Implements(concrete Type, iface *InterfaceType) bool {
+	if iface == nil {
+		return false
+	}
+	if iface.IsAny() {
+		return true
+	}
+	if concrete == nil {
+		return false
+	}
+
+	// 検査元がインターフェースの場合（サブインターフェース判定）
+	if srcIface, ok := concrete.(*InterfaceType); ok {
+		for _, im := range iface.Methods {
+			sm, idx := srcIface.GetMethod(im.Name)
+			if idx == -1 || sm == nil {
+				return false
+			}
+			if !c.signatureMatches(sm.ParamTypes, sm.ReturnTypes, sm.IsVariadic, im) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// 具象型（ポインタ型含む）のメソッド探索
+	recvName := concrete.TypeName()
+	for _, im := range iface.Methods {
+		fn, _ := c.LookupMethod(recvName, im.Name)
+		if fn == nil {
+			if !strings.HasPrefix(recvName, "*") {
+				fn, _ = c.LookupMethod("*"+recvName, im.Name)
+			}
+		}
+		if fn == nil {
+			return false
+		}
+
+		fnParams := fn.ParamTypes
+		if fn.IsMethod && len(fnParams) > 0 {
+			fnParams = fnParams[1:] // レシーバ自身をスキップして比較
+		}
+
+		if !c.signatureMatches(fnParams, fn.ReturnTypes, fn.IsVariadic, im) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (c *Context) signatureMatches(paramTypes []Type, returnTypes []Type, isVariadic bool, im Method) bool {
+	if len(paramTypes) != len(im.ParamTypes) {
+		return false
+	}
+	for i := range paramTypes {
+		if !c.typesCompatible(paramTypes[i], im.ParamTypes[i]) {
+			return false
+		}
+	}
+	if len(returnTypes) != len(im.ReturnTypes) {
+		return false
+	}
+	for i := range returnTypes {
+		if !c.typesCompatible(returnTypes[i], im.ReturnTypes[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Context) typesCompatible(t1, t2 Type) bool {
+	if t1 == nil || t2 == nil {
+		return t1 == t2
+	}
+	if t1 == t2 || t1.TypeName() == t2.TypeName() {
+		return true
+	}
+	if isIntType(t1) && isIntType(t2) && t1.Size() == t2.Size() {
+		return true
+	}
+	if iface2, ok := t2.(*InterfaceType); ok {
+		return c.Implements(t1, iface2)
+	}
+	return false
 }
 
 // -----------------------------------------------------------------------------
@@ -731,7 +825,6 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.FloatLiteral:
 		return TypeFloat64
 	case *ast.CharLiteral:
-		// 文字リテラルはデフォルトで UTF-8 標準 string 型として型推論
 		return TypeString
 	case *ast.StringLiteral:
 		return TypeString
@@ -905,6 +998,21 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			rawObjType = pt.Base
 		}
 
+		// インターフェース型レシーバのメソッド解決
+		if iface, ok := rawObjType.(*InterfaceType); ok {
+			if m, _ := iface.GetMethod(e.Field.Value); m != nil {
+				return &FuncType{
+					Name:         m.Name,
+					InternalKey:  m.InternalKey,
+					ParamTypes:   m.ParamTypes,
+					ReturnTypes:  m.ReturnTypes,
+					IsVariadic:   m.IsVariadic,
+					VariadicElem: m.VariadicElem,
+					IsMethod:     true,
+				}
+			}
+		}
+
 		if fn, _ := c.LookupMethod(objType.TypeName(), e.Field.Value); fn != nil {
 			return fn
 		}
@@ -977,7 +1085,24 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 				}
 			} else {
 				objType := c.InferExprType(mem.Object, locals)
-				if fn, _ := c.LookupMethod(objType.TypeName(), mem.Field.Value); fn != nil {
+				rawObj := objType
+				if pt, okPt := objType.(*PointerType); okPt {
+					rawObj = pt.Base
+				}
+
+				if iface, okIface := rawObj.(*InterfaceType); okIface {
+					if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
+						c.ResolvedCalls[e] = &FuncType{
+							Name:         m.Name,
+							InternalKey:  m.InternalKey,
+							ParamTypes:   m.ParamTypes,
+							ReturnTypes:  m.ReturnTypes,
+							IsVariadic:   m.IsVariadic,
+							VariadicElem: m.VariadicElem,
+							IsMethod:     true,
+						}
+					}
+				} else if fn, _ := c.LookupMethod(objType.TypeName(), mem.Field.Value); fn != nil {
 					c.ResolvedCalls[e] = fn
 				}
 			}
@@ -1036,7 +1161,6 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 		return expr
 	}
 
-	// 文字リテラルを整数型（uint, int 等）に代入・キャストする場合はコードポイントの IntegerLiteral へ直接変換
 	if cl, ok := expr.(*ast.CharLiteral); ok && isIntType(targetType) {
 		return &ast.IntegerLiteral{
 			Token: cl.Token,
@@ -1045,6 +1169,17 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 	}
 
 	actualType := c.InferExprType(expr, locals)
+
+	// インターフェース代入時の充足性検査
+	if iface, ok := targetType.(*InterfaceType); ok {
+		if _, isNil := expr.(*ast.NilLiteral); !isNil && !iface.IsAny() {
+			if !c.Implements(actualType, iface) {
+				panic(fmt.Sprintf("[Sema Error] type '%s' does not implement interface '%s'",
+					actualType.TypeName(), iface.TypeName()))
+			}
+		}
+	}
+
 	kind, needed := DetermineCast(actualType, targetType)
 	if !needed {
 		return expr
@@ -1075,7 +1210,6 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
 	case *ast.CharLiteral:
-		// 文字リテラルのコードポイント値を整数定数として評価
 		return int64(e.CodePoint), true
 	case *ast.Identifier:
 		if val, ok := c.LookupConstant(e.Value); ok {

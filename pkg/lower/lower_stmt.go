@@ -128,11 +128,12 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 // -------------------------------------------------------------
 // 代入文 (AssignStmt)
 // -------------------------------------------------------------
+
 func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
 		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-	// 多値アンパック代入 (例: text, err, _ := Decode(...) または sum, mul := <-async ... または val, ok := a.(T))
+	// 多値アンパック代入 (例: text, err, consumed := Decode(...) または sum, mul := <-async ... または val, ok := a.(T))
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
 		var rhsVal hir.Value
 		if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
@@ -173,13 +174,21 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 							continue
 						}
 						if ptr := s.root.symbols[ident.Value]; ptr != nil {
-							coerced := s.root.emitValueCoerce(elemVal, elemType)
+							targetType := elemType
+							if symT, okSym := s.root.symbolTypes[ident.Value]; okSym {
+								targetType = symT
+							}
+							coerced := s.root.emitValueCoerce(elemVal, targetType)
 							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: ptr})
 						}
 					} else {
 						targetPtr := s.root.Expr.LowerLValue(left)
 						if targetPtr != nil {
-							coerced := s.root.emitValueCoerce(elemVal, elemType)
+							var targetType sema.Type = elemType
+							if pt, okPt := targetPtr.Type().(*sema.PointerType); okPt {
+								targetType = pt.Base
+							}
+							coerced := s.root.emitValueCoerce(elemVal, targetType)
 							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: targetPtr})
 						}
 					}
@@ -195,7 +204,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 		rhsVals[i] = s.root.Expr.LowerExpr(r)
 	}
 
-	// 定義代入 (:=)
+	// 定義代入 (:=) または型付き変数宣言 (var)
 	if isDefine {
 		for i, left := range stmt.Left {
 			ident, ok := left.(*ast.Identifier)
@@ -213,7 +222,19 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			if stmt.Type != nil {
 				targetType = s.root.semaCtx.ResolveType(stmt.Type)
 				if val != nil {
-					val = s.root.emitValueCoerce(val, targetType)
+					if iface, isIface := targetType.(*sema.InterfaceType); isIface {
+						isZero := false
+						if ci, okCi := val.(*hir.ConstInt); okCi && ci.Val == 0 {
+							isZero = true
+						}
+						if isNilValue(val) || isZero {
+							val = s.root.defaultConstValue(iface)
+						} else {
+							val = s.root.emitValueCoerce(val, targetType)
+						}
+					} else {
+						val = s.root.emitValueCoerce(val, targetType)
+					}
 				}
 			} else if val != nil {
 				targetType = val.Type()
