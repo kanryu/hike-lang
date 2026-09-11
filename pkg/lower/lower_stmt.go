@@ -224,6 +224,9 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 					} else {
 						val = s.root.emitValueCoerce(val, targetType)
 					}
+				} else {
+					// 初期値省略時は対象型のデフォルトゼロ値（配列なら ConstZero）を取得
+					val = s.root.defaultConstValue(targetType)
 				}
 			} else if val != nil {
 				targetType = val.Type()
