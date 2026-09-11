@@ -935,15 +935,10 @@ func (p *Parser) parseVarStmt() ast.Statement {
 		}
 	}
 
-	rights := make([]ast.Expression, len(idents))
-	for i := range rights {
-		rights[i] = &ast.IntegerLiteral{Token: varTok, Value: 0}
-	}
-
 	return &ast.AssignStmt{
 		Token: varTok,
 		Left:  lefts,
-		Right: rights,
+		Right: nil,
 		Type:  typeExpr,
 	}
 }

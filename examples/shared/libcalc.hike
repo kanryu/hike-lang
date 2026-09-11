@@ -46,3 +46,14 @@ cfunc HikeAbsDiff(a int, b int) int {
 	diff := a - b
 	return abs(diff)
 }
+
+// 2nd test for cfunc with array parameter
+// fix(emitter): handle array-type casts in emitCast (Fixes #2)#3
+cfunc CTestArr(val int) int {
+    var h [5]int
+    h[0] = val
+    h[1] = val + 1
+    var sum int = 0
+    sum = h[0] + h[1]
+    return sum
+}
