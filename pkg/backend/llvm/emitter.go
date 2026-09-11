@@ -879,6 +879,81 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		return
 	}
 
+	// 9. 配列型をスカラー値として扱う (lower/型推論バグ: int式が誤って[N x i64]になる)
+	if strings.HasPrefix(fromLLVM, "[") {
+		if strings.HasPrefix(toLLVM, "[") {
+			// 配列→配列: bitcastでなくそのまま (型名が異なる場合のみbitcast、同一ならコピー)
+			if fromLLVM == toLLVM {
+				e.b.WriteString(fmt.Sprintf("  %s = %s\n", i.Dst, val))
+			} else {
+				e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			}
+		} else {
+			// 配列→整数: 先頭要素を抽出
+			e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", i.Dst, fromLLVM, val))
+		}
+		return
+	}
+	if strings.HasPrefix(toLLVM, "[") && rFrom > 0 {
+		// 整数→配列: ゼロ初期化配列の要素0に挿入。要素型は rFrom(ビット数)から決定。
+		elemLLVM := "i32"
+		if rFrom >= 64 {
+			elemLLVM = "i64"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s zeroinitializer, %s %s, 0\n", i.Dst, toLLVM, elemLLVM, val))
+		return
+	}
+
+	// 9. 配列型をスカラー値として扱う (lower/型推論バグ: int式が誤って[N x i64]になる)
+	if strings.HasPrefix(fromLLVM, "[") {
+		if strings.HasPrefix(toLLVM, "[") {
+			// 配列→配列: bitcastでなくそのまま (型名が異なる場合のみbitcast、同一ならコピー)
+			if fromLLVM == toLLVM {
+				e.b.WriteString(fmt.Sprintf("  %s = %s\n", i.Dst, val))
+			} else {
+				e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			}
+		} else {
+			// 配列→整数: 先頭要素を抽出
+			e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", i.Dst, fromLLVM, val))
+		}
+		return
+	}
+	if strings.HasPrefix(toLLVM, "[") && rFrom > 0 {
+		// 整数→配列: ゼロ初期化配列の要素0に挿入。要素型は rFrom(ビット数)から決定。
+		elemLLVM := "i32"
+		if rFrom >= 64 {
+			elemLLVM = "i64"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s zeroinitializer, %s %s, 0\n", i.Dst, toLLVM, elemLLVM, val))
+		return
+	}
+
+	// 9. 配列型をスカラー値として扱う (lower/型推論バグ: int式が誤って[N x i64]になる)
+	if strings.HasPrefix(fromLLVM, "[") {
+		if strings.HasPrefix(toLLVM, "[") {
+			// 配列→配列: bitcastでなくそのまま (型名が異なる場合のみbitcast、同一ならコピー)
+			if fromLLVM == toLLVM {
+				e.b.WriteString(fmt.Sprintf("  %s = %s\n", i.Dst, val))
+			} else {
+				e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			}
+		} else {
+			// 配列→整数: 先頭要素を抽出
+			e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", i.Dst, fromLLVM, val))
+		}
+		return
+	}
+	if strings.HasPrefix(toLLVM, "[") && rFrom > 0 {
+		// 整数→配列: ゼロ初期化配列の要素0に挿入。要素型は rFrom(ビット数)から決定。
+		elemLLVM := "i32"
+		if rFrom >= 64 {
+			elemLLVM = "i64"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s zeroinitializer, %s %s, 0\n", i.Dst, toLLVM, elemLLVM, val))
+		return
+	}
+
 	panic(fmt.Sprintf("[Emitter Panic] invalid cast operation: cannot cast '%s' to '%s' (val: %s, dst: %s)",
 		fromLLVM, toLLVM, val, i.Dst))
 }
