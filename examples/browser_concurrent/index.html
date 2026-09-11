@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Hike Concurrency on Browser (WASM)</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            background: #0f172a;
+            color: #f8fafc;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 2rem;
+            width: 480px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+        }
+        h2 { margin-top: 0; color: #38bdf8; font-size: 1.3rem; }
+        .status {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+            background: #334155;
+            display: inline-block;
+        }
+        .results {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .box {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #334155;
+        }
+        .box-title { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.25rem; }
+        .box-value { font-size: 1.8rem; font-weight: bold; color: #4ade80; }
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            background: #0284c7;
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #0369a1; }
+        button:disabled { background: #475569; cursor: not-allowed; }
+        #log {
+            margin-top: 1rem;
+            font-size: 0.8rem;
+            color: #cbd5e1;
+            font-family: Consolas, monospace;
+            background: #020617;
+            padding: 0.75rem;
+            border-radius: 6px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Hike Concurrency Engine</h2>
+    <div id="status" class="status">待機中</div>
+
+    <div class="results">
+        <div class="box">
+            <div class="box-title">SUM (15 + 3)</div>
+            <div id="val-sum" class="box-value">-</div>
+        </div>
+        <div class="box">
+            <div class="box-title">MUL (15 * 3)</div>
+            <div id="val-mul" class="box-value">-</div>
+        </div>
+    </div>
+
+    <button id="run-btn" onclick="startExecution()">並行計算を実行</button>
+
+    <div id="log"></div>
+</div>
+
+<script>
+    const statusEl = document.getElementById('status');
+    const sumEl = document.getElementById('val-sum');
+    const mulEl = document.getElementById('val-mul');
+    const logEl = document.getElementById('log');
+    const runBtn = document.getElementById('run-btn');
+
+    function log(msg) {
+        logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function startExecution() {
+        runBtn.disabled = true;
+        statusEl.innerText = "Workerスレッドプールで計算中...";
+        statusEl.style.background = "#0369a1";
+        sumEl.innerText = "-";
+        mulEl.innerText = "-";
+        log("Hike Main Worker を起動しました");
+
+        // 共有メモリ (SharedArrayBuffer) を初期化
+        const memory = new WebAssembly.Memory({
+            initial: 256,
+            maximum: 512,
+            shared: true
+        });
+
+       // 修正前: const worker = new Worker('worker.js');
+        // 修正後: タイムスタンプを付与してキャッシュを強制破棄
+        const worker = new Worker('worker.js?t=' + Date.now());
+
+        // Worker からのメッセージ（DOM更新・ログ通知）を受信
+        worker.onmessage = (e) => {
+            const { type, sum, mul, message } = e.data;
+            if (type === 'log') {
+                log(message);
+            } else if (type === 'result') {
+                sumEl.innerText = sum;
+                mulEl.innerText = mul;
+                statusEl.innerText = "計算完了 (Success)";
+                statusEl.style.background = "#15803d";
+                log(`結果受信: SUM=${sum}, MUL=${mul}`);
+                runBtn.disabled = false;
+            }
+        };
+
+        // WASMバイナリと共有メモリをWorkerへ転送
+        fetch('main.wasm')
+            .then(res => res.arrayBuffer())
+            .then(bytes => {
+                worker.postMessage({ type: 'init', wasmBytes: bytes, memory });
+            })
+            .catch(err => {
+                log("WASMロードエラー: " + err);
+                statusEl.innerText = "エラー";
+                statusEl.style.background = "#b91c1c";
+                runBtn.disabled = false;
+            });
+    }
+</script>
+
+</body>
+</html>

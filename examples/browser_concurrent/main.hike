@@ -1,0 +1,31 @@
+upackage main
+
+// JavaScriptホストに利用可能なヒープサイズ(KB単位)を問い合わせる
+extern func requestHeapSizeKB() int
+
+// メモリ確保関数(ランタイム提供)
+extern func malloc(size int) *byte
+
+// JavaScript側への結果通知コールバック
+extern func displayResult(sum int, mul int)
+
+func compute(a int, b int) (int, int) {
+    return a + b, a * b
+}
+
+func main() int {
+    // 1. JavaScriptホストに使用可能サイズ(KB)を問い合わせる
+    heapKB := requestHeapSizeKB()
+
+    // 2. JavaScriptが指定したサイズ分だけメモリを確保
+    heapBuffer := malloc(heapKB * 1024)
+
+    // 3. ワーカースレッドへタスクをオフロードし、<- で同期回収
+    sum, mul := <-Async(func() (int, int) {
+        return compute(15, 3)
+    })
+
+    // 4. 計算結果を画面UIへ反映
+    displayResult(sum, mul)
+    return 0
+}

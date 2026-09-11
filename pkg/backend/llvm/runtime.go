@@ -1,21 +1,39 @@
 package llvm
 
 import (
-	_ "embed" // embedパッケージをブランクインポート（ディレクティブ有効化のため）
+	_ "embed"
+	"strings"
 )
 
-// runtime/runtime.ll の内容をコンパイル時に文字列として埋め込む
+// runtime/runtime.ll (Native 64-bit / Windows) の内容をコンパイル時に埋め込む
 //
 //go:embed runtime/runtime.ll
 var builtinRuntimeIR string
 
-// 必要に応じて外部から取得できるように公開関数を用意するか、
-// 同一パッケージ内の emitter.go から builtinRuntimeIR を直接参照します
+// runtime/runtime_wasm32.ll (WASM32 / POSIX 互換) の内容をコンパイル時に埋め込む
+//
+//go:embed runtime/runtime_wasm32.ll
+var builtinRuntimeWasm32IR string
+
+// GetBuiltinRuntimeIR はデフォルト (Native 64-bit) のランタイム IR を返します
 func GetBuiltinRuntimeIR() string {
 	return builtinRuntimeIR
 }
 
-// RuntimeLLVMSymbols は runtime.ll 内で既に宣言・定義されているシンボル群
+// GetBuiltinRuntimeWasm32IR は wasm32 ターゲット向けのランタイム IR を返します
+func GetBuiltinRuntimeWasm32IR() string {
+	return builtinRuntimeWasm32IR
+}
+
+// GetRuntimeIR はターゲットトリプルを判定し、適切なランタイム IR を返します
+func GetRuntimeIR(targetTriple string) string {
+	if strings.HasPrefix(targetTriple, "wasm32") {
+		return builtinRuntimeWasm32IR
+	}
+	return builtinRuntimeIR
+}
+
+// RuntimeLLVMSymbols は各 runtime.ll 内で既に宣言・定義されているシンボル群
 var RuntimeLLVMSymbols = map[string]bool{
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
@@ -26,10 +44,19 @@ var RuntimeLLVMSymbols = map[string]bool{
 	// 純粋メモリ & 文字列操作内部実装 (32-bit / wasm32) (define internal)
 	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
 
-	// OS ネイティブ API (declare)
+	// --- Windows Native API (declare) ---
 	"QueueUserWorkItem": true, "CreateEventA": true, "SetEvent": true,
 	"WaitForSingleObject": true, "CloseHandle": true, "Sleep": true,
 	"GetTickCount64": true,
+
+	// --- POSIX / WASM32 抽象スレッド同期 API (declare) ---
+	"hike_thread_spawn":  true,
+	"hike_event_create":  true,
+	"hike_event_signal":  true,
+	"hike_event_wait":    true,
+	"hike_event_destroy": true,
+	"hike_sleep_ms":      true,
+	"hike_now_ns":        true,
 
 	// OS ネイティブバインディング実装 (define internal)
 	"c_os_sleep_ms": true, "os_sleep_ms": true,

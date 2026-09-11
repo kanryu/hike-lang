@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/backend/llvm"
@@ -39,9 +40,10 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil, nil, nil, fmt.Errorf("no input files provided")
 	}
 
-	// ターゲットアーキテクチャの型システム初期化
+	targetTriple := ""
 	if c.target != nil {
-		sema.SetTargetArchitecture(c.target.Triple)
+		targetTriple = c.target.Triple
+		sema.SetTargetArchitecture(targetTriple)
 	}
 
 	rootDir := filepath.Dir(entryPaths[0])
@@ -71,7 +73,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	}
 
 	// 4. HIR への Lowering (Compiler が保持するターゲット情報を Lowerer に直接教える)
-	is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4))
+	is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 	lw := lower.New(concreteProg, semaCtx)
 	lw.Set32Bit(is32Bit)
 	hirProg := lw.Lower()
@@ -86,9 +88,21 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 		return "", nil, nil, err
 	}
 
+	targetTriple := ""
+	if c.target != nil {
+		targetTriple = c.target.Triple
+	}
+
 	// 5. LLVM バックエンドによるコード出力
-	emitter := llvm.New(hirProg, semaCtx, c.target.Triple)
+	emitter := llvm.New(hirProg, semaCtx, targetTriple)
 	llvmIR := emitter.Emit()
+
+	// 6. ターゲットに応じたランタイム IR の自動切り替え
+	targetRuntime := llvm.GetRuntimeIR(targetTriple)
+	defaultRuntime := llvm.GetBuiltinRuntimeIR()
+	if targetRuntime != "" && targetRuntime != defaultRuntime && strings.Contains(llvmIR, defaultRuntime) {
+		llvmIR = strings.Replace(llvmIR, defaultRuntime, targetRuntime, 1)
+	}
 
 	return llvmIR, semaCtx, concreteProg, nil
 }
