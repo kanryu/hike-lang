@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hike Concurrency on Browser (WASM)</title>
+    
+    <!-- Critical: Service Worker for Cross-Origin Isolation (COOP/COEP) -->
+    <script src="coi-serviceworker.js"></script>
+
+    <!-- Syntax Highlighting (Highlight.js) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            background: #0f172a;
+            color: #f8fafc;
+            padding: 2rem 1rem;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 760px;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        h2 { margin: 0; color: #38bdf8; font-size: 1.3rem; }
+        .repo-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            color: #94a3b8;
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 0.35rem 0.75rem;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .repo-link:hover {
+            color: #38bdf8;
+            border-color: #38bdf8;
+        }
+        .status {
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            margin-bottom: 1.25rem;
+            background: #334155;
+            display: inline-block;
+            font-weight: 500;
+        }
+        .results {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+        .box {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #334155;
+        }
+        .box-title { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.25rem; }
+        .box-value { font-size: 1.8rem; font-weight: bold; color: #4ade80; }
+        
+        .config-group {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .config-label { font-size: 0.9rem; color: #cbd5e1; }
+        .config-input {
+            width: 100px;
+            padding: 0.4rem 0.6rem;
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #38bdf8;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            text-align: right;
+        }
+
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            background: #0284c7;
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #0369a1; }
+        button:disabled { background: #475569; cursor: not-allowed; }
+        
+        #log {
+            margin-top: 1rem;
+            font-size: 0.8rem;
+            color: #cbd5e1;
+            font-family: Consolas, monospace;
+            background: #020617;
+            padding: 0.75rem;
+            border-radius: 6px;
+            max-height: 140px;
+            overflow-y: auto;
+        }
+
+        /* Source Code Section */
+        .source-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
+        }
+        pre {
+            margin: 0;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            font-size: 0.85rem;
+            overflow-x: auto;
+        }
+        pre code {
+            font-family: Consolas, "Fira Code", monospace !important;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <div class="header">
+            <h2>Hike Concurrency Engine</h2>
+            <a class="repo-link" href="https://github.com/kanryu/hike-lang" target="_blank" rel="noopener">
+                <span>GitHub Repository</span> &rarr;
+            </a>
+        </div>
+
+        <div id="status" class="status">Idle</div>
+
+        <div class="config-group">
+            <span class="config-label">WASM Allowed Heap Size (KB):</span>
+            <input type="number" id="heap-size-input" class="config-input" value="64" min="16" max="4096" step="16">
+        </div>
+
+        <div class="results">
+            <div class="box">
+                <div class="box-title">SUM (15 + 3)</div>
+                <div id="val-sum" class="box-value">-</div>
+            </div>
+            <div class="box">
+                <div class="box-title">MUL (15 * 3)</div>
+                <div id="val-mul" class="box-value">-</div>
+            </div>
+        </div>
+
+        <button id="run-btn" onclick="startExecution()">Run Concurrent Computation</button>
+
+        <div id="log"></div>
+    </div>
+
+    <!-- Source Code Viewer Section -->
+    <div class="card">
+        <div class="source-title">
+            <span>Source Code (<code>main.hike</code>)</span>
+            <span style="font-size: 0.75rem; color: #64748b;">Hike Language</span>
+        </div>
+        <pre><code class="language-go">package main
+
+// Query available heap size (KB) from the JavaScript host
+extern func requestHeapSizeKB() int
+
+// Memory allocator provided by runtime
+extern func malloc(size int) *byte
+
+// UI update callback to the JavaScript host
+extern func displayResult(sum int, mul int)
+
+func compute(a int, b int) (int, int) {
+    return a + b, a * b
+}
+
+func main() int {
+    // 1. Query available size (KB) from JS host
+    heapKB := requestHeapSizeKB()
+
+    // 2. Allocate memory configured by host
+    heapBuffer := malloc(heapKB * 1024)
+
+    // 3. Offload work to background thread and await with &lt;-
+    sum, mul := &lt;-Async(func() (int, int) {
+        return compute(15, 3)
+    })
+
+    // 4. Update results in browser UI
+    displayResult(sum, mul)
+    return 0
+}</code></pre>
+    </div>
+</div>
+
+<!-- Load runtime.js -->
+<script src="runtime.js"></script>
+
+<script>
+    const statusEl = document.getElementById('status');
+    const sumEl = document.getElementById('val-sum');
+    const mulEl = document.getElementById('val-mul');
+    const logEl = document.getElementById('log');
+    const runBtn = document.getElementById('run-btn');
+    const heapInput = document.getElementById('heap-size-input');
+
+    // Initialize syntax highlighting
+    hljs.highlightAll();
+
+    function log(msg) {
+        logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Unified runtime loading runtime.js as Worker
+    const runtime = new HikeConcurrentRuntime({
+        wasmUrl: 'main.wasm',
+        scriptUrl: 'runtime.js',
+        heapSizeKB: Number(heapInput.value),
+        onResult: (sum, mul) => {
+            sumEl.innerText = sum;
+            mulEl.innerText = mul;
+            statusEl.innerText = "Completed (Success)";
+            statusEl.style.background = "#15803d";
+            log(`Result received: SUM=${sum}, MUL=${mul}`);
+            runBtn.disabled = false;
+        },
+        onLog: (msg) => {
+            log(msg);
+        }
+    });
+
+    // Heap size change event
+    heapInput.addEventListener('change', () => {
+        const kb = Number(heapInput.value);
+        window.setHikeHeapSizeKB(kb);
+        log(`Heap size updated via external API: ${kb} KB`);
+    });
+
+    async function startExecution() {
+        runBtn.disabled = true;
+        statusEl.innerText = "Computing in thread pool...";
+        statusEl.style.background = "#0369a1";
+        sumEl.innerText = "-";
+        mulEl.innerText = "-";
+
+        runtime.setHeapSizeKB(Number(heapInput.value));
+
+        try {
+            await runtime.start();
+        } catch (err) {
+            log("Execution error: " + err);
+            statusEl.innerText = "Error";
+            statusEl.style.background = "#b91c1c";
+            runBtn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
