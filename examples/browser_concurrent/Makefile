@@ -30,4 +30,4 @@ serve:
 
 # 4. 生成バイナリおよび中間IRのクリーンアップ
 clean:
-	rm -f main.wasm *.ll
+	rm -f main.wasm *.ll *.js

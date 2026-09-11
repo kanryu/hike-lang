@@ -16,7 +16,7 @@
             background: #1e293b;
             border-radius: 12px;
             padding: 2rem;
-            width: 480px;
+            width: 500px;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
         }
         h2 { margin-top: 0; color: #38bdf8; font-size: 1.3rem; }
@@ -43,6 +43,30 @@
         }
         .box-title { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.25rem; }
         .box-value { font-size: 1.8rem; font-weight: bold; color: #4ade80; }
+        
+        .config-group {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .config-label { font-size: 0.9rem; color: #cbd5e1; }
+        .config-input {
+            width: 100px;
+            padding: 0.4rem 0.6rem;
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #38bdf8;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            text-align: right;
+        }
+
         button {
             width: 100%;
             padding: 0.75rem;
@@ -65,7 +89,7 @@
             background: #020617;
             padding: 0.75rem;
             border-radius: 6px;
-            max-height: 120px;
+            max-height: 140px;
             overflow-y: auto;
         }
     </style>
@@ -75,6 +99,11 @@
 <div class="card">
     <h2>Hike Concurrency Engine</h2>
     <div id="status" class="status">待機中</div>
+
+    <div class="config-group">
+        <span class="config-label">WASM 許可ヒープ容量 (KB):</span>
+        <input type="number" id="heap-size-input" class="config-input" value="64" min="16" max="4096" step="16">
+    </div>
 
     <div class="results">
         <div class="box">
@@ -92,64 +121,64 @@
     <div id="log"></div>
 </div>
 
+<!-- runtime.js のみを読み込み -->
+<script src="runtime.js"></script>
+
 <script>
     const statusEl = document.getElementById('status');
     const sumEl = document.getElementById('val-sum');
     const mulEl = document.getElementById('val-mul');
     const logEl = document.getElementById('log');
     const runBtn = document.getElementById('run-btn');
+    const heapInput = document.getElementById('heap-size-input');
 
     function log(msg) {
         logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    function startExecution() {
+    // runtime.js 自体を Worker スクリプトとして起動する統合ランタイム
+    const runtime = new HikeConcurrentRuntime({
+        wasmUrl: 'main.wasm',
+        scriptUrl: 'runtime.js',
+        heapSizeKB: Number(heapInput.value),
+        onResult: (sum, mul) => {
+            sumEl.innerText = sum;
+            mulEl.innerText = mul;
+            statusEl.innerText = "計算完了 (Success)";
+            statusEl.style.background = "#15803d";
+            log(`結果受信: SUM=${sum}, MUL=${mul}`);
+            runBtn.disabled = false;
+        },
+        onLog: (msg) => {
+            log(msg);
+        }
+    });
+
+    // 外部API (setHikeHeapSizeKB) の呼び出し
+    heapInput.addEventListener('change', () => {
+        const kb = Number(heapInput.value);
+        window.setHikeHeapSizeKB(kb);
+        log(`外部APIよりヒープサイズを変更: ${kb} KB`);
+    });
+
+    async function startExecution() {
         runBtn.disabled = true;
-        statusEl.innerText = "Workerスレッドプールで計算中...";
+        statusEl.innerText = "スレッドプールで計算中...";
         statusEl.style.background = "#0369a1";
         sumEl.innerText = "-";
         mulEl.innerText = "-";
-        log("Hike Main Worker を起動しました");
 
-        // 共有メモリ (SharedArrayBuffer) を初期化
-        const memory = new WebAssembly.Memory({
-            initial: 256,
-            maximum: 512,
-            shared: true
-        });
+        runtime.setHeapSizeKB(Number(heapInput.value));
 
-       // 修正前: const worker = new Worker('worker.js');
-        // 修正後: タイムスタンプを付与してキャッシュを強制破棄
-        const worker = new Worker('worker.js?t=' + Date.now());
-
-        // Worker からのメッセージ（DOM更新・ログ通知）を受信
-        worker.onmessage = (e) => {
-            const { type, sum, mul, message } = e.data;
-            if (type === 'log') {
-                log(message);
-            } else if (type === 'result') {
-                sumEl.innerText = sum;
-                mulEl.innerText = mul;
-                statusEl.innerText = "計算完了 (Success)";
-                statusEl.style.background = "#15803d";
-                log(`結果受信: SUM=${sum}, MUL=${mul}`);
-                runBtn.disabled = false;
-            }
-        };
-
-        // WASMバイナリと共有メモリをWorkerへ転送
-        fetch('main.wasm')
-            .then(res => res.arrayBuffer())
-            .then(bytes => {
-                worker.postMessage({ type: 'init', wasmBytes: bytes, memory });
-            })
-            .catch(err => {
-                log("WASMロードエラー: " + err);
-                statusEl.innerText = "エラー";
-                statusEl.style.background = "#b91c1c";
-                runBtn.disabled = false;
-            });
+        try {
+            await runtime.start();
+        } catch (err) {
+            log("実行エラー: " + err);
+            statusEl.innerText = "エラー";
+            statusEl.style.background = "#b91c1c";
+            runBtn.disabled = false;
+        }
     }
 </script>
 

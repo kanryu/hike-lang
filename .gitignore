@@ -13,6 +13,7 @@ hikec.exe
 # Intermediate / Compiler Output files
 *.ll
 !**/runtime.ll
+!**/runtime_wasm32.ll
 *.bc
 *.s
 *.o
