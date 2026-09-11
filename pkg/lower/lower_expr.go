@@ -18,9 +18,23 @@ func NewExprLowerer(root *Lowerer) *ExprLowerer {
 	return &ExprLowerer{root: root}
 }
 
-// -----------------------------------------------------------------------------
+// lookupGlobal は素の名前またはパッケージ修飾名 (例: eventloop_running) でグローバル変数を検索する
+func (e *ExprLowerer) lookupGlobal(name string) (string, sema.Type, bool) {
+	if g, ok := e.root.semaCtx.Globals[name]; ok {
+		return name, g, true
+	}
+	targetSuffix := "_" + name
+	for gName, gt := range e.root.semaCtx.Globals {
+		if strings.HasSuffix(gName, targetSuffix) {
+			return gName, gt, true
+		}
+	}
+	return "", nil, false
+}
+
+// -------------------------------------------------------------
 // 式 (Expression) の評価
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	if expr == nil {
@@ -82,7 +96,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				return e.root.defaultConstValue(iface)
 			}
 
-			// 1. 既にインターフェース型である値の変換
 			if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
 				if iface.IsAny() {
 					dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -167,14 +180,28 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
 			return dst
 		}
-		if g, ok := e.root.semaCtx.Globals[node.Value]; ok {
+		if gName, g, ok := e.lookupGlobal(node.Value); ok {
 			dst := e.root.nextReg(g)
-			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: node.Value, Typ: &sema.PointerType{Base: g}}})
+			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
 			return dst
 		}
-		if fn, ok := e.root.semaCtx.Functions[node.Value]; ok {
+
+		lookupFn := func(name string) (*sema.FuncType, string) {
+			if fn, ok := e.root.semaCtx.Functions[name]; ok {
+				return fn, name
+			}
+			targetSuffix := "_" + name
+			for fnName, fn := range e.root.semaCtx.Functions {
+				if strings.HasSuffix(fnName, targetSuffix) {
+					return fn, fnName
+				}
+			}
+			return nil, ""
+		}
+
+		if fn, canonicalName := lookupFn(node.Value); fn != nil {
 			fatType := fn
-			callee := fn.Name
+			callee := canonicalName
 			if fn.IsCFunc && fn.CFuncAst != nil && !fn.CFuncAst.IsAlias() {
 				callee = "__hike_impl_" + fn.Name
 			} else if fn.IsExtern && fn.IRName != "" {
@@ -186,6 +213,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
 			return t2
 		}
+
 		if sema.IsBuiltinType(node.Value) {
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
@@ -508,13 +536,13 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 			}
 			return ptr
 		}
-		if g, exists := e.root.semaCtx.Globals[id.Value]; exists {
+		if gName, g, exists := e.lookupGlobal(id.Value); exists {
 			if _, isPtr := g.(*sema.PointerType); isPtr {
 				loadReg := e.root.nextReg(g)
-				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: &hir.GlobalVar{Name: id.Value, Typ: &sema.PointerType{Base: g}}})
+				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
 				return loadReg
 			}
-			return &hir.GlobalVar{Name: id.Value, Typ: &sema.PointerType{Base: g}}
+			return &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}
 		}
 	}
 	val := e.LowerExpr(expr)
@@ -533,8 +561,8 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 		if ptr, ok := e.root.symbols[node.Value]; ok {
 			return ptr
 		}
-		if g, ok := e.root.semaCtx.Globals[node.Value]; ok {
-			return &hir.GlobalVar{Name: node.Value, Typ: &sema.PointerType{Base: g}}
+		if gName, g, ok := e.lookupGlobal(node.Value); ok {
+			return &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}
 		}
 		panic(fmt.Sprintf("[Lower Error] undefined identifier for lvalue: %s", node.Value))
 
@@ -666,7 +694,6 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	rightVal := e.LowerExpr(node.Right)
 
 	if node.Operator == "==" || node.Operator == "!=" {
-		// 1. インターフェース値と nil リテラルの比較
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: 0})
@@ -690,7 +717,6 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 			return cmpReg
 		}
 
-		// 2. インターフェース変数同士の直接比較 (enc1 == enc2 / enc1 != enc2)
 		if leftIface, isLeftIface := leftVal.Type().(*sema.InterfaceType); isLeftIface {
 			if rightIface, isRightIface := rightVal.Type().(*sema.InterfaceType); isRightIface {
 				data1 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -730,7 +756,6 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 			}
 		}
 
-		// 3. 関数値と nil の比較
 		if _, isFunc := leftVal.Type().(*sema.FuncType); isFunc && isNilValue(rightVal) {
 			fnPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrExtractValue{Dst: fnPtr, Agg: leftVal, Index: 0})
@@ -755,7 +780,6 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	// ポインタ加算 (ptr + offset) または cstring 加算 (cstring + offset)
 	isPtrOrCString := false
 	if _, isPtr := leftVal.Type().(*sema.PointerType); isPtr {
 		isPtrOrCString = true

@@ -159,3 +159,93 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// 5. 標準ライブラリ eventloop によるメインスレッド同期実行（<-InvokeCh による待機初期化構文）検証
+func TestConcurrent_EventLoop_InvokeCh(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/eventloop"
+
+func printf(format string, ...) int
+
+var mainDeviceID int = 42
+
+func main() int {
+    eventloop.Init(16)
+
+    worker := Async(func() int {
+        // <-InvokeCh による待機初期化構文（メインスレッドで実行させて値を受信）
+        val := <-eventloop.InvokeCh[int](func() int {
+            return mainDeviceID * 10
+        })
+
+        // ループ停止タスクを投入
+        eventloop.Stop()
+
+        return val
+    })
+
+    // メインスレッドでイベントループを実行（ブロッキング）
+    eventloop.Run()
+
+    res := <-worker
+    printf("EV_RESULT=%d\n", res)
+    return 0
+}
+`,
+		ExpectedOut:  "EV_RESULT=420",
+		ExpectedExit: 0,
+	})
+}
+
+// 6. eventloop への複数タスク先行投入とパイプライン回収検証
+func TestConcurrent_EventLoop_Pipeline(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/eventloop"
+
+func printf(format string, ...) int
+
+var counter int = 100
+
+func main() int {
+    eventloop.Init(16)
+
+    worker := Async(func() int {
+        // メインスレッドへ2つの処理を先行投入 (Pipeline)
+        chA := eventloop.InvokeCh[int](func() int {
+            counter = counter + 5
+            return counter
+        })
+        chB := eventloop.InvokeCh[int](func() int {
+            counter = counter * 2
+            return counter
+        })
+
+        // 順次待機して回収
+        a := <-chA
+        b := <-chB
+
+        eventloop.Stop()
+        return a + b
+    })
+
+    eventloop.Run()
+
+    total := <-worker
+    printf("PIPELINE_TOTAL=%d\n", total)
+    return 0
+}
+`,
+		ExpectedOut:  "PIPELINE_TOTAL=315",
+		ExpectedExit: 0,
+	})
+}

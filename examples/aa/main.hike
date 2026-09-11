@@ -1,10 +1,36 @@
 package main
 
+import "std/eventloop"
+
 func printf(format string, ...) int
 
+var counter int = 100
+
 func main() int {
-    var a any = 1234
-    val, ok := a.(int)
-    printf("VAL=%d,OK=%d\n", val, ok)
+    eventloop.Init(16)
+
+    worker := Async(func() int {
+        // メインスレッドへ2つの処理を先行投入 (Pipeline)
+        chA := eventloop.InvokeCh[int](func() int {
+            counter = counter + 5
+            return counter
+        })
+        chB := eventloop.InvokeCh[int](func() int {
+            counter = counter * 2
+            return counter
+        })
+
+        // 順次待機して回収
+        a := <-chA
+        b := <-chB
+
+        eventloop.Stop()
+        return a + b
+    })
+
+    eventloop.Run()
+
+    total := <-worker
+    printf("PIPELINE_TOTAL=%d\n", total)
     return 0
 }

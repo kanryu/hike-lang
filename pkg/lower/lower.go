@@ -7,6 +7,7 @@ import (
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
+	"hikec-go/pkg/token"
 )
 
 type loopContext struct {
@@ -85,12 +86,32 @@ func (l *Lowerer) Lower() *hir.Program {
 		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{Name: name, Typ: typ})
 	}
 
+	// グローバル変数の初期化式（var x = expr）を代入文として収集
+	var globalInits []ast.Statement
+	for _, decl := range l.prog.Decls {
+		if vd, ok := decl.(*ast.VarDecl); ok && vd.Value != nil {
+			globalInits = append(globalInits, &ast.AssignStmt{
+				Token: token.Token{Type: token.ASSIGN, Literal: "="},
+				Left:  []ast.Expression{vd.Name},
+				Right: []ast.Expression{vd.Value},
+			})
+		}
+	}
+
 	// 2. トップレベル宣言の変換
 	for _, decl := range l.prog.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			if sema.IsGenericFuncDecl(d) {
 				continue
+			}
+			// main 関数の先頭にグローバル変数の初期化文を差し込む
+			if d.Name != nil && d.Name.Value == "main" && len(globalInits) > 0 && d.Body != nil {
+				newStmts := make([]ast.Statement, 0, len(globalInits)+len(d.Body.Statements))
+				newStmts = append(newStmts, globalInits...)
+				newStmts = append(newStmts, d.Body.Statements...)
+				d.Body.Statements = newStmts
+				globalInits = nil
 			}
 			l.Call.LowerFunc(d)
 

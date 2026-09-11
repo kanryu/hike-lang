@@ -1,0 +1,48 @@
+package eventloop
+
+var queue chan func()
+var running int = 0
+
+// イベントループの初期化
+func Init(cap int) {
+    if cap <= 0 {
+        cap = 64
+    }
+    queue = make(chan func(), cap)
+}
+
+// メインスレッドでイベントループを開始（ブロッキング）
+func Run() {
+    running = 1
+    for running == 1 {
+        task := <-queue
+        task()
+    }
+}
+
+// イベントループを停止
+func Stop() {
+    Post(func() {
+        running = 0
+    })
+}
+
+// 戻り値不要のタスクを投入（Fire & Forget）
+func Post(fn func()) {
+    queue <- fn
+}
+
+// メインスレッドで実行させ、結果を受け取る（チャンネルを返し、呼び出し側で待機する）
+func InvokeCh[T](fn func() T) (chan T) {
+    resCh := make(chan T, 1)
+    queue <- func() {
+        resCh <- fn()
+    }
+    return resCh
+}
+
+// メインスレッドで実行させ、結果を受け取る（別スレッドから同期呼び出し）
+func Invoke[T](fn func() T) T {
+    resCh := InvokeCh[T](fn)
+    return <-resCh
+}

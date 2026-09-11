@@ -133,7 +133,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
 		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-	// 多値アンパック代入 (例: text, err, consumed := Decode(...) または sum, mul := <-async ... または val, ok := a.(T))
+	// 多値アンパック代入
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
 		var rhsVal hir.Value
 		if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
@@ -169,28 +169,17 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 						s.root.symbolTypes[ident.Value] = elemType
 					}
 				} else {
-					if ident, okIdent := left.(*ast.Identifier); okIdent {
-						if ident.Value == "_" {
-							continue
+					if ident, okIdent := left.(*ast.Identifier); okIdent && ident.Value == "_" {
+						continue
+					}
+					targetPtr := s.root.Expr.LowerLValue(left)
+					if targetPtr != nil {
+						var targetType sema.Type = elemType
+						if pt, okPt := targetPtr.Type().(*sema.PointerType); okPt {
+							targetType = pt.Base
 						}
-						if ptr := s.root.symbols[ident.Value]; ptr != nil {
-							targetType := elemType
-							if symT, okSym := s.root.symbolTypes[ident.Value]; okSym {
-								targetType = symT
-							}
-							coerced := s.root.emitValueCoerce(elemVal, targetType)
-							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: ptr})
-						}
-					} else {
-						targetPtr := s.root.Expr.LowerLValue(left)
-						if targetPtr != nil {
-							var targetType sema.Type = elemType
-							if pt, okPt := targetPtr.Type().(*sema.PointerType); okPt {
-								targetType = pt.Base
-							}
-							coerced := s.root.emitValueCoerce(elemVal, targetType)
-							s.root.emit(&hir.InstrStore{Val: coerced, Ptr: targetPtr})
-						}
+						coerced := s.root.emitValueCoerce(elemVal, targetType)
+						s.root.emit(&hir.InstrStore{Val: coerced, Ptr: targetPtr})
 					}
 				}
 			}
@@ -198,7 +187,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 		}
 	}
 
-	// 右辺の先行評価 (a, b = b, a などの多重代入で変数値が上書き破壊されるのを防止)
+	// 右辺の先行評価
 	rhsVals := make([]hir.Value, len(stmt.Right))
 	for i, r := range stmt.Right {
 		rhsVals[i] = s.root.Expr.LowerExpr(r)
@@ -302,12 +291,8 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 		}
 
-		var targetPtr hir.Value
-		if ident, ok := left.(*ast.Identifier); ok {
-			targetPtr = s.root.symbols[ident.Value]
-		} else {
-			targetPtr = s.root.Expr.LowerLValue(left)
-		}
+		// 左辺値（ローカル変数、グローバル変数、構造体フィールド等）のアドレスを解決
+		targetPtr := s.root.Expr.LowerLValue(left)
 
 		if targetPtr != nil {
 			var val hir.Value
@@ -747,7 +732,6 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 			vVal := s.root.Expr.LowerExpr(valExpr)
 			var cmpReg *hir.Reg
 
-			// string または cstring の比較には文字列比較関数 (hike_streq) を使用
 			if vVal.Type() == sema.TypeString || vVal.Type() == sema.TypeCString || switchVal.Type() == sema.TypeString || switchVal.Type() == sema.TypeCString {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{switchVal, vVal}})
