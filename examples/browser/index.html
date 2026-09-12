@@ -32,6 +32,7 @@
             background: #64748b;
             color: #fff;
             margin-bottom: 1.5rem;
+            transition: background-color 0.2s;
         }
         .card {
             background: #0f172a;
@@ -95,29 +96,137 @@
         <div class="button-group">
             <button onclick="handleFibClick()">Run Fib(35) in Wasm</button>
             <button onclick="handleAddClick()">Compute 1234 + 5678</button>
-            <button class="secondary" onclick="wasmExports.AppendLogMessage(1)">Send Action A</button>
-            <button class="secondary" onclick="wasmExports.AppendLogMessage(2)">Send Action B</button>
+            <button class="secondary" onclick="handleActionClick(1)">Send Action A</button>
+            <button class="secondary" onclick="handleActionClick(2)">Send Action B</button>
         </div>
     </div>
 
+    <!-- Wasmと共に配布される標準ランタイムを読み込み -->
     <script src="runtime.js"></script>
     <script>
-        const runtime = new HikeRuntime();
+        let wasmInstance = null;
         let wasmExports = null;
+        let wasmMemory = null;
+        let heapOffset = null;
+
+        // メモリからUTF-8文字列をデコードするヘルパー
+        function decodeString(ptr, len) {
+            if (!wasmMemory) return "";
+            const bytes = new Uint8Array(wasmMemory.buffer, Number(ptr), Number(len));
+            return new TextDecoder("utf-8").decode(bytes);
+        }
 
         async function init() {
             try {
-                wasmExports = await runtime.load('main.wasm');
+                // 配布されたWasmバイナリを取得
+                const res = await fetch('main.wasm');
+                if (!res.ok) {
+                    throw new Error(`Failed to fetch main.wasm: ${res.statusText}`);
+                }
+                const wasmBytes = await res.arrayBuffer();
+
+                // 外部線形メモリ（Wasm内部エクスポートがない場合のフォールバック）
+                wasmMemory = new WebAssembly.Memory({ initial: 256, maximum: 512 });
+
+                // 配布用ランタイムが規定する32-bit環境インポートテーブル
+                const importObject = {
+                    env: {
+                        memory: wasmMemory,
+
+                        // 32-bit 動的アロケータ
+                        malloc: (size) => {
+                            const mem = (wasmExports && wasmExports.memory) ? wasmExports.memory : wasmMemory;
+                            if (!heapOffset) {
+                                if (wasmExports && wasmExports.__heap_base) {
+                                    heapOffset = Number(wasmExports.__heap_base.value || wasmExports.__heap_base);
+                                } else {
+                                    heapOffset = 65536; // 64KB
+                                }
+                            }
+                            const ptr = heapOffset;
+                            const allocSize = (Number(size) + 15) & ~15;
+                            heapOffset += allocSize;
+
+                            if (mem && heapOffset > mem.buffer.byteLength) {
+                                const neededBytes = heapOffset - mem.buffer.byteLength;
+                                const neededPages = Math.ceil(neededBytes / 65536);
+                                mem.grow(neededPages + 1);
+                            }
+                            return ptr;
+                        },
+
+                        calloc: (num, size) => {
+                            const total = Number(num) * Number(size);
+                            const ptr = importObject.env.malloc(total);
+                            const mem = (wasmExports && wasmExports.memory) ? wasmExports.memory : wasmMemory;
+                            if (mem) {
+                                new Uint8Array(mem.buffer, ptr, total).fill(0);
+                            }
+                            return ptr;
+                        },
+
+                        free: (ptr) => {},
+
+                        // main.hike で extern 定義された DOM / コンソール連携 API
+                        js_log: (ptr, len) => {
+                            console.log("[Hike WASM]", decodeString(ptr, len));
+                        },
+
+                        js_set_text: (idPtr, idLen, textPtr, textLen) => {
+                            const id = decodeString(idPtr, idLen);
+                            const text = decodeString(textPtr, textLen);
+                            const el = document.getElementById(id);
+                            if (el) el.innerText = text;
+                        },
+
+                        js_append_text: (idPtr, idLen, textPtr, textLen) => {
+                            const id = decodeString(idPtr, idLen);
+                            const text = decodeString(textPtr, textLen);
+                            const el = document.getElementById(id);
+                            if (el) el.innerText += text;
+                        },
+
+                        js_set_badge_color: (idPtr, idLen, colorPtr, colorLen) => {
+                            const id = decodeString(idPtr, idLen);
+                            const color = decodeString(colorPtr, colorLen);
+                            const el = document.getElementById(id);
+                            if (el) el.style.backgroundColor = color;
+                        },
+
+                        // スレッド・同期 API のスタブ
+                        hike_thread_spawn: () => 0,
+                        hike_event_create: () => 1,
+                        hike_event_signal: () => {},
+                        hike_event_wait: () => 0,
+                        hike_event_destroy: () => {},
+                        hike_sleep_ms: () => {},
+                        hike_now_ns: () => BigInt(Math.floor(performance.now() * 1000000))
+                    }
+                };
+
+                const { instance } = await WebAssembly.instantiate(wasmBytes, importObject);
+                wasmInstance = instance;
+                wasmExports = instance.exports;
+
+                if (instance.exports.memory) {
+                    wasmMemory = instance.exports.memory;
+                }
+
+                // Wasm側の初期化関数を実行してDOMをアクティブ状態に遷移
+                if (typeof wasmExports.InitApp === 'function') {
+                    wasmExports.InitApp();
+                }
             } catch (err) {
                 console.error("Failed to load Wasm:", err);
-                document.getElementById('status-badge').innerText = "Load Failed";
-                document.getElementById('status-badge').style.backgroundColor = "#ef4444";
+                const badge = document.getElementById('status-badge');
+                badge.innerText = "Load Failed";
+                badge.style.backgroundColor = "#ef4444";
                 document.getElementById('wasm-output').innerText = err.toString();
             }
         }
 
         function handleFibClick() {
-            if (!wasmExports) return;
+            if (!wasmExports || typeof wasmExports.RunComputation !== 'function') return;
             const start = performance.now();
             const res = wasmExports.RunComputation(35);
             const elapsed = (performance.now() - start).toFixed(2);
@@ -125,9 +234,14 @@
         }
 
         function handleAddClick() {
-            if (!wasmExports) return;
+            if (!wasmExports || typeof wasmExports.AddNumbers !== 'function') return;
             const sum = wasmExports.AddNumbers(1234, 5678);
             document.getElementById('wasm-log-box').innerText += `\n[Math] AddNumbers(1234, 5678) = ${sum}`;
+        }
+
+        function handleActionClick(code) {
+            if (!wasmExports || typeof wasmExports.AppendLogMessage !== 'function') return;
+            wasmExports.AppendLogMessage(code);
         }
 
         window.addEventListener('DOMContentLoaded', init);
