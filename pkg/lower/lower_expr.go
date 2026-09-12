@@ -46,7 +46,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.FloatLiteral:
 		return &hir.ConstFloat{Val: node.Value, Typ: sema.TypeFloat64}
 
-	// ★ 文字リテラルは文字列定数ではなく、byte (i8) 整数として評価する
+	// 文字リテラルは文字列定数ではなく、byte (i8) 整数として評価する
 	case *ast.CharLiteral:
 		return &hir.ConstInt{Val: int64(node.CodePoint), Typ: sema.TypeByte}
 
@@ -109,9 +109,10 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 					} else {
 						e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
 					}
+					t1 := e.root.nextReg(iface)
+					e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(iface), Val: dataPtr, Index: 0})
 					dst := e.root.nextReg(iface)
-					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: e.root.defaultConstValue(iface), Val: dataPtr, Index: 0})
-					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: dst, Val: typeIDReg, Index: 1})
+					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
 					return dst
 				}
 				if srcIface.TypeName() == iface.TypeName() {
@@ -223,7 +224,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.PrefixExpr:
 		if node.Operator == "&" {
-			// ★ 構造体リテラルのポインタ化 (&Struct{}) はヒープ領域 (calloc) に確保
+			// 構造体リテラルのポインタ化 (&Struct{}) はヒープ領域 (calloc) に確保
 			if sl, ok := node.Right.(*ast.StructLiteral); ok {
 				return e.lowerStructLiteralHeap(sl)
 			}
@@ -519,7 +520,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 }
 
-// lowerStructLiteralPtr はスタック上の構造体リテラルをゼロ初期化して生成
+// lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
 func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
 	allocaReg := e.root.nextReg(&sema.PointerType{Base: stType})
@@ -556,7 +557,7 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 	return allocaReg
 }
 
-// lowerStructLiteralHeap はヒープ領域 (calloc) に構造体を確保してゼロ初期化し、ポインタを返す
+// lowerStructLiteralHeapはヒープ領域 (calloc) に構造体を確保してゼロ初期化し、ポインタを返す
 func (e *ExprLowerer) lowerStructLiteralHeap(node *ast.StructLiteral) hir.Value {
 	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
 	size := int64(stType.Size())
@@ -895,7 +896,7 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	// ★ 両辺が string 型の場合のみ hike_streq / hike_strcat を呼ぶ (片方が byte の場合は入らない)
+	// 両辺がstring型の場合のみhike_streq / hike_strcatを呼ぶ
 	if leftVal.Type() == sema.TypeString && rightVal.Type() == sema.TypeString {
 		if node.Operator == "+" {
 			res := e.root.nextReg(sema.TypeString)

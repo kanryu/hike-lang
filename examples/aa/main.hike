@@ -1,37 +1,34 @@
-package main
 
-import "std/maps"
+package main
 
 func printf(format string, ...) int
 
+type Greeter interface {
+    Greet() string
+}
+
+type Person struct {
+    name string
+}
+
+func (p *Person) Greet() string {
+    return "Hi," + p.name
+}
+
+func checkAny(a any) int {
+    switch v := a.(type) {
+    case *Person:
+        return len(v.name)
+    default:
+        return -1
+    }
+}
+
 func main() int {
-    // 1. スライスの値のみ走査
-    items := []int{10, 20, 30}
-    valSum := 0
-    for _, v := range items {
-        valSum = valSum + v
-    }
-
-    // 2. マップのキー・値走査
-    m := make(map[string]int)
-    m["a"] = 100
-    m["b"] = 200
-    mapKeyCount := 0
-    mapValSum := 0
-    for k, v := range m {
-        if len(k) > 0 {
-            mapKeyCount = mapKeyCount + 1
-        }
-        mapValSum = mapValSum + v
-    }
-
-    // 3. 文字列のインデックス・byte 走査
-    str := "Hike"
-    byteSum := 0
-    for i, b := range str {
-        byteSum = byteSum + int(b) + i
-    }
-
-    printf("SLICE_VAL=%d,MAP_CNT=%d,MAP_VAL=%d,BYTE_SUM=%d\n", valSum, mapKeyCount, mapValSum, byteSum)
+    p := &Person{name: "Alice"}
+    var g Greeter = p
+    var a any = g // 非空インターフェース -> any への再ボクシングパス
+    r := checkAny(a)
+    printf("LEN=%d\n", r)
     return 0
 }

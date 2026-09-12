@@ -15,7 +15,7 @@ type loopContext struct {
 	continueBlock *hir.BasicBlock
 }
 
-// Lowerer はIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
+// LowererはIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
 type Lowerer struct {
 	prog          *ast.Program
 	semaCtx       *sema.Context
@@ -32,7 +32,7 @@ type Lowerer struct {
 	deferStack    []*ast.CallExpr
 	itabs         map[string]*hir.ItabDef
 	escapedVars   map[string]bool
-	is32Bit       bool // Compiler から伝播される 32bit ターゲットフラグ
+	is32Bit       bool // Compilerから伝播される32bitターゲットフラグ
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -63,12 +63,12 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	return l
 }
 
-// Set32Bit はターゲットが 32bit (wasm32 等) であるかを設定します
+// Set32Bitはターゲットが32bit (wasm32等) であるかを設定します
 func (l *Lowerer) Set32Bit(is32 bool) {
 	l.is32Bit = is32
 }
 
-// BuiltinName はターゲットアーキテクチャ（32bit/64bit）に応じた組み込み関数名を解決します
+// BuiltinNameはターゲットアーキテクチャ（32bit/64bit）に応じた組み込み関数名を解決します
 func (l *Lowerer) BuiltinName(baseName string) string {
 	if l.is32Bit {
 		return baseName + "32"
@@ -105,7 +105,7 @@ func (l *Lowerer) Lower() *hir.Program {
 			if sema.IsGenericFuncDecl(d) {
 				continue
 			}
-			// main 関数の先頭にグローバル変数の初期化文を差し込む
+			// main関数の先頭にグローバル変数の初期化文を差し込む
 			if d.Name != nil && d.Name.Value == "main" && len(globalInits) > 0 && d.Body != nil {
 				newStmts := make([]ast.Statement, 0, len(globalInits)+len(d.Body.Statements))
 				newStmts = append(newStmts, globalInits...)
@@ -126,7 +126,7 @@ func (l *Lowerer) Lower() *hir.Program {
 		}
 	}
 
-	// 3. ランタイム内部や標準ライブラリで登録された未定義の外部 extern 関数の補完登録
+	// 3. ランタイム内部や標準ライブラリで登録された未定義の外部extern関数の補完登録
 	definedNames := make(map[string]bool)
 	for _, fn := range l.hirProg.Functions {
 		definedNames[fn.Name] = true
@@ -161,9 +161,9 @@ func (l *Lowerer) Lower() *hir.Program {
 	return l.hirProg
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // レジスタ・ブロック・命令出力ユーティリティ
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (l *Lowerer) nextReg(typ sema.Type, name ...string) *hir.Reg {
 	l.regCount++
@@ -219,9 +219,9 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 	return sc
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 型変換・デフォルト値ユーティリティ
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 	if t == nil {
@@ -308,20 +308,16 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 				} else {
 					l.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
 				}
+
+				t1 := l.nextReg(iface)
+				l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(iface), Val: dataPtr, Index: 0})
 				dst := l.nextReg(iface)
-				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: l.defaultConstValue(iface), Val: dataPtr, Index: 0})
-				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: dst, Val: typeIDReg, Index: 1})
+				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
 				return dst
 			}
 			if srcIface.TypeName() == iface.TypeName() {
 				return val
 			}
-		} else if _, isPtr := val.Type().(*sema.PointerType); !isPtr {
-			// 2. 非ポインタ具象値をインターフェースにボクシングする場合、スタックに退避してポインタを渡す
-			allocaReg := l.nextReg(&sema.PointerType{Base: val.Type()})
-			l.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: val.Type()})
-			l.emit(&hir.InstrStore{Val: val, Ptr: allocaReg})
-			val = allocaReg
 		}
 
 		itabName := ""
