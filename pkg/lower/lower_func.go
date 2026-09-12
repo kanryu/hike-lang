@@ -197,11 +197,12 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		c.root.Stmt.LowerStmt(stmt)
 	}
 
-	for i := len(c.root.deferStack) - 1; i >= 0; i-- {
-		c.LowerCall(c.root.deferStack[i])
-	}
-
+	// フォールスルー時（明示的returnがない場合）のみdeferを呼んでデフォルトリターンを生成
 	if c.root.curBlock.Terminator == nil {
+		for i := len(c.root.deferStack) - 1; i >= 0; i-- {
+			c.LowerCall(c.root.deferStack[i])
+		}
+
 		if isMain {
 			c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{&hir.ConstInt{Val: 0, Typ: sema.TypeInt}}})
 		} else if len(returnTypes) == 0 {
@@ -216,9 +217,9 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 外部 C 関数宣言 (ExternFunc Declaration) の変換
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) LowerExternFunc(efn *ast.ExternFuncDecl) {
 	cName := efn.Name.Value
@@ -253,9 +254,9 @@ func (c *CallLowerer) LowerExternFunc(efn *ast.ExternFuncDecl) {
 	c.root.hirProg.Functions = append(c.root.hirProg.Functions, hirFn)
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // C 連携関数 (CFunc Declaration) の変換 (Dual ABI: 実体 + トランポリン)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 	targetCName := cfn.Name.Value
@@ -345,11 +346,11 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 		c.root.Stmt.LowerStmt(stmt)
 	}
 
-	for i := len(c.root.deferStack) - 1; i >= 0; i-- {
-		c.LowerCall(c.root.deferStack[i])
-	}
-
 	if c.root.curBlock.Terminator == nil {
+		for i := len(c.root.deferStack) - 1; i >= 0; i-- {
+			c.LowerCall(c.root.deferStack[i])
+		}
+
 		if len(returnTypes) == 0 {
 			c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
 		} else {
@@ -425,7 +426,6 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		IsExtern:    false,
 	}
 
-	// キャプチャされた変数の抽出
 	rawCaptures := sema.ScanCapturesFromLit(fl)
 	captures := []string{}
 	for _, name := range rawCaptures {
@@ -434,7 +434,6 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		}
 	}
 
-	// 外側の環境をキャプチャしている場合のみ、第1引数に環境ポインタ (__env_arg) を受け取る
 	var envParamReg *hir.Reg
 	if len(captures) > 0 {
 		envParamReg = &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
@@ -463,7 +462,6 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	anonEntry := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(anonEntry)
 
-	// キャプチャ環境の展開
 	if len(captures) > 0 {
 		envTyped := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
 		c.root.emit(&hir.InstrCast{Dst: envTyped, Val: envParamReg, ToType: &sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}})
@@ -506,11 +504,11 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		c.root.Stmt.LowerStmt(s)
 	}
 
-	for i := len(c.root.deferStack) - 1; i >= 0; i-- {
-		c.LowerCall(c.root.deferStack[i])
-	}
-
 	if c.root.curBlock.Terminator == nil {
+		for i := len(c.root.deferStack) - 1; i >= 0; i-- {
+			c.LowerCall(c.root.deferStack[i])
+		}
+
 		if len(ft.ReturnTypes) == 0 {
 			c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
 		} else {
@@ -559,4 +557,5 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	t2 := c.root.nextReg(fatType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: envVal, Index: 1})
 	return t2
+
 }
