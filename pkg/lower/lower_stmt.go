@@ -9,7 +9,7 @@ import (
 	"hikec-go/pkg/token"
 )
 
-// StmtLowerer は文（Statement）の走査、制御フロー（CFG）のブロック分岐、代入・変数初期化を担当する
+// StmtLowererは文（Statement）の走査、制御フロー（CFG）のブロック分岐、代入・変数初期化を担当する
 type StmtLowerer struct {
 	root *Lowerer
 }
@@ -225,7 +225,6 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 						val = s.root.emitValueCoerce(val, targetType)
 					}
 				} else {
-					// 初期値省略時は対象型のデフォルトゼロ値（配列なら ConstZero）を取得
 					val = s.root.defaultConstValue(targetType)
 				}
 			} else if val != nil {
@@ -294,7 +293,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 		}
 
-		// 左辺値（ローカル変数、グローバル変数、構造体フィールド等）のアドレスを解決
+		// 左辺値のアドレスを解決
 		targetPtr := s.root.Expr.LowerLValue(left)
 
 		if targetPtr != nil {
@@ -431,6 +430,36 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			s.root.emit(&hir.InstrAllocaDynamic{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
 			s.root.emit(&hir.InstrCallStatic{CalleeName: initFnName, Args: []hir.Value{finalRecv, bufReg}})
 
+			var oldKeySym, oldValSym hir.Value
+			var oldKeyTyp, oldValTyp sema.Type
+			var hasOldKey, hasOldVal bool
+
+			var kPtr, vPtr hir.Value
+			if fr.Key != nil {
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: sema.TypeInt})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = sema.TypeInt
+				}
+			}
+			if fr.Value != nil {
+				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+					oldValSym, hasOldVal = s.root.symbols[vId.Value]
+					oldValTyp = s.root.symbolTypes[vId.Value]
+
+					vReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, vId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: sema.TypeInt})
+					vPtr = vReg
+					s.root.symbols[vId.Value] = vPtr
+					s.root.symbolTypes[vId.Value] = sema.TypeInt
+				}
+			}
+
 			condBB := s.root.newBlock("mapbeh.cond")
 			bodyBB := s.root.newBlock("mapbeh.body")
 			endBB := s.root.newBlock("mapbeh.end")
@@ -451,37 +480,19 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			s.root.terminate(&hir.InstrBranch{Cond: okReg, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
 
 			s.root.setBlock(bodyBB)
-			if fr.Key != nil {
-				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
-					kPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-					s.root.emit(&hir.InstrExtractValue{Dst: kPtrReg, Agg: nextRes, Index: 0})
-					kValReg := s.root.nextReg(sema.TypeInt)
-					s.root.emit(&hir.InstrLoad{Dst: kValReg, Ptr: kPtrReg})
-					kPtr := s.root.symbols[kId.Value]
-					if kPtr == nil {
-						kPtr = s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, kId.Value)
-						s.root.emit(&hir.InstrAlloca{Dst: kPtr.(*hir.Reg), AllocType: sema.TypeInt})
-						s.root.symbols[kId.Value] = kPtr
-						s.root.symbolTypes[kId.Value] = sema.TypeInt
-					}
-					s.root.emit(&hir.InstrStore{Val: kValReg, Ptr: kPtr})
-				}
+			if kPtr != nil {
+				kPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+				s.root.emit(&hir.InstrExtractValue{Dst: kPtrReg, Agg: nextRes, Index: 0})
+				kValReg := s.root.nextReg(sema.TypeInt)
+				s.root.emit(&hir.InstrLoad{Dst: kValReg, Ptr: kPtrReg})
+				s.root.emit(&hir.InstrStore{Val: kValReg, Ptr: kPtr})
 			}
-			if fr.Value != nil {
-				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
-					vPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-					s.root.emit(&hir.InstrExtractValue{Dst: vPtrReg, Agg: nextRes, Index: 1})
-					vValReg := s.root.nextReg(sema.TypeInt)
-					s.root.emit(&hir.InstrLoad{Dst: vValReg, Ptr: vPtrReg})
-					vPtr := s.root.symbols[vId.Value]
-					if vPtr == nil {
-						vPtr = s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, vId.Value)
-						s.root.emit(&hir.InstrAlloca{Dst: vPtr.(*hir.Reg), AllocType: sema.TypeInt})
-						s.root.symbols[vId.Value] = vPtr
-						s.root.symbolTypes[vId.Value] = sema.TypeInt
-					}
-					s.root.emit(&hir.InstrStore{Val: vValReg, Ptr: vPtr})
-				}
+			if vPtr != nil {
+				vPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+				s.root.emit(&hir.InstrExtractValue{Dst: vPtrReg, Agg: nextRes, Index: 1})
+				vValReg := s.root.nextReg(sema.TypeInt)
+				s.root.emit(&hir.InstrLoad{Dst: vValReg, Ptr: vPtrReg})
+				s.root.emit(&hir.InstrStore{Val: vValReg, Ptr: vPtr})
 			}
 
 			s.LowerStmt(fr.Body)
@@ -490,27 +501,88 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			}
 
 			s.root.setBlock(endBB)
+			if fr.Key != nil {
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					if hasOldKey {
+						s.root.symbols[kId.Value] = oldKeySym
+						s.root.symbolTypes[kId.Value] = oldKeyTyp
+					} else {
+						delete(s.root.symbols, kId.Value)
+						delete(s.root.symbolTypes, kId.Value)
+					}
+				}
+			}
+			if fr.Value != nil {
+				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+					if hasOldVal {
+						s.root.symbols[vId.Value] = oldValSym
+						s.root.symbolTypes[vId.Value] = oldValTyp
+					} else {
+						delete(s.root.symbols, vId.Value)
+						delete(s.root.symbolTypes, vId.Value)
+					}
+				}
+			}
 			return
 		}
 	}
 
+	// 組み込み map[K]V の走査
 	if mp, isMap := xType.(*sema.MapType); isMap {
+		mapStructType := &sema.StructType{Name: "__hike_map"}
+		mapPtrType := &sema.PointerType{Base: mapStructType}
+		entryStructType := &sema.StructType{Name: "__hike_map_entry"}
+		entryPtrType := &sema.PointerType{Base: entryStructType}
+
+		typedMap := s.root.nextReg(mapPtrType)
+		s.root.emit(&hir.InstrCast{Dst: typedMap, Val: xVal, ToType: mapPtrType})
+
 		bIdxAlloca := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "maprange.bidx")
 		s.root.emit(&hir.InstrAlloca{Dst: bIdxAlloca, AllocType: sema.TypeInt})
 		s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: bIdxAlloca})
 
-		entryAlloca := s.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}, "maprange.cur")
-		s.root.emit(&hir.InstrAlloca{Dst: entryAlloca, AllocType: &sema.PointerType{Base: sema.TypeByte}})
+		entryAlloca := s.root.nextReg(&sema.PointerType{Base: entryPtrType}, "maprange.cur")
+		s.root.emit(&hir.InstrAlloca{Dst: entryAlloca, AllocType: entryPtrType})
 
-		pBuckets := s.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
-		s.root.emit(&hir.InstrGetFieldPtr{Dst: pBuckets, BasePtr: xVal, FieldIndex: 0, FieldName: "buckets"})
-		buckets := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		pBuckets := s.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: entryPtrType}})
+		s.root.emit(&hir.InstrGetFieldPtr{Dst: pBuckets, BasePtr: typedMap, FieldIndex: 0, FieldName: "buckets"})
+		buckets := s.root.nextReg(&sema.PointerType{Base: entryPtrType})
 		s.root.emit(&hir.InstrLoad{Dst: buckets, Ptr: pBuckets})
 
 		pNumBuckets := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-		s.root.emit(&hir.InstrGetFieldPtr{Dst: pNumBuckets, BasePtr: xVal, FieldIndex: 1, FieldName: "numBuckets"})
+		s.root.emit(&hir.InstrGetFieldPtr{Dst: pNumBuckets, BasePtr: typedMap, FieldIndex: 1, FieldName: "numBuckets"})
 		numBuckets := s.root.nextReg(sema.TypeInt)
 		s.root.emit(&hir.InstrLoad{Dst: numBuckets, Ptr: pNumBuckets})
+
+		var oldKeySym, oldValSym hir.Value
+		var oldKeyTyp, oldValTyp sema.Type
+		var hasOldKey, hasOldVal bool
+
+		var kPtr, vPtr hir.Value
+		if fr.Key != nil {
+			if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+				oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+				oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+				kReg := s.root.nextReg(&sema.PointerType{Base: mp.Key}, kId.Value)
+				s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: mp.Key})
+				kPtr = kReg
+				s.root.symbols[kId.Value] = kPtr
+				s.root.symbolTypes[kId.Value] = mp.Key
+			}
+		}
+		if fr.Value != nil {
+			if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+				oldValSym, hasOldVal = s.root.symbols[vId.Value]
+				oldValTyp = s.root.symbolTypes[vId.Value]
+
+				vReg := s.root.nextReg(&sema.PointerType{Base: mp.Value}, vId.Value)
+				s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: mp.Value})
+				vPtr = vReg
+				s.root.symbols[vId.Value] = vPtr
+				s.root.symbolTypes[vId.Value] = mp.Value
+			}
+		}
 
 		bCondBB := s.root.newBlock("maprange.bcond")
 		bBodyBB := s.root.newBlock("maprange.bbody")
@@ -535,56 +607,36 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		s.root.terminate(&hir.InstrBranch{Cond: cmpB, ThenTarget: bBodyBB.Label, ElseTarget: endBB.Label})
 
 		s.root.setBlock(bBodyBB)
-		pHead := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		pHead := s.root.nextReg(&sema.PointerType{Base: entryPtrType})
 		s.root.emit(&hir.InstrGetElemPtr{Dst: pHead, BasePtr: buckets, Index: curBIdx})
-		head := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		head := s.root.nextReg(entryPtrType)
 		s.root.emit(&hir.InstrLoad{Dst: head, Ptr: pHead})
 		s.root.emit(&hir.InstrStore{Val: head, Ptr: entryAlloca})
 		s.root.terminate(&hir.InstrJump{Target: eCondBB.Label})
 
 		s.root.setBlock(eCondBB)
-		curE := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		curE := s.root.nextReg(entryPtrType)
 		s.root.emit(&hir.InstrLoad{Dst: curE, Ptr: entryAlloca})
 		hasE := s.root.nextReg(sema.TypeBool)
-		s.root.emit(&hir.InstrBinary{Dst: hasE, Op: hir.OpNeq, L: curE, R: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}})
+		s.root.emit(&hir.InstrBinary{Dst: hasE, Op: hir.OpNeq, L: curE, R: &hir.ConstNil{Typ: entryPtrType}})
 		s.root.terminate(&hir.InstrBranch{Cond: hasE, ThenTarget: eBodyBB.Label, ElseTarget: bPostBB.Label})
 
 		s.root.setBlock(eBodyBB)
-		if fr.Key != nil {
-			if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
-				pKey := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-				s.root.emit(&hir.InstrGetFieldPtr{Dst: pKey, BasePtr: curE, FieldIndex: 1, FieldName: "key"})
-				rawKey := s.root.nextReg(sema.TypeInt)
-				s.root.emit(&hir.InstrLoad{Dst: rawKey, Ptr: pKey})
-				realKey := s.root.coerceFromI64(rawKey, mp.Key)
-
-				kPtr := s.root.symbols[kId.Value]
-				if kPtr == nil {
-					kPtr = s.root.nextReg(&sema.PointerType{Base: mp.Key}, kId.Value)
-					s.root.emit(&hir.InstrAlloca{Dst: kPtr.(*hir.Reg), AllocType: mp.Key})
-					s.root.symbols[kId.Value] = kPtr
-					s.root.symbolTypes[kId.Value] = mp.Key
-				}
-				s.root.emit(&hir.InstrStore{Val: realKey, Ptr: kPtr})
-			}
+		if kPtr != nil {
+			pKey := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+			s.root.emit(&hir.InstrGetFieldPtr{Dst: pKey, BasePtr: curE, FieldIndex: 1, FieldName: "key"})
+			rawKey := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrLoad{Dst: rawKey, Ptr: pKey})
+			realKey := s.root.coerceFromI64(rawKey, mp.Key)
+			s.root.emit(&hir.InstrStore{Val: realKey, Ptr: kPtr})
 		}
-		if fr.Value != nil {
-			if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
-				pVal := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-				s.root.emit(&hir.InstrGetFieldPtr{Dst: pVal, BasePtr: curE, FieldIndex: 2, FieldName: "val"})
-				rawVal := s.root.nextReg(sema.TypeInt)
-				s.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: pVal})
-				realVal := s.root.coerceFromI64(rawVal, mp.Value)
-
-				vPtr := s.root.symbols[vId.Value]
-				if vPtr == nil {
-					vPtr = s.root.nextReg(&sema.PointerType{Base: mp.Value}, vId.Value)
-					s.root.emit(&hir.InstrAlloca{Dst: vPtr.(*hir.Reg), AllocType: mp.Value})
-					s.root.symbols[vId.Value] = vPtr
-					s.root.symbolTypes[vId.Value] = mp.Value
-				}
-				s.root.emit(&hir.InstrStore{Val: realVal, Ptr: vPtr})
-			}
+		if vPtr != nil {
+			pVal := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+			s.root.emit(&hir.InstrGetFieldPtr{Dst: pVal, BasePtr: curE, FieldIndex: 2, FieldName: "val"})
+			rawVal := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: pVal})
+			realVal := s.root.coerceFromI64(rawVal, mp.Value)
+			s.root.emit(&hir.InstrStore{Val: realVal, Ptr: vPtr})
 		}
 
 		s.LowerStmt(fr.Body)
@@ -593,11 +645,11 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		}
 
 		s.root.setBlock(ePostBB)
-		curEPost := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		curEPost := s.root.nextReg(entryPtrType)
 		s.root.emit(&hir.InstrLoad{Dst: curEPost, Ptr: entryAlloca})
-		pNextE := s.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
+		pNextE := s.root.nextReg(&sema.PointerType{Base: entryPtrType})
 		s.root.emit(&hir.InstrGetFieldPtr{Dst: pNextE, BasePtr: curEPost, FieldIndex: 3, FieldName: "next"})
-		nextE := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		nextE := s.root.nextReg(entryPtrType)
 		s.root.emit(&hir.InstrLoad{Dst: nextE, Ptr: pNextE})
 		s.root.emit(&hir.InstrStore{Val: nextE, Ptr: entryAlloca})
 		s.root.terminate(&hir.InstrJump{Target: eCondBB.Label})
@@ -609,6 +661,28 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		s.root.terminate(&hir.InstrJump{Target: bCondBB.Label})
 
 		s.root.setBlock(endBB)
+		if fr.Key != nil {
+			if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+				if hasOldKey {
+					s.root.symbols[kId.Value] = oldKeySym
+					s.root.symbolTypes[kId.Value] = oldKeyTyp
+				} else {
+					delete(s.root.symbols, kId.Value)
+					delete(s.root.symbolTypes, kId.Value)
+				}
+			}
+		}
+		if fr.Value != nil {
+			if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+				if hasOldVal {
+					s.root.symbols[vId.Value] = oldValSym
+					s.root.symbolTypes[vId.Value] = oldValTyp
+				} else {
+					delete(s.root.symbols, vId.Value)
+					delete(s.root.symbolTypes, vId.Value)
+				}
+			}
+		}
 		return
 	}
 
@@ -642,6 +716,36 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 	s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
+	var oldKeySym, oldValSym hir.Value
+	var oldKeyTyp, oldValTyp sema.Type
+	var hasOldKey, hasOldVal bool
+
+	var kPtr, vPtr hir.Value
+	if fr.Key != nil {
+		if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+			oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+			oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+			kReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, kId.Value)
+			s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: sema.TypeInt})
+			kPtr = kReg
+			s.root.symbols[kId.Value] = kPtr
+			s.root.symbolTypes[kId.Value] = sema.TypeInt
+		}
+	}
+	if fr.Value != nil {
+		if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+			oldValSym, hasOldVal = s.root.symbols[vId.Value]
+			oldValTyp = s.root.symbolTypes[vId.Value]
+
+			vReg := s.root.nextReg(&sema.PointerType{Base: elemType}, vId.Value)
+			s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: elemType})
+			vPtr = vReg
+			s.root.symbols[vId.Value] = vPtr
+			s.root.symbolTypes[vId.Value] = elemType
+		}
+	}
+
 	condBB := s.root.newBlock("forrange.cond")
 	bodyBB := s.root.newBlock("forrange.body")
 	postBB := s.root.newBlock("forrange.post")
@@ -662,34 +766,15 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.terminate(&hir.InstrBranch{Cond: cmpReg, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
 
 	s.root.setBlock(bodyBB)
-	if fr.Key != nil {
-		if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
-			kPtr := s.root.symbols[kId.Value]
-			if kPtr == nil {
-				kPtr = s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, kId.Value)
-				s.root.emit(&hir.InstrAlloca{Dst: kPtr.(*hir.Reg), AllocType: sema.TypeInt})
-				s.root.symbols[kId.Value] = kPtr
-				s.root.symbolTypes[kId.Value] = sema.TypeInt
-			}
-			s.root.emit(&hir.InstrStore{Val: curIdx, Ptr: kPtr})
-		}
+	if kPtr != nil {
+		s.root.emit(&hir.InstrStore{Val: curIdx, Ptr: kPtr})
 	}
-	if fr.Value != nil {
-		if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
-			elemPtrReg := s.root.nextReg(&sema.PointerType{Base: elemType})
-			s.root.emit(&hir.InstrGetElemPtr{Dst: elemPtrReg, BasePtr: dataPtr, Index: curIdx})
-			elemValReg := s.root.nextReg(elemType)
-			s.root.emit(&hir.InstrLoad{Dst: elemValReg, Ptr: elemPtrReg})
-
-			vPtr := s.root.symbols[vId.Value]
-			if vPtr == nil {
-				vPtr = s.root.nextReg(&sema.PointerType{Base: elemType}, vId.Value)
-				s.root.emit(&hir.InstrAlloca{Dst: vPtr.(*hir.Reg), AllocType: elemType})
-				s.root.symbols[vId.Value] = vPtr
-				s.root.symbolTypes[vId.Value] = elemType
-			}
-			s.root.emit(&hir.InstrStore{Val: elemValReg, Ptr: vPtr})
-		}
+	if vPtr != nil {
+		elemPtrReg := s.root.nextReg(&sema.PointerType{Base: elemType})
+		s.root.emit(&hir.InstrGetElemPtr{Dst: elemPtrReg, BasePtr: dataPtr, Index: curIdx})
+		elemValReg := s.root.nextReg(elemType)
+		s.root.emit(&hir.InstrLoad{Dst: elemValReg, Ptr: elemPtrReg})
+		s.root.emit(&hir.InstrStore{Val: elemValReg, Ptr: vPtr})
 	}
 
 	s.LowerStmt(fr.Body)
@@ -704,6 +789,28 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
 
 	s.root.setBlock(endBB)
+	if fr.Key != nil {
+		if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+			if hasOldKey {
+				s.root.symbols[kId.Value] = oldKeySym
+				s.root.symbolTypes[kId.Value] = oldKeyTyp
+			} else {
+				delete(s.root.symbols, kId.Value)
+				delete(s.root.symbolTypes, kId.Value)
+			}
+		}
+	}
+	if fr.Value != nil {
+		if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+			if hasOldVal {
+				s.root.symbols[vId.Value] = oldValSym
+				s.root.symbolTypes[vId.Value] = oldValTyp
+			} else {
+				delete(s.root.symbols, vId.Value)
+				delete(s.root.symbolTypes, vId.Value)
+			}
+		}
+	}
 }
 
 func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {

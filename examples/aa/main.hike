@@ -1,13 +1,37 @@
-
 package main
 
-import "std/regexp"
+import "std/maps"
 
 func printf(format string, ...) int
 
 func main() int {
-    re := regexp.MustCompile("[0-9]+")
-    loc := re.FindStringIndex("abc12345def")
-    printf("START=%d,END=%d\n", loc[0], loc[1])
+    // 1. スライスの値のみ走査
+    items := []int{10, 20, 30}
+    valSum := 0
+    for _, v := range items {
+        valSum = valSum + v
+    }
+
+    // 2. マップのキー・値走査
+    m := make(map[string]int)
+    m["a"] = 100
+    m["b"] = 200
+    mapKeyCount := 0
+    mapValSum := 0
+    for k, v := range m {
+        if len(k) > 0 {
+            mapKeyCount = mapKeyCount + 1
+        }
+        mapValSum = mapValSum + v
+    }
+
+    // 3. 文字列のインデックス・byte 走査
+    str := "Hike"
+    byteSum := 0
+    for i, b := range str {
+        byteSum = byteSum + int(b) + i
+    }
+
+    printf("SLICE_VAL=%d,MAP_CNT=%d,MAP_VAL=%d,BYTE_SUM=%d\n", valSum, mapKeyCount, mapValSum, byteSum)
     return 0
 }

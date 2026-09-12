@@ -1059,24 +1059,40 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			ctx.Globals[d.Name.Value] = gType
 
 		case *ast.FuncDecl:
+			// 1. ジェネリック関数・メソッド宣言は Pass 2 での具象型解決をスキップ
+			if IsGenericFuncDecl(d) {
+				continue
+			}
+
 			fnName := d.Name.Value
 			if d.Receiver != nil {
-				recvType := ctx.ResolveType(d.Receiver.Type)
-				recvTypeName := strings.TrimPrefix(recvType.TypeName(), "*")
-				fnName = CanonicalMethodName(recvTypeName, fnName)
+				// ResolveType を直接呼ばずに型名（"Map" など）を取得
+				recvTypeName := getBaseTypeName(d.Receiver.Type)
+				if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
+					if st.IsGeneric() {
+						continue
+					}
+					recvTypeName = canonical
+				} else if alias, _ := ctx.LookupAlias(recvTypeName); alias != nil {
+					recvTypeName = alias.TypeName()
+				}
+				if recvTypeName != "" {
+					fnName = CanonicalMethodName(recvTypeName, fnName)
+				}
 			}
 
 			fnType := ctx.Functions[fnName]
 			if fnType == nil {
 				fnType = ctx.Functions[d.Name.Value]
 			}
-			if fnType == nil || fnType.IsGeneric() || IsGenericFuncDecl(d) {
+			if fnType == nil || fnType.IsGeneric() {
 				continue
 			}
 
 			isMethod := (d.Receiver != nil)
 			paramTypes := []Type{}
 
+			// ここに到達するのは非ジェネリックな具象メソッドのみなので安全に ResolveType できる
 			if d.Receiver != nil {
 				recvType := ctx.ResolveType(d.Receiver.Type)
 				paramTypes = append(paramTypes, recvType)
@@ -1311,44 +1327,44 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			}
 			return
 		}
-		switch n := e.(type) {
+		switch node := e.(type) {
 		case *ast.GenericInstExpr:
-			walkExpr(n.Left)
+			walkExpr(node.Left)
 		case *ast.BinaryExpr:
-			walkExpr(n.Left)
-			walkExpr(n.Right)
+			walkExpr(node.Left)
+			walkExpr(node.Right)
 		case *ast.PrefixExpr:
-			walkExpr(n.Right)
+			walkExpr(node.Right)
 		case *ast.ReceiveExpr:
-			walkExpr(n.Expr)
+			walkExpr(node.Expr)
 		case *ast.AsyncExpr:
-			walkExpr(n.Fn)
+			walkExpr(node.Fn)
 		case *ast.CallExpr:
-			walkExpr(n.Function)
-			for _, arg := range n.Args {
+			walkExpr(node.Function)
+			for _, arg := range node.Args {
 				walkExpr(arg)
 			}
 		case *ast.MemberExpr:
-			walkExpr(n.Object)
+			walkExpr(node.Object)
 		case *ast.IndexExpr:
-			walkExpr(n.Left)
-			walkExpr(n.Index)
+			walkExpr(node.Left)
+			walkExpr(node.Index)
 		case *ast.SliceExpr:
-			walkExpr(n.Left)
-			walkExpr(n.Low)
-			walkExpr(n.High)
+			walkExpr(node.Left)
+			walkExpr(node.Low)
+			walkExpr(node.High)
 		case *ast.TypeAssertExpr:
-			walkExpr(n.Expr)
+			walkExpr(node.Expr)
 		case *ast.ArrayLiteral:
-			for _, el := range n.Elements {
+			for _, el := range node.Elements {
 				walkExpr(el)
 			}
 		case *ast.SliceLiteral:
-			for _, el := range n.Elements {
+			for _, el := range node.Elements {
 				walkExpr(el)
 			}
 		case *ast.StructLiteral:
-			for _, sf := range n.Fields {
+			for _, sf := range node.Fields {
 				walkExpr(sf.Value)
 			}
 		case *ast.CharLiteral:
@@ -1637,6 +1653,12 @@ func insertImplicitCasts(prog *ast.Program, ctx *Context) {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
 			if IsGenericFuncDecl(fn) {
 				continue
+			}
+			if fn.Receiver != nil {
+				recvName := getBaseTypeName(fn.Receiver.Type)
+				if st, _ := ctx.LookupStruct(recvName); st != nil && st.IsGeneric() {
+					continue
+				}
 			}
 
 			locals := make(map[string]Type)
@@ -2107,6 +2129,10 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return nil
 		}
 		if fd.Receiver != nil {
+			recvName := getBaseTypeName(fd.Receiver.Type)
+			if st, _ := ctx.LookupStruct(recvName); st != nil && st.IsGeneric() {
+				return nil
+			}
 			if err := checkType(fd.Receiver.Type); err != nil {
 				return err
 			}
