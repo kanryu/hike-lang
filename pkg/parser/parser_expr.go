@@ -71,8 +71,10 @@ func replaceIota(expr ast.Expression, iotaVal int64) ast.Expression {
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		if e.Value == "iota" {
-			return &ast.IotaExpr{Token: e.Token, Value: iotaVal}
+			return &ast.IntegerLiteral{Token: e.Token, Value: iotaVal}
 		}
+	case *ast.IotaExpr:
+		return &ast.IntegerLiteral{Token: e.Token, Value: iotaVal}
 	case *ast.BinaryExpr:
 		return &ast.BinaryExpr{
 			Token:    e.Token,
