@@ -889,21 +889,84 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 		retTypeStr = i.Dst.Typ.LLVMType()
 	}
 
-	paramTypes := []string{"i8*"}
-	args := []string{fmt.Sprintf("i8* %s", e.formatVal(i.EnvPtr))}
-	for _, a := range i.Args {
-		paramTypes = append(paramTypes, a.Type().LLVMType())
-		args = append(args, fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a)))
+	fnVal := e.formatVal(i.FnPtr)
+	var envVal string
+	if i.EnvPtr != nil {
+		envVal = e.formatVal(i.EnvPtr)
 	}
 
-	rawSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(paramTypes, ", "))
-	typedFn := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFn, e.formatVal(i.FnPtr), rawSig))
+	// 1. 通常呼び出し用のシグネチャ (C ABI: env なし)
+	plainParamTypes := make([]string, len(i.Args))
+	plainArgs := make([]string, len(i.Args))
+	for idx, a := range i.Args {
+		plainParamTypes[idx] = a.Type().LLVMType()
+		plainArgs[idx] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
+	}
+	plainSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(plainParamTypes, ", "))
 
+	// 静的に env が null または未指定の場合: 分岐なしで直接 C ABI 呼び出し
+	if i.EnvPtr == nil || envVal == "null" {
+		typedFn := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFn, fnVal, plainSig))
+		if i.Dst != nil {
+			e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", i.Dst, retTypeStr, typedFn, strings.Join(plainArgs, ", ")))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  call void %s(%s)\n", typedFn, strings.Join(plainArgs, ", ")))
+		}
+		return
+	}
+
+	// 2. クロージャ / バウンドメソッド用のシグネチャ (第1引数に i8* env を渡す)
+	closureParamTypes := []string{"i8*"}
+	closureArgs := []string{fmt.Sprintf("i8* %s", envVal)}
+	for _, a := range i.Args {
+		closureParamTypes = append(closureParamTypes, a.Type().LLVMType())
+		closureArgs = append(closureArgs, fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a)))
+	}
+	closureSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(closureParamTypes, ", "))
+
+	// 3. ランタイム動的ディスパッチ (env == null か判定して分岐)
+	e.regCount++
+	id := e.regCount
+	lblPlain := fmt.Sprintf("call.plain.%d", id)
+	lblClosure := fmt.Sprintf("call.closure.%d", id)
+	lblCont := fmt.Sprintf("call.cont.%d", id)
+
+	cond := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = icmp eq i8* %s, null\n", cond, envVal))
+	e.b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cond, lblPlain, lblClosure))
+
+	// 通常関数分岐
+	e.b.WriteString(fmt.Sprintf("%s:\n", lblPlain))
+	typedFnPlain := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFnPlain, fnVal, plainSig))
+	var resPlain string
 	if i.Dst != nil {
-		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", i.Dst, retTypeStr, typedFn, strings.Join(args, ", ")))
+		resPlain = e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", resPlain, retTypeStr, typedFnPlain, strings.Join(plainArgs, ", ")))
 	} else {
-		e.b.WriteString(fmt.Sprintf("  call void %s(%s)\n", typedFn, strings.Join(args, ", ")))
+		e.b.WriteString(fmt.Sprintf("  call void %s(%s)\n", typedFnPlain, strings.Join(plainArgs, ", ")))
+	}
+	e.b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCont))
+
+	// クロージャ / バウンドメソッド分岐
+	e.b.WriteString(fmt.Sprintf("%s:\n", lblClosure))
+	typedFnClosure := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFnClosure, fnVal, closureSig))
+	var resClosure string
+	if i.Dst != nil {
+		resClosure = e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", resClosure, retTypeStr, typedFnClosure, strings.Join(closureArgs, ", ")))
+	} else {
+		e.b.WriteString(fmt.Sprintf("  call void %s(%s)\n", typedFnClosure, strings.Join(closureArgs, ", ")))
+	}
+	e.b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCont))
+
+	// 合流ブロック
+	e.b.WriteString(fmt.Sprintf("%s:\n", lblCont))
+	if i.Dst != nil {
+		e.b.WriteString(fmt.Sprintf("  %s = phi %s [ %s, %%%s ], [ %s, %%%s ]\n",
+			i.Dst, retTypeStr, resPlain, lblPlain, resClosure, lblClosure))
 	}
 }
 

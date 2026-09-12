@@ -408,7 +408,7 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 }
 
 // -------------------------------------------------------------
-// クロージャ (FuncLit) の Lowering
+// クロージャ / 無名関数 (FuncLit) の Lowering
 // -------------------------------------------------------------
 
 func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
@@ -425,15 +425,20 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		IsExtern:    false,
 	}
 
-	envParamReg := &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
-	anonFn.Params = append(anonFn.Params, envParamReg)
-
+	// キャプチャされた変数の抽出
 	rawCaptures := sema.ScanCapturesFromLit(fl)
 	captures := []string{}
 	for _, name := range rawCaptures {
 		if _, ok := c.root.symbols[name]; ok {
 			captures = append(captures, name)
 		}
+	}
+
+	// 外側の環境をキャプチャしている場合のみ、第1引数に環境ポインタ (__env_arg) を受け取る
+	var envParamReg *hir.Reg
+	if len(captures) > 0 {
+		envParamReg = &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
+		anonFn.Params = append(anonFn.Params, envParamReg)
 	}
 
 	prevFunc := c.root.curFunc
@@ -458,6 +463,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	anonEntry := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(anonEntry)
 
+	// キャプチャ環境の展開
 	if len(captures) > 0 {
 		envTyped := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
 		c.root.emit(&hir.InstrCast{Dst: envTyped, Val: envParamReg, ToType: &sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}})
