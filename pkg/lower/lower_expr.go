@@ -390,11 +390,58 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				return t2
 			}
 		}
-		ptr := e.LowerLValue(node)
-		ptrType := ptr.Type().(*sema.PointerType)
-		dst := e.root.nextReg(ptrType.Base)
-		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
-		return dst
+
+		basePtr := e.LowerStructPtr(node.Object)
+		baseType := basePtr.Type().(*sema.PointerType).Base
+		st, sName := e.root.findStruct(baseType)
+		if st != nil {
+			if fieldPtr, fieldType, _, found := e.ResolveFieldPath(st, sName, basePtr, node.Field.Value); found {
+				dst := e.root.nextReg(fieldType)
+				e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: fieldPtr})
+				return dst
+			}
+		}
+
+		// メソッド探索 (Method Value / バウンドメソッド)
+		if targetFnName, targetFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, node.Field.Value, basePtr); found && targetFn != nil {
+			methodParamTypes := []sema.Type{}
+			if len(targetFn.ParamTypes) > 1 {
+				methodParamTypes = targetFn.ParamTypes[1:]
+			}
+			boundFnType := &sema.FuncType{
+				ParamTypes:   methodParamTypes,
+				ReturnTypes:  targetFn.ReturnTypes,
+				IsVariadic:   targetFn.IsVariadic,
+				VariadicElem: targetFn.VariadicElem,
+			}
+
+			var recvPtr hir.Value = finalRecv
+			if _, isPtr := finalRecv.Type().(*sema.PointerType); !isPtr {
+				allocaTmp := e.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+				e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+				e.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+				recvPtr = allocaTmp
+			}
+
+			rawRecvPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCast{Dst: rawRecvPtr, Val: recvPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
+
+			callee := targetFnName
+			if targetFn.IsCFunc && targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
+				callee = "__hike_impl_" + targetFn.Name
+			} else if targetFn.IsExtern && targetFn.IRName != "" {
+				callee = targetFn.IRName
+			}
+
+			fnGlobal := &hir.GlobalVar{Name: callee, Typ: &sema.PointerType{Base: sema.TypeByte}}
+			t1 := e.root.nextReg(boundFnType)
+			e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(boundFnType), Val: fnGlobal, Index: 0})
+			t2 := e.root.nextReg(boundFnType)
+			e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: rawRecvPtr, Index: 1})
+			return t2
+		}
+
+		panic(fmt.Sprintf("[Lower Error] field or method '%s' not found on type '%s'", node.Field.Value, baseType.TypeName()))
 
 	case *ast.IndexExpr:
 		baseVal := e.LowerExpr(node.Left)

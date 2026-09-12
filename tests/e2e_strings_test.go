@@ -423,3 +423,219 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// -------------------------------------------------------------
+// 4. string と cstring の相互変換 & FFI 連携テスト
+// -------------------------------------------------------------
+
+// string <-> cstring の相互キャスト検証
+func TestStrings_CString_Conversion(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    orig := "Hello FFI"
+    // string -> cstring
+    cs := cstring(orig)
+    // cstring -> string
+    back := string(cs)
+
+    lOrig := len(orig)
+    lBack := len(back)
+    eq := (orig == back)
+
+    printf("LEN1=%d,LEN2=%d,EQ=%d,STR=%s\n", lOrig, lBack, eq, back)
+    return 0
+}
+`,
+		ExpectedOut:  "LEN1=9,LEN2=9,EQ=1,STR=Hello FFI",
+		ExpectedExit: 0,
+	})
+}
+
+// 外部 C 関数 (extern) への cstring の受け渡し検証
+func TestStrings_CString_PassToExtern(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func puts(s cstring) int
+func printf(format string, ...) int
+
+func main() int {
+    msg := "Printed via puts"
+    cs := cstring(msg)
+    puts(cs)
+
+    // cstring を printf に渡す検証
+    fmtStr := "CS_PRINT=%s\n"
+    printf(fmtStr, cs)
+    return 0
+}
+`,
+		ExpectedOut:  "Printed via puts\nCS_PRINT=Printed via puts",
+		ExpectedExit: 0,
+	})
+}
+
+// cstring に対するインデックスアクセス (cs[i]) およびスライス操作 (cs[low:high]) の検証
+func TestStrings_CString_IndexAndSubslice(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    cs := cstring("HikeCString")
+
+    // 1. インデックスアクセス (byte 取得)
+    c0 := cs[0]
+    c4 := cs[4]
+
+    // 2. 部分文字列スライス切り出し
+    sub := cs[4:11]
+
+    printf("C0=%c,C4=%c,SUB=%s\n", c0, c4, sub)
+    return 0
+}
+`,
+		ExpectedOut:  "C0=H,C4=C,SUB=CString",
+		ExpectedExit: 0,
+	})
+}
+
+// -------------------------------------------------------------
+// 5. 境界値・ゼロ値・特殊文字列テスト
+// -------------------------------------------------------------
+
+// 空文字列 ("") の各種操作 (len、連結、スライス、cstring 変換) 検証
+func TestStrings_Primitive_EmptyString(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    empty := ""
+    l := len(empty)
+
+    // 空文字列との連結
+    concat1 := empty + "hike"
+    concat2 := "hike" + empty
+
+    // 空文字列への cstring 変換と復元
+    cs := cstring(empty)
+    back := string(cs)
+
+    // 同一比較
+    eq := (empty == "")
+    eqBack := (back == "")
+
+    printf("LEN=%d,C1=%s,C2=%s,EQ=%d,EQB=%d\n", l, concat1, concat2, eq, eqBack)
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=0,C1=hike,C2=hike,EQ=1,EQB=1",
+		ExpectedExit: 0,
+	})
+}
+
+// var 宣言による string の初期値 (zero value) の検証
+func TestStrings_Primitive_ZeroValue(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    var s string
+    l := len(s)
+    eq := (s == "")
+    s = s + "initialized"
+
+    printf("LEN=%d,EQ=%d,S=%s\n", l, eq, s)
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=0,EQ=1,S=initialized",
+		ExpectedExit: 0,
+	})
+}
+
+// UTF-8 マルチバイト文字列のバイト長およびインデックスアクセス検証
+func TestStrings_Primitive_UTF8Bytes(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    // "こんにちは" は UTF-8 で各文字 3 バイト x 5 = 15 バイト
+    s := "こんにちは"
+    l := len(s)
+    b0 := s[0]
+    b1 := s[1]
+    b2 := s[2]
+
+    // 部分スライス (最初の 1 文字 = 先頭 3 バイト)
+    firstChar := s[0:3]
+
+    printf("LEN=%d,BYTES=(%d,%d,%d),CHAR=%s\n", l, b0, b1, b2, firstChar)
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=15,BYTES=(227,129,147),CHAR=こ",
+		ExpectedExit: 0,
+	})
+}
+
+// 構造体フィールドに格納された string / cstring の読み書き検証
+func TestStrings_Struct_StringFields(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Config struct {
+    name    string
+    rawPtr  cstring
+    version int
+}
+
+func main() int {
+    var cfg Config
+    cfg.name = "CompilerConfig"
+    cfg.rawPtr = cstring("RawBuffer")
+    cfg.version = 1
+
+    strFromRaw := string(cfg.rawPtr)
+    printf("NAME=%s,VER=%d,RAW=%s\n", cfg.name, cfg.version, strFromRaw)
+    return 0
+}
+`,
+		ExpectedOut:  "NAME=CompilerConfig,VER=1,RAW=RawBuffer",
+		ExpectedExit: 0,
+	})
+}
