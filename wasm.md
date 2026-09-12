@@ -144,7 +144,7 @@ Import the generated `runtime.js` to instantiate and interact with the module im
 
     <script src="runtime.js"></script>
     <script>
-        const runtime = new HikeRuntime();
+        const runtime = new HikeConcurrentRuntime();
         let wasmExports = null;
 
         async function start() {
@@ -153,12 +153,12 @@ Import the generated `runtime.js` to instantiate and interact with the module im
 
             document.getElementById('btn-fib').onclick = () => {
                 // Pass BigInt for Hike's 64-bit int (i64)
-                const result = wasmExports.RunComputation(35n);
-                console.log("Fib(35) =", result);
+                const result = wasmExports.RunComputation(35);
+                console.log("Fib(35) =", result);// 9227465
             };
 
             document.getElementById('btn-add').onclick = () => {
-                const sum = wasmExports.AddNumbers(1234n, 5678n);
+                const sum = wasmExports.AddNumbers(1234, 5678);
                 console.log("Sum =", sum);
             };
         }
@@ -186,7 +186,7 @@ async function run() {
     const wasmBuffer = await fs.readFile(
         path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.wasm')
     );
-    const runtime = new HikeRuntime();
+    const runtime = new HikeConcurrentRuntime();
     
     const { instance } = await WebAssembly.instantiate(wasmBuffer, runtime.getImportObject());
     const wasm = instance.exports;
@@ -195,7 +195,7 @@ async function run() {
         wasm.InitApp();
     }
 
-    const res = wasm.RunComputation(30n);
+    const res = wasm.RunComputation(30);
     console.log(`Computed Fib(30) in Node.js: ${res}`);
 }
 
@@ -214,6 +214,6 @@ Represented as `i64` in WebAssembly. When passing or receiving these values in J
 * **Compact Integers (`int32`, `bool`, `byte`)**
 Represented as `i32` in WebAssembly. These map directly to standard JavaScript `Number` or `Boolean` types without conversion.
 * **Strings (`string`)**
-Represented internally as a `{ pointer, length }` pair (`i8*` and `i64`). Passing strings to JavaScript is handled by providing the address and byte length, which `runtime.js` decodes via `getString(ptr, len)` backed by the browser's `TextDecoder`.
+Use `runtime.readString(ptr)` (or direct typed array view from `runtime.memory`) to decode strings from WebAssembly memory.
 * **Dynamic Allocation (`malloc` / `calloc`)**
 `runtime.js` provides a minimal 8-byte aligned bump allocator on top of `WebAssembly.Memory`. Memory automatically expands via `memory.grow` when the heap boundary is reached, eliminating any need for an external allocator package.
