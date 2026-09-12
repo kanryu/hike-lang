@@ -93,16 +93,9 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 		targetTriple = c.target.Triple
 	}
 
-	// 5. LLVM バックエンドによるコード出力
+	// 5. LLVM バックエンドによるコード出力 (Emitter 内でターゲットに応じたランタイムが最初から出力されます)
 	emitter := llvm.New(hirProg, semaCtx, targetTriple)
 	llvmIR := emitter.Emit()
-
-	// 6. ターゲットに応じたランタイム IR の自動切り替え
-	targetRuntime := llvm.GetRuntimeIR(targetTriple)
-	defaultRuntime := llvm.GetBuiltinRuntimeIR()
-	if targetRuntime != "" && targetRuntime != defaultRuntime && strings.Contains(llvmIR, defaultRuntime) {
-		llvmIR = strings.Replace(llvmIR, defaultRuntime, targetRuntime, 1)
-	}
 
 	return llvmIR, semaCtx, concreteProg, nil
 }

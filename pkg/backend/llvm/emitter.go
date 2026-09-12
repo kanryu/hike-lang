@@ -94,8 +94,8 @@ func (e *Emitter) emitPrologue() {
 	e.b.WriteString(fmt.Sprintf("source_filename = \"%s.hike\"\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", e.targetTriple))
 
-	// 並列実装された組み込みランタイムIRをそのまま出力
-	e.b.WriteString(builtinRuntimeIR)
+	// ターゲットトリプルに応じた適切なランタイムIRを出力
+	e.b.WriteString(GetRuntimeIR(e.targetTriple))
 	e.b.WriteString("\n\n")
 }
 
