@@ -639,3 +639,142 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// -------------------------------------------------------------
+// 6. std/regexp API テスト (Submatch, Index, Quantifier, UTF-8, Errors)
+// -------------------------------------------------------------
+
+// キャプチャグループ (FindStringSubmatch) の検証
+func TestStrings_Regexp_Submatch(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    re := regexp.MustCompile("([a-z]+)=([0-9]+)")
+    matches := re.FindStringSubmatch("user=100")
+    printf("LEN=%d,M0=%s,M1=%s,M2=%s\n", len(matches), matches[0], matches[1], matches[2])
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=3,M0=user=100,M1=user,M2=100",
+		ExpectedExit: 0,
+	})
+}
+
+// 一致位置のインデックス特定 (FindStringIndex) の検証
+func TestStrings_Regexp_FindIndex(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    re := regexp.MustCompile("[0-9]+")
+    loc := re.FindStringIndex("abc12345def")
+    printf("START=%d,END=%d\n", loc[0], loc[1])
+    return 0
+}
+`,
+		ExpectedOut:  "START=3,END=8",
+		ExpectedExit: 0,
+	})
+}
+
+// 量指定子 (非貪欲マッチ) と境界アサーション (^, $) の検証
+func TestStrings_Regexp_QuantifiersAndAnchors(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    reLazy := regexp.MustCompile("<.*?>")
+    res1 := reLazy.ReplaceAllString("<div>hello</div>", "[TAG]")
+
+    reAnchor := regexp.MustCompile("^Hike.*2026$")
+    m1 := reAnchor.MatchString("Hike Lang 2026")
+    m2 := reAnchor.MatchString("Other Hike Lang 2026")
+
+    printf("RES1=%s,M1=%d,M2=%d\n", res1, m1, m2)
+    return 0
+}
+`,
+		ExpectedOut:  "RES1=[TAG]hello[TAG],M1=1,M2=0",
+		ExpectedExit: 0,
+	})
+}
+
+// UTF-8 マルチバイト文字列に対する正規表現マッチおよびキャプチャの検証
+func TestStrings_Regexp_UTF8(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    re := regexp.MustCompile("世界")
+    matched := re.MatchString("こんにちは世界！")
+
+    reSub := regexp.MustCompile("こんにちは(.*)")
+    parts := reSub.FindStringSubmatch("こんにちは世界")
+
+    printf("MATCH=%d,SUB=%s\n", matched, parts[1])
+    return 0
+}
+`,
+		ExpectedOut:  "MATCH=1,SUB=世界",
+		ExpectedExit: 0,
+	})
+}
+
+// 空文字列に対するマッチおよび不一致時のインデックス取得境界値の検証
+func TestStrings_Regexp_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    reEmpty := regexp.MustCompile("^$")
+    m1 := reEmpty.MatchString("")
+    m2 := reEmpty.MatchString("non-empty")
+
+    reNum := regexp.MustCompile("[0-9]+")
+    noLoc := reNum.FindStringIndex("abcdef")
+    noMatchLen := len(noLoc)
+
+    printf("EMPTY_MATCH=%d,NON_EMPTY=%d,NOLOC_LEN=%d\n", m1, m2, noMatchLen)
+    return 0
+}
+`,
+		ExpectedOut:  "EMPTY_MATCH=1,NON_EMPTY=0,NOLOC_LEN=0",
+		ExpectedExit: 0,
+	})
+}

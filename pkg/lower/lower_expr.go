@@ -9,7 +9,6 @@ import (
 	"hikec-go/pkg/sema"
 )
 
-// ExprLowerer は式の評価、演算子処理、左辺値（LValue）ポインタ解決、構造体フィールド探索を担当する
 type ExprLowerer struct {
 	root *Lowerer
 }
@@ -18,7 +17,6 @@ func NewExprLowerer(root *Lowerer) *ExprLowerer {
 	return &ExprLowerer{root: root}
 }
 
-// lookupGlobal は素の名前またはパッケージ修飾名 (例: eventloop_running) でグローバル変数を検索する
 func (e *ExprLowerer) lookupGlobal(name string) (string, sema.Type, bool) {
 	if g, ok := e.root.semaCtx.Globals[name]; ok {
 		return name, g, true
@@ -48,8 +46,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.FloatLiteral:
 		return &hir.ConstFloat{Val: node.Value, Typ: sema.TypeFloat64}
 
+	// ★ 文字リテラルは文字列定数ではなく、byte (i8) 整数として評価する
 	case *ast.CharLiteral:
-		return e.root.getStringConst(node.Value)
+		return &hir.ConstInt{Val: int64(node.CodePoint), Typ: sema.TypeByte}
 
 	case *ast.StringLiteral:
 		return e.root.getStringConst(node.Value)
@@ -224,6 +223,10 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.PrefixExpr:
 		if node.Operator == "&" {
+			// ★ 構造体リテラルのポインタ化 (&Struct{}) はヒープ領域 (calloc) に確保
+			if sl, ok := node.Right.(*ast.StructLiteral); ok {
+				return e.lowerStructLiteralHeap(sl)
+			}
 			return e.LowerLValue(node.Right)
 		}
 		if node.Operator == "*" {
@@ -516,11 +519,12 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 }
 
-// lowerStructLiteralPtr は構造体リテラルのスタック領域を確保・初期化し、そのポインタ (Alloca) を返す
+// lowerStructLiteralPtr はスタック上の構造体リテラルをゼロ初期化して生成
 func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
 	allocaReg := e.root.nextReg(&sema.PointerType{Base: stType})
 	e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: stType})
+	e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(stType), Ptr: allocaReg})
 
 	for i, fVal := range node.Fields {
 		val := e.LowerExpr(fVal.Value)
@@ -552,11 +556,61 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 	return allocaReg
 }
 
-// lowerArrayLiteralPtr は配列リテラルのスタック領域を確保・初期化し、そのポインタ (Alloca) を返す
+// lowerStructLiteralHeap はヒープ領域 (calloc) に構造体を確保してゼロ初期化し、ポインタを返す
+func (e *ExprLowerer) lowerStructLiteralHeap(node *ast.StructLiteral) hir.Value {
+	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	size := int64(stType.Size())
+	if size <= 0 {
+		size = int64(sema.PointerSize)
+	}
+	sizeVal := &hir.ConstInt{Val: size, Typ: sema.TypeInt}
+	oneVal := &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+
+	callocRaw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	e.root.emit(&hir.InstrCallStatic{
+		Dst:        callocRaw,
+		CalleeName: "calloc",
+		Args:       []hir.Value{oneVal, sizeVal},
+	})
+
+	heapReg := e.root.nextReg(&sema.PointerType{Base: stType})
+	e.root.emit(&hir.InstrCast{Dst: heapReg, Val: callocRaw, ToType: &sema.PointerType{Base: stType}})
+
+	for i, fVal := range node.Fields {
+		val := e.LowerExpr(fVal.Value)
+		fieldIdx := i
+		var fName string
+		var fieldType sema.Type
+		if fVal.Name != nil {
+			fName = fVal.Name.Value
+			for idx, sf := range stType.Fields {
+				if sf.Name == fName {
+					fieldIdx = idx
+					fieldType = sf.Type
+					break
+				}
+			}
+		} else {
+			fName = stType.Fields[i].Name
+			fieldType = stType.Fields[i].Type
+		}
+		if fieldType != nil {
+			val = e.root.emitValueCoerce(val, fieldType)
+		} else {
+			fieldType = val.Type()
+		}
+		fPtrReg := e.root.nextReg(&sema.PointerType{Base: fieldType})
+		e.root.emit(&hir.InstrGetFieldPtr{Dst: fPtrReg, BasePtr: heapReg, FieldIndex: fieldIdx, FieldName: fName})
+		e.root.emit(&hir.InstrStore{Val: val, Ptr: fPtrReg})
+	}
+	return heapReg
+}
+
 func (e *ExprLowerer) lowerArrayLiteralPtr(node *ast.ArrayLiteral) hir.Value {
 	arType := e.root.semaCtx.ResolveType(node.Type).(*sema.ArrayType)
 	allocaReg := e.root.nextReg(&sema.PointerType{Base: arType})
 	e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: arType})
+	e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(arType), Ptr: allocaReg})
 
 	for i, el := range node.Elements {
 		val := e.LowerExpr(el)
@@ -633,7 +687,7 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 		panic(fmt.Sprintf("[Lower Error] invalid prefix operator for lvalue: %s", node.Operator))
 
 	case *ast.StructLiteral:
-		return e.lowerStructLiteralPtr(node)
+		return e.lowerStructLiteralHeap(node)
 
 	case *ast.ArrayLiteral:
 		return e.lowerArrayLiteralPtr(node)
@@ -841,7 +895,8 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	if leftVal.Type() == sema.TypeString || rightVal.Type() == sema.TypeString {
+	// ★ 両辺が string 型の場合のみ hike_streq / hike_strcat を呼ぶ (片方が byte の場合は入らない)
+	if leftVal.Type() == sema.TypeString && rightVal.Type() == sema.TypeString {
 		if node.Operator == "+" {
 			res := e.root.nextReg(sema.TypeString)
 			e.root.emit(&hir.InstrCallStatic{Dst: res, CalleeName: e.root.BuiltinName("hike_strcat"), Args: []hir.Value{leftVal, rightVal}})
@@ -907,10 +962,6 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	e.root.emit(&hir.InstrBinary{Dst: dst, Op: op, L: leftVal, R: rightVal})
 	return dst
 }
-
-// -------------------------------------------------------------
-// 並行処理式 (Async / Receive)
-// -------------------------------------------------------------
 
 func (e *ExprLowerer) LowerAsyncExpr(ae *ast.AsyncExpr) hir.Value {
 	fnVal := e.LowerExpr(ae.Fn)
@@ -983,10 +1034,6 @@ func (e *ExprLowerer) LowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
 	return targetVal
 }
 
-// -------------------------------------------------------------
-// 型アサーション (TypeAssert)
-// -------------------------------------------------------------
-
 func (e *ExprLowerer) LowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
 	ifaceVal := e.LowerExpr(tae.Expr)
 	ifaceType := ifaceVal.Type()
@@ -1027,10 +1074,6 @@ func (e *ExprLowerer) LowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
 	e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: matchReg, Index: 1})
 	return t2
 }
-
-// -------------------------------------------------------------
-// 構造体フィールド探索 (Field Path Resolution)
-// -------------------------------------------------------------
 
 func (e *ExprLowerer) ResolveFieldPath(st *sema.StructType, sName string, curPtr hir.Value, fieldName string) (hir.Value, sema.Type, string, bool) {
 	if st == nil {

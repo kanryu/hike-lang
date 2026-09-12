@@ -1,0 +1,447 @@
+package regexp
+
+const (
+	OP_MATCH        = 0
+	OP_CHAR         = 1
+	OP_RANGE        = 2
+	OP_ANY          = 3
+	OP_ASSERT_START = 4
+	OP_ASSERT_END   = 5
+	OP_JUMP         = 6
+	OP_SPLIT        = 7
+	OP_SAVE         = 8
+)
+
+type Inst struct {
+	op       int
+	c        int
+	ranges   []int
+	inverted bool
+	x        int
+	y        int
+}
+
+type Regexp struct {
+	pattern       string
+	prog          []*Inst
+	numGroups     int
+	anchoredStart bool
+	anchoredEnd   bool
+}
+
+func (re *Regexp) emit(inst *Inst) int {
+	idx := len(re.prog)
+	re.prog = append(re.prog, inst)
+	return idx
+}
+
+func (re *Regexp) insertAt(idx int, inst *Inst) {
+	re.prog = append(re.prog, inst)
+	for i := len(re.prog) - 1; i > idx; i = i - 1 {
+		re.prog[i] = re.prog[i-1]
+	}
+	re.prog[idx] = inst
+
+	for i := 0; i < len(re.prog); i = i + 1 {
+		if i != idx {
+			if re.prog[i].op == OP_JUMP {
+				if re.prog[i].x >= idx {
+					re.prog[i].x = re.prog[i].x + 1
+				}
+			}
+			if re.prog[i].op == OP_SPLIT {
+				if re.prog[i].x >= idx {
+					re.prog[i].x = re.prog[i].x + 1
+				}
+				if re.prog[i].y >= idx {
+					re.prog[i].y = re.prog[i].y + 1
+				}
+			}
+		}
+	}
+}
+
+func (re *Regexp) parseAtom(pattern string, pos int) int {
+	if pos >= len(pattern) {
+		return pos
+	}
+
+	atomStart := len(re.prog)
+	ch := int(pattern[pos])
+
+	if ch == 40 { // '('
+		pos = pos + 1
+		re.numGroups = re.numGroups + 1
+		grp := re.numGroups
+		re.emit(&Inst{op: OP_SAVE, x: 2 * grp})
+		for pos < len(pattern) && int(pattern[pos]) != 41 { // ')'
+			pos = re.parseAtom(pattern, pos)
+		}
+		if pos < len(pattern) && int(pattern[pos]) == 41 {
+			pos = pos + 1
+		}
+		re.emit(&Inst{op: OP_SAVE, x: 2*grp + 1})
+	} else if ch == 91 { // '['
+		pos = pos + 1
+		inverted := false
+		if pos < len(pattern) && int(pattern[pos]) == 94 { // '^'
+			inverted = true
+			pos = pos + 1
+		}
+		ranges := make([]int, 0)
+		for pos < len(pattern) && int(pattern[pos]) != 93 { // ']'
+			c1 := int(pattern[pos])
+			c2 := c1
+			if pos+2 < len(pattern) && int(pattern[pos+1]) == 45 && int(pattern[pos+2]) != 93 { // '-', ']'
+				c2 = int(pattern[pos+2])
+				pos = pos + 3
+			} else {
+				pos = pos + 1
+			}
+			ranges = append(ranges, c1)
+			ranges = append(ranges, c2)
+		}
+		if pos < len(pattern) && int(pattern[pos]) == 93 {
+			pos = pos + 1
+		}
+		re.emit(&Inst{op: OP_RANGE, ranges: ranges, inverted: inverted})
+	} else if ch == 46 { // '.'
+		pos = pos + 1
+		re.emit(&Inst{op: OP_ANY})
+	} else if ch == 92 { // '\\'
+		pos = pos + 1
+		if pos < len(pattern) {
+			esc := int(pattern[pos])
+			pos = pos + 1
+			re.emit(&Inst{op: OP_CHAR, c: esc})
+		}
+	} else {
+		c := ch
+		pos = pos + 1
+		re.emit(&Inst{op: OP_CHAR, c: c})
+	}
+
+	// 量指定子 (*, +, ?, *?, +?, ??)
+	if pos < len(pattern) {
+		q := int(pattern[pos])
+		if q == 42 { // '*'
+			pos = pos + 1
+			isLazy := false
+			if pos < len(pattern) && int(pattern[pos]) == 63 { // '?'
+				isLazy = true
+				pos = pos + 1
+			}
+			re.insertAt(atomStart, &Inst{op: OP_SPLIT})
+			re.emit(&Inst{op: OP_JUMP, x: atomStart})
+			exitTarget := len(re.prog)
+			if isLazy {
+				re.prog[atomStart].x = exitTarget
+				re.prog[atomStart].y = atomStart + 1
+			} else {
+				re.prog[atomStart].x = atomStart + 1
+				re.prog[atomStart].y = exitTarget
+			}
+		} else if q == 43 { // '+'
+			pos = pos + 1
+			isLazy := false
+			if pos < len(pattern) && int(pattern[pos]) == 63 { // '?'
+				isLazy = true
+				pos = pos + 1
+			}
+			exitTarget := len(re.prog) + 1
+			if isLazy {
+				re.emit(&Inst{op: OP_SPLIT, x: exitTarget, y: atomStart})
+			} else {
+				re.emit(&Inst{op: OP_SPLIT, x: atomStart, y: exitTarget})
+			}
+		} else if q == 63 { // '?'
+			pos = pos + 1
+			isLazy := false
+			if pos < len(pattern) && int(pattern[pos]) == 63 { // '?'
+				isLazy = true
+				pos = pos + 1
+			}
+			re.insertAt(atomStart, &Inst{op: OP_SPLIT})
+			exitTarget := len(re.prog)
+			if isLazy {
+				re.prog[atomStart].x = exitTarget
+				re.prog[atomStart].y = atomStart + 1
+			} else {
+				re.prog[atomStart].x = atomStart + 1
+				re.prog[atomStart].y = exitTarget
+			}
+		}
+	}
+
+	return pos
+}
+
+func Compile(pattern string) *Regexp {
+	re := &Regexp{
+		pattern:       pattern,
+		prog:          make([]*Inst, 0),
+		numGroups:     0,
+		anchoredStart: false,
+		anchoredEnd:   false,
+	}
+
+	patLen := len(pattern)
+	pos := 0
+
+	if patLen > 0 && int(pattern[0]) == 94 { // '^'
+		re.anchoredStart = true
+		pos = 1
+	}
+
+	re.emit(&Inst{op: OP_SAVE, x: 0})
+
+	if re.anchoredStart {
+		re.emit(&Inst{op: OP_ASSERT_START})
+	}
+
+	for pos < patLen {
+		if int(pattern[pos]) == 36 && pos == patLen-1 { // '$'
+			pos = pos + 1
+			break
+		}
+		pos = re.parseAtom(pattern, pos)
+	}
+
+	if patLen > 0 && int(pattern[patLen-1]) == 36 { // '$'
+		re.anchoredEnd = true
+		re.emit(&Inst{op: OP_ASSERT_END})
+	}
+
+	re.emit(&Inst{op: OP_SAVE, x: 1})
+	re.emit(&Inst{op: OP_MATCH})
+
+	return re
+}
+
+func MustCompile(pattern string) *Regexp {
+	return Compile(pattern)
+}
+
+func (re *Regexp) exec(pc int, s string, pos int, saved []int) bool {
+	if pc >= len(re.prog) {
+		return false
+	}
+
+	inst := re.prog[pc]
+	op := inst.op
+
+	if op == OP_MATCH {
+		return true
+	}
+
+	if op == OP_CHAR {
+		if pos < len(s) && int(s[pos]) == inst.c {
+			return re.exec(pc+1, s, pos+1, saved)
+		}
+		return false
+	}
+
+	if op == OP_ANY {
+		if pos < len(s) && int(s[pos]) != 10 { // '\n'
+			return re.exec(pc+1, s, pos+1, saved)
+		}
+		return false
+	}
+
+	if op == OP_RANGE {
+		if pos < len(s) {
+			b := int(s[pos])
+			matched := false
+			for r := 0; r < len(inst.ranges); r = r + 2 {
+				if b >= inst.ranges[r] && b <= inst.ranges[r+1] {
+					matched = true
+					break
+				}
+			}
+			if inst.inverted {
+				matched = !matched
+			}
+			if matched {
+				return re.exec(pc+1, s, pos+1, saved)
+			}
+		}
+		return false
+	}
+
+	if op == OP_ASSERT_START {
+		if pos == 0 {
+			return re.exec(pc+1, s, pos, saved)
+		}
+		return false
+	}
+
+	if op == OP_ASSERT_END {
+		if pos == len(s) {
+			return re.exec(pc+1, s, pos, saved)
+		}
+		return false
+	}
+
+	if op == OP_JUMP {
+		return re.exec(inst.x, s, pos, saved)
+	}
+
+	if op == OP_SPLIT {
+		if re.exec(inst.x, s, pos, saved) {
+			return true
+		}
+		return re.exec(inst.y, s, pos, saved)
+	}
+
+	if op == OP_SAVE {
+		oldVal := saved[inst.x]
+		saved[inst.x] = pos
+		if re.exec(pc+1, s, pos, saved) {
+			return true
+		}
+		saved[inst.x] = oldVal
+		return false
+	}
+
+	return false
+}
+
+func (re *Regexp) findFrom(s string, from int) []int {
+	sLen := len(s)
+	numSlots := (re.numGroups + 1) * 2
+	saved := make([]int, numSlots)
+
+	for start := from; start <= sLen; start = start + 1 {
+		for k := 0; k < numSlots; k = k + 1 {
+			saved[k] = -1
+		}
+		if re.exec(0, s, start, saved) {
+			res := make([]int, 2)
+			res[0] = saved[0]
+			res[1] = saved[1]
+			return res
+		}
+		if re.anchoredStart {
+			break
+		}
+	}
+	return make([]int, 0)
+}
+
+func (re *Regexp) MatchString(s string) bool {
+	loc := re.findFrom(s, 0)
+	return len(loc) > 0
+}
+
+func (re *Regexp) FindStringIndex(s string) []int {
+	return re.findFrom(s, 0)
+}
+
+func (re *Regexp) FindStringSubmatch(s string) []string {
+	sLen := len(s)
+	numSlots := (re.numGroups + 1) * 2
+	saved := make([]int, numSlots)
+
+	for start := 0; start <= sLen; start = start + 1 {
+		for k := 0; k < numSlots; k = k + 1 {
+			saved[k] = -1
+		}
+		if re.exec(0, s, start, saved) {
+			res := make([]string, re.numGroups+1)
+			for g := 0; g <= re.numGroups; g = g + 1 {
+				st := saved[2*g]
+				en := saved[2*g+1]
+				if st >= 0 && en >= st && en <= sLen {
+					res[g] = s[st:en]
+				} else {
+					res[g] = ""
+				}
+			}
+			return res
+		}
+		if re.anchoredStart {
+			break
+		}
+	}
+	return make([]string, 0)
+}
+
+func (re *Regexp) ReplaceAllString(src string, repl string) string {
+	res := ""
+	lastIdx := 0
+	searchPos := 0
+	srcLen := len(src)
+
+	for searchPos <= srcLen {
+		loc := re.findFrom(src, searchPos)
+		if len(loc) == 0 {
+			break
+		}
+		start := loc[0]
+		end := loc[1]
+
+		if start > lastIdx {
+			res = res + src[lastIdx:start]
+		}
+		res = res + repl
+		lastIdx = end
+
+		if end > searchPos {
+			searchPos = end
+		} else {
+			if searchPos < srcLen {
+				res = res + src[searchPos:searchPos+1]
+				lastIdx = searchPos + 1
+				searchPos = searchPos + 1
+			} else {
+				break
+			}
+		}
+	}
+
+	if lastIdx < srcLen {
+		res = res + src[lastIdx:srcLen]
+	}
+	return res
+}
+
+func (re *Regexp) ReplaceAllStringFunc(src string, replFunc func(string) string) string {
+	res := ""
+	lastIdx := 0
+	searchPos := 0
+	srcLen := len(src)
+
+	for searchPos <= srcLen {
+		loc := re.findFrom(src, searchPos)
+		if len(loc) == 0 {
+			break
+		}
+		start := loc[0]
+		end := loc[1]
+
+		if start > lastIdx {
+			res = res + src[lastIdx:start]
+		}
+
+		matchedStr := src[start:end]
+		res = res + replFunc(matchedStr)
+		lastIdx = end
+
+		if end > searchPos {
+			searchPos = end
+		} else {
+			if searchPos < srcLen {
+				res = res + src[searchPos:searchPos+1]
+				lastIdx = searchPos + 1
+				searchPos = searchPos + 1
+			} else {
+				break
+			}
+		}
+	}
+
+	if lastIdx < srcLen {
+		res = res + src[lastIdx:srcLen]
+	}
+	return res
+}

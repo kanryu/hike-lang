@@ -230,3 +230,98 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// 7. 正規表現置換 (ReplaceAllStringFunc) における無名関数ポインタ渡し
+func TestFuncPtr_Regexp_AnonymousFunc(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    re := regexp.MustCompile("[0-9]+")
+    src := "item10_count25"
+    res := re.ReplaceAllStringFunc(src, func(s string) string {
+        return "[" + s + "]"
+    })
+    printf("RES=%s\n", res)
+    return 0
+}
+`,
+		ExpectedOut:  "RES=item[10]_count[25]",
+		ExpectedExit: 0,
+	})
+}
+
+// 8. 正規表現置換 (ReplaceAllStringFunc) におけるクロージャ（キャプチャあり）渡し
+func TestFuncPtr_Regexp_ClosureCapture(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+
+func printf(format string, ...) int
+
+func main() int {
+    re := regexp.MustCompile("[a-z]")
+    src := "a-b-c"
+    count := 0
+    res := re.ReplaceAllStringFunc(src, func(s string) string {
+        count = count + 1
+        if count == 1 {
+            return "FIRST"
+        }
+        if count == 2 {
+            return "SECOND"
+        }
+        return "THIRD"
+    })
+    printf("RES=%s,COUNT=%d\n", res, count)
+    return 0
+}
+`,
+		ExpectedOut:  "RES=FIRST-SECOND-THIRD,COUNT=3",
+		ExpectedExit: 0,
+	})
+}
+
+// 9. 正規表現置換 (ReplaceAllStringFunc) におけるトップレベル関数ポインタ渡し
+func TestFuncPtr_Regexp_TopLevelFunc(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+import "std/strings"
+
+func printf(format string, ...) int
+
+func Wrap(s string) string {
+    return "<" + s + ">"
+}
+
+func main() int {
+    re := regexp.MustCompile("[a-z]+")
+    src := "hello world"
+
+    r1 := re.ReplaceAllStringFunc(src, Wrap)
+    r2 := re.ReplaceAllStringFunc(src, strings.ToUpper)
+
+    printf("R1=%s,R2=%s\n", r1, r2)
+    return 0
+}
+`,
+		ExpectedOut:  "R1=<hello> <world>,R2=HELLO WORLD",
+		ExpectedExit: 0,
+	})
+}

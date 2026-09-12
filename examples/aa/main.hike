@@ -1,24 +1,13 @@
 
 package main
 
+import "std/regexp"
+
 func printf(format string, ...) int
 
-func Add(a int, b int) int {
-    return a + b
-}
-
-func Sub(a int, b int) int {
-    return a - b
-}
-
-func ExecOp(op func(int, int) int, x int, y int) int {
-    return op(x, y)
-}
-
 func main() int {
-    var fn func(int, int) int = Add
-    r1 := fn(30, 20)
-    r2 := ExecOp(Sub, 30, 20)
-    printf("ADD=%d,SUB=%d\n", r1, r2)
+    re := regexp.MustCompile("[0-9]+")
+    loc := re.FindStringIndex("abc12345def")
+    printf("START=%d,END=%d\n", loc[0], loc[1])
     return 0
 }
