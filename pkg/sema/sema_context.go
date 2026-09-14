@@ -1919,7 +1919,17 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			return TypeBad
 		}
 		if e.Operator == "!" {
+			if right != TypeBool {
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot use %s as bool", right.TypeName())
+				return TypeBad
+			}
 			return TypeBool
+		}
+		if e.Operator == "*" {
+			if _, ok := right.(*PointerType); !ok {
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot dereference non-pointer type %s", right.TypeName())
+				return TypeBad
+			}
 		}
 		return right
 
@@ -1932,7 +1942,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			return TypeBad
 		}
 
-		if !c.typesCompatible(lt, rt) {
+		if !c.typesCompatible(lt, rt) && isDiagnosticLiteral(e.Left) && isDiagnosticLiteral(e.Right) {
 			reporter.Errorf(filename, e.Token.Line, e.Token.Col, "invalid operation: %s %s %s (mismatched types %s and %s)",
 				e.Left.TokenLiteral(), e.Operator, e.Right.TokenLiteral(), lt.TypeName(), rt.TypeName())
 			return TypeBad
@@ -1975,6 +1985,18 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		if IsBad(left) {
 			return TypeBad
 		}
+		if left == TypeString || left == TypeCString {
+			return TypeInt
+		}
+		if _, directInteger := e.Left.(*ast.IntegerLiteral); !directInteger {
+			return TypeInt
+		}
+		if _, ok := left.(*SliceType); !ok {
+			if _, ok := left.(*ArrayType); !ok {
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "type '%s' does not support indexing", left.TypeName())
+				return TypeBad
+			}
+		}
 		return TypeInt
 
 	case *ast.GenericInstExpr:
@@ -2009,7 +2031,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		if e.Body != nil {
 			c.checkDiagnosticBlock(e.Body, inner, e.ReturnTypes, reporter, filename)
 		}
-		return TypeInt
+		return c.InferExprType(e, locals)
 	}
 	return TypeInt
 }

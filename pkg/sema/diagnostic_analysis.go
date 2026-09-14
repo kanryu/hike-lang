@@ -66,19 +66,39 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
 		var declType Type = TypeInt
+		var valueType Type = TypeInt
+		if s.Value != nil {
+			valueType = c.InferExprTypeWithDiag(s.Value, locals, reporter, filename)
+		}
 		if s.Type != nil {
 			declType = c.resolveDiagnosticType(s.Type)
+			if s.Value != nil && isSimpleDiagnosticTarget(s.Type) && isDiagnosticLiteral(s.Value) && !IsBad(valueType) && !IsBad(declType) && !c.typesCompatible(declType, valueType) {
+				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", valueType.TypeName(), declType.TypeName())
+			}
+		} else {
+			declType = valueType
 		}
 		locals[s.Name.Value] = declType
 
 	case *ast.AssignStmt:
 		isDefine := s.Type != nil || s.Token.Literal == ":=" || s.Token.Type == token.DEFINE || s.Token.Type == token.VAR
 		if isDefine {
+			rightTypes := make([]Type, len(s.Right))
+			for i, right := range s.Right {
+				rightTypes[i] = c.InferExprTypeWithDiag(right, locals, reporter, filename)
+			}
 			for _, left := range s.Left {
 				if ident, ok := left.(*ast.Identifier); ok {
 					var valueType Type = TypeInt
-					if s.Type != nil {
-						valueType = c.resolveDiagnosticType(s.Type)
+					if len(rightTypes) > 0 {
+						valueType = rightTypes[0]
+					}
+					if s.Type != nil && len(rightTypes) > 0 && isSimpleDiagnosticTarget(s.Type) {
+						declType := c.resolveDiagnosticType(s.Type)
+						if !IsBad(valueType) && !IsBad(declType) && !c.typesCompatible(declType, valueType) {
+							reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", valueType.TypeName(), declType.TypeName())
+						}
+						valueType = declType
 					}
 					locals[ident.Value] = valueType
 				}
@@ -90,14 +110,25 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		return
 	case *ast.ReturnStmt:
 		for i, value := range s.Values {
-			_ = i
-			c.InferExprTypeWithDiag(value, locals, reporter, filename)
+			actual := c.InferExprTypeWithDiag(value, locals, reporter, filename)
+			if i < len(returns) && isDiagnosticLiteral(value) && !IsBad(actual) {
+				expected := c.resolveDiagnosticType(returns[i])
+				if !IsBad(expected) && !c.typesCompatible(expected, actual) {
+					reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", actual.TypeName(), expected.TypeName())
+				}
+			}
 		}
 	case *ast.BlockStmt:
 		c.checkDiagnosticBlock(s, cloneTypes(locals), returns, reporter, filename)
 	case *ast.IfStmt:
 		if s.Init != nil {
 			c.checkDiagnosticStmt(s.Init, locals, returns, reporter, filename)
+		}
+		if _, isInteger := s.Condition.(*ast.IntegerLiteral); isInteger {
+			conditionType := c.InferExprTypeWithDiag(s.Condition, locals, reporter, filename)
+			if !IsBad(conditionType) && conditionType != TypeBool {
+				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as bool", conditionType.TypeName())
+			}
 		}
 		c.checkDiagnosticBlock(s.Consequence, cloneTypes(locals), returns, reporter, filename)
 		if alt, ok := s.Alternative.(*ast.BlockStmt); ok {
@@ -135,6 +166,24 @@ func cloneTypes(src map[string]Type) map[string]Type {
 		dst[k] = v
 	}
 	return dst
+}
+
+func isDiagnosticLiteral(expr ast.Expression) bool {
+	switch expr.(type) {
+	case *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral, *ast.CharLiteral, *ast.NilLiteral:
+		return true
+	case *ast.Identifier:
+		return expr.TokenLiteral() == "true" || expr.TokenLiteral() == "false"
+	default:
+		return false
+	}
+}
+
+func isSimpleDiagnosticTarget(expr ast.TypeExpr) bool {
+	if named, ok := expr.(*ast.NamedType); ok && named.Name != nil {
+		return named.Name.Value == "string" || named.Name.Value == "bool"
+	}
+	return false
 }
 
 func (c *Context) resolveDiagnosticType(expr ast.TypeExpr) (typ Type) {
