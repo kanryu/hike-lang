@@ -1,0 +1,337 @@
+package bytes
+
+// Equal reports whether a and b are the same byte sequence.
+func Equal(a []byte, b []byte) bool {
+    if len(a) != len(b) {
+        return false
+    }
+    for i := 0; i < len(a); i = i + 1 {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+// Compare returns -1, 0, or 1 according to the lexical ordering of a and b.
+func Compare(a []byte, b []byte) int {
+    limit := len(a)
+    if len(b) < limit {
+        limit = len(b)
+    }
+    for i := 0; i < limit; i = i + 1 {
+        if a[i] < b[i] {
+            return -1
+        }
+        if a[i] > b[i] {
+            return 1
+        }
+    }
+    if len(a) < len(b) {
+        return -1
+    }
+    if len(a) > len(b) {
+        return 1
+    }
+    return 0
+}
+
+// Index returns the first index of sep in s, or -1.
+func Index(s []byte, sep []byte) int {
+    if len(sep) == 0 {
+        return 0
+    }
+    if len(sep) > len(s) {
+        return -1
+    }
+    for i := 0; i <= len(s)-len(sep); i = i + 1 {
+        if Equal(s[i:i+len(sep)], sep) {
+            return i
+        }
+    }
+    return -1
+}
+
+// LastIndex returns the last index of sep in s, or -1.
+func LastIndex(s []byte, sep []byte) int {
+    if len(sep) == 0 {
+        return len(s)
+    }
+    if len(sep) > len(s) {
+        return -1
+    }
+    for i := len(s) - len(sep); i >= 0; i = i - 1 {
+        if Equal(s[i:i+len(sep)], sep) {
+            return i
+        }
+    }
+    return -1
+}
+
+// Count counts the non-overlapping occurrences of sep in s.
+func Count(s []byte, sep []byte) int {
+    if len(sep) == 0 {
+        return len(s) + 1
+    }
+    count := 0
+    pos := 0
+    for pos <= len(s)-len(sep) {
+        idx := Index(s[pos:len(s)], sep)
+        if idx < 0 {
+            break
+        }
+        count = count + 1
+        pos = pos + idx + len(sep)
+    }
+    return count
+}
+
+func containsByte(set string, value byte) bool {
+    for i := 0; i < len(set); i = i + 1 {
+        if byte(set[i]) == value {
+            return true
+        }
+    }
+    return false
+}
+
+// Contains reports whether sep is within b.
+func Contains(b []byte, sep []byte) bool {
+    return Index(b, sep) >= 0
+}
+
+// IndexAny returns the first index of a byte from chars in s, or -1.
+func IndexAny(s []byte, chars string) int {
+    for i := 0; i < len(s); i = i + 1 {
+        if containsByte(chars, s[i]) {
+            return i
+        }
+    }
+    return -1
+}
+
+// LastIndexAny returns the last index of a byte from chars in s, or -1.
+func LastIndexAny(s []byte, chars string) int {
+    for i := len(s) - 1; i >= 0; i = i - 1 {
+        if containsByte(chars, s[i]) {
+            return i
+        }
+    }
+    return -1
+}
+
+// Cut slices s around the first occurrence of sep.
+func Cut(s []byte, sep []byte) ([]byte, []byte, bool) {
+    idx := Index(s, sep)
+    if idx < 0 {
+        return s, make([]byte, 0), false
+    }
+    return s[:idx], s[idx+len(sep):], true
+}
+
+// Clone returns a copy of b.
+func Clone(b []byte) []byte {
+    out := make([]byte, 0, len(b))
+    for i := 0; i < len(b); i = i + 1 {
+        out = append(out, b[i])
+    }
+    return out
+}
+
+// Repeat returns count copies of b concatenated together.
+func Repeat(b []byte, count int) []byte {
+    out := make([]byte, 0, len(b)*count)
+    if count <= 0 {
+        return out
+    }
+    for i := 0; i < count; i = i + 1 {
+        for j := 0; j < len(b); j = j + 1 {
+            out = append(out, b[j])
+        }
+    }
+    return out
+}
+
+func appendBytes(dst []byte, src []byte) []byte {
+    for i := 0; i < len(src); i = i + 1 {
+        dst = append(dst, src[i])
+    }
+    return dst
+}
+
+// Replace returns a copy of s with up to n non-overlapping replacements.
+func Replace(s []byte, old []byte, new []byte, n int) []byte {
+    if len(old) == 0 || n == 0 {
+        return Clone(s)
+    }
+    out := make([]byte, 0, len(s))
+    pos := 0
+    replaced := 0
+    for pos <= len(s)-len(old) && (n < 0 || replaced < n) {
+        idx := Index(s[pos:len(s)], old)
+        if idx < 0 {
+            break
+        }
+        out = appendBytes(out, s[pos:pos+idx])
+        out = appendBytes(out, new)
+        pos = pos + idx + len(old)
+        replaced = replaced + 1
+    }
+    out = appendBytes(out, s[pos:len(s)])
+    return out
+}
+
+// ReplaceAll returns a copy of s with all non-overlapping replacements.
+func ReplaceAll(s []byte, old []byte, new []byte) []byte {
+    return Replace(s, old, new, -1)
+}
+
+func splitWithAfter(s []byte, sep []byte, n int, withAfter bool) [][]byte {
+    out := make([][]byte, 0)
+    if n == 0 {
+        return out
+    }
+    if len(sep) == 0 {
+        if n < 0 || n > len(s)+1 {
+            n = len(s) + 1
+        }
+        for i := 0; i < len(s) && len(out) < n-1; i = i + 1 {
+            out = append(out, s[i:i+1])
+        }
+        if len(out) < n {
+            out = append(out, s[len(out):len(s)])
+        }
+        return out
+    }
+    pos := 0
+    parts := 0
+    for pos <= len(s)-len(sep) && (n < 0 || parts < n-1) {
+        idx := Index(s[pos:len(s)], sep)
+        if idx < 0 {
+            break
+        }
+        end := pos + idx
+        if withAfter {
+            end = end + len(sep)
+        }
+        out = append(out, s[pos:end])
+        pos = pos + idx + len(sep)
+        parts = parts + 1
+    }
+    out = append(out, s[pos:len(s)])
+    return out
+}
+
+// Split slices s around each instance of sep.
+func Split(s []byte, sep []byte) [][]byte {
+    return splitWithAfter(s, sep, -1, false)
+}
+
+// SplitAfter slices s after each instance of sep.
+func SplitAfter(s []byte, sep []byte) [][]byte {
+    return splitWithAfter(s, sep, -1, true)
+}
+
+// SplitN slices s around at most n instances of sep.
+func SplitN(s []byte, sep []byte, n int) [][]byte {
+    return splitWithAfter(s, sep, n, false)
+}
+
+// SplitAfterN slices s after at most n instances of sep.
+func SplitAfterN(s []byte, sep []byte, n int) [][]byte {
+    return splitWithAfter(s, sep, n, true)
+}
+
+// Join concatenates the byte slices with sep between them.
+func Join(slices [][]byte, sep []byte) []byte {
+    out := make([]byte, 0)
+    for i := 0; i < len(slices); i = i + 1 {
+        if i > 0 {
+            out = appendBytes(out, sep)
+        }
+        out = appendBytes(out, slices[i])
+    }
+    return out
+}
+
+// ToUpper returns an ASCII upper-case copy of b.
+func ToUpper(b []byte) []byte {
+    out := Clone(b)
+    for i := 0; i < len(out); i = i + 1 {
+        if out[i] >= byte(97) && out[i] <= byte(122) {
+            out[i] = out[i] - byte(32)
+        }
+    }
+    return out
+}
+
+// ToLower returns an ASCII lower-case copy of b.
+func ToLower(b []byte) []byte {
+    out := Clone(b)
+    for i := 0; i < len(out); i = i + 1 {
+        if out[i] >= byte(65) && out[i] <= byte(90) {
+            out[i] = out[i] + byte(32)
+        }
+    }
+    return out
+}
+
+func trimLeftIndex(b []byte, cutset string) int {
+    i := 0
+    for i < len(b) && containsByte(cutset, b[i]) {
+        i = i + 1
+    }
+    return i
+}
+
+func trimRightIndex(b []byte, cutset string) int {
+    i := len(b)
+    for i > 0 && containsByte(cutset, b[i-1]) {
+        i = i - 1
+    }
+    return i
+}
+
+// Trim removes all leading and trailing bytes in cutset.
+func Trim(b []byte, cutset string) []byte {
+    start := trimLeftIndex(b, cutset)
+    end := trimRightIndex(b, cutset)
+    if end < start {
+        end = start
+    }
+    return b[start:end]
+}
+
+// TrimLeft removes all leading bytes in cutset.
+func TrimLeft(b []byte, cutset string) []byte {
+    return b[trimLeftIndex(b, cutset):len(b)]
+}
+
+// TrimRight removes all trailing bytes in cutset.
+func TrimRight(b []byte, cutset string) []byte {
+    return b[0:trimRightIndex(b, cutset)]
+}
+
+// TrimSpace removes leading and trailing ASCII whitespace.
+func TrimSpace(b []byte) []byte {
+    return Trim(b, " \t\r\n\v\f")
+}
+
+// Fields splits b around runs of ASCII whitespace.
+func Fields(b []byte) [][]byte {
+    out := make([][]byte, 0)
+    i := 0
+    for i < len(b) {
+        for i < len(b) && containsByte(" \t\r\n\v\f", b[i]) {
+            i = i + 1
+        }
+        start := i
+        for i < len(b) && !containsByte(" \t\r\n\v\f", b[i]) {
+            i = i + 1
+        }
+        if start < i {
+            out = append(out, b[start:i])
+        }
+    }
+    return out
+}
