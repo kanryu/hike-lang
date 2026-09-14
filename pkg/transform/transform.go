@@ -346,6 +346,9 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 	case *ast.ForRangeStmt:
 		stmt.X = t.transformExpr(stmt.X)
 		xType := t.inferExprTypeExpr(stmt.X)
+		if recv, ok := stmt.X.(*ast.ReceiveExpr); ok {
+			xType = t.inferExprTypeExpr(recv.Expr)
+		}
 		if xType != nil {
 			structName, typeArgs, _ := extractStructAndTypeArgs(xType)
 			if structName != "" && len(typeArgs) > 0 {

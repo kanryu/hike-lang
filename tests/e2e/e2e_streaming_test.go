@@ -72,3 +72,100 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// ジェネリック構造体のメソッド特殊化と、非同期for-rangeの組み合わせを検証する。
+func TestE2EStreaming_GenericDownloadPipeline(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Download[T] struct {
+    Blocks chan T
+}
+
+func (d *Download[T]) InitIterator(buf *byte) int {
+    return 0
+}
+
+func (d *Download[T]) NextChannel(buf *byte) (chan T, bool) {
+    return d.Blocks, true
+}
+
+func download() *Download[int] {
+    result := &Download[int]{Blocks: make(chan int, 3)}
+    Async(func() int {
+        result.Blocks <- 11
+        result.Blocks <- 22
+        result.Blocks <- 33
+        return 0
+    })
+    return result
+}
+
+func main() int {
+    total := 0
+    blocks := 0
+    stream := download()
+
+    for block := range <-stream {
+        total = total + block
+        blocks = blocks + 1
+        if blocks == 3 {
+            break
+        }
+    }
+
+    printf("GENERIC_BLOCKS=%d,GENERIC_TOTAL=%d\n", blocks, total)
+    return 0
+}
+`,
+		ExpectedOut:  "GENERIC_BLOCKS=3,GENERIC_TOTAL=66",
+		ExpectedExit: 0,
+	})
+}
+
+// ジェネリック構造体を同期 for-range (InitIterator + Next) で走査する。
+func TestE2EStreaming_GenericSynchronousPipeline(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Sequence[T] struct {
+}
+
+func (s *Sequence[T]) InitIterator(buf *byte) int {
+    return 0
+}
+
+func (s *Sequence[T]) Next(buf *byte) (T, bool) {
+    var value T
+    return value, true
+}
+
+func main() int {
+    sequence := &Sequence[int]{}
+    total := 0
+    count := 0
+    for value := range sequence {
+        total = total + 5
+        count = count + 1
+        if count == 3 {
+            break
+        }
+    }
+    printf("GENERIC_SYNC_COUNT=%d,GENERIC_SYNC_TOTAL=%d\n", count, total)
+    return 0
+}
+`,
+		ExpectedOut:  "GENERIC_SYNC_COUNT=3,GENERIC_SYNC_TOTAL=15",
+		ExpectedExit: 0,
+	})
+}

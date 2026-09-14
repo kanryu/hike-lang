@@ -1141,7 +1141,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			if fnType == nil {
 				fnType = ctx.Functions[d.Name.Value]
 			}
-			if fnType == nil || fnType.IsGeneric() {
+			if fnType == nil {
 				continue
 			}
 
