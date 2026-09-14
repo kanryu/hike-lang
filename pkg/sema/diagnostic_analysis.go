@@ -4,6 +4,8 @@ import (
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/diag"
 	"hikec-go/pkg/token"
+	"path"
+	"strings"
 )
 
 // AnalyzeWithReporter は通常の意味解析に加えて、回復可能な型エラーを
@@ -23,6 +25,12 @@ func AnalyzeWithReporter(prog *ast.Program, reporter *diag.Reporter, filename st
 }
 
 func (c *Context) collectDiagnostics(prog *ast.Program, reporter *diag.Reporter, filename string) {
+	packageNames := make(map[string]bool)
+	for _, imp := range prog.Imports {
+		name := path.Base(strings.Trim(imp.Path, "\"`"))
+		packageNames[name] = true
+	}
+	c.diagnosticPackages = packageNames
 	for _, decl := range prog.Decls {
 		var body *ast.BlockStmt
 		var params []*ast.ParamDecl
@@ -49,20 +57,20 @@ func (c *Context) collectDiagnostics(prog *ast.Program, reporter *diag.Reporter,
 		for _, p := range params {
 			locals[p.Name.Value] = TypeInt
 		}
-		c.checkDiagnosticBlock(body, locals, returns, reporter, filename)
+		c.checkDiagnosticBlock(body, locals, returns, packageNames, reporter, filename)
 	}
 }
 
-func (c *Context) checkDiagnosticBlock(block *ast.BlockStmt, locals map[string]Type, returns []ast.TypeExpr, reporter *diag.Reporter, filename string) {
+func (c *Context) checkDiagnosticBlock(block *ast.BlockStmt, locals map[string]Type, returns []ast.TypeExpr, packageNames map[string]bool, reporter *diag.Reporter, filename string) {
 	if block == nil {
 		return
 	}
 	for _, stmt := range block.Statements {
-		c.checkDiagnosticStmt(stmt, locals, returns, reporter, filename)
+		c.checkDiagnosticStmt(stmt, locals, returns, packageNames, reporter, filename)
 	}
 }
 
-func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type, returns []ast.TypeExpr, reporter *diag.Reporter, filename string) {
+func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type, returns []ast.TypeExpr, packageNames map[string]bool, reporter *diag.Reporter, filename string) {
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
 		var declType Type = TypeInt
@@ -119,10 +127,10 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 			}
 		}
 	case *ast.BlockStmt:
-		c.checkDiagnosticBlock(s, cloneTypes(locals), returns, reporter, filename)
+		c.checkDiagnosticBlock(s, cloneTypes(locals), returns, packageNames, reporter, filename)
 	case *ast.IfStmt:
 		if s.Init != nil {
-			c.checkDiagnosticStmt(s.Init, locals, returns, reporter, filename)
+			c.checkDiagnosticStmt(s.Init, locals, returns, packageNames, reporter, filename)
 		}
 		if _, isInteger := s.Condition.(*ast.IntegerLiteral); isInteger {
 			conditionType := c.InferExprTypeWithDiag(s.Condition, locals, reporter, filename)
@@ -130,20 +138,20 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as bool", conditionType.TypeName())
 			}
 		}
-		c.checkDiagnosticBlock(s.Consequence, cloneTypes(locals), returns, reporter, filename)
+		c.checkDiagnosticBlock(s.Consequence, cloneTypes(locals), returns, packageNames, reporter, filename)
 		if alt, ok := s.Alternative.(*ast.BlockStmt); ok {
-			c.checkDiagnosticBlock(alt, cloneTypes(locals), returns, reporter, filename)
+			c.checkDiagnosticBlock(alt, cloneTypes(locals), returns, packageNames, reporter, filename)
 		} else if alt, ok := s.Alternative.(*ast.IfStmt); ok {
-			c.checkDiagnosticStmt(alt, cloneTypes(locals), returns, reporter, filename)
+			c.checkDiagnosticStmt(alt, cloneTypes(locals), returns, packageNames, reporter, filename)
 		}
 	case *ast.ForStmt:
 		if s.Init != nil {
-			c.checkDiagnosticStmt(s.Init, locals, returns, reporter, filename)
+			c.checkDiagnosticStmt(s.Init, locals, returns, packageNames, reporter, filename)
 		}
 		if s.Post != nil {
-			c.checkDiagnosticStmt(s.Post, locals, returns, reporter, filename)
+			c.checkDiagnosticStmt(s.Post, locals, returns, packageNames, reporter, filename)
 		}
-		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, reporter, filename)
+		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, packageNames, reporter, filename)
 	case *ast.ForRangeStmt:
 		rangeLocals := cloneTypes(locals)
 		if ident, ok := s.Key.(*ast.Identifier); ok {
@@ -152,7 +160,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		if ident, ok := s.Value.(*ast.Identifier); ok {
 			rangeLocals[ident.Value] = TypeInt
 		}
-		c.checkDiagnosticBlock(s.Body, rangeLocals, returns, reporter, filename)
+		c.checkDiagnosticBlock(s.Body, rangeLocals, returns, packageNames, reporter, filename)
 	case *ast.SendStmt:
 		return
 	case *ast.DeferStmt:

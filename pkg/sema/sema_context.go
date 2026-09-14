@@ -11,19 +11,20 @@ import (
 )
 
 type Context struct {
-	Structs        map[string]*StructType
-	Interfaces     map[string]*InterfaceType
-	Functions      map[string]*FuncType
-	Globals        map[string]Type
-	Constants      map[string]int64
-	FloatConstants map[string]float64
-	Aliases        map[string]Type
-	GenericTypes   map[string]*ast.TypeDecl
-	GenericFuncs   map[string]*ast.FuncDecl
-	TypeParams     map[string]*TypeParamType
-	typeIDs        map[string]int64
-	nextTypeID     int64
-	HasMapImport   bool
+	Structs            map[string]*StructType
+	Interfaces         map[string]*InterfaceType
+	Functions          map[string]*FuncType
+	Globals            map[string]Type
+	Constants          map[string]int64
+	FloatConstants     map[string]float64
+	Aliases            map[string]Type
+	GenericTypes       map[string]*ast.TypeDecl
+	GenericFuncs       map[string]*ast.FuncDecl
+	TypeParams         map[string]*TypeParamType
+	typeIDs            map[string]int64
+	nextTypeID         int64
+	HasMapImport       bool
+	diagnosticPackages map[string]bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
@@ -1971,7 +1972,11 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 	case *ast.MemberExpr:
 		// Imported package members are resolved by the loader/transformer and do
 		// not appear as local identifiers in this context.
-		if _, isPackage := e.Object.(*ast.Identifier); !isPackage {
+		if object, isIdentifier := e.Object.(*ast.Identifier); isIdentifier {
+			if !c.diagnosticPackages[object.Value] {
+				return c.InferExprTypeWithDiag(e.Object, locals, reporter, filename)
+			}
+		} else {
 			objType := c.InferExprTypeWithDiag(e.Object, locals, reporter, filename)
 			if IsBad(objType) {
 				return TypeBad
@@ -2034,7 +2039,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			}
 		}
 		if e.Body != nil {
-			c.checkDiagnosticBlock(e.Body, inner, e.ReturnTypes, reporter, filename)
+			c.checkDiagnosticBlock(e.Body, inner, e.ReturnTypes, c.diagnosticPackages, reporter, filename)
 		}
 		return c.InferExprType(e, locals)
 	}

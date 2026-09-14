@@ -194,3 +194,35 @@ func main() int {
 		"undefined: secondMissing",
 	}})
 }
+
+func TestGrammar_UndefinedOperandSuppressesCascadeErrors(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{
+		Source: `
+package main
+func main() int {
+    var x = undefinedVal + 1
+    return x
+}
+`,
+		ExpectedErrorLines: []string{"undefined: undefinedVal"},
+		ForbiddenErrors:    []string{"mismatched types", "type '' has no fields"},
+		ExpectedErrorCount: 1,
+		ExpectedLocations:  []ExpectedDiagnostic{{Line: 4, Column: 13, Message: "undefined: undefinedVal"}},
+	})
+}
+
+func TestGrammar_UndefinedMemberSuppressesCascadeErrors(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{
+		Source: `
+package main
+func main() int {
+    var y = undefinedVal.Field
+    return y
+}
+`,
+		ExpectedErrorLines: []string{"undefined: undefinedVal"},
+		ForbiddenErrors:    []string{"mismatched types", "type '' has no fields"},
+		ExpectedErrorCount: 1,
+		ExpectedLocations:  []ExpectedDiagnostic{{Line: 4, Column: 13, Message: "undefined: undefinedVal"}},
+	})
+}

@@ -67,6 +67,16 @@ type HikeCompileErrorCase struct {
 	Source             string
 	ExpectedError      string
 	ExpectedErrorLines []string
+	ForbiddenErrors    []string
+	ExpectedErrorCount int
+	ExpectedLocations  []ExpectedDiagnostic
+}
+
+// ExpectedDiagnostic は、ファイル名・行・列を含む診断の期待値です。
+type ExpectedDiagnostic struct {
+	Line    int
+	Column  int
+	Message string
 }
 
 // RunHikeCompileErrorCase は、指定されたHikeソースがコンパイルに失敗し、
@@ -107,6 +117,32 @@ func RunHikeCompileErrorCase(t *testing.T, tc HikeCompileErrorCase) {
 	for _, expectedLine := range tc.ExpectedErrorLines {
 		if !strings.Contains(errorOutput, expectedLine) {
 			t.Errorf("期待したエラー情報が見つかりませんでした\n[期待値]: %s\n[実際]: %s", expectedLine, errorOutput)
+		}
+	}
+	for _, forbiddenError := range tc.ForbiddenErrors {
+		if strings.Contains(errorOutput, forbiddenError) {
+			t.Errorf("抑制されるべきエラー情報が出力されました\n[禁止値]: %s\n[実際]: %s", forbiddenError, errorOutput)
+		}
+	}
+	if tc.ExpectedErrorCount > 0 {
+		actualCount := 0
+		for _, line := range strings.Split(strings.TrimSpace(errorOutput), "\n") {
+			if strings.Contains(line, "main.hike:") {
+				actualCount++
+			}
+		}
+		if actualCount != tc.ExpectedErrorCount {
+			t.Errorf("エラー件数が一致しませんでした\n[期待値]: %d\n[実際]: %d\n[出力]: %s", tc.ExpectedErrorCount, actualCount, errorOutput)
+		}
+	}
+	for _, expected := range tc.ExpectedLocations {
+		location := fmt.Sprintf("main.hike:%d:%d:", expected.Line, expected.Column)
+		if !strings.Contains(errorOutput, location) {
+			t.Errorf("期待したエラー位置が見つかりませんでした\n[期待値]: %s\n[実際]: %s", location, errorOutput)
+			continue
+		}
+		if expected.Message != "" && !strings.Contains(errorOutput, location+" "+expected.Message) {
+			t.Errorf("期待した位置のエラーメッセージが見つかりませんでした\n[期待値]: %s %s\n[実際]: %s", location, expected.Message, errorOutput)
 		}
 	}
 }
