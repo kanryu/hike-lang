@@ -1,0 +1,49 @@
+// Package subtle implements helpers for cryptographic code that must avoid
+// data-dependent branches.
+package subtle
+
+// ConstantTimeCompare returns 1 when x and y have equal contents.
+func ConstantTimeCompare(x []byte, y []byte) int {
+	if len(x) != len(y) {
+		return 0
+	}
+	var diff byte
+	for i := 0; i < len(x); i = i + 1 {
+		diff = diff | (x[i] ^ y[i])
+	}
+	return ConstantTimeByteEq(diff, byte(0))
+}
+
+// ConstantTimeSelect returns x when v is 1 and y when v is 0.
+func ConstantTimeSelect(v int, x int, y int) int {
+	return ((0-v) & x) | ((v-1) & y)
+}
+
+// ConstantTimeByteEq returns 1 when x and y are equal.
+func ConstantTimeByteEq(x byte, y byte) int {
+	return int((uint32(x^y) - uint32(1)) >> 31)
+}
+
+// ConstantTimeEq returns 1 when x and y are equal.
+func ConstantTimeEq(x int32, y int32) int {
+	return int((uint64(uint32(x^y)) - uint64(1)) >> 63)
+}
+
+// ConstantTimeCopy copies y into x when v is 1.
+func ConstantTimeCopy(v int, x []byte, y []byte) {
+	if len(x) != len(y) {
+		return
+	}
+	xmask := byte(v - 1)
+	ymask := byte(0 - v)
+	for i := 0; i < len(x); i = i + 1 {
+		x[i] = (x[i] & xmask) | (y[i] & ymask)
+	}
+}
+
+// ConstantTimeLessOrEq returns 1 when x is less than or equal to y.
+func ConstantTimeLessOrEq(x int, y int) int {
+	x32 := int32(x)
+	y32 := int32(y)
+	return int(((x32-y32-1)>>31)&1)
+}

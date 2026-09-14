@@ -1,0 +1,47 @@
+// Package crypto collects common cryptographic identifiers.
+package crypto
+
+// Hash identifies a cryptographic hash function implemented by another
+// package. The numeric values follow Go's crypto package.
+type Hash uint
+
+const MD4 Hash = 1
+const MD5 Hash = 2
+const SHA1 Hash = 3
+const SHA224 Hash = 4
+const SHA256 Hash = 5
+const SHA384 Hash = 6
+const SHA512 Hash = 7
+const MD5SHA1 Hash = 8
+const RIPEMD160 Hash = 9
+const SHA3_224 Hash = 10
+const SHA3_256 Hash = 11
+const SHA3_384 Hash = 12
+const SHA3_512 Hash = 13
+const SHA512_224 Hash = 14
+const SHA512_256 Hash = 15
+const BLAKE2s_256 Hash = 16
+const BLAKE2b_256 Hash = 17
+const BLAKE2b_384 Hash = 18
+const BLAKE2b_512 Hash = 19
+
+// Size returns the digest size associated with h, in bytes.
+func Size(h Hash) int {
+	switch h {
+	case MD4, MD5:
+		return 16
+	case SHA1, RIPEMD160:
+		return 20
+	case SHA224, SHA512_224, SHA3_224:
+		return 28
+	case SHA256, SHA512_256, SHA3_256, BLAKE2s_256, BLAKE2b_256:
+		return 32
+	case SHA384, SHA3_384, BLAKE2b_384:
+		return 48
+	case SHA512, SHA3_512, BLAKE2b_512:
+		return 64
+	case MD5SHA1:
+		return 36
+	}
+	return 0
+}

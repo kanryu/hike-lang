@@ -1,0 +1,87 @@
+// Package md5 implements the MD5 hash algorithm defined by RFC 1321.
+// MD5 is cryptographically broken and must not be used for new security work.
+package md5
+
+const Size = 16
+const BlockSize = 64
+
+func leftRotate(x uint32, n int) uint32 {
+	return (x << uint32(n)) | (x >> uint32(32-n))
+}
+
+func compress(s []uint32, block []byte) {
+	var k [64]uint32
+	k[0] = 0xd76aa478; k[1] = 0xe8c7b756; k[2] = 0x242070db; k[3] = 0xc1bdceee
+	k[4] = 0xf57c0faf; k[5] = 0x4787c62a; k[6] = 0xa8304613; k[7] = 0xfd469501
+	k[8] = 0x698098d8; k[9] = 0x8b44f7af; k[10] = 0xffff5bb1; k[11] = 0x895cd7be
+	k[12] = 0x6b901122; k[13] = 0xfd987193; k[14] = 0xa679438e; k[15] = 0x49b40821
+	k[16] = 0xf61e2562; k[17] = 0xc040b340; k[18] = 0x265e5a51; k[19] = 0xe9b6c7aa
+	k[20] = 0xd62f105d; k[21] = 0x02441453; k[22] = 0xd8a1e681; k[23] = 0xe7d3fbc8
+	k[24] = 0x21e1cde6; k[25] = 0xc33707d6; k[26] = 0xf4d50d87; k[27] = 0x455a14ed
+	k[28] = 0xa9e3e905; k[29] = 0xfcefa3f8; k[30] = 0x676f02d9; k[31] = 0x8d2a4c8a
+	k[32] = 0xfffa3942; k[33] = 0x8771f681; k[34] = 0x6d9d6122; k[35] = 0xfde5380c
+	k[36] = 0xa4beea44; k[37] = 0x4bdecfa9; k[38] = 0xf6bb4b60; k[39] = 0xbebfbc70
+	k[40] = 0x289b7ec6; k[41] = 0xeaa127fa; k[42] = 0xd4ef3085; k[43] = 0x04881d05
+	k[44] = 0xd9d4d039; k[45] = 0xe6db99e5; k[46] = 0x1fa27cf8; k[47] = 0xc4ac5665
+	k[48] = 0xf4292244; k[49] = 0x432aff97; k[50] = 0xab9423a7; k[51] = 0xfc93a039
+	k[52] = 0x655b59c3; k[53] = 0x8f0ccc92; k[54] = 0xffeff47d; k[55] = 0x85845dd1
+	k[56] = 0x6fa87e4f; k[57] = 0xfe2ce6e0; k[58] = 0xa3014314; k[59] = 0x4e0811a1
+	k[60] = 0xf7537e82; k[61] = 0xbd3af235; k[62] = 0x2ad7d2bb; k[63] = 0xeb86d391
+	var r [64]int
+	r[0] = 7; r[1] = 12; r[2] = 17; r[3] = 22; r[4] = 7; r[5] = 12; r[6] = 17; r[7] = 22
+	r[8] = 7; r[9] = 12; r[10] = 17; r[11] = 22; r[12] = 7; r[13] = 12; r[14] = 17; r[15] = 22
+	r[16] = 5; r[17] = 9; r[18] = 14; r[19] = 20; r[20] = 5; r[21] = 9; r[22] = 14; r[23] = 20
+	r[24] = 5; r[25] = 9; r[26] = 14; r[27] = 20; r[28] = 5; r[29] = 9; r[30] = 14; r[31] = 20
+	r[32] = 4; r[33] = 11; r[34] = 16; r[35] = 23; r[36] = 4; r[37] = 11; r[38] = 16; r[39] = 23
+	r[40] = 4; r[41] = 11; r[42] = 16; r[43] = 23; r[44] = 4; r[45] = 11; r[46] = 16; r[47] = 23
+	r[48] = 6; r[49] = 10; r[50] = 15; r[51] = 21; r[52] = 6; r[53] = 10; r[54] = 15; r[55] = 21
+	r[56] = 6; r[57] = 10; r[58] = 15; r[59] = 21; r[60] = 6; r[61] = 10; r[62] = 15; r[63] = 21
+	var m [16]uint32
+	for i := 0; i < 16; i = i + 1 {
+		j := i * 4
+		m[i] = uint32(block[j]) | uint32(block[j+1])<<8 | uint32(block[j+2])<<16 | uint32(block[j+3])<<24
+	}
+	a := s[0]; b := s[1]; c := s[2]; d := s[3]
+	for i := 0; i < 64; i = i + 1 {
+		var f uint32
+		g := 0
+		if i < 16 {
+			f = (b & c) | ((b ^ uint32(0xffffffff)) & d)
+			g = i
+		} else if i < 32 {
+			f = (d & b) | ((d ^ uint32(0xffffffff)) & c)
+			g = (5*i + 1) % 16
+		} else if i < 48 {
+			f = b ^ c ^ d
+			g = (3*i + 5) % 16
+		} else {
+			f = c ^ (b | (d ^ uint32(0xffffffff)))
+			g = (7*i) % 16
+		}
+		t := d
+		d = c
+		c = b
+		b = b + leftRotate(a+f+k[i]+m[g], r[i])
+		a = t
+	}
+	s[0] = s[0] + a; s[1] = s[1] + b; s[2] = s[2] + c; s[3] = s[3] + d
+}
+
+// Sum returns the MD5 checksum of data.
+func Sum(data []byte) [16]byte {
+	s := make([]uint32, 4)
+	s[0] = 0x67452301; s[1] = 0xefcdab89; s[2] = 0x98badcfe; s[3] = 0x10325476
+	paddedLen := ((len(data) + 9 + 63) / 64) * 64
+	padded := make([]byte, paddedLen)
+	for i := 0; i < len(data); i = i + 1 { padded[i] = data[i] }
+	padded[len(data)] = byte(0x80)
+	bitLen := uint64(len(data)) * 8
+	for i := 0; i < 8; i = i + 1 { padded[paddedLen-8+i] = byte(bitLen >> uint64(i*8)) }
+	for i := 0; i < paddedLen; i = i + 64 { compress(s, padded[i:i+64]) }
+	var out [16]byte
+	for i := 0; i < 4; i = i + 1 {
+		out[i*4] = byte(s[i]); out[i*4+1] = byte(s[i] >> 8)
+		out[i*4+2] = byte(s[i] >> 16); out[i*4+3] = byte(s[i] >> 24)
+	}
+	return out
+}

@@ -1,0 +1,143 @@
+// Package aes implements AES-128.
+package aes
+
+const BlockSize = 16
+const KeySize = 16
+
+type Cipher struct {
+	roundKeys []byte
+}
+
+func gfMul(a byte, b byte) byte {
+	result := byte(0)
+	for i := 0; i < 8; i = i + 1 {
+		if (b & byte(1)) != 0 {
+			result = result ^ a
+		}
+		hi := a & byte(0x80)
+		a = a << 1
+		if hi != 0 { a = a ^ byte(0x1b) }
+		b = b >> 1
+	}
+	return result
+}
+
+func gfPow(a byte, n int) byte {
+	result := byte(1)
+	for i := 0; i < n; i = i + 1 { result = gfMul(result, a) }
+	return result
+}
+
+func rotateByteLeft(x byte, n int) byte {
+	return (x << byte(n)) | (x >> byte(8-n))
+}
+
+func sbox(x byte) byte {
+	inv := byte(0)
+	if x != 0 { inv = gfPow(x, 254) }
+	return inv ^ rotateByteLeft(inv, 1) ^ rotateByteLeft(inv, 2) ^ rotateByteLeft(inv, 3) ^ rotateByteLeft(inv, 4) ^ byte(0x63)
+}
+
+func invSbox(x byte) byte {
+	for i := 0; i < 256; i = i + 1 {
+		if sbox(byte(i)) == x { return byte(i) }
+	}
+	return 0
+}
+
+func rcon(round int) byte {
+	value := byte(1)
+	for i := 1; i < round; i = i + 1 { value = gfMul(value, byte(2)) }
+	return value
+}
+
+// NewCipher creates an AES-128 cipher. It returns nil for keys other than 16 bytes.
+func NewCipher(key []byte) *Cipher {
+	if len(key) != KeySize { return nil }
+	roundKeys := make([]byte, 176)
+	for i := 0; i < 16; i = i + 1 { roundKeys[i] = key[i] }
+	bytesGenerated := 16
+	word := make([]byte, 4)
+	for bytesGenerated < 176 {
+		for i := 0; i < 4; i = i + 1 { word[i] = roundKeys[bytesGenerated-4+i] }
+		if bytesGenerated%16 == 0 {
+			t := word[0]; word[0] = sbox(word[1]); word[1] = sbox(word[2]); word[2] = sbox(word[3]); word[3] = sbox(t)
+			word[0] = word[0] ^ rcon(bytesGenerated/16)
+		}
+		for i := 0; i < 4; i = i + 1 {
+			roundKeys[bytesGenerated] = roundKeys[bytesGenerated-16] ^ word[i]
+			bytesGenerated = bytesGenerated + 1
+		}
+	}
+	return &Cipher{roundKeys: roundKeys}
+}
+
+func addRoundKey(state []byte, keys []byte, round int) {
+	for i := 0; i < 16; i = i + 1 { state[i] = state[i] ^ keys[round*16+i] }
+}
+
+func subBytes(state []byte) {
+	for i := 0; i < 16; i = i + 1 { state[i] = sbox(state[i]) }
+}
+
+func invSubBytes(state []byte) {
+	for i := 0; i < 16; i = i + 1 { state[i] = invSbox(state[i]) }
+}
+
+func shiftRows(state []byte) {
+	tmp := make([]byte, 16)
+	for col := 0; col < 4; col = col + 1 {
+		for row := 0; row < 4; row = row + 1 { tmp[4*col+row] = state[4*((col+row)%4)+row] }
+	}
+	for i := 0; i < 16; i = i + 1 { state[i] = tmp[i] }
+}
+
+func invShiftRows(state []byte) {
+	tmp := make([]byte, 16)
+	for col := 0; col < 4; col = col + 1 {
+		for row := 0; row < 4; row = row + 1 { tmp[4*col+row] = state[4*((col-row+4)%4)+row] }
+	}
+	for i := 0; i < 16; i = i + 1 { state[i] = tmp[i] }
+}
+
+func mixColumns(state []byte) {
+	for col := 0; col < 4; col = col + 1 {
+		i := col * 4; a0 := state[i]; a1 := state[i+1]; a2 := state[i+2]; a3 := state[i+3]
+		state[i] = gfMul(a0, 2) ^ gfMul(a1, 3) ^ a2 ^ a3
+		state[i+1] = a0 ^ gfMul(a1, 2) ^ gfMul(a2, 3) ^ a3
+		state[i+2] = a0 ^ a1 ^ gfMul(a2, 2) ^ gfMul(a3, 3)
+		state[i+3] = gfMul(a0, 3) ^ a1 ^ a2 ^ gfMul(a3, 2)
+	}
+}
+
+func invMixColumns(state []byte) {
+	for col := 0; col < 4; col = col + 1 {
+		i := col * 4; a0 := state[i]; a1 := state[i+1]; a2 := state[i+2]; a3 := state[i+3]
+		state[i] = gfMul(a0, 14) ^ gfMul(a1, 11) ^ gfMul(a2, 13) ^ gfMul(a3, 9)
+		state[i+1] = gfMul(a0, 9) ^ gfMul(a1, 14) ^ gfMul(a2, 11) ^ gfMul(a3, 13)
+		state[i+2] = gfMul(a0, 13) ^ gfMul(a1, 9) ^ gfMul(a2, 14) ^ gfMul(a3, 11)
+		state[i+3] = gfMul(a0, 11) ^ gfMul(a1, 13) ^ gfMul(a2, 9) ^ gfMul(a3, 14)
+	}
+}
+
+// Encrypt encrypts one 16-byte block from src into dst.
+func (c *Cipher) Encrypt(dst []byte, src []byte) {
+	if c == nil || len(src) < BlockSize || len(dst) < BlockSize { return }
+	state := make([]byte, 16)
+	for i := 0; i < 16; i = i + 1 { state[i] = src[i] }
+	addRoundKey(state, c.roundKeys, 0)
+	for round := 1; round < 10; round = round + 1 { subBytes(state); shiftRows(state); mixColumns(state); addRoundKey(state, c.roundKeys, round) }
+	subBytes(state); shiftRows(state); addRoundKey(state, c.roundKeys, 10)
+	for i := 0; i < 16; i = i + 1 { dst[i] = state[i] }
+}
+
+// Decrypt decrypts one 16-byte block from src into dst.
+func (c *Cipher) Decrypt(dst []byte, src []byte) {
+	if c == nil || len(src) < BlockSize || len(dst) < BlockSize { return }
+	state := make([]byte, 16)
+	for i := 0; i < 16; i = i + 1 { state[i] = src[i] }
+	addRoundKey(state, c.roundKeys, 10)
+	for round := 9; round > 0; round = round - 1 { invShiftRows(state); invSubBytes(state); addRoundKey(state, c.roundKeys, round); invMixColumns(state) }
+	invShiftRows(state); invSubBytes(state); addRoundKey(state, c.roundKeys, 0)
+	for i := 0; i < 16; i = i + 1 { dst[i] = state[i] }
+}

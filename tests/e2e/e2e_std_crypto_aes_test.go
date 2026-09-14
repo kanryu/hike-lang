@@ -1,0 +1,42 @@
+package e2e_test
+
+import "testing"
+
+// AES-128のFIPS 197既知ベクトルと暗号化・復号APIを検証する。
+func TestE2EStd_CryptoAES(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/crypto/aes"
+
+func printf(format string, ...) int
+
+func main() int {
+    key := []byte{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+    plain := []byte{0,17,34,51,68,85,102,119,136,153,170,187,204,221,238,255}
+    cipherText := make([]byte, 16)
+    recovered := make([]byte, 16)
+    c := aes.NewCipher(key)
+    c.Encrypt(cipherText, plain)
+    c.Decrypt(recovered, cipherText)
+    printf("SIZE=%d KEY=%d ENC=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d ",
+        aes.BlockSize, c != nil,
+        cipherText[0], cipherText[1], cipherText[2], cipherText[3],
+        cipherText[4], cipherText[5], cipherText[6], cipherText[7],
+        cipherText[8], cipherText[9], cipherText[10], cipherText[11],
+        cipherText[12], cipherText[13], cipherText[14], cipherText[15])
+    printf("DEC=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+        recovered[0], recovered[1], recovered[2], recovered[3],
+        recovered[4], recovered[5], recovered[6], recovered[7],
+        recovered[8], recovered[9], recovered[10], recovered[11],
+        recovered[12], recovered[13], recovered[14], recovered[15])
+    return 0
+}
+`,
+		ExpectedOut: "SIZE=16 KEY=1 ENC=105,196,224,216,106,123,4,48,216,205,183,128,112,180,197,90 DEC=0,17,34,51,68,85,102,119,136,153,170,187,204,221,238,255",
+		ExpectedExit: 0,
+	})
+}

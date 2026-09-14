@@ -1,0 +1,102 @@
+// Package sha256 implements SHA-256 as specified by FIPS 180-4.
+package sha256
+
+const Size = 32
+const BlockSize = 64
+
+func rotr(x uint32, n int) uint32 {
+	return (x >> uint32(n)) | (x << uint32(32-n))
+}
+
+func ch(x uint32, y uint32, z uint32) uint32 {
+	return (x & y) ^ ((x ^ uint32(0xffffffff)) & z)
+}
+
+func maj(x uint32, y uint32, z uint32) uint32 {
+	return (x & y) ^ (x & z) ^ (y & z)
+}
+
+func bigSigma0(x uint32) uint32 {
+	return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22)
+}
+
+func bigSigma1(x uint32) uint32 {
+	return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25)
+}
+
+func smallSigma0(x uint32) uint32 {
+	return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3)
+}
+
+func smallSigma1(x uint32) uint32 {
+	return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10)
+}
+
+func compress(h []uint32, block []byte) {
+	var k [64]uint32
+	k[0] = 0x428a2f98; k[1] = 0x71374491; k[2] = 0xb5c0fbcf; k[3] = 0xe9b5dba5
+	k[4] = 0x3956c25b; k[5] = 0x59f111f1; k[6] = 0x923f82a4; k[7] = 0xab1c5ed5
+	k[8] = 0xd807aa98; k[9] = 0x12835b01; k[10] = 0x243185be; k[11] = 0x550c7dc3
+	k[12] = 0x72be5d74; k[13] = 0x80deb1fe; k[14] = 0x9bdc06a7; k[15] = 0xc19bf174
+	k[16] = 0xe49b69c1; k[17] = 0xefbe4786; k[18] = 0x0fc19dc6; k[19] = 0x240ca1cc
+	k[20] = 0x2de92c6f; k[21] = 0x4a7484aa; k[22] = 0x5cb0a9dc; k[23] = 0x76f988da
+	k[24] = 0x983e5152; k[25] = 0xa831c66d; k[26] = 0xb00327c8; k[27] = 0xbf597fc7
+	k[28] = 0xc6e00bf3; k[29] = 0xd5a79147; k[30] = 0x06ca6351; k[31] = 0x14292967
+	k[32] = 0x27b70a85; k[33] = 0x2e1b2138; k[34] = 0x4d2c6dfc; k[35] = 0x53380d13
+	k[36] = 0x650a7354; k[37] = 0x766a0abb; k[38] = 0x81c2c92e; k[39] = 0x92722c85
+	k[40] = 0xa2bfe8a1; k[41] = 0xa81a664b; k[42] = 0xc24b8b70; k[43] = 0xc76c51a3
+	k[44] = 0xd192e819; k[45] = 0xd6990624; k[46] = 0xf40e3585; k[47] = 0x106aa070
+	k[48] = 0x19a4c116; k[49] = 0x1e376c08; k[50] = 0x2748774c; k[51] = 0x34b0bcb5
+	k[52] = 0x391c0cb3; k[53] = 0x4ed8aa4a; k[54] = 0x5b9cca4f; k[55] = 0x682e6ff3
+	k[56] = 0x748f82ee; k[57] = 0x78a5636f; k[58] = 0x84c87814; k[59] = 0x8cc70208
+	k[60] = 0x90befffa; k[61] = 0xa4506ceb; k[62] = 0xbef9a3f7; k[63] = 0xc67178f2
+
+	var w [64]uint32
+	for i := 0; i < 16; i = i + 1 {
+		j := i * 4
+		w[i] = (uint32(block[j]) << 24) | (uint32(block[j+1]) << 16) | (uint32(block[j+2]) << 8) | uint32(block[j+3])
+	}
+	for i := 16; i < 64; i = i + 1 {
+		w[i] = smallSigma1(w[i-2]) + w[i-7] + smallSigma0(w[i-15]) + w[i-16]
+	}
+	a := h[0]; b := h[1]; c := h[2]; d := h[3]
+	e := h[4]; f := h[5]; g := h[6]; z := h[7]
+	for i := 0; i < 64; i = i + 1 {
+		t1 := z + bigSigma1(e) + ch(e, f, g) + k[i] + w[i]
+		t2 := bigSigma0(a) + maj(a, b, c)
+		z = g; g = f; f = e; e = d + t1
+		d = c; c = b; b = a; a = t1 + t2
+	}
+	h[0] = h[0] + a; h[1] = h[1] + b; h[2] = h[2] + c; h[3] = h[3] + d
+	h[4] = h[4] + e; h[5] = h[5] + f; h[6] = h[6] + g; h[7] = h[7] + z
+}
+
+// Sum256 returns the SHA-256 checksum of data.
+func Sum256(data []byte) [32]byte {
+	h := make([]uint32, 8)
+	h[0] = 0x6a09e667; h[1] = 0xbb67ae85; h[2] = 0x3c6ef372; h[3] = 0xa54ff53a
+	h[4] = 0x510e527f; h[5] = 0x9b05688c; h[6] = 0x1f83d9ab; h[7] = 0x5be0cd19
+
+	bitLen := uint64(len(data)) * 8
+	paddedLen := ((len(data) + 9 + 63) / 64) * 64
+	padded := make([]byte, paddedLen)
+	for i := 0; i < len(data); i = i + 1 {
+		padded[i] = data[i]
+	}
+	padded[len(data)] = byte(0x80)
+	for i := 0; i < 8; i = i + 1 {
+		padded[paddedLen-1-i] = byte(bitLen >> uint64(i*8))
+	}
+	for i := 0; i < paddedLen; i = i + 64 {
+		compress(h, padded[i:i+64])
+	}
+
+	var out [32]byte
+	for i := 0; i < 8; i = i + 1 {
+		out[i*4] = byte(h[i] >> 24)
+		out[i*4+1] = byte(h[i] >> 16)
+		out[i*4+2] = byte(h[i] >> 8)
+		out[i*4+3] = byte(h[i])
+	}
+	return out
+}
