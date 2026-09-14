@@ -99,7 +99,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 
 	// 2. 意味解析・型検査フェーズ
 	_ = c.safeExecute(primaryFile, func() error {
-		ctx, err := sema.Analyze(rawProg)
+		ctx, err := sema.AnalyzeWithReporter(rawProg, c.reporter, primaryFile)
 		if err != nil {
 			return err
 		}
@@ -187,7 +187,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 	// 1. Sema フェーズ (エラーが出ても最後まで回す)
 	var semaCtx *sema.Context
 	_ = c.safeExecute(filename, func() error {
-		ctx, err := sema.Analyze(prog)
+		ctx, err := sema.AnalyzeWithReporter(prog, c.reporter, filename)
 		if err != nil {
 			return err
 		}

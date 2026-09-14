@@ -1866,7 +1866,18 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 }
 
 func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
+	if expr == nil {
+		return TypeBad
+	}
 	switch e := expr.(type) {
+	case *ast.IntegerLiteral, *ast.CharLiteral:
+		return TypeInt
+	case *ast.FloatLiteral:
+		return TypeFloat64
+	case *ast.StringLiteral:
+		return TypeString
+	case *ast.NilLiteral:
+		return &PointerType{Base: TypeByte}
 	case *ast.Identifier:
 		if t, ok := locals[e.Value]; ok {
 			return t
@@ -1877,10 +1888,40 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		if _, ok := c.LookupConstant(e.Value); ok {
 			return TypeInt
 		}
+		if _, ok := c.LookupFloatConstant(e.Value); ok {
+			return TypeFloat64
+		}
+		if t, ok := c.Functions[e.Value]; ok {
+			return t
+		}
+		switch e.Value {
+		case "true", "false":
+			return TypeBool
+		case "len", "cap", "append", "delete", "make", "sizeof":
+			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeInt}}
+		case "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte":
+			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeInt}}
+		case "string", "cstring":
+			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeString}}
+		case "bool":
+			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeBool}}
+		case "float32", "float64":
+			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeFloat64}}
+		}
 
 		// 未定義識別子: エラーを記録して TypeBad を返却
 		reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", e.Value)
 		return TypeBad
+
+	case *ast.PrefixExpr:
+		right := c.InferExprTypeWithDiag(e.Right, locals, reporter, filename)
+		if IsBad(right) {
+			return TypeBad
+		}
+		if e.Operator == "!" {
+			return TypeBool
+		}
+		return right
 
 	case *ast.BinaryExpr:
 		lt := c.InferExprTypeWithDiag(e.Left, locals, reporter, filename)
@@ -1897,6 +1938,78 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			return TypeBad
 		}
 		return lt
+
+	case *ast.CallExpr:
+		fnType := c.InferExprTypeWithDiag(e.Function, locals, reporter, filename)
+		for _, arg := range e.Args {
+			c.InferExprTypeWithDiag(arg, locals, reporter, filename)
+		}
+		if IsBad(fnType) {
+			return TypeBad
+		}
+		if ft, ok := fnType.(*FuncType); ok {
+			if len(ft.ReturnTypes) == 0 {
+				return TypeVoid
+			}
+			if len(ft.ReturnTypes) == 1 {
+				return ft.ReturnTypes[0]
+			}
+			return &TupleType{Types: ft.ReturnTypes}
+		}
+		return TypeBad
+
+	case *ast.MemberExpr:
+		// Imported package members are resolved by the loader/transformer and do
+		// not appear as local identifiers in this context.
+		if _, isPackage := e.Object.(*ast.Identifier); !isPackage {
+			objType := c.InferExprTypeWithDiag(e.Object, locals, reporter, filename)
+			if IsBad(objType) {
+				return TypeBad
+			}
+		}
+		return TypeInt
+
+	case *ast.IndexExpr:
+		left := c.InferExprTypeWithDiag(e.Left, locals, reporter, filename)
+		c.InferExprTypeWithDiag(e.Index, locals, reporter, filename)
+		if IsBad(left) {
+			return TypeBad
+		}
+		return TypeInt
+
+	case *ast.GenericInstExpr:
+		return TypeInt
+
+	case *ast.StructLiteral:
+		for _, field := range e.Fields {
+			c.InferExprTypeWithDiag(field.Value, locals, reporter, filename)
+		}
+		return TypeInt
+
+	case *ast.ArrayLiteral:
+		for _, element := range e.Elements {
+			c.InferExprTypeWithDiag(element, locals, reporter, filename)
+		}
+		return TypeInt
+
+	case *ast.SliceLiteral:
+		for _, element := range e.Elements {
+			c.InferExprTypeWithDiag(element, locals, reporter, filename)
+		}
+		return TypeInt
+
+	case *ast.FuncLit:
+		inner := cloneTypes(locals)
+		for _, p := range e.Params {
+			inner[p.Name.Value] = TypeInt
+			if p.Default != nil {
+				c.InferExprTypeWithDiag(p.Default, inner, reporter, filename)
+			}
+		}
+		if e.Body != nil {
+			c.checkDiagnosticBlock(e.Body, inner, e.ReturnTypes, reporter, filename)
+		}
+		return TypeInt
 	}
 	return TypeInt
 }

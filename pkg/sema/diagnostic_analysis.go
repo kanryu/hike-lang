@@ -1,0 +1,147 @@
+package sema
+
+import (
+	"hikec-go/pkg/ast"
+	"hikec-go/pkg/diag"
+	"hikec-go/pkg/token"
+)
+
+// AnalyzeWithReporter は通常の意味解析に加えて、回復可能な型エラーを
+// Reporter に蓄積します。エラーがあっても同じブロックの後続文を検査します。
+func AnalyzeWithReporter(prog *ast.Program, reporter *diag.Reporter, filename string) (*Context, error) {
+	ctx, err := Analyze(prog)
+	if err != nil {
+		if reporter != nil {
+			reporter.AddRaw(filename, err.Error())
+		}
+		return nil, nil
+	}
+	if reporter != nil {
+		ctx.collectDiagnostics(prog, reporter, filename)
+	}
+	return ctx, nil
+}
+
+func (c *Context) collectDiagnostics(prog *ast.Program, reporter *diag.Reporter, filename string) {
+	for _, decl := range prog.Decls {
+		var body *ast.BlockStmt
+		var params []*ast.ParamDecl
+		var returns []ast.TypeExpr
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			// Loader は依存パッケージの宣言も同じ AST に展開するため、
+			// ここではエントリープログラムの main を診断対象にする。
+			// 依存パッケージの詳細診断は、そのパッケージを直接コンパイル
+			// する際に行う。
+			if d.Name == nil || d.Name.Value != "main" {
+				continue
+			}
+			body, params, returns = d.Body, d.Params, d.ReturnTypes
+		case *ast.CFuncDecl:
+			body, params, returns = d.Body, d.Params, d.ReturnTypes
+		default:
+			continue
+		}
+		if body == nil {
+			continue
+		}
+		locals := make(map[string]Type, len(params))
+		for _, p := range params {
+			locals[p.Name.Value] = TypeInt
+		}
+		c.checkDiagnosticBlock(body, locals, returns, reporter, filename)
+	}
+}
+
+func (c *Context) checkDiagnosticBlock(block *ast.BlockStmt, locals map[string]Type, returns []ast.TypeExpr, reporter *diag.Reporter, filename string) {
+	if block == nil {
+		return
+	}
+	for _, stmt := range block.Statements {
+		c.checkDiagnosticStmt(stmt, locals, returns, reporter, filename)
+	}
+}
+
+func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type, returns []ast.TypeExpr, reporter *diag.Reporter, filename string) {
+	switch s := stmt.(type) {
+	case *ast.VarDecl:
+		var declType Type = TypeInt
+		if s.Type != nil {
+			declType = c.resolveDiagnosticType(s.Type)
+		}
+		locals[s.Name.Value] = declType
+
+	case *ast.AssignStmt:
+		isDefine := s.Type != nil || s.Token.Literal == ":=" || s.Token.Type == token.DEFINE || s.Token.Type == token.VAR
+		if isDefine {
+			for _, left := range s.Left {
+				if ident, ok := left.(*ast.Identifier); ok {
+					var valueType Type = TypeInt
+					if s.Type != nil {
+						valueType = c.resolveDiagnosticType(s.Type)
+					}
+					locals[ident.Value] = valueType
+				}
+			}
+			return
+		}
+
+	case *ast.ExprStmt:
+		return
+	case *ast.ReturnStmt:
+		for i, value := range s.Values {
+			_ = i
+			c.InferExprTypeWithDiag(value, locals, reporter, filename)
+		}
+	case *ast.BlockStmt:
+		c.checkDiagnosticBlock(s, cloneTypes(locals), returns, reporter, filename)
+	case *ast.IfStmt:
+		if s.Init != nil {
+			c.checkDiagnosticStmt(s.Init, locals, returns, reporter, filename)
+		}
+		c.checkDiagnosticBlock(s.Consequence, cloneTypes(locals), returns, reporter, filename)
+		if alt, ok := s.Alternative.(*ast.BlockStmt); ok {
+			c.checkDiagnosticBlock(alt, cloneTypes(locals), returns, reporter, filename)
+		} else if alt, ok := s.Alternative.(*ast.IfStmt); ok {
+			c.checkDiagnosticStmt(alt, cloneTypes(locals), returns, reporter, filename)
+		}
+	case *ast.ForStmt:
+		if s.Init != nil {
+			c.checkDiagnosticStmt(s.Init, locals, returns, reporter, filename)
+		}
+		if s.Post != nil {
+			c.checkDiagnosticStmt(s.Post, locals, returns, reporter, filename)
+		}
+		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, reporter, filename)
+	case *ast.ForRangeStmt:
+		rangeLocals := cloneTypes(locals)
+		if ident, ok := s.Key.(*ast.Identifier); ok {
+			rangeLocals[ident.Value] = TypeInt
+		}
+		if ident, ok := s.Value.(*ast.Identifier); ok {
+			rangeLocals[ident.Value] = TypeInt
+		}
+		c.checkDiagnosticBlock(s.Body, rangeLocals, returns, reporter, filename)
+	case *ast.SendStmt:
+		return
+	case *ast.DeferStmt:
+		return
+	}
+}
+
+func cloneTypes(src map[string]Type) map[string]Type {
+	dst := make(map[string]Type, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (c *Context) resolveDiagnosticType(expr ast.TypeExpr) (typ Type) {
+	defer func() {
+		if recover() != nil {
+			typ = TypeBad
+		}
+	}()
+	return c.ResolveType(expr)
+}
