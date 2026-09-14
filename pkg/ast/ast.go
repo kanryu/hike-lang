@@ -309,6 +309,8 @@ type BinaryExpr struct {
 	Left     Expression
 	Operator string
 	Right    Expression
+	// WithCarry requests the optional second result of a shift expression.
+	WithCarry bool
 }
 
 func (be *BinaryExpr) expressionNode()      {}

@@ -764,6 +764,15 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	lVal := e.formatVal(i.L)
 	rVal := e.formatVal(i.R)
 
+	if i.Op == hir.OpShl || i.Op == hir.OpShr {
+		if isFloat || !isShiftIntegerType(typ) {
+			panic(fmt.Sprintf("[Emitter Panic] shift requires an integer operand, got '%s'", llvmT))
+		}
+		if i.R == nil || !isShiftIntegerType(i.R.Type()) {
+			panic(fmt.Sprintf("[Emitter Panic] shift count requires an integer operand, got '%s'", i.R.Type().LLVMType()))
+		}
+	}
+
 	if isFloat {
 		var opStr string
 		switch i.Op {
@@ -792,6 +801,18 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 		return
 	}
 
+	// LLVM has separate arithmetic right shift (ashr) and logical right shift
+	// (lshr) instructions.  Keep the signedness of the Hike integer type when
+	// selecting the instruction; treating every integer as signed corrupts
+	// high-bit values of uint/byte/uintptr.
+	isUnsigned := false
+	if basic, ok := typ.(*sema.BasicType); ok {
+		switch basic {
+		case sema.TypeUint, sema.TypeUint64, sema.TypeUint32, sema.TypeUint16, sema.TypeUint8, sema.TypeUintptr, sema.TypeByte:
+			isUnsigned = true
+		}
+	}
+
 	var opStr string
 	switch i.Op {
 	case hir.OpAdd:
@@ -813,7 +834,11 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	case hir.OpShl:
 		opStr = "shl"
 	case hir.OpShr:
-		opStr = "ashr"
+		if i.LogicalShift || isUnsigned {
+			opStr = "lshr"
+		} else {
+			opStr = "ashr"
+		}
 	case hir.OpEq:
 		opStr = "icmp eq"
 	case hir.OpNeq:
@@ -828,6 +853,18 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 		opStr = "icmp sge"
 	}
 	e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", i.Dst, opStr, llvmT, lVal, rVal))
+}
+
+func isIntegerLLVMType(llvmType string) bool {
+	return strings.HasPrefix(llvmType, "i") && len(llvmType) > 1
+}
+
+func isShiftIntegerType(typ sema.Type) bool {
+	if typ == nil || !isIntegerLLVMType(typ.LLVMType()) || typ == sema.TypeBool {
+		return false
+	}
+	_, ok := typ.(*sema.BasicType)
+	return ok
 }
 
 func (e *Emitter) emitUnary(i *hir.InstrUnary) {
