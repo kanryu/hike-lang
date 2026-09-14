@@ -27,6 +27,16 @@ func round(x float64) float64
 func trunc(x float64) float64
 func fmod(x float64, y float64) float64
 func hypot(x float64, y float64) float64
+func acosh(x float64) float64
+func asinh(x float64) float64
+func atanh(x float64) float64
+func erf(x float64) float64
+func erfc(x float64) float64
+func exp2(x float64) float64
+func expm1(x float64) float64
+func log1p(x float64) float64
+func logb(x float64) float64
+func copysign(x float64, y float64) float64
 
 // ==========================================
 // 2. Mathematical Constants
@@ -42,6 +52,10 @@ const Log2E = 1.44269504088896340736
 const Ln10 = 2.30258509299404568402
 const Log10E = 0.43429448190325182765
 const Phi = 1.61803398874989484820
+const MaxFloat64 = 1.7976931348623157e308
+const SmallestNonzeroFloat64 = 4.9406564584124654e-324
+const MaxFloat32 = 3.4028234663852886e38
+const SmallestNonzeroFloat32 = 1.401298464324817e-45
 
 // ==========================================
 // 3. Standard Math Functions
@@ -162,4 +176,57 @@ func Dim(x float64, y float64) float64 {
 		return 0.0
 	}
 	return v
+}
+
+// Additional Go math-compatible functions.
+func Acosh(x float64) float64 {
+	return acosh(x)
+}
+
+func Asinh(x float64) float64 {
+	return asinh(x)
+}
+
+func Atanh(x float64) float64 {
+	return atanh(x)
+}
+
+func Erf(x float64) float64 {
+	return erf(x)
+}
+
+func Erfc(x float64) float64 {
+	return erfc(x)
+}
+
+func Exp2(x float64) float64 {
+	return exp2(x)
+}
+
+func Expm1(x float64) float64 {
+	return expm1(x)
+}
+
+func Log1p(x float64) float64 {
+	return log1p(x)
+}
+
+func Logb(x float64) float64 {
+	return logb(x)
+}
+
+func Copysign(x float64, y float64) float64 {
+	return copysign(x, y)
+}
+
+func Signbit(x float64) bool {
+	return x < 0.0
+}
+
+func Pow10(n int) float64 {
+	return pow(10.0, float64(n))
+}
+
+func SinCos(x float64) (float64, float64) {
+	return sin(x), cos(x)
 }
