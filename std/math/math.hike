@@ -4,39 +4,9 @@ package math
 // 1. C Runtime Math Extern Bindings
 // ==========================================
 func sqrt(x float64) float64
-func cbrt(x float64) float64
-func pow(x float64, y float64) float64
-func sin(x float64) float64
-func cos(x float64) float64
-func tan(x float64) float64
-func asin(x float64) float64
-func acos(x float64) float64
-func atan(x float64) float64
-func atan2(y float64, x float64) float64
-func sinh(x float64) float64
-func cosh(x float64) float64
-func tanh(x float64) float64
-func exp(x float64) float64
-func log(x float64) float64
-func log10(x float64) float64
-func log2(x float64) float64
 func fabs(x float64) float64
 func floor(x float64) float64
 func ceil(x float64) float64
-func round(x float64) float64
-func trunc(x float64) float64
-func fmod(x float64, y float64) float64
-func hypot(x float64, y float64) float64
-func acosh(x float64) float64
-func asinh(x float64) float64
-func atanh(x float64) float64
-func erf(x float64) float64
-func erfc(x float64) float64
-func exp2(x float64) float64
-func expm1(x float64) float64
-func log1p(x float64) float64
-func logb(x float64) float64
-func copysign(x float64, y float64) float64
 
 // ==========================================
 // 2. Mathematical Constants
@@ -69,67 +39,137 @@ func Sqrt(x float64) float64 {
 }
 
 func Cbrt(x float64) float64 {
-	return cbrt(x)
+	if x == 0.0 {
+		return 0.0
+	}
+	if x < 0.0 {
+		return -Exp(Log(-x) / 3.0)
+	}
+	return Exp(Log(x) / 3.0)
 }
 
 func Pow(x float64, y float64) float64 {
-	return pow(x, y)
+	if x == 0.0 {
+		if y == 0.0 {
+			return 1.0
+		}
+		return 0.0
+	}
+	if x < 0.0 {
+		n := int(y)
+		v := Exp(y * Log(-x))
+		if float64(n) == y && n%2 != 0 {
+			return -v
+		}
+		return v
+	}
+	return Exp(y * Log(x))
 }
 
 func Sin(x float64) float64 {
-	return sin(x)
+	quarter := Pi / 2.0
+	quadrant := int(Floor(x/quarter + 0.5))
+	r := x - float64(quadrant)*quarter
+	q := quadrant % 4
+	if q < 0 {
+		q = q + 4
+	}
+	if q == 0 {
+		return sinPoly(r)
+	}
+	if q == 1 {
+		return cosPoly(r)
+	}
+	if q == 2 {
+		return -sinPoly(r)
+	}
+	return -cosPoly(r)
 }
 
 func Cos(x float64) float64 {
-	return cos(x)
+	return Sin(x + Pi/2.0)
 }
 
 func Tan(x float64) float64 {
-	return tan(x)
+	return Sin(x) / Cos(x)
+}
+
+func sinPoly(x float64) float64 {
+	x2 := x * x
+	return x * (1.0 + x2*(-0.16666666666666666+x2*(0.008333333333333333+x2*(-0.0001984126984126984+x2*0.0000027557319223985893))))
+}
+
+func cosPoly(x float64) float64 {
+	x2 := x * x
+	return 1.0 + x2*(-0.5+x2*(0.041666666666666664+x2*(-0.001388888888888889+x2*0.0000248015873015873)))
 }
 
 func Asin(x float64) float64 {
-	return asin(x)
+	if x >= 1.0 {
+		return Pi / 2.0
+	}
+	if x <= -1.0 {
+		return -Pi / 2.0
+	}
+	return Atan(x / Sqrt(1.0-x*x))
 }
 
 func Acos(x float64) float64 {
-	return acos(x)
+	if x >= 1.0 {
+		return 0.0
+	}
+	if x <= -1.0 {
+		return Pi
+	}
+	return Pi/2.0 - Asin(x)
 }
 
 func Atan(x float64) float64 {
-	return atan(x)
+	return atanPure(x)
 }
 
 func Atan2(y float64, x float64) float64 {
-	return atan2(y, x)
+	if x > 0.0 {
+		return Atan(y / x)
+	}
+	if x < 0.0 && y >= 0.0 {
+		return Atan(y/x) + Pi
+	}
+	if x < 0.0 {
+		return Atan(y/x) - Pi
+	}
+	if y > 0.0 {
+		return Pi/2.0
+	}
+	return -Pi / 2.0
 }
 
 func Sinh(x float64) float64 {
-	return sinh(x)
+	return (Exp(x) - Exp(-x)) / 2.0
 }
 
 func Cosh(x float64) float64 {
-	return cosh(x)
+	return (Exp(x) + Exp(-x)) / 2.0
 }
 
 func Tanh(x float64) float64 {
-	return tanh(x)
+	return Sinh(x) / Cosh(x)
 }
 
 func Exp(x float64) float64 {
-	return exp(x)
+	return expPure(x)
 }
 
 func Log(x float64) float64 {
-	return log(x)
+	return logPure(x)
 }
 
 func Log10(x float64) float64 {
-	return log10(x)
+	return Log(x) / Ln10
 }
 
 func Log2(x float64) float64 {
-	return log2(x)
+	return Log(x) / Ln2
 }
 
 func Floor(x float64) float64 {
@@ -141,19 +181,25 @@ func Ceil(x float64) float64 {
 }
 
 func Round(x float64) float64 {
-	return round(x)
+	if x < 0.0 {
+		return -Floor(-x + 0.5)
+	}
+	return Floor(x + 0.5)
 }
 
 func Trunc(x float64) float64 {
-	return trunc(x)
+	if x < 0.0 {
+		return Ceil(x)
+	}
+	return Floor(x)
 }
 
 func Mod(x float64, y float64) float64 {
-	return fmod(x, y)
+	return x - Trunc(x/y)*y
 }
 
 func Hypot(p float64, q float64) float64 {
-	return hypot(p, q)
+	return Sqrt(p*p + q*q)
 }
 
 func Max(x float64, y float64) float64 {
@@ -180,43 +226,54 @@ func Dim(x float64, y float64) float64 {
 
 // Additional Go math-compatible functions.
 func Acosh(x float64) float64 {
-	return acosh(x)
+	return Log(x + Sqrt(x*x-1.0))
 }
 
 func Asinh(x float64) float64 {
-	return asinh(x)
+	return Log(x + Sqrt(x*x+1.0))
 }
 
 func Atanh(x float64) float64 {
-	return atanh(x)
+	return Log((1.0+x)/(1.0-x)) / 2.0
 }
 
 func Erf(x float64) float64 {
-	return erf(x)
+	// Abramowitz-Stegun 7.1.26 approximation.
+	sign := 1.0
+	if x < 0.0 {
+		sign = -1.0
+		x = -x
+	}
+	t := 1.0 / (1.0 + 0.3275911*x)
+	y := 1.0 - (((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Exp(-x*x)
+	return sign * y
 }
 
 func Erfc(x float64) float64 {
-	return erfc(x)
+	return 1.0 - Erf(x)
 }
 
 func Exp2(x float64) float64 {
-	return exp2(x)
+	return Exp(x * Ln2)
 }
 
 func Expm1(x float64) float64 {
-	return expm1(x)
+	return Exp(x) - 1.0
 }
 
 func Log1p(x float64) float64 {
-	return log1p(x)
+	return Log(1.0 + x)
 }
 
 func Logb(x float64) float64 {
-	return logb(x)
+	return Floor(Log2(Abs(x)))
 }
 
 func Copysign(x float64, y float64) float64 {
-	return copysign(x, y)
+	if y < 0.0 {
+		return -Abs(x)
+	}
+	return Abs(x)
 }
 
 func Signbit(x float64) bool {
@@ -224,9 +281,66 @@ func Signbit(x float64) bool {
 }
 
 func Pow10(n int) float64 {
-	return pow(10.0, float64(n))
+	return Exp(float64(n) * Ln10)
 }
 
 func SinCos(x float64) (float64, float64) {
-	return sin(x), cos(x)
+	return Sin(x), Cos(x)
+}
+
+func expPure(x float64) float64 {
+	if x > 709.0 {
+		return MaxFloat64
+	}
+	if x < -745.0 {
+		return 0.0
+	}
+	n := int(Floor(x/Ln2 + 0.5))
+	r := x - float64(n)*Ln2
+	r2 := r * r
+	result := 1.0 + r + r2/2.0 + r2*r/6.0 + r2*r2/24.0 + r2*r2*r/120.0 + r2*r2*r2/720.0
+	if n > 0 {
+		for i := 0; i < n; i = i + 1 {
+			result = result * 2.0
+		}
+	} else {
+		for i := 0; i > n; i = i - 1 {
+			result = result / 2.0
+		}
+	}
+	return result
+}
+
+func logPure(x float64) float64 {
+	if x <= 0.0 {
+		return 0.0
+	}
+	y := x
+	k := 0
+	for y >= 2.0 {
+		y = y / 2.0
+		k = k + 1
+	}
+	for y < 1.0 {
+		y = y * 2.0
+		k = k - 1
+	}
+	z := (y - 1.0) / (y + 1.0)
+	z2 := z * z
+	series := z + z*z2/3.0 + z*z2*z2/5.0 + z*z2*z2*z2/7.0 + z*z2*z2*z2*z2/9.0 + z*z2*z2*z2*z2*z2/11.0
+	return 2.0*series + float64(k)*Ln2
+}
+
+func atanPure(x float64) float64 {
+	if x < 0.0 {
+		return -atanPure(-x)
+	}
+	if x > 1.0 {
+		return Pi/2.0 - atanPure(1.0/x)
+	}
+	if x > 0.4142135623730950 {
+		return Pi/4.0 + atanPure((x-1.0)/(x+1.0))
+	}
+	x2 := x * x
+	return x * (1.0 + x2*(-1.0/3.0+x2*(1.0/5.0+x2*(-1.0/7.0+x2*(1.0/9.0+x2*(-1.0/11.0))))))
 }

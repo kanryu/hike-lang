@@ -251,7 +251,9 @@ func (e *Emitter) emitFunctions() {
 		for _, bb := range fn.Blocks {
 			for _, inst := range bb.Instructions {
 				if call, ok := inst.(*hir.InstrCallStatic); ok {
-					referencedExterns[call.CalleeName] = true
+					if llvmIntrinsicName(call.CalleeName) == "" {
+						referencedExterns[call.CalleeName] = true
+					}
 				}
 			}
 		}
@@ -266,6 +268,9 @@ func (e *Emitter) emitFunctions() {
 
 	for _, fn := range e.prog.Functions {
 		if fn.IsExtern {
+			if llvmIntrinsicName(fn.Name) != "" {
+				continue
+			}
 			if e.declaredSymbols[fn.Name] {
 				continue
 			}
@@ -300,6 +305,24 @@ func (e *Emitter) emitFunctions() {
 
 		e.declaredSymbols[fn.Name] = true
 		e.emitFunction(fn)
+	}
+}
+
+// llvmIntrinsicName maps the portable scalar math operations exposed by
+// std/math to LLVM intrinsics. LLVM lowers these to the best target-native
+// instruction or runtime sequence without requiring a libc symbol.
+func llvmIntrinsicName(name string) string {
+	switch name {
+	case "sqrt":
+		return "llvm.sqrt.f64"
+	case "fabs":
+		return "llvm.fabs.f64"
+	case "floor":
+		return "llvm.floor.f64"
+	case "ceil":
+		return "llvm.ceil.f64"
+	default:
+		return ""
 	}
 }
 
@@ -602,6 +625,10 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			i.Dst, elemLLVM, expectedBaseType, baseVal, idxLLVM, e.formatVal(i.Index)))
 
 	case *hir.InstrCallStatic:
+		calleeName := i.CalleeName
+		if intrinsic := llvmIntrinsicName(calleeName); intrinsic != "" {
+			calleeName = intrinsic
+		}
 		args := make([]string, len(i.Args))
 		for idx, a := range i.Args {
 			if a == nil {
@@ -621,17 +648,17 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		if isVar {
 			if i.Dst != nil {
 				e.b.WriteString(fmt.Sprintf("  %s = call %s %s @%s(%s)\n",
-					i.Dst, i.Dst.Typ.LLVMType(), varSig, i.CalleeName, strings.Join(args, ", ")))
+					i.Dst, i.Dst.Typ.LLVMType(), varSig, calleeName, strings.Join(args, ", ")))
 			} else {
 				e.b.WriteString(fmt.Sprintf("  call void %s @%s(%s)\n",
-					varSig, i.CalleeName, strings.Join(args, ", ")))
+					varSig, calleeName, strings.Join(args, ", ")))
 			}
 		} else {
 			if i.Dst != nil {
 				e.b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n",
-					i.Dst, i.Dst.Typ.LLVMType(), i.CalleeName, strings.Join(args, ", ")))
+					i.Dst, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
 			} else {
-				e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", i.CalleeName, strings.Join(args, ", ")))
+				e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
 			}
 		}
 
