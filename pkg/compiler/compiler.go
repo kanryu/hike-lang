@@ -2,11 +2,13 @@ package compiler
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/backend/llvm"
+	"hikec-go/pkg/diag"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/loader"
 	"hikec-go/pkg/lower"
@@ -16,8 +18,9 @@ import (
 )
 
 type Compiler struct {
-	target  *target.Target
-	verbose bool
+	target   *target.Target
+	verbose  bool
+	reporter *diag.Reporter
 }
 
 func New(tgt *target.Target) *Compiler {
@@ -25,13 +28,33 @@ func New(tgt *target.Target) *Compiler {
 		tgt = target.DefaultTarget()
 	}
 	return &Compiler{
-		target:  tgt,
-		verbose: false,
+		target:   tgt,
+		verbose:  false,
+		reporter: diag.NewReporter(),
 	}
 }
 
 func (c *Compiler) SetVerbose(v bool) {
 	c.verbose = v
+}
+
+func (c *Compiler) Reporter() *diag.Reporter {
+	return c.reporter
+}
+
+// safeExecute は各コンパイルフェーズを安全に実行し、パニックが発生した場合も捕捉してエラー情報へ正規化する
+func (c *Compiler) safeExecute(defaultFile string, fn func() error) error {
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("%v", r)
+			c.reporter.Add(diag.ParseDiagnostic(defaultFile, msg))
+		}
+	}()
+
+	if err := fn(); err != nil {
+		c.reporter.AddRaw(defaultFile, err.Error())
+	}
+	return nil
 }
 
 // CompileToHIR はフロントエンド・ミドルエンドを実行し、ターゲットに応じた HIR を生成します
@@ -40,43 +63,78 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil, nil, nil, fmt.Errorf("no input files provided")
 	}
 
+	c.reporter.Clear()
+	primaryFile := entryPaths[0]
+
 	targetTriple := ""
 	if c.target != nil {
 		targetTriple = c.target.Triple
 		sema.SetTargetArchitecture(targetTriple)
 	}
 
-	rootDir := filepath.Dir(entryPaths[0])
+	rootDir := filepath.Dir(primaryFile)
 	if rootDir == "" {
 		rootDir = "."
 	}
 
-	// 1. パッケージ探索・構文解析
-	ld := loader.New(rootDir)
-	ld.SetVerbose(c.verbose)
-	rawProg, err := ld.Load(entryPaths...)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("loader error: %w", err)
+	var rawProg *ast.Program
+	var semaCtx *sema.Context
+	var concreteProg *ast.Program
+	var hirProg *hir.Program
+
+	// 1. パッケージ探索・構文解析フェーズ
+	_ = c.safeExecute(primaryFile, func() error {
+		ld := loader.New(rootDir)
+		ld.SetVerbose(c.verbose)
+		p, err := ld.Load(entryPaths...)
+		if err != nil {
+			return err
+		}
+		rawProg = p
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		return nil, nil, nil, c.reporter
 	}
 
-	// 2. 意味解析・型検査
-	semaCtx, err := sema.Analyze(rawProg)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("semantic error: %w", err)
+	// 2. 意味解析・型検査フェーズ
+	_ = c.safeExecute(primaryFile, func() error {
+		ctx, err := sema.Analyze(rawProg)
+		if err != nil {
+			return err
+		}
+		semaCtx = ctx
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		return nil, nil, nil, c.reporter
 	}
 
-	// 3. ジェネリクス単相化
-	tf := transform.New(rawProg, semaCtx)
-	concreteProg, err := tf.Transform()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("transform error: %w", err)
+	// 3. ジェネリクス単相化フェーズ
+	_ = c.safeExecute(primaryFile, func() error {
+		tf := transform.New(rawProg, semaCtx)
+		p, err := tf.Transform()
+		if err != nil {
+			return err
+		}
+		concreteProg = p
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		return nil, nil, nil, c.reporter
 	}
 
-	// 4. HIR への Lowering (Compiler が保持するターゲット情報を Lowerer に直接教える)
-	is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
-	lw := lower.New(concreteProg, semaCtx)
-	lw.Set32Bit(is32Bit)
-	hirProg := lw.Lower()
+	// 4. HIR への Lowering フェーズ
+	_ = c.safeExecute(primaryFile, func() error {
+		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
+		lw := lower.New(concreteProg, semaCtx)
+		lw.Set32Bit(is32Bit)
+		hirProg = lw.Lower()
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		return nil, nil, nil, c.reporter
+	}
 
 	return hirProg, semaCtx, concreteProg, nil
 }
@@ -93,11 +151,99 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 		targetTriple = c.target.Triple
 	}
 
-	// 5. LLVM バックエンドによるコード出力 (Emitter 内でターゲットに応じたランタイムが最初から出力されます)
-	emitter := llvm.New(hirProg, semaCtx, targetTriple)
-	llvmIR := emitter.Emit()
+	primaryFile := entryPaths[0]
+	var llvmIR string
+
+	// 5. LLVM バックエンドによるコード出力フェーズ
+	_ = c.safeExecute(primaryFile, func() error {
+		emitter := llvm.New(hirProg, semaCtx, targetTriple)
+		llvmIR = emitter.Emit()
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		return "", nil, nil, c.reporter
+	}
 
 	return llvmIR, semaCtx, concreteProg, nil
+}
+
+// Compile はコンパイルを実行し、エラーが発生した場合は Go コンパイラ形式で stderr に出力して終了します
+func (c *Compiler) Compile(entryPaths ...string) error {
+	_, _, _, err := c.CompileToLLVM(entryPaths...)
+	if err != nil {
+		if c.reporter.HasErrors() {
+			fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+			return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
+		}
+		return err
+	}
+	return nil
+}
+
+// CompileProgram は AST Program から直接コンパイルを実行し、フェーズゲート制御を行う
+func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
+	c.reporter.Clear()
+
+	// 1. Sema フェーズ (エラーが出ても最後まで回す)
+	var semaCtx *sema.Context
+	_ = c.safeExecute(filename, func() error {
+		ctx, err := sema.Analyze(prog)
+		if err != nil {
+			return err
+		}
+		semaCtx = ctx
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
+	}
+
+	// 2. Transform フェーズ
+	var concreteProg *ast.Program
+	_ = c.safeExecute(filename, func() error {
+		tf := transform.New(prog, semaCtx)
+		p, err := tf.Transform()
+		if err != nil {
+			return err
+		}
+		concreteProg = p
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
+	}
+
+	// 3. Lower (HIR) / Emit (LLVM) フェーズ
+	var hirProg *hir.Program
+	targetTriple := ""
+	if c.target != nil {
+		targetTriple = c.target.Triple
+	}
+	_ = c.safeExecute(filename, func() error {
+		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
+		lw := lower.New(concreteProg, semaCtx)
+		lw.Set32Bit(is32Bit)
+		hirProg = lw.Lower()
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
+	}
+
+	_ = c.safeExecute(filename, func() error {
+		emitter := llvm.New(hirProg, semaCtx, targetTriple)
+		_ = emitter.Emit()
+		return nil
+	})
+	if c.reporter.HasErrors() {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
+	}
+
+	return nil
 }
 
 // CompileFile は単一ファイルのコンパイル用ショートカット

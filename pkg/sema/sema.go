@@ -347,6 +347,14 @@ func (t *FutureType) TypeName() string {
 func (t *FutureType) LLVMType() string { return "i8*" }
 func (t *FutureType) Size() int        { return PointerSize }
 
+// TypeBad は型チェック中にエラーが発生した場合に使用される特殊な型です。
+// 後続の型チェックでは、オペランドに TypeBad が含まれていた場合は新たなエラーを出力せずに静かに TypeBad をパススルーさせます。
+var TypeBad = &BasicType{Name: "<bad>", ByteSize: 0, LLVM: "void"}
+
+func IsBad(t Type) bool {
+	return t == nil || t == TypeBad
+}
+
 // -------------------------------------------------------------
 // 内部シンボルキー生成 & マングリング変換ヘルパー
 // -------------------------------------------------------------

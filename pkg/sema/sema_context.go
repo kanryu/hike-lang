@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"hikec-go/pkg/ast"
+	"hikec-go/pkg/diag"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/token"
 )
@@ -1862,4 +1863,40 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 	}
 
 	return TypeVoid, fmt.Errorf("type '%s' does not support slicing (implement 'Sliceable' with Slice(low, high int) to enable)", leftType.TypeName())
+}
+
+func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if t, ok := locals[e.Value]; ok {
+			return t
+		}
+		if t, ok := c.Globals[e.Value]; ok {
+			return t
+		}
+		if _, ok := c.LookupConstant(e.Value); ok {
+			return TypeInt
+		}
+
+		// 未定義識別子: エラーを記録して TypeBad を返却
+		reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", e.Value)
+		return TypeBad
+
+	case *ast.BinaryExpr:
+		lt := c.InferExprTypeWithDiag(e.Left, locals, reporter, filename)
+		rt := c.InferExprTypeWithDiag(e.Right, locals, reporter, filename)
+
+		// どちらかがすでに不正型なら、これ以上の重複エラーを出さずに TypeBad を返す
+		if IsBad(lt) || IsBad(rt) {
+			return TypeBad
+		}
+
+		if !c.typesCompatible(lt, rt) {
+			reporter.Errorf(filename, e.Token.Line, e.Token.Col, "invalid operation: %s %s %s (mismatched types %s and %s)",
+				e.Left.TokenLiteral(), e.Operator, e.Right.TokenLiteral(), lt.TypeName(), rt.TypeName())
+			return TypeBad
+		}
+		return lt
+	}
+	return TypeInt
 }
