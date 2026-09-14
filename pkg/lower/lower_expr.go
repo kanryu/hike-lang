@@ -434,7 +434,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
 			baseName := parts[0]
 			typeSuffix := parts[1]
-			specSlice := fmt.Sprintf("%s_Slice__%s", baseName, typeSuffix)
+			specSlice := fmt.Sprintf("%s_Slice_%s", baseName, typeSuffix)
 			if fn, ok := e.root.semaCtx.Functions[specSlice]; ok {
 				sliceFnName = specSlice
 				sliceFn = fn
@@ -483,7 +483,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 					parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
 					baseName := parts[0]
 					typeSuffix := parts[1]
-					specLen := fmt.Sprintf("%s_Len__%s", baseName, typeSuffix)
+					specLen := fmt.Sprintf("%s_Len_%s", baseName, typeSuffix)
 					if fn, ok := e.root.semaCtx.Functions[specLen]; ok {
 						lenFnName = specLen
 						lenFn = fn
@@ -804,7 +804,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
 		baseName := parts[0]
 		typeSuffix := parts[1]
-		specGet := fmt.Sprintf("%s_Get__%s", baseName, typeSuffix)
+		specGet := fmt.Sprintf("%s_Get_%s", baseName, typeSuffix)
 		if fn, ok := e.root.semaCtx.Functions[specGet]; ok {
 			getFnName = specGet
 			getFn = fn

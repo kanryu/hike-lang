@@ -812,7 +812,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			internalKey := BuildInternalKey(prog.Package, fd.Name.Value, structNameWithPtr)
 			fd.InternalKey = internalKey
 
-			irName := fnName
+			irName := MangleInternalKeyToIR(internalKey)
 			if !isMethod && (prog.Package == "" || prog.Package == "main") {
 				irName = fd.Name.Value
 			}

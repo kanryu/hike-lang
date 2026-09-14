@@ -301,7 +301,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				parts := strings.SplitN(strings.TrimPrefix(leftType.TypeName(), "*"), "__", 2)
 				baseName := parts[0]
 				typeSuffix := parts[1]
-				specSet := fmt.Sprintf("%s_Set__%s", baseName, typeSuffix)
+				specSet := fmt.Sprintf("%s_Set_%s", baseName, typeSuffix)
 				if fn, ok := s.root.semaCtx.Functions[specSet]; ok {
 					setFnName = specSet
 					setFn = fn
@@ -544,8 +544,8 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			parts := strings.SplitN(strings.TrimPrefix(xType.TypeName(), "*"), "__", 2)
 			baseName := parts[0]
 			typeSuffix := parts[1]
-			specInit := fmt.Sprintf("%s_InitIterator__%s", baseName, typeSuffix)
-			specNextChan := fmt.Sprintf("%s_NextChannel__%s", baseName, typeSuffix)
+			specInit := fmt.Sprintf("%s_InitIterator_%s", baseName, typeSuffix)
+			specNextChan := fmt.Sprintf("%s_NextChannel_%s", baseName, typeSuffix)
 			if fn, ok := s.root.semaCtx.Functions[specInit]; ok {
 				initFnName = specInit
 				hasInit = true
@@ -760,8 +760,8 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		parts := strings.SplitN(strings.TrimPrefix(xType.TypeName(), "*"), "__", 2)
 		baseName := parts[0]
 		typeSuffix := parts[1]
-		specInit := fmt.Sprintf("%s_InitIterator__%s", baseName, typeSuffix)
-		specNext := fmt.Sprintf("%s_Next__%s", baseName, typeSuffix)
+		specInit := fmt.Sprintf("%s_InitIterator_%s", baseName, typeSuffix)
+		specNext := fmt.Sprintf("%s_Next_%s", baseName, typeSuffix)
 		if fn, ok := s.root.semaCtx.Functions[specInit]; ok {
 			initFnName = specInit
 			hasInit = true

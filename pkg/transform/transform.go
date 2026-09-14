@@ -827,12 +827,12 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 
 	argNames := []string{}
 	for _, typ := range typeArgs {
-		name := strings.ReplaceAll(typ.TypeName(), "*", "Ptr")
-		name = strings.ReplaceAll(name, "[]", "Slice_")
+		name := strings.ReplaceAll(typ.TypeName(), "*", "ptr_")
+		name = strings.ReplaceAll(name, "[]", "slice_")
 		argNames = append(argNames, name)
 	}
 	specKey := strings.Join(argNames, "_")
-	specializedName := fmt.Sprintf("%s__%s", baseName, specKey)
+	specializedName := fmt.Sprintf("%s_%s", baseName, specKey)
 
 	if origFnMeta != nil && origFnMeta.Specializations != nil {
 		if existing, ok := origFnMeta.Specializations[specKey]; ok {
@@ -886,6 +886,7 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 
 	fnType := &sema.FuncType{
 		Name:            specializedName,
+		IRName:          specializedName,
 		TypeParams:      typeParamNames,
 		TypeArgs:        typeArgs,
 		IsMethod:        false,

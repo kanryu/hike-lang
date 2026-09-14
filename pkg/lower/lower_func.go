@@ -31,6 +31,10 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		recvName := strings.TrimPrefix(recvType.TypeName(), "*")
 		fnName = sema.CanonicalMethodName(recvName, fnName)
 	}
+	irName := fnName
+	if fnMeta, _ := c.root.semaCtx.LookupFunction(fnName); fnMeta != nil && fnMeta.IRName != "" {
+		irName = fnMeta.IRName
+	}
 
 	isMain := (fn.Name.Value == "main" && fn.Receiver == nil)
 	returnTypes := []sema.Type{}
@@ -69,7 +73,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	isIRVariadic := (fn.Body == nil && fn.IsVariadic)
 
 	hirFn := &hir.Function{
-		Name:        fnName,
+		Name:        irName,
 		Params:      []*hir.Reg{},
 		ReturnTypes: returnTypes,
 		Blocks:      []*hir.BasicBlock{},

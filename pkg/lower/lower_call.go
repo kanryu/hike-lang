@@ -374,18 +374,18 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		shortTypeName = rawTypeName[idx+1:]
 	}
 
-	if fn, _ := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
-		targetName := fn.Name
-		if targetName == "" {
-			targetName = sema.CanonicalMethodName(rawTypeName, methodName)
+	if fn, canonical := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
+		targetName := canonical
+		if fn.IRName != "" {
+			targetName = fn.IRName
 		}
 		return targetName, fn, curPtr, true
 	}
 	if !strings.HasPrefix(recvType.TypeName(), "*") {
-		if fn, _ := c.root.semaCtx.LookupMethod("*"+recvType.TypeName(), methodName); fn != nil {
-			targetName := fn.Name
-			if targetName == "" {
-				targetName = sema.CanonicalMethodName(rawTypeName, methodName)
+		if fn, canonical := c.root.semaCtx.LookupMethod("*"+recvType.TypeName(), methodName); fn != nil {
+			targetName := canonical
+			if fn.IRName != "" {
+				targetName = fn.IRName
 			}
 			return targetName, fn, curPtr, true
 		}

@@ -115,44 +115,31 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 	isPtr := strings.HasPrefix(recvTypeName, "*")
 	rawRecv := strings.TrimPrefix(recvTypeName, "*")
 
-	// 1. 完全一致する内部キーを優先探索
-	exactKey := fmt.Sprintf("%s@%s", methodName, recvTypeName)
-	if fn, ok := c.Functions[exactKey]; ok {
-		return fn, exactKey
-	}
-
-	keyRaw := fmt.Sprintf("%s@%s", methodName, rawRecv)
-	if fn, ok := c.Functions[keyRaw]; ok {
-		return fn, keyRaw
-	}
-
-	keyPtr := fmt.Sprintf("%s@*%s", methodName, rawRecv)
-	if fn, ok := c.Functions[keyPtr]; ok {
-		return fn, keyPtr
-	}
-
-	// 2. パッケージ修飾付きの内部キーを走査 (例: net.Close@Socket)
-	for k, fn := range c.Functions {
-		if strings.Contains(k, "@") {
-			parts := strings.SplitN(k, "@", 2)
-			fnPart := parts[0]
-			stPart := parts[1]
-
-			cleanSt := strings.TrimPrefix(stPart, "*")
-			if cleanSt == rawRecv || strings.HasSuffix(cleanSt, "_"+rawRecv) || strings.HasSuffix(cleanSt, "."+rawRecv) ||
-				strings.HasSuffix(rawRecv, "_"+cleanSt) || strings.HasSuffix(rawRecv, "."+cleanSt) {
-				cleanFn := fnPart
-				if dot := strings.LastIndex(fnPart, "."); dot != -1 {
-					cleanFn = fnPart[dot+1:]
-				}
-				if cleanFn == methodName {
-					return fn, k
-				}
-			}
+	// InternalKey を唯一の正規名として照合する。suffix 探索は同名型を
+	// 誤って選ぶため行わず、receiver とメソッドの完全な構造だけを見る。
+	for _, fn := range c.Functions {
+		if fn == nil || fn.InternalKey == "" {
+			continue
+		}
+		parts := strings.SplitN(fn.InternalKey, "@", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		fnPart := parts[0]
+		if dot := strings.LastIndex(fnPart, "."); dot != -1 {
+			fnPart = fnPart[dot+1:]
+		}
+		if fnPart != methodName {
+			continue
+		}
+		storedRecv := parts[1]
+		if storedRecv == recvTypeName || storedRecv == rawRecv ||
+			(isPtr && storedRecv == "*"+rawRecv) {
+			return fn, fn.InternalKey
 		}
 	}
 
-	// 3. 従来のアンダースコア連結名での探索 (後方互換性)
+	// 互換用の canonical 名は完全一致だけを許可する。
 	legacyName := CanonicalMethodName(rawRecv, methodName)
 	if fn, ok := c.Functions[legacyName]; ok {
 		return fn, legacyName
