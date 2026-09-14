@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"hikec-go/pkg/hir"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
 )
 
@@ -22,6 +23,10 @@ type Emitter struct {
 	regCount        int
 	asyncThunks     map[string]*asyncThunk
 	declaredSymbols map[string]bool
+}
+
+func (e *Emitter) SetVerboseLevel(level int) {
+	logger.SetLevel(level)
 }
 
 func defaultTargetTriple() string {
@@ -185,7 +190,7 @@ func (e *Emitter) emitItabs() {
 			}
 			rawSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(rawParams, ", "))
 
-			// 実体関数の正確な LLVM シグネチャを取得
+			// 実体関数の正確なLLVMシグネチャを取得
 			var targetFn *hir.Function
 			for _, fn := range e.prog.Functions {
 				if fn.Name == m.TargetFnName {
@@ -224,7 +229,11 @@ func (e *Emitter) emitItabs() {
 			}
 
 			concreteSig := fmt.Sprintf("%s (%s)*", concreteRet, strings.Join(concreteParams, ", "))
-			fieldValues = append(fieldValues, fmt.Sprintf("%s bitcast (%s @%s to %s)", rawSig, concreteSig, m.TargetFnName, rawSig))
+			if concreteSig == rawSig {
+				fieldValues = append(fieldValues, fmt.Sprintf("%s @%s", rawSig, m.TargetFnName))
+			} else {
+				fieldValues = append(fieldValues, fmt.Sprintf("%s bitcast (%s @%s to %s)", rawSig, concreteSig, m.TargetFnName, rawSig))
+			}
 		}
 
 		e.b.WriteString(fmt.Sprintf("@%s = constant %%struct.%s { %s }\n",
@@ -248,7 +257,7 @@ func (e *Emitter) emitFunctions() {
 		}
 	}
 
-	// itab 定数から参照されている関数も外部宣言対象に登録
+	// itab定数から参照されている関数も外部宣言対象に登録
 	for _, itab := range e.prog.Itabs {
 		for _, m := range itab.Methods {
 			referencedExterns[m.TargetFnName] = true
@@ -295,6 +304,7 @@ func (e *Emitter) emitFunctions() {
 }
 
 func (e *Emitter) emitFunction(fn *hir.Function) {
+	logger.LogVerbose2("[Verbose2] --- Emit Function: @%s (blocks=%d) ---\n", fn.Name, len(fn.Blocks))
 	isMain := (fn.Name == "main")
 	retTypeStr := "void"
 	if isMain {
@@ -325,6 +335,7 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s) {\n", storageClass, retTypeStr, fn.Name, strings.Join(params, ", ")))
 
 	for _, bb := range fn.Blocks {
+		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
 		e.b.WriteString(fmt.Sprintf("%s:\n", bb.Label))
 		for _, inst := range bb.Instructions {
 			e.emitInstruction(inst)
@@ -419,25 +430,52 @@ func (e *Emitter) emitAsyncThunks() {
 		e.b.WriteString("  %p_fn = getelementptr inbounds i8*, i8** %env_arr, i32 0\n")
 		e.b.WriteString("  %fn_raw = load i8*, i8** %p_fn\n")
 		e.b.WriteString("  %p_env = getelementptr inbounds i8*, i8** %env_arr, i32 1\n")
-		e.b.WriteString("  %real_env = load i8*, i8** %p_env\n\n")
+		e.b.WriteString("  %real_env = load i8*, i8** %p_env\n")
+		e.b.WriteString("  %cond = icmp eq i8* %real_env, null\n")
+		e.b.WriteString("  br i1 %cond, label %call_plain, label %call_closure\n\n")
 
+		e.b.WriteString("call_plain:\n")
 		if thunk.retLLVMType == "void" {
-			e.b.WriteString("  %typed_fn = bitcast i8* %fn_raw to void (i8*)*\n")
-			e.b.WriteString("  call void %typed_fn(i8* %real_env)\n")
+			e.b.WriteString("  %plain_fn_v = bitcast i8* %fn_raw to void ()*\n")
+			e.b.WriteString("  call void %plain_fn_v()\n")
+			e.b.WriteString("  br label %cleanup\n\n")
 		} else {
-			e.b.WriteString(fmt.Sprintf("  %%typed_fn = bitcast i8* %%fn_raw to %s (i8*)*\n", thunk.retLLVMType))
-			e.b.WriteString(fmt.Sprintf("  %%res = call %s %%typed_fn(i8* %%real_env)\n", thunk.retLLVMType))
-			e.b.WriteString(fmt.Sprintf("  %%typed_buf = bitcast i8* %%buf to %s*\n", thunk.retLLVMType))
-			e.b.WriteString(fmt.Sprintf("  store %s %%res, %s* %%typed_buf\n", thunk.retLLVMType, thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%plain_fn = bitcast i8* %%fn_raw to %s ()*\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%res_plain = call %s %%plain_fn()\n", thunk.retLLVMType))
+			e.b.WriteString("  br label %store_res\n\n")
 		}
 
-		e.b.WriteString("\n  call void @free(i8* %wrapper_env)\n")
+		e.b.WriteString("call_closure:\n")
+		if thunk.retLLVMType == "void" {
+			e.b.WriteString("  %closure_fn_v = bitcast i8* %fn_raw to void (i8*)*\n")
+			e.b.WriteString("  call void %closure_fn_v(i8* %real_env)\n")
+			e.b.WriteString("  br label %cleanup\n\n")
+		} else {
+			e.b.WriteString(fmt.Sprintf("  %%closure_fn = bitcast i8* %%fn_raw to %s (i8*)*\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%res_closure = call %s %%closure_fn(i8* %%real_env)\n", thunk.retLLVMType))
+			e.b.WriteString("  br label %store_res\n\n")
+
+			e.b.WriteString("store_res:\n")
+			e.b.WriteString(fmt.Sprintf("  %%res = phi %s [ %%res_plain, %%call_plain ], [ %%res_closure, %%call_closure ]\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  %%typed_buf = bitcast i8* %%buf to %s*\n", thunk.retLLVMType))
+			e.b.WriteString(fmt.Sprintf("  store %s %%res, %s* %%typed_buf\n", thunk.retLLVMType, thunk.retLLVMType))
+			e.b.WriteString("  br label %cleanup\n\n")
+		}
+
+		e.b.WriteString("cleanup:\n")
+		e.b.WriteString("  call void @free(i8* %wrapper_env)\n")
 		e.b.WriteString("  ret void\n")
 		e.b.WriteString("}\n\n")
 	}
 }
 
 func (e *Emitter) emitInstruction(inst hir.Instruction) {
+	if inst == nil {
+		logger.LogVerbose2("[Verbose2] emitInstruction: <nil>\n")
+		return
+	}
+	logger.LogVerbose2("[Verbose2] emitInstruction: %T -> %+v\n", inst, inst)
+
 	intLLVM := sema.TypeInt.LLVMType()
 
 	switch i := inst.(type) {
@@ -462,12 +500,34 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, rawPtr, i.AllocType.LLVMType()))
 
 	case *hir.InstrLoad:
-		e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", i.Dst, i.Dst.Typ.LLVMType(), i.Dst.Typ.LLVMType(), e.formatVal(i.Ptr)))
+		if i.Ptr == nil {
+			logger.LogVerbose2("[Verbose2] ERROR: InstrLoad has nil Ptr! Dst=%v\n", i.Dst)
+			return
+		}
+		ptrVal := e.formatVal(i.Ptr)
+		expectedPtrType := i.Dst.Typ.LLVMType() + "*"
+		if i.Ptr.Type() != nil && i.Ptr.Type().LLVMType() != expectedPtrType {
+			castPtr := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castPtr, i.Ptr.Type().LLVMType(), ptrVal, expectedPtrType))
+			ptrVal = castPtr
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = load %s, %s %s\n", i.Dst, i.Dst.Typ.LLVMType(), expectedPtrType, ptrVal))
 
 	case *hir.InstrStore:
-		e.b.WriteString(fmt.Sprintf("  store %s %s, %s* %s\n",
+		if i.Ptr == nil || i.Val == nil {
+			logger.LogVerbose2("[Verbose2] ERROR: InstrStore has nil Ptr or Val! (Ptr=%v, Val=%v)\n", i.Ptr, i.Val)
+			return
+		}
+		ptrVal := e.formatVal(i.Ptr)
+		expectedPtrType := i.Val.Type().LLVMType() + "*"
+		if i.Ptr.Type() != nil && i.Ptr.Type().LLVMType() != expectedPtrType {
+			castPtr := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castPtr, i.Ptr.Type().LLVMType(), ptrVal, expectedPtrType))
+			ptrVal = castPtr
+		}
+		e.b.WriteString(fmt.Sprintf("  store %s %s, %s %s\n",
 			i.Val.Type().LLVMType(), e.formatVal(i.Val),
-			i.Val.Type().LLVMType(), e.formatVal(i.Ptr)))
+			expectedPtrType, ptrVal))
 
 	case *hir.InstrBinary:
 		e.emitBinary(i)
@@ -492,8 +552,18 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			typeName := i.BasePtr.Type().TypeName()
 			stName = strings.TrimPrefix(strings.TrimPrefix(typeName, "*"), "%struct.")
 		}
+
+		baseVal := e.formatVal(i.BasePtr)
+		expectedBaseType := fmt.Sprintf("%%struct.%s*", stName)
+		if i.BasePtr.Type() != nil && i.BasePtr.Type().LLVMType() != expectedBaseType {
+			castBase := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n",
+				castBase, i.BasePtr.Type().LLVMType(), baseVal, expectedBaseType))
+			baseVal = castBase
+		}
+
 		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %%struct.%s, %s %s, i32 0, i32 %d\n",
-			i.Dst, stName, i.BasePtr.Type().LLVMType(), e.formatVal(i.BasePtr), i.FieldIndex))
+			i.Dst, stName, expectedBaseType, baseVal, i.FieldIndex))
 
 	case *hir.InstrGetElemPtr:
 		baseType := i.BasePtr.Type()
@@ -519,12 +589,31 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			elemLLVM = "i8"
 		}
 
+		baseVal := e.formatVal(i.BasePtr)
+		expectedBaseType := elemLLVM + "*"
+		if baseType != nil && baseType.LLVMType() != expectedBaseType {
+			castBase := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n",
+				castBase, baseType.LLVMType(), baseVal, expectedBaseType))
+			baseVal = castBase
+		}
+
 		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, %s %s\n",
-			i.Dst, elemLLVM, baseType.LLVMType(), e.formatVal(i.BasePtr), idxLLVM, e.formatVal(i.Index)))
+			i.Dst, elemLLVM, expectedBaseType, baseVal, idxLLVM, e.formatVal(i.Index)))
 
 	case *hir.InstrCallStatic:
 		args := make([]string, len(i.Args))
 		for idx, a := range i.Args {
+			if a == nil {
+				logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] is nil!\n", i.CalleeName, idx)
+				args[idx] = "i8* null"
+				continue
+			}
+			if a.Type() == nil {
+				logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] has nil Type()! Val=%v\n", i.CalleeName, idx, a)
+				args[idx] = fmt.Sprintf("i64 %s", e.formatVal(a))
+				continue
+			}
 			args[idx] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
 		}
 
@@ -566,7 +655,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		pFn := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 0\n", pFn, arrEnv))
 		fnVal := e.formatVal(i.FnPtr)
-		if i.FnPtr.Type().LLVMType() != "i8*" {
+		if i.FnPtr != nil && i.FnPtr.Type() != nil && i.FnPtr.Type().LLVMType() != "i8*" {
 			castFn := e.nextTmp()
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castFn, i.FnPtr.Type().LLVMType(), fnVal))
 			fnVal = castFn
@@ -575,11 +664,14 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 
 		pEnv := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 1\n", pEnv, arrEnv))
-		envVal := e.formatVal(i.EnvPtr)
-		if i.EnvPtr.Type().LLVMType() != "i8*" {
-			castEnv := e.nextTmp()
-			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
-			envVal = castEnv
+		envVal := "null"
+		if i.EnvPtr != nil {
+			envVal = e.formatVal(i.EnvPtr)
+			if i.EnvPtr.Type() != nil && i.EnvPtr.Type().LLVMType() != "i8*" {
+				castEnv := e.nextTmp()
+				e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
+				envVal = castEnv
+			}
 		}
 		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", envVal, pEnv))
 
@@ -622,7 +714,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", rawPtr, valLLVM, tmpAlloca))
 
 		chVal := e.formatVal(i.Chan)
-		if i.Chan.Type().LLVMType() != "i8*" {
+		if i.Chan.Type() != nil && i.Chan.Type().LLVMType() != "i8*" {
 			castCh := e.nextTmp()
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
 			chVal = castCh
@@ -637,7 +729,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", rawPtr, elemLLVM, tmpAlloca))
 
 		chVal := e.formatVal(i.Chan)
-		if i.Chan.Type().LLVMType() != "i8*" {
+		if i.Chan.Type() != nil && i.Chan.Type().LLVMType() != "i8*" {
 			castCh := e.nextTmp()
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
 			chVal = castCh
@@ -647,7 +739,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 
 	case *hir.InstrChanClose:
 		chVal := e.formatVal(i.Chan)
-		if i.Chan.Type().LLVMType() != "i8*" {
+		if i.Chan.Type() != nil && i.Chan.Type().LLVMType() != "i8*" {
 			castCh := e.nextTmp()
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castCh, i.Chan.Type().LLVMType(), chVal))
 			chVal = castCh
@@ -742,7 +834,11 @@ func (e *Emitter) emitUnary(i *hir.InstrUnary) {
 	typ := i.Val.Type()
 	val := e.formatVal(i.Val)
 	if i.Op == hir.OpNot {
-		e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", i.Dst, val))
+		if typ.LLVMType() == "i1" {
+			e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", i.Dst, val))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  %s = xor %s %s, -1\n", i.Dst, typ.LLVMType(), val))
+		}
 	} else if i.Op == hir.OpNeg {
 		if typ == sema.TypeFloat64 || typ == sema.TypeFloat32 {
 			e.b.WriteString(fmt.Sprintf("  %s = fsub %s 0.0, %s\n", i.Dst, typ.LLVMType(), val))
@@ -776,13 +872,23 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 		return
 	}
 
-	ifName := strings.ReplaceAll(i.Iface.Name, ".", "_")
-	if ifName == "" {
-		ifName = "anon_iface"
+	itabStructType := ""
+	for _, itab := range e.prog.Itabs {
+		if itab.GlobalName == i.ItabName {
+			itabStructType = fmt.Sprintf("%%struct.%s*", itab.ItabStructName)
+			break
+		}
+	}
+	if itabStructType == "" {
+		ifName := strings.ReplaceAll(i.Iface.Name, ".", "_")
+		if ifName == "" {
+			ifName = "anon_iface"
+		}
+		itabStructType = fmt.Sprintf("%%struct.__itab_%s*", ifName)
 	}
 
 	itabPtr := e.nextTmp()
-	e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__itab_%s* @%s to i8*\n", itabPtr, ifName, i.ItabName))
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast %s @%s to i8*\n", itabPtr, itabStructType, i.ItabName))
 	t1 := e.nextTmp()
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", t1, dataPtr))
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", i.Dst, t1, itabPtr))
@@ -814,30 +920,36 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 	toLLVM := i.ToType.LLVMType()
 	val := e.formatVal(i.Val)
 
-	if fromLLVM == toLLVM {
-		if strings.HasPrefix(fromLLVM, "{") || strings.HasPrefix(fromLLVM, "[") {
-			panic(fmt.Sprintf("[Emitter Panic] invalid cast: cannot bitcast aggregate type '%s'", fromLLVM))
-		}
-		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
-		return
-	}
-
 	rFrom := intRank(fromLLVM)
 	rTo := intRank(toLLVM)
 	isFromPtr := strings.HasSuffix(fromLLVM, "*")
 	isToPtr := strings.HasSuffix(toLLVM, "*")
 
-	// 1. 浮動小数点数 -> 整数 (fptosi)
+	if fromLLVM == toLLVM {
+		if strings.HasPrefix(fromLLVM, "{") || strings.HasPrefix(fromLLVM, "[") {
+			panic(fmt.Sprintf("[Emitter Panic] invalid cast: cannot bitcast aggregate type '%s'", fromLLVM))
+		}
+		if isFloatType(fromLLVM) {
+			e.b.WriteString(fmt.Sprintf("  %s = fadd %s %s, 0.0\n", i.Dst, fromLLVM, val))
+		} else if rFrom > 0 {
+			e.b.WriteString(fmt.Sprintf("  %s = or %s %s, 0\n", i.Dst, fromLLVM, val))
+		} else if isFromPtr {
+			elem := strings.TrimSuffix(fromLLVM, "*")
+			e.b.WriteString(fmt.Sprintf("  %s = getelementptr %s, %s %s, i32 0\n", i.Dst, elem, fromLLVM, val))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+		}
+		return
+	}
+
 	if isFloatType(fromLLVM) && rTo > 0 {
 		e.b.WriteString(fmt.Sprintf("  %s = fptosi %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 2. 整数 -> 浮動小数点数 (sitofp)
 	if rFrom > 0 && isFloatType(toLLVM) {
 		e.b.WriteString(fmt.Sprintf("  %s = sitofp %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 3. 浮動小数点数間の変換
 	if fromLLVM == "double" && toLLVM == "float" {
 		e.b.WriteString(fmt.Sprintf("  %s = fptrunc double %s to float\n", i.Dst, val))
 		return
@@ -846,33 +958,41 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		e.b.WriteString(fmt.Sprintf("  %s = fpext float %s to double\n", i.Dst, val))
 		return
 	}
-	// 4. 整数間の拡縮 (Trunc / ZExt)
 	if rFrom > 0 && rTo > 0 {
 		if rFrom > rTo {
 			e.b.WriteString(fmt.Sprintf("  %s = trunc %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 			return
 		}
 		if rFrom < rTo {
-			e.b.WriteString(fmt.Sprintf("  %s = zext %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
+			isUnsigned := false
+			if rFrom == 1 {
+				isUnsigned = true
+			} else if i.Val.Type() != nil {
+				tn := i.Val.Type().TypeName()
+				if strings.HasPrefix(tn, "uint") || tn == "byte" || tn == "uintptr" {
+					isUnsigned = true
+				}
+			}
+			castOp := "sext"
+			if isUnsigned {
+				castOp = "zext"
+			}
+			e.b.WriteString(fmt.Sprintf("  %s = %s %s %s to %s\n", i.Dst, castOp, fromLLVM, val, toLLVM))
 			return
 		}
 	}
-	// 5. ポインタ同士の変換 (bitcast)
 	if isFromPtr && isToPtr {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 6. ポインタ -> 整数 (ptrtoint)
 	if isFromPtr && rTo > 0 {
 		e.b.WriteString(fmt.Sprintf("  %s = ptrtoint %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 7. 整数 -> ポインタ (inttoptr)
 	if rFrom > 0 && isToPtr {
 		e.b.WriteString(fmt.Sprintf("  %s = inttoptr %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
 		return
 	}
-	// 8. 同一ビット幅の整数と浮動小数点の相互変換 (bitcast)
 	if (rFrom == 64 && toLLVM == "double") || (fromLLVM == "double" && rTo == 64) ||
 		(rFrom == 32 && toLLVM == "float") || (fromLLVM == "float" && rTo == 32) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))
@@ -890,12 +1010,22 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	}
 
 	fnVal := e.formatVal(i.FnPtr)
+	if i.FnPtr != nil && i.FnPtr.Type() != nil && i.FnPtr.Type().LLVMType() != "i8*" {
+		castFn := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castFn, i.FnPtr.Type().LLVMType(), fnVal))
+		fnVal = castFn
+	}
+
 	var envVal string
 	if i.EnvPtr != nil {
 		envVal = e.formatVal(i.EnvPtr)
+		if i.EnvPtr.Type() != nil && i.EnvPtr.Type().LLVMType() != "i8*" {
+			castEnv := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
+			envVal = castEnv
+		}
 	}
 
-	// 1. 通常呼び出し用のシグネチャ (C ABI: env なし)
 	plainParamTypes := make([]string, len(i.Args))
 	plainArgs := make([]string, len(i.Args))
 	for idx, a := range i.Args {
@@ -904,8 +1034,11 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	}
 	plainSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(plainParamTypes, ", "))
 
-	// 静的に env が null または未指定の場合: 分岐なしで直接 C ABI 呼び出し
-	if i.EnvPtr == nil || envVal == "null" {
+	isNilConst := false
+	if _, ok := i.EnvPtr.(*hir.ConstNil); ok {
+		isNilConst = true
+	}
+	if i.EnvPtr == nil || isNilConst || envVal == "null" {
 		typedFn := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFn, fnVal, plainSig))
 		if i.Dst != nil {
@@ -916,7 +1049,6 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 		return
 	}
 
-	// 2. クロージャ / バウンドメソッド用のシグネチャ (第1引数に i8* env を渡す)
 	closureParamTypes := []string{"i8*"}
 	closureArgs := []string{fmt.Sprintf("i8* %s", envVal)}
 	for _, a := range i.Args {
@@ -925,7 +1057,6 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	}
 	closureSig := fmt.Sprintf("%s (%s)*", retTypeStr, strings.Join(closureParamTypes, ", "))
 
-	// 3. ランタイム動的ディスパッチ (env == null か判定して分岐)
 	e.regCount++
 	id := e.regCount
 	lblPlain := fmt.Sprintf("call.plain.%d", id)
@@ -936,12 +1067,11 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	e.b.WriteString(fmt.Sprintf("  %s = icmp eq i8* %s, null\n", cond, envVal))
 	e.b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n\n", cond, lblPlain, lblClosure))
 
-	// 通常関数分岐
 	e.b.WriteString(fmt.Sprintf("%s:\n", lblPlain))
 	typedFnPlain := e.nextTmp()
 	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFnPlain, fnVal, plainSig))
 	var resPlain string
-	if i.Dst != nil {
+	if i.Dst != nil && retTypeStr != "void" {
 		resPlain = e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", resPlain, retTypeStr, typedFnPlain, strings.Join(plainArgs, ", ")))
 	} else {
@@ -949,12 +1079,11 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	}
 	e.b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCont))
 
-	// クロージャ / バウンドメソッド分岐
 	e.b.WriteString(fmt.Sprintf("%s:\n", lblClosure))
 	typedFnClosure := e.nextTmp()
 	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", typedFnClosure, fnVal, closureSig))
 	var resClosure string
-	if i.Dst != nil {
+	if i.Dst != nil && retTypeStr != "void" {
 		resClosure = e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = call %s %s(%s)\n", resClosure, retTypeStr, typedFnClosure, strings.Join(closureArgs, ", ")))
 	} else {
@@ -962,9 +1091,8 @@ func (e *Emitter) emitCallIndirect(i *hir.InstrCallIndirect) {
 	}
 	e.b.WriteString(fmt.Sprintf("  br label %%%s\n\n", lblCont))
 
-	// 合流ブロック
 	e.b.WriteString(fmt.Sprintf("%s:\n", lblCont))
-	if i.Dst != nil {
+	if i.Dst != nil && retTypeStr != "void" {
 		e.b.WriteString(fmt.Sprintf("  %s = phi %s [ %s, %%%s ], [ %s, %%%s ]\n",
 			i.Dst, retTypeStr, resPlain, lblPlain, resClosure, lblClosure))
 	}
@@ -974,8 +1102,13 @@ func (e *Emitter) emitCallIface(i *hir.InstrCallIface) {
 	dataPtr := e.nextTmp()
 	itabRaw := e.nextTmp()
 	ifaceVal := e.formatVal(i.IfaceVal)
-	e.b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 0\n", dataPtr, ifaceVal))
-	e.b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 1\n", itabRaw, ifaceVal))
+	ifaceType := "{ i8*, i8* }"
+	if i.IfaceVal != nil && i.IfaceVal.Type() != nil {
+		ifaceType = i.IfaceVal.Type().LLVMType()
+	}
+
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", dataPtr, ifaceType, ifaceVal))
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 1\n", itabRaw, ifaceType, ifaceVal))
 
 	retTypeStr := "void"
 	if i.Dst != nil {
@@ -1030,10 +1163,16 @@ func (e *Emitter) emitTerminator(term hir.Terminator, isMain bool) {
 			if isMain {
 				if typStr == "i32" {
 					e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", val))
-				} else {
+				} else if r := intRank(typStr); r > 32 {
 					truncReg := e.nextTmp()
 					e.b.WriteString(fmt.Sprintf("  %s = trunc %s %s to i32\n", truncReg, typStr, val))
 					e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", truncReg))
+				} else if r > 0 && r < 32 {
+					extReg := e.nextTmp()
+					e.b.WriteString(fmt.Sprintf("  %s = sext %s %s to i32\n", extReg, typStr, val))
+					e.b.WriteString(fmt.Sprintf("  ret i32 %s\n", extReg))
+				} else {
+					e.b.WriteString("  ret i32 0\n")
 				}
 			} else {
 				e.b.WriteString(fmt.Sprintf("  ret %s %s\n", typStr, val))
@@ -1059,6 +1198,7 @@ func (e *Emitter) emitTerminator(term hir.Terminator, isMain bool) {
 
 func (e *Emitter) formatVal(v hir.Value) string {
 	if v == nil {
+		logger.LogVerbose2("[Verbose2] WARNING: formatVal received nil Value\n")
 		return "0"
 	}
 	intLLVM := sema.TypeInt.LLVMType()

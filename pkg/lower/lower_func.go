@@ -32,12 +32,20 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		fnName = sema.CanonicalMethodName(recvName, fnName)
 	}
 
-	isMain := (fn.Name.Value == "main")
+	isMain := (fn.Name.Value == "main" && fn.Receiver == nil)
 	returnTypes := []sema.Type{}
 	if isMain {
 		returnTypes = []sema.Type{sema.TypeInt}
 	} else if fnType := c.root.semaCtx.Functions[fnName]; fnType != nil {
 		returnTypes = fnType.ReturnTypes
+	} else if fn.Receiver != nil {
+		if mFn, _ := c.root.semaCtx.LookupMethod(recvType.TypeName(), fn.Name.Value); mFn != nil {
+			returnTypes = mFn.ReturnTypes
+		} else {
+			for _, rt := range fn.ReturnTypes {
+				returnTypes = append(returnTypes, c.root.semaCtx.ResolveType(rt))
+			}
+		}
 	} else {
 		for _, rt := range fn.ReturnTypes {
 			returnTypes = append(returnTypes, c.root.semaCtx.ResolveType(rt))
@@ -239,6 +247,11 @@ func (c *CallLowerer) LowerExternFunc(efn *ast.ExternFuncDecl) {
 	params := []*hir.Reg{}
 	for i, p := range efn.Params {
 		pType := c.root.semaCtx.ResolveType(p.Type)
+		if p.IsVariadic {
+			if _, isSlice := pType.(*sema.SliceType); !isSlice {
+				pType = &sema.SliceType{Elem: pType}
+			}
+		}
 		params = append(params, &hir.Reg{ID: i + 1, Typ: pType, Name: p.Name.Value})
 	}
 
@@ -278,6 +291,11 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 		params := []*hir.Reg{}
 		for i, p := range cfn.Params {
 			pType := c.root.semaCtx.ResolveType(p.Type)
+			if p.IsVariadic {
+				if _, isSlice := pType.(*sema.SliceType); !isSlice {
+					pType = &sema.SliceType{Elem: pType}
+				}
+			}
 			params = append(params, &hir.Reg{ID: i + 1, Typ: pType, Name: p.Name.Value})
 		}
 
@@ -401,8 +419,16 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 		Args:       callArgs,
 	})
 
-	if callDst != nil {
+	if len(returnTypes) == 1 {
 		c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{callDst}})
+	} else if len(returnTypes) > 1 {
+		retVals := make([]hir.Value, len(returnTypes))
+		for i, rt := range returnTypes {
+			elemReg := c.root.nextReg(rt)
+			c.root.emit(&hir.InstrExtractValue{Dst: elemReg, Agg: callDst, Index: i})
+			retVals[i] = elemReg
+		}
+		c.root.terminate(&hir.InstrReturn{Vals: retVals})
 	} else {
 		c.root.terminate(&hir.InstrReturn{Vals: []hir.Value{}})
 	}
@@ -434,12 +460,6 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		}
 	}
 
-	var envParamReg *hir.Reg
-	if len(captures) > 0 {
-		envParamReg = &hir.Reg{ID: 1, Typ: &sema.PointerType{Base: sema.TypeByte}, Name: "__env_arg"}
-		anonFn.Params = append(anonFn.Params, envParamReg)
-	}
-
 	prevFunc := c.root.curFunc
 	prevBlock := c.root.curBlock
 	prevSymbols := c.root.symbols
@@ -447,16 +467,24 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	prevLoopStack := c.root.loopStack
 	prevDeferStack := c.root.deferStack
 	prevEscapedVars := c.root.escapedVars
+	prevRegCount := c.root.regCount
 
 	c.root.curFunc = anonFn
 	c.root.symbols = make(map[string]hir.Value)
 	c.root.symbolTypes = make(map[string]sema.Type)
 	c.root.loopStack = []loopContext{}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.regCount = 0
 	if fl.Body != nil {
 		c.root.escapedVars = sema.CollectAllCapturesInBlock(fl.Body)
 	} else {
 		c.root.escapedVars = make(map[string]bool)
+	}
+
+	var envParamReg *hir.Reg
+	if len(captures) > 0 {
+		envParamReg = c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "__env_arg")
+		anonFn.Params = append(anonFn.Params, envParamReg)
 	}
 
 	anonEntry := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
@@ -529,6 +557,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.loopStack = prevLoopStack
 	c.root.deferStack = prevDeferStack
 	c.root.escapedVars = prevEscapedVars
+	c.root.regCount = prevRegCount
 
 	var envVal hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
 	if len(captures) > 0 {
@@ -557,5 +586,4 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	t2 := c.root.nextReg(fatType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: envVal, Index: 1})
 	return t2
-
 }

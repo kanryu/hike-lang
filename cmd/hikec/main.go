@@ -35,6 +35,7 @@ func printUsage() {
 	fmt.Println("  -o <path>        Output .syso file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32)")
 	fmt.Println("  -v               Enable verbose logging")
+	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
 	fmt.Println("\nOptions for emit-ir / build / run:")
 	fmt.Println("  -o <path>        Output file path (default: <source>.ll, <source>.wasm, or executable)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
@@ -42,9 +43,17 @@ func printUsage() {
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -v               Enable verbose logging")
+	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
 }
 
 func main() {
+	for _, arg := range os.Args {
+		if arg == "-vv" || arg == "--vv" {
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
+			break
+		}
+	}
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -95,6 +104,9 @@ func runGo(args []string) {
 			i++
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
 			opts.TargetName = strings.SplitN(arg, "=", 2)[1]
+		} else if arg == "-vv" || arg == "--vv" {
+			opts.Verbose = true
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
 		} else if arg == "-v" || arg == "--verbose" {
 			opts.Verbose = true
 		} else if !strings.HasPrefix(arg, "-") {
@@ -141,6 +153,9 @@ func runEmitIR(args []string) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
 			// スキップ
+		} else if arg == "-vv" || arg == "--vv" {
+			verbose = true
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 		} else if strings.HasPrefix(arg, "-") {
@@ -231,6 +246,10 @@ func runBuild(args []string) {
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
+		} else if arg == "-vv" || arg == "--vv" {
+			verbose = true
+			passThroughArgs = append(passThroughArgs, "-vv")
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
 		} else if arg == "-v" || arg == "--verbose" {
 			verbose = true
 			passThroughArgs = append(passThroughArgs, "-v")
@@ -322,6 +341,12 @@ func runBuild(args []string) {
 // run: ビルドして即時実行する (Native / Wasm 両対応)
 // -------------------------------------------------------------
 func runRun(args []string) {
+	for _, arg := range args {
+		if arg == "-vv" || arg == "--vv" {
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
+			break
+		}
+	}
 	targetName := getDefaultTargetName()
 	for i := 0; i < len(args); i++ {
 		arg := args[i]

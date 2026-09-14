@@ -153,32 +153,59 @@ type Field struct {
 }
 
 type StructType struct {
-	Name            string
-	InternalKey     string
-	TypeParams      []string
-	TypeArgs        []Type
-	Fields          []Field
-	Template        *ast.TypeDecl
-	IsSpecialized   bool
-	Specializations map[string]*StructType
+	Name                string
+	InternalKey         string
+	TypeParams          []string
+	TypeArgs            []Type
+	Fields              []Field
+	Template            *ast.TypeDecl
+	IsSpecialized       bool
+	Specializations     map[string]*StructType
+	BuiltinCapabilities map[string]*FuncType
 }
 
 func (t *StructType) TypeName() string { return t.Name }
 func (t *StructType) LLVMType() string { return "%struct." + t.Name }
 func (t *StructType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+
+func (t *StructType) Align() int {
+	maxAlign := 1
+	for _, f := range t.Fields {
+		fa := f.Type.Size()
+		if fa > PointerSize {
+			fa = PointerSize
+		}
+		if fa > maxAlign {
+			maxAlign = fa
+		}
+	}
+	return maxAlign
+}
+
 func (t *StructType) Size() int {
-	sz := 0
+	offset := 0
+	maxAlign := 1
 	for _, f := range t.Fields {
 		fsz := f.Type.Size()
 		if fsz <= 0 {
 			fsz = PointerSize
 		}
-		sz += fsz
+		align := fsz
+		if align > PointerSize {
+			align = PointerSize
+		}
+		if align > maxAlign {
+			maxAlign = align
+		}
+		// アライメント境界へパディングを挿入
+		offset = (offset + align - 1) &^ (align - 1)
+		offset += fsz
 	}
-	if sz == 0 {
+	if offset == 0 {
 		return PointerSize
 	}
-	return sz
+	// 構造体末尾のパディングを最大アライメントの倍数に切り上げ
+	return (offset + maxAlign - 1) &^ (maxAlign - 1)
 }
 
 type Method struct {
@@ -629,6 +656,8 @@ func validateDefaultParams(params []*ast.ParamDecl) error {
 // -------------------------------------------------------------
 // 意味解析メインパイプライン (Analyze)
 // -------------------------------------------------------------
+
+// Analyze はプログラム全体の構文木を走査し、完全な型マップとセマンティクス情報を構築する
 func Analyze(prog *ast.Program) (*Context, error) {
 	ctx := NewContext()
 
@@ -677,43 +706,56 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				}
 			}
 
-			internalKey := BuildInternalKey(prog.Package, td.Name.Value, "")
+			rawName := td.Name.Value
+			qualifiedName := rawName
+			if prog.Package != "" && prog.Package != "main" {
+				qualifiedName = prog.Package + "_" + rawName
+			}
+
+			internalKey := BuildInternalKey(prog.Package, rawName, "")
 			td.InternalKey = internalKey
 
 			if _, ok := td.Type.(*ast.InterfaceType); ok {
 				iface := &InterfaceType{
-					Name:            td.Name.Value,
+					Name:            qualifiedName,
 					InternalKey:     internalKey,
 					TypeParams:      tParams,
 					Methods:         []Method{},
 					Template:        td,
 					Specializations: make(map[string]*InterfaceType),
 				}
-				ctx.Interfaces[td.Name.Value] = iface
-				ctx.Aliases[td.Name.Value] = iface
+				ctx.Interfaces[qualifiedName] = iface
+				ctx.Interfaces[rawName] = iface
+				ctx.Aliases[qualifiedName] = iface
+				ctx.Aliases[rawName] = iface
 				if len(tParams) > 0 {
-					ctx.GenericTypes[td.Name.Value] = td
+					ctx.GenericTypes[qualifiedName] = td
+					ctx.GenericTypes[rawName] = td
 				}
 			} else if _, ok := td.Type.(*ast.StructType); ok {
 				structType := &StructType{
-					Name:            td.Name.Value,
-					InternalKey:     internalKey,
-					TypeParams:      tParams,
-					Fields:          []Field{},
-					Template:        td,
-					Specializations: make(map[string]*StructType),
+					Name:                qualifiedName,
+					InternalKey:         internalKey,
+					TypeParams:          tParams,
+					Fields:              []Field{},
+					Template:            td,
+					Specializations:     make(map[string]*StructType),
+					BuiltinCapabilities: make(map[string]*FuncType),
 				}
-				ctx.Structs[td.Name.Value] = structType
-				ctx.Aliases[td.Name.Value] = structType
+				ctx.Structs[qualifiedName] = structType
+				ctx.Structs[rawName] = structType
+				ctx.Aliases[qualifiedName] = structType
+				ctx.Aliases[rawName] = structType
 				if len(tParams) > 0 {
-					ctx.GenericTypes[td.Name.Value] = td
+					ctx.GenericTypes[qualifiedName] = td
+					ctx.GenericTypes[rawName] = td
 				}
 			} else {
 				resolvedAlias := ctx.ResolveType(td.Type)
-				ctx.Aliases[td.Name.Value] = resolvedAlias
+				ctx.Aliases[qualifiedName] = resolvedAlias
+				ctx.Aliases[rawName] = resolvedAlias
 			}
 		} else if fd, ok := decl.(*ast.FuncDecl); ok {
-			// デフォルト引数の末尾規則検証
 			if err := validateDefaultParams(fd.Params); err != nil {
 				return nil, err
 			}
@@ -770,7 +812,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			internalKey := BuildInternalKey(prog.Package, fd.Name.Value, structNameWithPtr)
 			fd.InternalKey = internalKey
 
-			// IRName はコンパイルされる実体関数名 fnName と一致させる
 			irName := fnName
 			if !isMethod && (prog.Package == "" || prog.Package == "main") {
 				irName = fd.Name.Value
@@ -965,13 +1006,15 @@ func Analyze(prog *ast.Program) (*Context, error) {
 		}
 	}
 
-	// Pass 1.5: 具象型のみ先行解決
+	// Pass 1.5: 具象型のみ先行解決 (名前とフィールドの確実なバインド)
 	for _, decl := range prog.Decls {
 		if td, ok := decl.(*ast.TypeDecl); ok {
-			if st, _ := ctx.LookupStruct(td.Name.Value); st != nil && st.IsGeneric() {
+			st, _ := ctx.LookupStruct(td.Name.Value)
+			if st != nil && st.IsGeneric() {
 				continue
 			}
-			if iface, _ := ctx.LookupInterface(td.Name.Value); iface != nil && iface.IsGeneric() {
+			iface, _ := ctx.LookupInterface(td.Name.Value)
+			if iface != nil && iface.IsGeneric() {
 				continue
 			}
 
@@ -1004,19 +1047,24 @@ func Analyze(prog *ast.Program) (*Context, error) {
 						ReturnTypes:  rts,
 					})
 				}
-				ctx.Interfaces[td.Name.Value].Methods = methods
-			} else if st, ok := td.Type.(*ast.StructType); ok {
+				if iface != nil {
+					iface.Methods = methods
+				}
+			} else if astSt, ok := td.Type.(*ast.StructType); ok {
 				fields := []Field{}
-				for _, f := range st.Fields {
+				for _, f := range astSt.Fields {
 					fields = append(fields, Field{
 						Name:       f.Name.Value,
 						Type:       ctx.ResolveType(f.Type),
 						IsEmbedded: f.IsEmbedded,
 					})
 				}
-				ctx.Structs[td.Name.Value].Fields = fields
+				if st != nil {
+					st.Fields = fields
+				}
 			} else {
-				ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
+				resolved := ctx.ResolveType(td.Type)
+				ctx.Aliases[td.Name.Value] = resolved
 			}
 		}
 	}
@@ -1059,15 +1107,15 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			ctx.Globals[d.Name.Value] = gType
 
 		case *ast.FuncDecl:
-			// 1. ジェネリック関数・メソッド宣言は Pass 2 での具象型解決をスキップ
 			if IsGenericFuncDecl(d) {
 				continue
 			}
 
 			fnName := d.Name.Value
+			var origRecvName string = ""
 			if d.Receiver != nil {
-				// ResolveType を直接呼ばずに型名（"Map" など）を取得
-				recvTypeName := getBaseTypeName(d.Receiver.Type)
+				origRecvName = getBaseTypeName(d.Receiver.Type)
+				recvTypeName := origRecvName
 				if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
 					if st.IsGeneric() {
 						continue
@@ -1092,7 +1140,6 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			isMethod := (d.Receiver != nil)
 			paramTypes := []Type{}
 
-			// ここに到達するのは非ジェネリックな具象メソッドのみなので安全に ResolveType できる
 			if d.Receiver != nil {
 				recvType := ctx.ResolveType(d.Receiver.Type)
 				paramTypes = append(paramTypes, recvType)
@@ -1120,6 +1167,33 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			fnType.ReturnTypes = returnTypes
 			fnType.IsVariadic = d.IsVariadic
 			fnType.VariadicElem = variadicElem
+
+			if isMethod && origRecvName != "" {
+				if st, _ := ctx.LookupStruct(origRecvName); st != nil {
+					rawMethodName := d.Name.Value
+
+					if rawMethodName == "Get" && len(paramTypes) == 2 && (len(returnTypes) == 1 || len(returnTypes) == 2) {
+						st.BuiltinCapabilities["Indexable"] = fnType
+					}
+					if rawMethodName == "Set" && len(paramTypes) == 3 && len(returnTypes) == 0 {
+						st.BuiltinCapabilities["IndexAssignable"] = fnType
+					}
+					if rawMethodName == "Slice" && len(paramTypes) == 3 && (len(returnTypes) == 1 || len(returnTypes) == 2) {
+						if paramTypes[1].TypeName() == "int" && paramTypes[2].TypeName() == "int" {
+							st.BuiltinCapabilities["Sliceable"] = fnType
+						}
+					}
+					if rawMethodName == "InitIterator" {
+						st.BuiltinCapabilities["Iterable_Init"] = fnType
+					}
+					if rawMethodName == "Next" {
+						st.BuiltinCapabilities["Iterable_Next"] = fnType
+					}
+					if rawMethodName == "NextChannel" {
+						st.BuiltinCapabilities["AsyncIterable"] = fnType
+					}
+				}
+			}
 
 		case *ast.ExternFuncDecl:
 			fnType := ctx.Functions[d.Name.Value]
@@ -1480,7 +1554,7 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			name := node.Value
 			if !params[name] && !locals[name] && !seen[name] {
 				switch name {
-				case "true", "false", "nil", "len", "cap", "append", "delete", "make",
+				case "true", "false", "nil", "len", "cap", "append", "delete", "make", "sizeof",
 					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "cstring", "bool", "float32", "float64", "void", "any", "error":
 					return
 				}

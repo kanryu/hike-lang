@@ -1,34 +1,12 @@
-
 package main
+
+import "std/collections/list"
 
 func printf(format string, ...) int
 
-type Greeter interface {
-    Greet() string
-}
-
-type Person struct {
-    name string
-}
-
-func (p *Person) Greet() string {
-    return "Hi," + p.name
-}
-
-func checkAny(a any) int {
-    switch v := a.(type) {
-    case *Person:
-        return len(v.name)
-    default:
-        return -1
-    }
-}
-
 func main() int {
-    p := &Person{name: "Alice"}
-    var g Greeter = p
-    var a any = g // 非空インターフェース -> any への再ボクシングパス
-    r := checkAny(a)
-    printf("LEN=%d\n", r)
+    var dummy list.List[int]
+    listSize := sizeof(list.List[int])
+    printf("LIST_SIZE_GE_16=%d\n", listSize >= 16)
     return 0
 }

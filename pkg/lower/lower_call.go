@@ -6,6 +6,7 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/token"
 )
@@ -250,6 +251,56 @@ func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 		return c.root.semaCtx.ResolveType(node)
 	case *ast.FuncType:
 		return c.root.semaCtx.ResolveType(node)
+	case *ast.GenericInstExpr:
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := node.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := node.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+		if typeId != nil {
+			return c.root.semaCtx.ResolveType(&ast.NamedType{
+				Token:    node.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: node.TypeArgs,
+			})
+		}
+	case *ast.IndexExpr:
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := node.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := node.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+		if typeId != nil {
+			var typeArgs []ast.TypeExpr
+			if te, okTe := node.Index.(ast.TypeExpr); okTe {
+				typeArgs = append(typeArgs, te)
+			} else if id, okId := node.Index.(*ast.Identifier); okId {
+				typeArgs = append(typeArgs, &ast.NamedType{Token: id.Token, Name: id})
+			} else if mem, okMem := node.Index.(*ast.MemberExpr); okMem {
+				if p, okP := mem.Object.(*ast.Identifier); okP {
+					typeArgs = append(typeArgs, &ast.NamedType{Token: mem.Token, Package: p, Name: mem.Field})
+				}
+			}
+			return c.root.semaCtx.ResolveType(&ast.NamedType{
+				Token:    node.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: typeArgs,
+			})
+		}
+		return nil
+
 	case *ast.Identifier:
 		if builtinT, ok := sema.LookupBuiltinType(node.Value); ok {
 			return builtinT
@@ -301,15 +352,16 @@ func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 			if alias, _ := c.root.semaCtx.LookupAlias(typeName); alias != nil {
 				return alias
 			}
+			return nil
 		}
 		return nil
 	}
 	return nil
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // メソッドパス解決
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPtr hir.Value) (string, *sema.FuncType, hir.Value, bool) {
 	if recvType == nil {
@@ -322,7 +374,6 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		shortTypeName = rawTypeName[idx+1:]
 	}
 
-	// 1. semaCtx.LookupMethod による正確な探索 (確定シンボル名 fn.Name を最優先)
 	if fn, _ := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
 		targetName := fn.Name
 		if targetName == "" {
@@ -561,6 +612,15 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 	for i, arg := range callArgs {
 		val := c.root.Expr.LowerExpr(arg)
 		if i < len(paramTypes) {
+			if expectedPtr, okExpected := paramTypes[i].(*sema.PointerType); okExpected {
+				if actualPtr, okActual := val.Type().(*sema.PointerType); okActual {
+					if nestedPtr, okNested := actualPtr.Base.(*sema.PointerType); okNested && nestedPtr.Base.TypeName() == expectedPtr.Base.TypeName() {
+						loaded := c.root.nextReg(actualPtr.Base)
+						c.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: val})
+						val = loaded
+					}
+				}
+			}
 			val = c.root.emitValueCoerce(val, paramTypes[i])
 		}
 		args[i] = val
@@ -814,7 +874,11 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		if id, okId := genInst.Left.(*ast.Identifier); okId {
 			baseName = id.Value
 		} else if mem, okMem := genInst.Left.(*ast.MemberExpr); okMem {
-			baseName = mem.Field.Value
+			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+				baseName = pkgId.Value + "_" + mem.Field.Value
+			} else {
+				baseName = mem.Field.Value
+			}
 		}
 
 		if baseName != "" {
@@ -906,7 +970,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		}
 	}
 
-	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string, cstring)
+	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string, cstring, )
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
 		case "make":
@@ -970,6 +1034,40 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: capVal, Index: 2})
 				return t3
 			}
+
+		case "sizeof":
+			logger.LogVerbose2("[Verbose2] CallLowerer LowerCall CallExpr: ast=%T (%+v)\n", call, call)
+			if len(call.Args) == 1 {
+				arg := call.Args[0]
+				t := c.ResolveTypeFromExpr(arg)
+				if t == nil || t == sema.TypeVoid {
+					argVal := c.root.Expr.LowerExpr(arg)
+					t = argVal.Type()
+				}
+				if t != nil && t != sema.TypeVoid {
+					if pt, isPtr := t.(*sema.PointerType); isPtr {
+						t = pt.Base
+					}
+					sz := int64(t.Size())
+					if st, _ := c.root.findStruct(t); st != nil {
+						stSz := int64(st.Size())
+						if stSz > sz {
+							sz = stSz
+						}
+						if sz <= int64(sema.PointerSize) && strings.Contains(st.Name, "__") {
+							baseName := strings.Split(strings.TrimPrefix(st.Name, "*"), "__")[0]
+							if baseSt, _ := c.root.findStructByName(baseName); baseSt != nil && len(baseSt.Fields) > 0 {
+								baseSz := int64(baseSt.Size())
+								if baseSz > sz {
+									sz = baseSz
+								}
+							}
+						}
+					}
+					return &hir.ConstInt{Val: sz, Typ: sema.TypeInt}
+				}
+			}
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
 		case "close":
 			if len(call.Args) > 0 {
@@ -1483,7 +1581,10 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 			targetFnName, fnMeta, _, found = c.ResolveMethod(&sema.PointerType{Base: concreteType}, m.Name, nil)
 		}
 		if found && fnMeta != nil {
-			targetFnName = fnMeta.Name
+			targetFnName = fnMeta.IRName
+			if targetFnName == "" {
+				targetFnName = fnMeta.Name
+			}
 		} else if !found {
 			targetFnName = sema.CanonicalMethodName(sName, m.Name)
 		}

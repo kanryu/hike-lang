@@ -6,6 +6,7 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
 )
 
@@ -28,6 +29,116 @@ func (e *ExprLowerer) lookupGlobal(name string) (string, sema.Type, bool) {
 		}
 	}
 	return "", nil, false
+}
+
+func (e *ExprLowerer) resolveTypeFromExpr(expr ast.Expression) sema.Type {
+	if expr == nil {
+		return nil
+	}
+	if te, ok := expr.(ast.TypeExpr); ok {
+		return e.root.semaCtx.ResolveType(te)
+	}
+	if id, ok := expr.(*ast.Identifier); ok {
+		if t, okT := sema.LookupBuiltinType(id.Value); okT {
+			return t
+		}
+		if id.Value == "any" {
+			return &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
+		}
+		if id.Value == "error" {
+			return e.root.semaCtx.Interfaces["error"]
+		}
+		if st, _ := e.root.semaCtx.LookupStruct(id.Value); st != nil {
+			return st
+		}
+		if iface, _ := e.root.semaCtx.LookupInterface(id.Value); iface != nil {
+			return iface
+		}
+		if alias, _ := e.root.semaCtx.LookupAlias(id.Value); alias != nil {
+			return alias
+		}
+	}
+	// 1. パッケージ修飾型名 (例: list.List)
+	if mem, ok := expr.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			qualified := pkgId.Value + "_" + mem.Field.Value
+			if st, _ := e.root.semaCtx.LookupStruct(qualified); st != nil {
+				return st
+			}
+			if iface, _ := e.root.semaCtx.LookupInterface(qualified); iface != nil {
+				return iface
+			}
+			if alias, _ := e.root.semaCtx.LookupAlias(qualified); alias != nil {
+				return alias
+			}
+			return e.root.semaCtx.ResolveType(&ast.NamedType{
+				Token:   mem.Token,
+				Package: pkgId,
+				Name:    mem.Field,
+			})
+		}
+	}
+	// 2. 添字構文によるジェネリクス型指定 (例: List[int] や list.List[int])
+	if idxExpr, ok := expr.(*ast.IndexExpr); ok {
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := idxExpr.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := idxExpr.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+
+		if typeId != nil {
+			var typeArgs []ast.TypeExpr
+			if te, okTe := idxExpr.Index.(ast.TypeExpr); okTe {
+				typeArgs = append(typeArgs, te)
+			} else if id, okId := idxExpr.Index.(*ast.Identifier); okId {
+				typeArgs = append(typeArgs, &ast.NamedType{Token: id.Token, Name: id})
+			} else if mem, okMem := idxExpr.Index.(*ast.MemberExpr); okMem {
+				if p, okP := mem.Object.(*ast.Identifier); okP {
+					typeArgs = append(typeArgs, &ast.NamedType{Token: mem.Token, Package: p, Name: mem.Field})
+				}
+			}
+
+			return e.root.semaCtx.ResolveType(&ast.NamedType{
+				Token:    idxExpr.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: typeArgs,
+			})
+		}
+	}
+	// 3. GenericInstExpr によるジェネリクス型指定
+	if gen, ok := expr.(*ast.GenericInstExpr); ok {
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := gen.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := gen.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+		if typeId != nil {
+			return e.root.semaCtx.ResolveType(&ast.NamedType{
+				Token:    gen.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: gen.TypeArgs,
+			})
+		}
+	}
+	if pref, ok := expr.(*ast.PrefixExpr); ok && pref.Operator == "*" {
+		base := e.resolveTypeFromExpr(pref.Right)
+		if base != nil && base != sema.TypeVoid {
+			return &sema.PointerType{Base: base}
+		}
+	}
+	return nil
 }
 
 // -------------------------------------------------------------
@@ -238,6 +349,11 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return dst
 		}
 		val := e.LowerExpr(node.Right)
+		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+			elem0 := e.root.nextReg(tup.Types[0])
+			e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: val, Index: 0})
+			val = elem0
+		}
 		op := hir.OpNeg
 		if node.Operator == "!" {
 			op = hir.OpNot
@@ -293,7 +409,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.SliceExpr:
 		baseVal := e.LowerExpr(node.Left)
-		if baseVal.Type() == sema.TypeString || baseVal.Type() == sema.TypeCString {
+		baseType := baseVal.Type()
+
+		if baseType == sema.TypeString || baseType == sema.TypeCString {
 			lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
 			if node.Low != nil {
 				lowVal = e.LowerExpr(node.Low)
@@ -309,11 +427,134 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return subRes
 		}
 
+		// ユーザー定義コレクション構造体の Sliceable (Slice(low, high int))
+		objPtr := e.LowerStructPtr(node.Left)
+		sliceFnName, sliceFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, "Slice", objPtr)
+		if strings.Contains(baseType.TypeName(), "__") {
+			parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+			baseName := parts[0]
+			typeSuffix := parts[1]
+			specSlice := fmt.Sprintf("%s_Slice__%s", baseName, typeSuffix)
+			if fn, ok := e.root.semaCtx.Functions[specSlice]; ok {
+				sliceFnName = specSlice
+				sliceFn = fn
+				found = true
+			}
+		}
+		if !found && strings.Contains(baseType.TypeName(), "__") {
+			baseName := strings.Split(strings.TrimPrefix(baseType.TypeName(), "*"), "__")[0]
+			if st, _ := e.root.semaCtx.LookupStruct(baseName); st != nil {
+				sliceFnName, sliceFn, finalRecv, found = e.root.Call.ResolveMethod(st, "Slice", objPtr)
+			}
+		}
+
+		if found && sliceFnName != "" {
+			if finalRecv == nil {
+				finalRecv = objPtr
+			}
+			if sliceFn != nil && len(sliceFn.ParamTypes) > 0 {
+				_, isPtrExpected := sliceFn.ParamTypes[0].(*sema.PointerType)
+				_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+				if isPtrExpected && !isPtrActual {
+					allocaTmp := e.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+					e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+					e.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+					finalRecv = allocaTmp
+				} else if !isPtrExpected && isPtrActual {
+					ptrType := finalRecv.Type().(*sema.PointerType)
+					loadReg := e.root.nextReg(ptrType.Base)
+					e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+					finalRecv = loadReg
+				}
+			}
+
+			lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+			if node.Low != nil {
+				lowVal = e.LowerExpr(node.Low)
+				lowVal = e.root.emitValueCoerce(lowVal, sema.TypeInt)
+			}
+			var highVal hir.Value
+			if node.High != nil {
+				highVal = e.LowerExpr(node.High)
+				highVal = e.root.emitValueCoerce(highVal, sema.TypeInt)
+			} else {
+				lenFnName, lenFn, lenRecv, lenFound := e.root.Call.ResolveMethod(baseType, "Len", objPtr)
+				if strings.Contains(baseType.TypeName(), "__") {
+					parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+					baseName := parts[0]
+					typeSuffix := parts[1]
+					specLen := fmt.Sprintf("%s_Len__%s", baseName, typeSuffix)
+					if fn, ok := e.root.semaCtx.Functions[specLen]; ok {
+						lenFnName = specLen
+						lenFn = fn
+						lenFound = true
+					}
+				}
+				if lenFound && lenFn != nil {
+					if lenRecv == nil {
+						lenRecv = objPtr
+					}
+					if len(lenFn.ParamTypes) > 0 {
+						_, isPtrExpected := lenFn.ParamTypes[0].(*sema.PointerType)
+						_, isPtrActual := lenRecv.Type().(*sema.PointerType)
+						if isPtrExpected && !isPtrActual {
+							allocaTmp := e.root.nextReg(&sema.PointerType{Base: lenRecv.Type()})
+							e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: lenRecv.Type()})
+							e.root.emit(&hir.InstrStore{Val: lenRecv, Ptr: allocaTmp})
+							lenRecv = allocaTmp
+						} else if !isPtrExpected && isPtrActual {
+							ptrType := lenRecv.Type().(*sema.PointerType)
+							loadReg := e.root.nextReg(ptrType.Base)
+							e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: lenRecv})
+							lenRecv = loadReg
+						}
+					}
+					lenReg := e.root.nextReg(sema.TypeInt)
+					e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: lenFnName, Args: []hir.Value{lenRecv}})
+					highVal = lenReg
+				} else {
+					highVal = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+				}
+			}
+
+			var retType sema.Type = sema.TypeVoid
+			if sliceFn != nil {
+				if len(sliceFn.ReturnTypes) == 1 {
+					retType = sliceFn.ReturnTypes[0]
+				} else if len(sliceFn.ReturnTypes) > 1 {
+					retType = &sema.TupleType{Types: sliceFn.ReturnTypes}
+				}
+			}
+			if retType == sema.TypeVoid {
+				retType = baseType
+			}
+
+			resReg := e.root.nextReg(retType)
+			e.root.emit(&hir.InstrCallStatic{
+				Dst:        resReg,
+				CalleeName: sliceFnName,
+				Args:       []hir.Value{finalRecv, lowVal, highVal},
+			})
+
+			// 戻り値がタプル (*List[T], bool) の場合、式コンテキストでは第0要素を抽出
+			if tup, isTup := retType.(*sema.TupleType); isTup && len(tup.Types) > 0 {
+				valReg := e.root.nextReg(tup.Types[0])
+				e.root.emit(&hir.InstrExtractValue{
+					Dst:   valReg,
+					Agg:   resReg,
+					Index: 0,
+				})
+				return valReg
+			}
+
+			return resReg
+		}
+
 		var elemType sema.Type = sema.TypeByte
 		var typedDataPtr hir.Value = nil
 		var capVal hir.Value = nil
 
-		if slType, isSlice := baseVal.Type().(*sema.SliceType); isSlice {
+		if slType, isSlice := baseType.(*sema.SliceType); isSlice {
 			elemType = slType.Elem
 			rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			cVal := e.root.nextReg(sema.TypeInt)
@@ -323,7 +564,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrCast{Dst: tPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: elemType}})
 			typedDataPtr = tPtr
 			capVal = cVal
-		} else if arType, isArray := baseVal.Type().(*sema.ArrayType); isArray {
+		} else if arType, isArray := baseType.(*sema.ArrayType); isArray {
 			elemType = arType.Elem
 			arrPtr := e.LowerLValue(node.Left)
 			tPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
@@ -331,7 +572,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			typedDataPtr = tPtr
 			capVal = &hir.ConstInt{Val: int64(arType.Len), Typ: sema.TypeInt}
 		} else {
-			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", baseVal.Type().TypeName()))
+			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", baseType.TypeName()))
 		}
 
 		lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
@@ -363,6 +604,49 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return t3
 
 	case *ast.CallExpr:
+		// sizeof 組み込みサポート (型名・変数・ポインタ構造体に対応)
+		if id, ok := node.Function.(*ast.Identifier); ok && id.Value == "sizeof" {
+			logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: ast=%T (%+v)\n", node, node)
+			if len(node.Args) == 1 {
+				arg := node.Args[0]
+				logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: arg=%T (%+v)\n", arg, arg)
+				t := e.resolveTypeFromExpr(arg)
+				if t == nil || t == sema.TypeVoid {
+					argVal := e.LowerExpr(arg)
+					t = argVal.Type()
+				}
+				if t != nil && t != sema.TypeVoid {
+					// ポインタ型の場合は指し先の実体型を評価
+					if pt, isPtr := t.(*sema.PointerType); isPtr {
+						t = pt.Base
+					}
+					sz := int64(t.Size())
+					if st, _ := e.root.findStruct(t); st != nil {
+						stSz := int64(st.Size())
+						if stSz > sz {
+							sz = stSz
+						}
+						// 特殊化構造体でフィールドが未展開等の場合にベーステンプレート構造体を探索
+						if sz <= int64(sema.PointerSize) && strings.Contains(st.Name, "__") {
+							baseName := strings.Split(strings.TrimPrefix(st.Name, "*"), "__")[0]
+							if baseSt, _ := e.root.findStructByName(baseName); baseSt != nil && len(baseSt.Fields) > 0 {
+								baseSz := int64(baseSt.Size())
+								if baseSz > sz {
+									sz = baseSz
+								}
+							}
+						}
+						logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: struct '%s', size = %d\n", st.Name, sz)
+					} else {
+						logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: type '%s', size = %d\n", t.TypeName(), sz)
+					}
+					logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: folded to %d\n", sz)
+					return &hir.ConstInt{Val: sz, Typ: sema.TypeInt}
+				}
+			}
+			logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: FAILED to resolve, returning 0\n")
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+		}
 		return e.root.Call.LowerCall(node)
 
 	case *ast.MemberExpr:
@@ -408,6 +692,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 		// メソッド探索 (Method Value / バウンドメソッド)
 		if targetFnName, targetFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, node.Field.Value, basePtr); found && targetFn != nil {
+			if finalRecv == nil {
+				finalRecv = basePtr
+			}
 			methodParamTypes := []sema.Type{}
 			if len(targetFn.ParamTypes) > 1 {
 				methodParamTypes = targetFn.ParamTypes[1:]
@@ -448,57 +735,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		panic(fmt.Sprintf("[Lower Error] field or method '%s' not found on type '%s'", node.Field.Value, baseType.TypeName()))
 
 	case *ast.IndexExpr:
-		baseVal := e.LowerExpr(node.Left)
-		idxVal := e.LowerExpr(node.Index)
-
-		if mp, isMap := baseVal.Type().(*sema.MapType); isMap {
-			keyI64 := e.root.coerceToI64(idxVal, mp.Key)
-			outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-			e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
-			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
-			rawVal := e.root.nextReg(sema.TypeInt)
-			e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
-			return e.root.coerceFromI64(rawVal, mp.Value)
-		}
-
-		if baseVal.Type() == sema.TypeString || baseVal.Type() == sema.TypeCString {
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
-			elemVal := e.root.nextReg(sema.TypeByte)
-			e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-			return elemVal
-		}
-
-		if sl, isSlice := baseVal.Type().(*sema.SliceType); isSlice {
-			rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
-			typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-			e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: sl.Elem}})
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
-			elemVal := e.root.nextReg(sl.Elem)
-			e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-			return elemVal
-		}
-
-		if pt, isPtr := baseVal.Type().(*sema.PointerType); isPtr {
-			elemPtr := e.root.nextReg(pt)
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
-			elemVal := e.root.nextReg(pt.Base)
-			e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-			return elemVal
-		}
-
-		if ar, isArr := baseVal.Type().(*sema.ArrayType); isArr {
-			arrPtr := e.LowerLValue(node.Left)
-			elemPtr := e.root.nextReg(&sema.PointerType{Base: ar.Elem})
-			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: arrPtr, Index: idxVal})
-			elemVal := e.root.nextReg(ar.Elem)
-			e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-			return elemVal
-		}
-
-		panic(fmt.Sprintf("[Lower Error] unsupported index target type: %s", baseVal.Type().TypeName()))
+		return e.LowerIndexExpr(node)
 
 	case *ast.TypeAssertExpr:
 		tup := e.LowerTypeAssertExpr(node)
@@ -518,6 +755,204 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	}
 
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+}
+
+// LowerIndexExpr は添字式 (IndexExpr) を評価して HIR 値を生成する
+func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
+	baseVal := e.LowerExpr(node.Left)
+	idxVal := e.LowerExpr(node.Index)
+
+	// タプル戻り値の場合は第0要素を抽出
+	if tup, isTup := baseVal.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+		elem0 := e.root.nextReg(tup.Types[0])
+		e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: baseVal, Index: 0})
+		baseVal = elem0
+	}
+	if tup, isTup := idxVal.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+		elem0 := e.root.nextReg(tup.Types[0])
+		e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: idxVal, Index: 0})
+		idxVal = elem0
+	}
+
+	baseType := baseVal.Type()
+
+	// 1. 組み込み map[K]V
+	if mp, isMap := baseType.(*sema.MapType); isMap {
+		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
+		outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+		e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
+		e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
+		rawVal := e.root.nextReg(sema.TypeInt)
+		e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
+		return e.root.coerceFromI64(rawVal, mp.Value)
+	}
+
+	// 2. ユーザー定義コレクション構造体の Indexable (Get(key))
+	// baseVal からレシーバポインタを取得 (node.Left の二重評価を回避)
+	var objPtr hir.Value
+	if _, isPtr := baseType.(*sema.PointerType); isPtr {
+		objPtr = baseVal
+	} else {
+		allocaTmp := e.root.nextReg(&sema.PointerType{Base: baseType})
+		e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: baseType})
+		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: allocaTmp})
+		objPtr = allocaTmp
+	}
+
+	getFnName, getFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, "Get", objPtr)
+	if strings.Contains(baseType.TypeName(), "__") {
+		parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+		baseName := parts[0]
+		typeSuffix := parts[1]
+		specGet := fmt.Sprintf("%s_Get__%s", baseName, typeSuffix)
+		if fn, ok := e.root.semaCtx.Functions[specGet]; ok {
+			getFnName = specGet
+			getFn = fn
+			found = true
+		}
+	}
+	if !found && strings.Contains(baseType.TypeName(), "__") {
+		baseName := strings.Split(strings.TrimPrefix(baseType.TypeName(), "*"), "__")[0]
+		if st, _ := e.root.semaCtx.LookupStruct(baseName); st != nil {
+			getFnName, getFn, finalRecv, found = e.root.Call.ResolveMethod(st, "Get", objPtr)
+		}
+	}
+
+	if found && getFnName != "" {
+		if finalRecv == nil {
+			finalRecv = objPtr
+		}
+		if getFn != nil && len(getFn.ParamTypes) > 0 {
+			_, isPtrExpected := getFn.ParamTypes[0].(*sema.PointerType)
+			_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+			if isPtrExpected && !isPtrActual {
+				allocaTmp := e.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+				e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+				e.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+				finalRecv = allocaTmp
+			} else if !isPtrExpected && isPtrActual {
+				ptrType := finalRecv.Type().(*sema.PointerType)
+				loadReg := e.root.nextReg(ptrType.Base)
+				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+				finalRecv = loadReg
+			}
+		}
+
+		var keyArg hir.Value
+		if getFn != nil && len(getFn.ParamTypes) >= 2 {
+			kIdx := 1
+			if !getFn.IsMethod && len(getFn.ParamTypes) == 1 {
+				kIdx = 0
+			}
+			keyArg = e.root.emitValueCoerce(idxVal, getFn.ParamTypes[kIdx])
+		} else {
+			keyArg = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		}
+
+		var retType sema.Type = sema.TypeInt
+		if getFn != nil {
+			if len(getFn.ReturnTypes) == 1 {
+				retType = getFn.ReturnTypes[0]
+			} else if len(getFn.ReturnTypes) > 1 {
+				retType = &sema.TupleType{Types: getFn.ReturnTypes}
+			}
+		}
+
+		resReg := e.root.nextReg(retType)
+		e.root.emit(&hir.InstrCallStatic{
+			Dst:        resReg,
+			CalleeName: getFnName,
+			Args:       []hir.Value{finalRecv, keyArg},
+		})
+
+		// 戻り値がタプル (T, bool) の場合、式コンテキストでは第0要素 (T) を抽出
+		if tup, isTup := retType.(*sema.TupleType); isTup && len(tup.Types) > 0 {
+			valReg := e.root.nextReg(tup.Types[0])
+			e.root.emit(&hir.InstrExtractValue{
+				Dst:   valReg,
+				Agg:   resReg,
+				Index: 0,
+			})
+			return valReg
+		}
+
+		return resReg
+	}
+
+	// 3. 従来の MapBehavior (後方互換性)
+	if _, _, isBeh := e.root.semaCtx.CheckMapBehavior(baseType); isBeh {
+		getFnName, getFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, "Get", objPtr)
+		if found && getFn != nil {
+			if finalRecv == nil {
+				finalRecv = objPtr
+			}
+			keyArg := e.root.emitValueCoerce(idxVal, getFn.ParamTypes[1])
+			resReg := e.root.nextReg(getFn.ReturnTypes[0])
+			e.root.emit(&hir.InstrCallStatic{
+				Dst:        resReg,
+				CalleeName: getFnName,
+				Args:       []hir.Value{finalRecv, keyArg},
+			})
+			return resReg
+		}
+	}
+
+	// 4. 文字列インデックス (byte 取得)
+	if baseType == sema.TypeString || baseType == sema.TypeCString {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+		elemVal := e.root.nextReg(sema.TypeByte)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	// 5. スライスインデックス
+	if sl, isSlice := baseType.(*sema.SliceType); isSlice {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
+		typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: sl.Elem}})
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
+		elemVal := e.root.nextReg(sl.Elem)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	// 6. ポインタインデックス (配列ポインタ *[N]T または 汎用ポインタ *T)
+	if pt, isPtr := baseType.(*sema.PointerType); isPtr {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		if arrType, isArr := pt.Base.(*sema.ArrayType); isArr {
+			elemPtr := e.root.nextReg(&sema.PointerType{Base: arrType.Elem})
+			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+			elemVal := e.root.nextReg(arrType.Elem)
+			e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+			return elemVal
+		}
+		elemPtr := e.root.nextReg(pt)
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+		elemVal := e.root.nextReg(pt.Base)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	// 7. 配列インデックス [N]T (一時領域を確保してロード)
+	if ar, isArr := baseType.(*sema.ArrayType); isArr {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		allocaTmp := e.root.nextReg(&sema.PointerType{Base: ar})
+		e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: ar})
+		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: allocaTmp})
+
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: ar.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: allocaTmp, Index: idxVal})
+		elemVal := e.root.nextReg(ar.Elem)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	panic(fmt.Sprintf("[Lower Error] unsupported index target type: %s", baseType.TypeName()))
 }
 
 // lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
@@ -630,9 +1065,12 @@ func (e *ExprLowerer) lowerArrayLiteralPtr(node *ast.ArrayLiteral) hir.Value {
 func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 	if id, ok := expr.(*ast.Identifier); ok {
 		if ptr, exists := e.root.symbols[id.Value]; exists {
-			ptrType := ptr.Type().(*sema.PointerType)
-			if _, isPtr := ptrType.Base.(*sema.PointerType); isPtr {
-				loadReg := e.root.nextReg(ptrType.Base)
+			valueType := ptr.Type().(*sema.PointerType).Base
+			if declaredType, known := e.root.symbolTypes[id.Value]; known {
+				valueType = declaredType
+			}
+			if _, isPtr := valueType.(*sema.PointerType); isPtr {
+				loadReg := e.root.nextReg(valueType)
 				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: ptr})
 				return loadReg
 			}
@@ -794,6 +1232,17 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 
 	leftVal := e.LowerExpr(node.Left)
 	rightVal := e.LowerExpr(node.Right)
+
+	if tup, isTup := leftVal.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+		elem0 := e.root.nextReg(tup.Types[0])
+		e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: leftVal, Index: 0})
+		leftVal = elem0
+	}
+	if tup, isTup := rightVal.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+		elem0 := e.root.nextReg(tup.Types[0])
+		e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: rightVal, Index: 0})
+		rightVal = elem0
+	}
 
 	if node.Operator == "==" || node.Operator == "!=" {
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {

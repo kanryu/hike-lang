@@ -356,12 +356,23 @@ entry:
   %p_tl = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 4
   %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
   %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
   %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
   %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
   br label %try_send
 
 try_send:
   call void @__hike_chan_lock(i32* %p_lock)
+  ; クローズ済みチャネルへの送信チェック (デッドロック抑止)
+  %cls = load i32, i32* %p_cls
+  %is_closed = icmp ne i32 %cls, 0
+  br i1 %is_closed, label %on_closed_send, label %check_room
+
+on_closed_send:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+check_room:
   %cnt = load i64, i64* %p_cnt
   %cap = load i64, i64* %p_cap
   %has_room = icmp slt i64 %cnt, %cap
@@ -524,7 +535,14 @@ ret_false:
 define internal i8* @hike_substr(i8* %s, i64 %low, i64 %high) #0 {
 entry:
   %s_null = icmp eq i8* %s, null
-  br i1 %s_null, label %ret_null, label %do_sub
+  br i1 %s_null, label %ret_null, label %check_range
+check_range:
+  %inv = icmp slt i64 %high, %low
+  br i1 %inv, label %ret_empty, label %do_sub
+ret_empty:
+  %empty = call i8* @malloc(i64 1)
+  store i8 0, i8* %empty
+  ret i8* %empty
 do_sub:
   %len = sub i64 %high, %low
   %alloc_size = add i64 %len, 1

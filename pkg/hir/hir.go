@@ -48,8 +48,8 @@ type ConstFloat struct {
 
 func (c *ConstFloat) Type() sema.Type { return c.Typ }
 func (c *ConstFloat) String() string {
-	s := fmt.Sprintf("%f", c.Val)
-	if !strings.Contains(s, ".") {
+	s := fmt.Sprintf("%g", c.Val)
+	if !strings.Contains(s, ".") && !strings.Contains(s, "e") {
 		s += ".0"
 	}
 	return s
@@ -258,6 +258,17 @@ func (i *InstrBoxInterface) String() string {
 		i.Dst, i.Val.Type().TypeName(), i.Val, i.Iface.TypeName(), i.ItabName)
 }
 
+type InstrUnboxInterface struct {
+	Dst        *Reg
+	IfaceVal   Value
+	TargetType sema.Type
+}
+
+func (i *InstrUnboxInterface) Result() *Reg { return i.Dst }
+func (i *InstrUnboxInterface) String() string {
+	return fmt.Sprintf("  %s = unbox_iface %s to %s", i.Dst, i.IfaceVal, i.TargetType.TypeName())
+}
+
 type InstrGetFieldPtr struct {
 	Dst        *Reg
 	BasePtr    Value
@@ -402,12 +413,16 @@ func (i *InstrChanSend) String() string {
 }
 
 type InstrChanRecv struct {
-	Dst  *Reg
-	Chan Value
+	Dst   *Reg
+	OkDst *Reg
+	Chan  Value
 }
 
 func (i *InstrChanRecv) Result() *Reg { return i.Dst }
 func (i *InstrChanRecv) String() string {
+	if i.OkDst != nil {
+		return fmt.Sprintf("  %s, %s = chan_recv %s", i.Dst, i.OkDst, i.Chan)
+	}
 	return fmt.Sprintf("  %s = chan_recv %s", i.Dst, i.Chan)
 }
 
@@ -484,6 +499,12 @@ func (i *InstrReturn) String() string {
 	}
 	return fmt.Sprintf("  ret %s", strings.Join(vStrs, ", "))
 }
+
+type InstrUnreachable struct{}
+
+func (i *InstrUnreachable) Result() *Reg         { return nil }
+func (i *InstrUnreachable) Successors() []string { return nil }
+func (i *InstrUnreachable) String() string       { return "  unreachable" }
 
 type BasicBlock struct {
 	Label        string

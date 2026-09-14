@@ -27,10 +27,16 @@ func GetBuiltinRuntimeWasm32IR() string {
 
 // GetRuntimeIR はターゲットトリプルを判定し、適切なランタイム IR を返します
 func GetRuntimeIR(targetTriple string) string {
-	if strings.HasPrefix(targetTriple, "wasm32") {
+	t := strings.ToLower(targetTriple)
+	if strings.Contains(t, "wasm32") || strings.Contains(t, "wasm") {
 		return builtinRuntimeWasm32IR
 	}
 	return builtinRuntimeIR
+}
+
+// IsRuntimeSymbol は指定されたシンボル名がランタイム IR 内で定義・宣言済みであるかを判定します
+func IsRuntimeSymbol(name string) bool {
+	return RuntimeLLVMSymbols[name]
 }
 
 // RuntimeLLVMSymbols は各 runtime.ll 内で既に宣言・定義されているシンボル群
@@ -45,9 +51,13 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
 
 	// --- Windows Native API (declare) ---
-	"QueueUserWorkItem": true, "CreateEventA": true, "SetEvent": true,
-	"WaitForSingleObject": true, "CloseHandle": true, "Sleep": true,
-	"GetTickCount64": true,
+	"QueueUserWorkItem":   true,
+	"CreateEventA":        true,
+	"SetEvent":            true,
+	"WaitForSingleObject": true,
+	"CloseHandle":         true,
+	"Sleep":               true,
+	"GetTickCount64":      true,
 
 	// --- POSIX / WASM32 抽象スレッド同期 API (declare) ---
 	"hike_thread_spawn":  true,

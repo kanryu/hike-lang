@@ -16,7 +16,41 @@ declare void @hike_event_destroy(i8*)
 declare void @hike_sleep_ms(i32)
 declare i64 @hike_now_ns()
 
-; --- 32-bit Task Descriptor: 20 bytes (ptr*4 + i32*1) ---
+; --- Memory Management Types (32-bit) ---
+%struct.Arena = type { i8*, i32, i32 }
+%struct.Allocator = type { i8*, i8* }
+
+; --- Standard OS / Host Sleep & Time Binding (std/time) ---
+
+define internal void @c_os_sleep_ms(i32 %ms) {
+entry:
+  call void @hike_sleep_ms(i32 %ms)
+  ret void
+}
+
+define internal void @os_sleep_ms(i32 %ms) {
+entry:
+  call void @hike_sleep_ms(i32 %ms)
+  ret void
+}
+
+define internal i64 @c_os_now_ns() {
+entry:
+  %ns = call i64 @hike_now_ns()
+  ret i64 %ns
+}
+
+define internal i64 @os_now_ns() {
+entry:
+  %ns = call i64 @hike_now_ns()
+  ret i64 %ns
+}
+
+; ------------------------------------------------------------------------------
+; Async Thread Pool & Task Runtime (32-bit, wasm32)
+; ------------------------------------------------------------------------------
+
+; %struct.__hike_task = { fn_thunk, env_ptr, ret_buf, completed, event_handle } (20 bytes)
 %struct.__hike_task = type { void (i8*, i8*)*, i8*, i8*, i32, i8* }
 
 ; ワーカースレッドのエントリサンク
@@ -221,6 +255,237 @@ calc_diff:
 }
 
 ; ------------------------------------------------------------------------------
+; Channel & Concurrency Queue Runtime (32-bit, wasm32)
+; ------------------------------------------------------------------------------
+
+; %struct.__hike_chan = { elem_size, cap, count, head, tail, buf, lock, closed, ev_recv, ev_send } (40 bytes)
+%struct.__hike_chan = type { i32, i32, i32, i32, i32, i8*, i32, i32, i8*, i8* }
+
+; チャネル内部スピンロックの獲得 (Yield 付き)
+define internal void @__hike_chan_lock(i32* %lock) {
+entry:
+  br label %spin
+spin:
+  %prev = atomicrmw xchg i32* %lock, i32 1 seq_cst
+  %is_free = icmp eq i32 %prev, 0
+  br i1 %is_free, label %acquired, label %wait
+wait:
+  call void @hike_sleep_ms(i32 0)
+  br label %spin
+acquired:
+  ret void
+}
+
+; チャネル内部スピンロックの解放
+define internal void @__hike_chan_unlock(i32* %lock) {
+entry:
+  store atomic i32 0, i32* %lock seq_cst, align 4
+  ret void
+}
+
+; チャネルの新規生成 (make(chan T, cap)) (32-bit)
+define internal i8* @__hike_chan_make(i32 %elem_size, i32 %cap) {
+entry:
+  %cap_le_0 = icmp sle i32 %cap, 0
+  %real_cap = select i1 %cap_le_0, i32 1, i32 %cap
+
+  %raw = call i8* @malloc(i32 40)
+  %ch = bitcast i8* %raw to %struct.__hike_chan*
+
+  %buf_bytes = mul i32 %real_cap, %elem_size
+  %buf = call i8* @malloc(i32 %buf_bytes)
+
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  store i32 %elem_size, i32* %p_es
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  store i32 %real_cap, i32* %p_cap
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  store i32 0, i32* %p_cnt
+  %p_hd = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 3
+  store i32 0, i32* %p_hd
+  %p_tl = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 4
+  store i32 0, i32* %p_tl
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  store i8* %buf, i8** %p_buf
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  store i32 0, i32* %p_lock
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  store i32 0, i32* %p_cls
+
+  ; 自動リセットイベントの生成 (受信側・送信側)
+  %ev_recv = call i8* @hike_event_create()
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  store i8* %ev_recv, i8** %p_ev_r
+
+  %ev_send = call i8* @hike_event_create()
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  store i8* %ev_send, i8** %p_ev_s
+
+  ret i8* %raw
+}
+
+; チャネルへの値送信 (ch <- val) (32-bit)
+define internal void @__hike_chan_send(i8* %ch_raw, i8* %val_ptr) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  %p_tl = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 4
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  br label %try_send
+
+try_send:
+  call void @__hike_chan_lock(i32* %p_lock)
+  ; クローズ済みチャネルへの送信チェック
+  %cls = load i32, i32* %p_cls
+  %is_closed = icmp ne i32 %cls, 0
+  br i1 %is_closed, label %on_closed_send, label %check_room
+
+on_closed_send:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+check_room:
+  %cnt = load i32, i32* %p_cnt
+  %cap = load i32, i32* %p_cap
+  %has_room = icmp slt i32 %cnt, %cap
+  br i1 %has_room, label %do_send, label %full
+
+do_send:
+  %tl = load i32, i32* %p_tl
+  %es = load i32, i32* %p_es
+  %buf = load i8*, i8** %p_buf
+  %offset = mul i32 %tl, %es
+  %dst = getelementptr inbounds i8, i8* %buf, i32 %offset
+  call i8* @memcpy32(i8* %dst, i8* %val_ptr, i32 %es)
+
+  %next_tl_raw = add i32 %tl, 1
+  %next_tl = urem i32 %next_tl_raw, %cap
+  store i32 %next_tl, i32* %p_tl
+
+  %next_cnt = add i32 %cnt, 1
+  store i32 %next_cnt, i32* %p_cnt
+
+  ; 受信待ちスレッドを起床
+  %ev_r = load i8*, i8** %p_ev_r
+  call void @hike_event_signal(i8* %ev_r)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+full:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  %ev_s = load i8*, i8** %p_ev_s
+  call i32 @hike_event_wait(i8* %ev_s, i32 10)
+  br label %try_send
+}
+
+; チャネルからの値受信 (<-ch) (32-bit)
+define internal void @__hike_chan_recv(i8* %ch_raw, i8* %val_ptr) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cnt = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 2
+  %p_cap = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 1
+  %p_hd = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 3
+  %p_es = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 0
+  %p_buf = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 5
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+  br label %try_recv
+
+try_recv:
+  call void @__hike_chan_lock(i32* %p_lock)
+  %cnt = load i32, i32* %p_cnt
+  %has_data = icmp sgt i32 %cnt, 0
+  br i1 %has_data, label %do_recv, label %empty
+
+do_recv:
+  %hd = load i32, i32* %p_hd
+  %cap = load i32, i32* %p_cap
+  %es = load i32, i32* %p_es
+  %buf = load i8*, i8** %p_buf
+  %offset = mul i32 %hd, %es
+  %src = getelementptr inbounds i8, i8* %buf, i32 %offset
+  call i8* @memcpy32(i8* %val_ptr, i8* %src, i32 %es)
+
+  %next_hd_raw = add i32 %hd, 1
+  %next_hd = urem i32 %next_hd_raw, %cap
+  store i32 %next_hd, i32* %p_hd
+
+  %next_cnt = sub i32 %cnt, 1
+  store i32 %next_cnt, i32* %p_cnt
+
+  ; 送信待ちスレッドを起床
+  %ev_s = load i8*, i8** %p_ev_s
+  call void @hike_event_signal(i8* %ev_s)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+empty:
+  %cls = load i32, i32* %p_cls
+  %is_closed = icmp ne i32 %cls, 0
+  br i1 %is_closed, label %on_closed, label %wait_data
+
+on_closed:
+  ; クローズ済みで空の場合はゼロ値（null / 0）を書き込んで即座に復帰
+  %es_c = load i32, i32* %p_es
+  br label %zero_loop.cond
+
+zero_loop.cond:
+  %zi = phi i32 [ 0, %on_closed ], [ %zi.next, %zero_loop.body ]
+  %z_cmp = icmp slt i32 %zi, %es_c
+  br i1 %z_cmp, label %zero_loop.body, label %zero_loop.end
+
+zero_loop.body:
+  %z_ptr = getelementptr inbounds i8, i8* %val_ptr, i32 %zi
+  store i8 0, i8* %z_ptr
+  %zi.next = add i32 %zi, 1
+  br label %zero_loop.cond
+
+zero_loop.end:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+
+wait_data:
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ; 空の間は OS イベントでスリープ待機 (CPU 使用率 0%)
+  %ev_r = load i8*, i8** %p_ev_r
+  call i32 @hike_event_wait(i8* %ev_r, i32 10)
+  br label %try_recv
+}
+
+; チャネルのクローズ (close(ch)) (32-bit)
+define internal void @__hike_chan_close(i8* %ch_raw) {
+entry:
+  %ch = bitcast i8* %ch_raw to %struct.__hike_chan*
+  %p_lock = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 6
+  %p_cls = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 7
+  %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
+  %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
+
+  call void @__hike_chan_lock(i32* %p_lock)
+  store i32 1, i32* %p_cls
+
+  ; 待機中の全スレッドを起床させて終了状態を検知させる
+  %ev_r = load i8*, i8** %p_ev_r
+  call void @hike_event_signal(i8* %ev_r)
+
+  %ev_s = load i8*, i8** %p_ev_s
+  call void @hike_event_signal(i8* %ev_s)
+
+  call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+}
+
+; ------------------------------------------------------------------------------
 ; String Runtime Functions (32-bit, wasm32)
 ; ------------------------------------------------------------------------------
 
@@ -248,7 +513,14 @@ ret_false:
 define internal i8* @hike_substr32(i8* %s, i32 %low, i32 %high) #0 {
 entry:
   %s_null = icmp eq i8* %s, null
-  br i1 %s_null, label %ret_null, label %do_sub
+  br i1 %s_null, label %ret_null, label %check_range
+check_range:
+  %inv = icmp slt i32 %high, %low
+  br i1 %inv, label %ret_empty, label %do_sub
+ret_empty:
+  %empty = call i8* @malloc(i32 1)
+  store i8 0, i8* %empty
+  ret i8* %empty
 do_sub:
   %len = sub i32 %high, %low
   %alloc_size = add i32 %len, 1
@@ -294,6 +566,349 @@ alloc:
   %null_ptr = getelementptr inbounds i8, i8* %buf, i32 %len
   store i8 0, i8* %null_ptr
   ret i8* %buf
+}
+
+; ------------------------------------------------------------------------------
+; Hash Map Runtime Types & Functions (32-bit, wasm32)
+; ------------------------------------------------------------------------------
+
+%struct.__hike_map_entry = type { i32, i32, i32, %struct.__hike_map_entry* }
+%struct.__hike_map = type { %struct.__hike_map_entry**, i32, i32, i32 }
+
+; 文字列 FNV-1a ハッシュ算出 (32-bit: offset=-2128831035, prime=16777619)
+define internal i32 @__hike_hash_str(i8* %s) {
+entry:
+  %null_chk = icmp eq i8* %s, null
+  br i1 %null_chk, label %ret_zero, label %loop_init
+ret_zero:
+  ret i32 0
+loop_init:
+  br label %loop.cond
+loop.cond:
+  %h = phi i32 [ -2128831035, %loop_init ], [ %h.next, %loop.body ]
+  %ptr = phi i8* [ %s, %loop_init ], [ %ptr.next, %loop.body ]
+  %ch = load i8, i8* %ptr
+  %is_null = icmp eq i8 %ch, 0
+  br i1 %is_null, label %loop.end, label %loop.body
+loop.body:
+  %ch.zext = zext i8 %ch to i32
+  %h.xor = xor i32 %h, %ch.zext
+  %h.next = mul i32 %h.xor, 16777619
+  %ptr.next = getelementptr inbounds i8, i8* %ptr, i32 1
+  br label %loop.cond
+loop.end:
+  ret i32 %h
+}
+
+; マップキーの一致判定 (32-bit)
+define internal i1 @__hike_map_key_eq(i32 %k1, i32 %k2, i32 %is_str) {
+entry:
+  %is_s = icmp ne i32 %is_str, 0
+  br i1 %is_s, label %check_str, label %check_int
+check_int:
+  %eq_int = icmp eq i32 %k1, %k2
+  ret i1 %eq_int
+check_str:
+  %p1 = inttoptr i32 %k1 to i8*
+  %p2 = inttoptr i32 %k2 to i8*
+  %eq_ptr = icmp eq i8* %p1, %p2
+  br i1 %eq_ptr, label %ret_true, label %check_null
+check_null:
+  %n1 = icmp eq i8* %p1, null
+  %n2 = icmp eq i8* %p2, null
+  %either_null = or i1 %n1, %n2
+  br i1 %either_null, label %ret_false, label %do_cmp
+do_cmp:
+  %res = call i32 @strcmp32(i8* %p1, i8* %p2)
+  %is_z = icmp eq i32 %res, 0
+  ret i1 %is_z
+ret_true:
+  ret i1 true
+ret_false:
+  ret i1 false
+}
+
+; マップの新規生成 (32-bit)
+define internal %struct.__hike_map* @__hike_map_create(i32 %cap, i32 %is_str) {
+entry:
+  %raw = call i8* @malloc(i32 16)
+  %m = bitcast i8* %raw to %struct.__hike_map*
+  %buckets_raw = call i8* @calloc(i32 16, i32 4)
+  %buckets = bitcast i8* %buckets_raw to %struct.__hike_map_entry**
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  store %struct.__hike_map_entry** %buckets, %struct.__hike_map_entry*** %p_b
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  store i32 16, i32* %p_nb
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  store i32 0, i32* %p_len
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  store i32 %is_str, i32* %p_str
+  ret %struct.__hike_map* %m
+}
+
+; マップバケットの拡張と再ハッシュ (32-bit)
+define internal void @__hike_map_grow(%struct.__hike_map* %m) {
+entry:
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %old_nb = load i32, i32* %p_nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %old_b = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %new_nb = mul i32 %old_nb, 2
+  %new_raw = call i8* @calloc(i32 %new_nb, i32 4)
+  %new_b = bitcast i8* %new_raw to %struct.__hike_map_entry**
+  br label %loop.i
+loop.i:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %loop.i.inc ]
+  %cmp.i = icmp slt i32 %i, %old_nb
+  br i1 %cmp.i, label %loop.entry.init, label %loop.i.done
+loop.entry.init:
+  %p_cur_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %old_b, i32 %i
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_cur_head
+  br label %loop.entry
+loop.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %loop.entry.init ], [ %nxt, %loop.entry.body ]
+  %has_cur = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_cur, label %loop.entry.body, label %loop.i.inc
+loop.entry.body:
+  %p_nxt = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %nxt = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_nxt
+  %p_hash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %h_val = load i32, i32* %p_hash
+  %h_pos = and i32 %h_val, 2147483647
+  %new_idx = urem i32 %h_pos, %new_nb
+  %p_new_slot = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %new_b, i32 %new_idx
+  %existing = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_new_slot
+  store %struct.__hike_map_entry* %existing, %struct.__hike_map_entry** %p_nxt
+  store %struct.__hike_map_entry* %cur, %struct.__hike_map_entry** %p_new_slot
+  br label %loop.entry
+loop.i.inc:
+  %i.next = add i32 %i, 1
+  br label %loop.i
+loop.i.done:
+  %old_b_raw = bitcast %struct.__hike_map_entry** %old_b to i8*
+  call void @free(i8* %old_b_raw)
+  store %struct.__hike_map_entry** %new_b, %struct.__hike_map_entry*** %p_b
+  store i32 %new_nb, i32* %p_nb
+  ret void
+}
+
+; マップへのキー・値格納 (32-bit)
+define internal void @__hike_map_set(%struct.__hike_map* %m, i32 %key, i32 %val) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_void, label %check_grow
+ret_void:
+  ret void
+check_grow:
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %cur_len = load i32, i32* %p_len
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i32, i32* %p_nb
+  %limit = mul i32 %nb, 3
+  %limit_div = sdiv i32 %limit, 4
+  %needs_grow = icmp sge i32 %cur_len, %limit_div
+  br i1 %needs_grow, label %do_grow, label %do_hash
+do_grow:
+  call void @__hike_map_grow(%struct.__hike_map* %m)
+  br label %do_hash
+do_hash:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i32, i32* %p_str
+  %is_s = icmp ne i32 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i32 %key to i8*
+  %h_s = call i32 @__hike_hash_str(i8* %k_ptr)
+  br label %lookup
+hash_int:
+  br label %lookup
+lookup:
+  %hash = phi i32 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb_2 = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb_cur = load i32, i32* %p_nb_2
+  %h_pos = and i32 %hash, 2147483647
+  %idx = urem i32 %h_pos, %nb_cur
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i32 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %lookup ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %insert_new
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i32, i32* %p_ehash
+  %hash_match = icmp eq i32 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i32, i32* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i32 %ekey, i32 %key, i32 %is_str)
+  br i1 %key_match, label %update_val, label %search.next
+update_val:
+  %p_eval = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 2
+  store i32 %val, i32* %p_eval
+  ret void
+search.next:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  br label %search.entry
+insert_new:
+  %new_entry_raw = call i8* @malloc(i32 16)
+  %new_e = bitcast i8* %new_entry_raw to %struct.__hike_map_entry*
+  %np_hash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 0
+  store i32 %hash, i32* %np_hash
+  %np_key = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 1
+  store i32 %key, i32* %np_key
+  %np_val = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 2
+  store i32 %val, i32* %np_val
+  %np_next = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %new_e, i32 0, i32 3
+  %cur_head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  store %struct.__hike_map_entry* %cur_head, %struct.__hike_map_entry** %np_next
+  store %struct.__hike_map_entry* %new_e, %struct.__hike_map_entry** %p_head
+  %new_len = add i32 %cur_len, 1
+  store i32 %new_len, i32* %p_len
+  ret void
+}
+
+; マップからの値取得 (32-bit)
+define internal i1 @__hike_map_get(%struct.__hike_map* %m, i32 %key, i32* %out_val) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_not_found, label %do_lookup
+ret_not_found:
+  store i32 0, i32* %out_val
+  ret i1 false
+do_lookup:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i32, i32* %p_str
+  %is_s = icmp ne i32 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i32 %key to i8*
+  %h_s = call i32 @__hike_hash_str(i8* %k_ptr)
+  br label %search_init
+hash_int:
+  br label %search_init
+search_init:
+  %hash = phi i32 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i32, i32* %p_nb
+  %h_pos = and i32 %hash, 2147483647
+  %idx = urem i32 %h_pos, %nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i32 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %cur = phi %struct.__hike_map_entry* [ %head, %search_init ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %ret_not_found
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i32, i32* %p_ehash
+  %hash_match = icmp eq i32 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i32, i32* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i32 %ekey, i32 %key, i32 %is_str)
+  br i1 %key_match, label %found, label %search.next
+found:
+  %p_eval = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 2
+  %val = load i32, i32* %p_eval
+  store i32 %val, i32* %out_val
+  ret i1 true
+search.next:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  br label %search.entry
+}
+
+; マップ要素の削除 (32-bit)
+define internal void @__hike_map_delete(%struct.__hike_map* %m, i32 %key) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_void, label %do_del
+ret_void:
+  ret void
+do_del:
+  %p_str = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 3
+  %is_str = load i32, i32* %p_str
+  %is_s = icmp ne i32 %is_str, 0
+  br i1 %is_s, label %hash_str, label %hash_int
+hash_str:
+  %k_ptr = inttoptr i32 %key to i8*
+  %h_s = call i32 @__hike_hash_str(i8* %k_ptr)
+  br label %search_init
+hash_int:
+  br label %search_init
+search_init:
+  %hash = phi i32 [ %h_s, %hash_str ], [ %key, %hash_int ]
+  %p_nb = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 1
+  %nb = load i32, i32* %p_nb
+  %h_pos = and i32 %hash, 2147483647
+  %idx = urem i32 %h_pos, %nb
+  %p_b = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_b
+  %p_head = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i32 %idx
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  br label %search.entry
+search.entry:
+  %prev = phi %struct.__hike_map_entry* [ null, %search_init ], [ %cur, %search.next ]
+  %cur = phi %struct.__hike_map_entry* [ %head, %search_init ], [ %cur.next, %search.next ]
+  %has_entry = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_entry, label %search.body, label %ret_void
+search.body:
+  %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %ehash = load i32, i32* %p_ehash
+  %hash_match = icmp eq i64 %ehash, %hash
+  br i1 %hash_match, label %search.key_check, label %search.next
+search.key_check:
+  %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %ekey = load i32, i32* %p_ekey
+  %key_match = call i1 @__hike_map_key_eq(i32 %ekey, i32 %key, i32 %is_str)
+  br i1 %key_match, label %do_unlink, label %search.next
+do_unlink:
+  %p_enext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %nxt = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext
+  %has_prev = icmp ne %struct.__hike_map_entry* %prev, null
+  br i1 %has_prev, label %unlink_prev, label %unlink_head
+unlink_prev:
+  %p_pnext = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %prev, i32 0, i32 3
+  store %struct.__hike_map_entry* %nxt, %struct.__hike_map_entry** %p_pnext
+  br label %after_unlink
+unlink_head:
+  store %struct.__hike_map_entry* %nxt, %struct.__hike_map_entry** %p_head
+  br label %after_unlink
+after_unlink:
+  %cur_raw = bitcast %struct.__hike_map_entry* %cur to i8*
+  call void @free(i8* %cur_raw)
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %cur_len = load i32, i32* %p_len
+  %new_len = sub i32 %cur_len, 1
+  store i32 %new_len, i32* %p_len
+  ret void
+search.next:
+  %p_enext2 = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %cur.next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_enext2
+  br label %search.entry
+}
+
+; マップ要素数の取得 (32-bit)
+define internal i32 @__hike_map_len(%struct.__hike_map* %m) {
+entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %ret_zero, label %get_len
+ret_zero:
+  ret i32 0
+get_len:
+  %p_len = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %m, i32 0, i32 2
+  %l = load i32, i32* %p_len
+  ret i32 %l
 }
 
 ; ------------------------------------------------------------------------------

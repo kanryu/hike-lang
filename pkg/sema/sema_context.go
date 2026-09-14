@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"hikec-go/pkg/ast"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/token"
 )
 
@@ -22,7 +23,6 @@ type Context struct {
 	typeIDs        map[string]int64
 	nextTypeID     int64
 	HasMapImport   bool
-	Verbose        bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
@@ -42,7 +42,6 @@ func NewContext() *Context {
 		TypeParams:     make(map[string]*TypeParamType),
 		typeIDs:        make(map[string]int64),
 		nextTypeID:     1,
-		Verbose:        false,
 		ResolvedCalls:  make(map[*ast.CallExpr]*FuncType),
 	}
 	ctx.typeIDs["int"] = 1
@@ -65,12 +64,6 @@ func NewContext() *Context {
 	ctx.Aliases["error"] = errorIface
 
 	return ctx
-}
-
-func (c *Context) log(msg string) {
-	if c.Verbose {
-		fmt.Printf("[SEMA] %s\n", msg)
-	}
 }
 
 func (c *Context) GetTypeID(t Type) int64 {
@@ -229,9 +222,51 @@ func (c *Context) LookupFloatConstant(name string) (float64, bool) {
 	return 0.0, false
 }
 
-// -----------------------------------------------------------------------------
+// RegisterTypeDecl は AST の TypeDecl を走査し、型マップ（Structs, GenericTypes 等）へ先行登録する
+func (c *Context) RegisterTypeDecl(td *ast.TypeDecl, pkgName string) {
+	if td == nil || td.Name == nil {
+		return
+	}
+	rawName := td.Name.Value
+	qualifiedName := rawName
+	if pkgName != "" && pkgName != "main" {
+		qualifiedName = pkgName + "_" + rawName
+	}
+
+	if len(td.TypeParams) > 0 {
+		c.GenericTypes[rawName] = td
+		c.GenericTypes[qualifiedName] = td
+
+		typeParamNames := make([]string, len(td.TypeParams))
+		for i, tp := range td.TypeParams {
+			typeParamNames[i] = tp.Name.Value
+		}
+
+		tmplStruct := &StructType{
+			Name:                qualifiedName,
+			TypeParams:          typeParamNames,
+			TypeArgs:            []Type{},
+			Fields:              []Field{},
+			Template:            td,
+			IsSpecialized:       false,
+			Specializations:     make(map[string]*StructType),
+			BuiltinCapabilities: make(map[string]*FuncType),
+		}
+		c.Structs[qualifiedName] = tmplStruct
+		c.Structs[rawName] = tmplStruct
+	} else {
+		if st := c.ResolveType(td.Type); st != nil && st != TypeVoid {
+			if sType, okSt := st.(*StructType); okSt {
+				c.Structs[qualifiedName] = sType
+				c.Structs[rawName] = sType
+			}
+		}
+	}
+}
+
+// -------------------------------------------------------------
 // インターフェース充足性検査 (Interface Conformance)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 // Implements は concrete 型が iface インターフェースを満たしているかを判定する
 func (c *Context) Implements(concrete Type, iface *InterfaceType) bool {
@@ -321,9 +356,9 @@ func (c *Context) typesCompatible(t1, t2 Type) bool {
 	return false
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 型解決 (Type Resolution)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	if expr == nil {
@@ -400,13 +435,14 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				}
 
 				newSt := &StructType{
-					Name:            specializedName,
-					TypeParams:      st.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Fields:          []Field{},
-					Template:        st.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*StructType),
+					Name:                specializedName,
+					TypeParams:          st.TypeParams,
+					TypeArgs:            resolvedArgs,
+					Fields:              []Field{},
+					Template:            st.Template,
+					IsSpecialized:       true,
+					Specializations:     make(map[string]*StructType),
+					BuiltinCapabilities: make(map[string]*FuncType),
 				}
 				c.Structs[specializedName] = newSt
 				st.Specializations[specKey] = newSt
@@ -514,8 +550,34 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return alias
 		}
 
+		// ★追加: 関数呼び出し判定等から参照された場合に FuncType を返す
+		if fn, _ := c.LookupFunction(name); fn != nil {
+			return fn
+		}
+
 		panic(fmt.Sprintf("[Sema Error] line %d:%d: undefined type '%s'",
 			t.Token.Line, t.Token.Col, name))
+
+	// ★追加: *ast.StructType の解決ハンドラ
+	case *ast.StructType:
+		st := &StructType{
+			Fields:              []Field{},
+			Specializations:     make(map[string]*StructType),
+			BuiltinCapabilities: make(map[string]*FuncType),
+		}
+		for _, f := range t.Fields {
+			fType := c.ResolveType(f.Type)
+			name := ""
+			if f.Name != nil {
+				name = f.Name.Value
+			}
+			st.Fields = append(st.Fields, Field{
+				Name:       name,
+				Type:       fType,
+				IsEmbedded: f.IsEmbedded,
+			})
+		}
+		return st
 
 	case *ast.PointerType:
 		return &PointerType{Base: c.ResolveType(t.Base)}
@@ -643,13 +705,14 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 				}
 
 				newSt := &StructType{
-					Name:            specializedName,
-					TypeParams:      st.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Fields:          []Field{},
-					Template:        st.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*StructType),
+					Name:                specializedName,
+					TypeParams:          st.TypeParams,
+					TypeArgs:            resolvedArgs,
+					Fields:              []Field{},
+					Template:            st.Template,
+					IsSpecialized:       true,
+					Specializations:     make(map[string]*StructType),
+					BuiltinCapabilities: make(map[string]*FuncType),
 				}
 				c.Structs[specializedName] = newSt
 				st.Specializations[specKey] = newSt
@@ -671,6 +734,25 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 		}
 
 		return c.ResolveType(node)
+	case *ast.StructType:
+		st := &StructType{
+			Fields:              []Field{},
+			Specializations:     make(map[string]*StructType),
+			BuiltinCapabilities: make(map[string]*FuncType),
+		}
+		for _, f := range node.Fields {
+			fType := c.ResolveTypeWithSubst(f.Type, subst)
+			name := ""
+			if f.Name != nil {
+				name = f.Name.Value
+			}
+			st.Fields = append(st.Fields, Field{
+				Name:       name,
+				Type:       fType,
+				IsEmbedded: f.IsEmbedded,
+			})
+		}
+		return st
 	case *ast.FuncType:
 		fnType := &FuncType{
 			ParamTypes:      []Type{},
@@ -768,7 +850,59 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 		if alias, _ := c.LookupAlias(id.Value); alias != nil {
 			return alias
 		}
+		return nil
 	}
+	// 1. パッケージ修飾型名 (例: list.List)
+	if mem, ok := e.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			qualified := pkgId.Value + "_" + mem.Field.Value
+			if st, _ := c.LookupStruct(qualified); st != nil {
+				return st
+			}
+			if iface, _ := c.LookupInterface(qualified); iface != nil {
+				return iface
+			}
+			if alias, _ := c.LookupAlias(qualified); alias != nil {
+				return alias
+			}
+			// 型として解決できない場合（メソッドや通常関数）は nil を返して通常呼び出しとして処理させる
+			return nil
+		}
+	}
+	// 2. 添字構文によるジェネリクス型指定 (例: List[int] や list.List[int])
+	if idxExpr, ok := e.(*ast.IndexExpr); ok {
+		var pkgId *ast.Identifier
+		var typeId *ast.Identifier
+		if id, okId := idxExpr.Left.(*ast.Identifier); okId {
+			typeId = id
+		} else if mem, okMem := idxExpr.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				typeId = mem.Field
+			}
+		}
+
+		if typeId != nil {
+			var typeArgs []ast.TypeExpr
+			if te, okTe := idxExpr.Index.(ast.TypeExpr); okTe {
+				typeArgs = append(typeArgs, te)
+			} else if id, okId := idxExpr.Index.(*ast.Identifier); okId {
+				typeArgs = append(typeArgs, &ast.NamedType{Token: id.Token, Name: id})
+			} else if mem, okMem := idxExpr.Index.(*ast.MemberExpr); okMem {
+				if p, okP := mem.Object.(*ast.Identifier); okP {
+					typeArgs = append(typeArgs, &ast.NamedType{Token: mem.Token, Package: p, Name: mem.Field})
+				}
+			}
+
+			return c.ResolveType(&ast.NamedType{
+				Token:    idxExpr.Token,
+				Package:  pkgId,
+				Name:     typeId,
+				TypeArgs: typeArgs,
+			})
+		}
+	}
+	// 3. GenericInstExpr によるジェネリクス型指定
 	if gen, ok := e.(*ast.GenericInstExpr); ok {
 		var pkgId *ast.Identifier
 		var typeId *ast.Identifier
@@ -810,9 +944,9 @@ func isIntType(t Type) bool {
 	return false
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 型推論 (Type Inference) & 暗黙キャスト
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Type {
 	if expr == nil {
@@ -1033,14 +1167,8 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 
 	case *ast.SliceExpr:
 		lt := c.InferExprType(e.Left, locals)
-		if lt == TypeString {
-			return TypeString
-		}
-		if sl, ok := lt.(*SliceType); ok {
-			return sl
-		}
-		if ar, ok := lt.(*ArrayType); ok {
-			return &SliceType{Elem: ar.Elem}
+		if st, err := c.ResolveSliceExprType(lt, e.Low, e.High); err == nil {
+			return st
 		}
 		return lt
 
@@ -1060,7 +1188,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 		if id, ok := e.Function.(*ast.Identifier); ok {
 			switch id.Value {
-			case "len", "cap":
+			case "len", "cap", "sizeof": // sizeof 組み込みサポート
 				return TypeInt
 			case "string":
 				return TypeString
@@ -1263,6 +1391,48 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 			return l ^ r, true
 		}
 	case *ast.CallExpr:
+		// sizeof(Type) または sizeof(Expr) のコンパイル時定数評価
+		if id, ok := e.Function.(*ast.Identifier); ok && id.Value == "sizeof" {
+			if len(e.Args) == 1 {
+				arg := e.Args[0]
+				logger.LogVerbose2("[Verbose2] Sema evalConstInt CallExpr sizeof: arg=%T (%+v)\n", arg, arg)
+				if _, ok := arg.(*ast.GenericInstExpr); ok {
+					logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: arg is GenericInstExpr, postponing\n")
+					return 0, false
+				}
+				if _, ok := arg.(*ast.IndexExpr); ok {
+					logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: arg is IndexExpr, postponing\n")
+					return 0, false
+				}
+				t := c.resolveTypeFromExpr(arg)
+				if t == nil || t == TypeVoid {
+					t = c.InferExprType(arg, nil)
+				}
+				if t != nil && t != TypeVoid {
+					if pt, isPtr := t.(*PointerType); isPtr {
+						t = pt.Base
+					}
+					if st, _ := c.LookupStruct(t.TypeName()); st != nil {
+						if st.IsGeneric() || len(st.Fields) == 0 {
+							logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: struct '%s' unexpanded, postponing\n", st.Name)
+							return 0, false
+						}
+						sz := int64(st.Size())
+						logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: folded struct size = %d\n", sz)
+						if sz > 0 {
+							return sz, true
+						}
+						return 0, false
+					}
+					sz := int64(t.Size())
+					logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: folded type size = %d\n", sz)
+					if sz > 0 {
+						return sz, true
+					}
+				}
+			}
+			return 0, false
+		}
 		if len(e.Args) == 1 {
 			return c.evalConstInt(e.Args[0])
 		}
@@ -1336,7 +1506,245 @@ func (c *Context) evalConstFloat(expr ast.Expression) (float64, bool) {
 }
 
 // -------------------------------------------------------------
-// マップビヘイビア・インデックス解決
+// 組み込みインターフェース能力判定 (Builtin Capabilities)
+// -------------------------------------------------------------
+
+// CheckIndexable は指定された型が Indexable (Get(key) V または Get(key) (V, bool)) を満たすか検査する
+func (c *Context) CheckIndexable(t Type) (keyType Type, valType Type, hasOk bool, fn *FuncType) {
+	if t == nil {
+		return nil, nil, false, nil
+	}
+	typeName := t.TypeName()
+	rawName := strings.TrimPrefix(typeName, "*")
+
+	st, _ := c.LookupStruct(rawName)
+	if st == nil && strings.Contains(rawName, "__") {
+		st, _ = c.LookupStruct(strings.Split(rawName, "__")[0])
+	}
+
+	if st != nil && st.BuiltinCapabilities != nil {
+		if capFn, ok := st.BuiltinCapabilities["Indexable"]; ok && capFn != nil {
+			k, v, okFlag := extractIndexableSignature(capFn)
+			return k, v, okFlag, capFn
+		}
+	}
+
+	fn, _ = c.LookupMethod(typeName, "Get")
+	if fn == nil && !strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod("*"+typeName, "Get")
+	}
+	if fn == nil && strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod(rawName, "Get")
+	}
+
+	if fn != nil {
+		k, v, okFlag := extractIndexableSignature(fn)
+		if k != nil && v != nil {
+			if st != nil {
+				if st.BuiltinCapabilities == nil {
+					st.BuiltinCapabilities = make(map[string]*FuncType)
+				}
+				st.BuiltinCapabilities["Indexable"] = fn
+			}
+			return k, v, okFlag, fn
+		}
+	}
+
+	return nil, nil, false, nil
+}
+
+func extractIndexableSignature(fn *FuncType) (keyType Type, valType Type, hasOk bool) {
+	params := fn.ParamTypes
+	if fn.IsMethod && len(params) > 0 {
+		params = params[1:]
+	}
+	if len(params) != 1 {
+		return nil, nil, false
+	}
+	if len(fn.ReturnTypes) == 1 {
+		return params[0], fn.ReturnTypes[0], false
+	}
+	if len(fn.ReturnTypes) == 2 {
+		return params[0], fn.ReturnTypes[0], true
+	}
+	return nil, nil, false
+}
+
+// CheckIndexAssignable は指定された型が IndexAssignable (Set(key, val)) を満たすか検査する
+func (c *Context) CheckIndexAssignable(t Type) (keyType Type, valType Type, fn *FuncType) {
+	if t == nil {
+		return nil, nil, nil
+	}
+	typeName := t.TypeName()
+	rawName := strings.TrimPrefix(typeName, "*")
+
+	st, _ := c.LookupStruct(rawName)
+	if st == nil && strings.Contains(rawName, "__") {
+		st, _ = c.LookupStruct(strings.Split(rawName, "__")[0])
+	}
+
+	if st != nil && st.BuiltinCapabilities != nil {
+		if capFn, ok := st.BuiltinCapabilities["IndexAssignable"]; ok && capFn != nil {
+			k, v := extractIndexAssignableSignature(capFn)
+			return k, v, capFn
+		}
+	}
+
+	fn, _ = c.LookupMethod(typeName, "Set")
+	if fn == nil && !strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod("*"+typeName, "Set")
+	}
+	if fn == nil && strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod(rawName, "Set")
+	}
+
+	if fn != nil {
+		k, v := extractIndexAssignableSignature(fn)
+		if k != nil && v != nil {
+			if st != nil {
+				if st.BuiltinCapabilities == nil {
+					st.BuiltinCapabilities = make(map[string]*FuncType)
+				}
+				st.BuiltinCapabilities["IndexAssignable"] = fn
+			}
+			return k, v, fn
+		}
+	}
+
+	return nil, nil, nil
+}
+
+func extractIndexAssignableSignature(fn *FuncType) (keyType Type, valType Type) {
+	params := fn.ParamTypes
+	if fn.IsMethod && len(params) > 0 {
+		params = params[1:]
+	}
+	if len(params) == 2 && len(fn.ReturnTypes) == 0 {
+		return params[0], params[1]
+	}
+	return nil, nil
+}
+
+// CheckSliceable は指定された型が Sliceable (Slice(low, high int) (T, bool) または Slice(low, high int) T) を満たすか検査する
+func (c *Context) CheckSliceable(t Type) (resType Type, hasOk bool, fn *FuncType) {
+	if t == nil {
+		return nil, false, nil
+	}
+	typeName := t.TypeName()
+	rawName := strings.TrimPrefix(typeName, "*")
+
+	st, _ := c.LookupStruct(rawName)
+	if st == nil && strings.Contains(rawName, "__") {
+		st, _ = c.LookupStruct(strings.Split(rawName, "__")[0])
+	}
+
+	if st != nil && st.BuiltinCapabilities != nil {
+		if capFn, ok := st.BuiltinCapabilities["Sliceable"]; ok && capFn != nil {
+			r, okFlag := extractSliceableSignature(capFn)
+			return r, okFlag, capFn
+		}
+	}
+
+	fn, _ = c.LookupMethod(typeName, "Slice")
+	if fn == nil && !strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod("*"+typeName, "Slice")
+	}
+	if fn == nil && strings.HasPrefix(typeName, "*") {
+		fn, _ = c.LookupMethod(rawName, "Slice")
+	}
+
+	if fn != nil {
+		r, okFlag := extractSliceableSignature(fn)
+		if r != nil {
+			if st != nil {
+				if st.BuiltinCapabilities == nil {
+					st.BuiltinCapabilities = make(map[string]*FuncType)
+				}
+				st.BuiltinCapabilities["Sliceable"] = fn
+			}
+			return r, okFlag, fn
+		}
+	}
+
+	return nil, false, nil
+}
+
+func extractSliceableSignature(fn *FuncType) (resType Type, hasOk bool) {
+	params := fn.ParamTypes
+	if fn.IsMethod && len(params) > 0 {
+		params = params[1:]
+	}
+	if len(params) == 2 && isIntType(params[0]) && isIntType(params[1]) {
+		if len(fn.ReturnTypes) == 1 {
+			return fn.ReturnTypes[0], false
+		}
+		if len(fn.ReturnTypes) == 2 {
+			return fn.ReturnTypes[0], true
+		}
+	}
+	return nil, false
+}
+
+// CheckIterable は指定された型が Iterable (InitIterator(buf *byte) int && Next(buf *byte) (*T, bool)) を満たすか検査する
+func (c *Context) CheckIterable(t Type) (elemType Type, fnInit *FuncType, fnNext *FuncType) {
+	if t == nil {
+		return nil, nil, nil
+	}
+	typeName := t.TypeName()
+	rawName := strings.TrimPrefix(typeName, "*")
+
+	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
+	if fnInit == nil {
+		fnInit, _ = c.LookupMethod("*"+rawName, "InitIterator")
+	}
+
+	fnNext, _ = c.LookupMethod(typeName, "Next")
+	if fnNext == nil {
+		fnNext, _ = c.LookupMethod("*"+rawName, "Next")
+	}
+
+	if fnInit != nil && fnNext != nil {
+		if len(fnNext.ReturnTypes) == 2 {
+			ret0 := fnNext.ReturnTypes[0]
+			if pt, ok := ret0.(*PointerType); ok {
+				return pt.Base, fnInit, fnNext
+			}
+			return ret0, fnInit, fnNext
+		}
+	}
+	return nil, nil, nil
+}
+
+// CheckAsyncIterable は指定された型が AsyncIterable (InitIterator + NextChannel(buf *byte) (chan T, bool)) を満たすか検査する
+func (c *Context) CheckAsyncIterable(t Type) (elemType Type, fnInit *FuncType, fnNextChan *FuncType) {
+	if t == nil {
+		return nil, nil, nil
+	}
+	typeName := t.TypeName()
+	rawName := strings.TrimPrefix(typeName, "*")
+
+	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
+	if fnInit == nil {
+		fnInit, _ = c.LookupMethod("*"+rawName, "InitIterator")
+	}
+
+	fnNextChan, _ = c.LookupMethod(typeName, "NextChannel")
+	if fnNextChan == nil {
+		fnNextChan, _ = c.LookupMethod("*"+rawName, "NextChannel")
+	}
+
+	if fnNextChan != nil {
+		if len(fnNextChan.ReturnTypes) >= 1 {
+			if ch, ok := fnNextChan.ReturnTypes[0].(*ChanType); ok {
+				return ch.Elem, fnInit, fnNextChan
+			}
+		}
+	}
+	return nil, nil, nil
+}
+
+// -------------------------------------------------------------
+// マップビヘイビア・インデックス & スライス解決
 // -------------------------------------------------------------
 
 func (c *Context) EnsureMapSupported(line, col int) error {
@@ -1417,6 +1825,12 @@ func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) 
 		return mp.Value, nil
 	}
 
+	// ユーザー定義構造体の Indexable 能力判定 (Get メソッド)
+	if _, valType, _, fn := c.CheckIndexable(leftType); fn != nil {
+		return valType, nil
+	}
+
+	// 従来の MapBehavior (後方互換性)
 	if _, valType, ok := c.CheckMapBehavior(leftType); ok {
 		return valType, nil
 	}
@@ -1434,5 +1848,31 @@ func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) 
 		return TypeByte, nil
 	}
 
-	return TypeVoid, fmt.Errorf("type '%s' does not support indexing or MapBehavior interface", leftType.TypeName())
+	return TypeVoid, fmt.Errorf("type '%s' does not support indexing (implement 'Indexable' with Get method to enable)", leftType.TypeName())
+}
+
+func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) (Type, error) {
+	if leftType == nil {
+		return TypeVoid, fmt.Errorf("cannot slice nil type")
+	}
+
+	if leftType == TypeString || leftType == TypeCString {
+		return TypeString, nil
+	}
+	if sl, ok := leftType.(*SliceType); ok {
+		return sl, nil
+	}
+	if ar, ok := leftType.(*ArrayType); ok {
+		return &SliceType{Elem: ar.Elem}, nil
+	}
+	if pt, ok := leftType.(*PointerType); ok {
+		return &SliceType{Elem: pt.Base}, nil
+	}
+
+	// ユーザー定義構造体の Sliceable 能力判定 (Slice メソッド)
+	if resType, _, fn := c.CheckSliceable(leftType); fn != nil {
+		return resType, nil
+	}
+
+	return TypeVoid, fmt.Errorf("type '%s' does not support slicing (implement 'Sliceable' with Slice(low, high int) to enable)", leftType.TypeName())
 }

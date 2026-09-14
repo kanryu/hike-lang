@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"fmt"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -133,7 +134,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
 		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
-	// 多値アンパック代入
+	// 多値アンパック代入 (v, ok := expr)
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
 		var rhsVal hir.Value
 		if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
@@ -208,6 +209,19 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				val = rhsVals[i]
 			}
 
+			// 単一受け取り時、右辺がタプルであれば先頭要素（インデックス0）を自動抽出
+			if len(stmt.Left) == 1 && val != nil {
+				if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+					elemVal := s.root.nextReg(tup.Types[0])
+					s.root.emit(&hir.InstrExtractValue{
+						Dst:   elemVal,
+						Agg:   val,
+						Index: 0,
+					})
+					val = elemVal
+				}
+			}
+
 			if stmt.Type != nil {
 				targetType = s.root.semaCtx.ResolveType(stmt.Type)
 				if val != nil {
@@ -259,10 +273,13 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			continue
 		}
 
-		// マップ要素への代入 m[k] = v の判定
+		// マップおよびコレクション構造体への添字代入 m[k] = v の判定
 		if idxExpr, okIdx := left.(*ast.IndexExpr); okIdx {
 			leftVal := s.root.Expr.LowerExpr(idxExpr.Left)
-			if mp, isMap := leftVal.Type().(*sema.MapType); isMap {
+			leftType := leftVal.Type()
+
+			// 1. 組み込み map[K]V
+			if mp, isMap := leftType.(*sema.MapType); isMap {
 				keyVal := s.root.Expr.LowerExpr(idxExpr.Index)
 				if i < len(rhsVals) {
 					val := rhsVals[i]
@@ -276,10 +293,85 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				}
 				continue
 			}
-			if _, _, isBeh := s.root.semaCtx.CheckMapBehavior(leftVal.Type()); isBeh {
-				objPtr := s.root.Expr.LowerStructPtr(idxExpr.Left)
-				setFnName, setFn, finalRecv, found := s.root.Call.ResolveMethod(leftVal.Type(), "Set", objPtr)
+
+			// 2. ユーザー定義コレクションへの添字代入 (Set(key, val) メソッド)
+			objPtr := s.root.Expr.LowerStructPtr(idxExpr.Left)
+			setFnName, setFn, finalRecv, found := s.root.Call.ResolveMethod(leftType, "Set", objPtr)
+			if strings.Contains(leftType.TypeName(), "__") {
+				parts := strings.SplitN(strings.TrimPrefix(leftType.TypeName(), "*"), "__", 2)
+				baseName := parts[0]
+				typeSuffix := parts[1]
+				specSet := fmt.Sprintf("%s_Set__%s", baseName, typeSuffix)
+				if fn, ok := s.root.semaCtx.Functions[specSet]; ok {
+					setFnName = specSet
+					setFn = fn
+					found = true
+				}
+			}
+			if !found && strings.Contains(leftType.TypeName(), "__") {
+				baseName := strings.Split(strings.TrimPrefix(leftType.TypeName(), "*"), "__")[0]
+				if st, _ := s.root.semaCtx.LookupStruct(baseName); st != nil {
+					setFnName, setFn, finalRecv, found = s.root.Call.ResolveMethod(st, "Set", objPtr)
+				}
+			}
+
+			if found && setFnName != "" && i < len(rhsVals) {
+				if finalRecv == nil {
+					finalRecv = objPtr
+				}
+				if setFn != nil && len(setFn.ParamTypes) > 0 {
+					_, isPtrExpected := setFn.ParamTypes[0].(*sema.PointerType)
+					_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+					if isPtrExpected && !isPtrActual {
+						allocaTmp := s.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+						s.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+						s.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+						finalRecv = allocaTmp
+					} else if !isPtrExpected && isPtrActual {
+						ptrType := finalRecv.Type().(*sema.PointerType)
+						loadReg := s.root.nextReg(ptrType.Base)
+						s.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+						finalRecv = loadReg
+					}
+				}
+
+				keyVal := s.root.Expr.LowerExpr(idxExpr.Index)
+				val := rhsVals[i]
+
+				var keyArg, valArg hir.Value
+				if setFn != nil && len(setFn.ParamTypes) >= 2 {
+					kIdx := 1
+					vIdx := 2
+					if !setFn.IsMethod && len(setFn.ParamTypes) == 2 {
+						kIdx = 0
+						vIdx = 1
+					}
+					if len(setFn.ParamTypes) > vIdx {
+						keyArg = s.root.emitValueCoerce(keyVal, setFn.ParamTypes[kIdx])
+						valArg = s.root.emitValueCoerce(val, setFn.ParamTypes[vIdx])
+					} else {
+						keyArg = s.root.emitValueCoerce(keyVal, sema.TypeInt)
+						valArg = val
+					}
+				} else {
+					keyArg = s.root.emitValueCoerce(keyVal, sema.TypeInt)
+					valArg = val
+				}
+
+				s.root.emit(&hir.InstrCallStatic{
+					CalleeName: setFnName,
+					Args:       []hir.Value{finalRecv, keyArg, valArg},
+				})
+				continue
+			}
+
+			// 3. 従来の MapBehavior (後方互換性)
+			if _, _, isBeh := s.root.semaCtx.CheckMapBehavior(leftType); isBeh {
+				setFnName, setFn, finalRecv, found := s.root.Call.ResolveMethod(leftType, "Set", objPtr)
 				if found && setFn != nil && i < len(rhsVals) {
+					if finalRecv == nil {
+						finalRecv = objPtr
+					}
 					keyVal := s.root.Expr.LowerExpr(idxExpr.Index)
 					val := rhsVals[i]
 					keyArg := s.root.emitValueCoerce(keyVal, setFn.ParamTypes[1])
@@ -302,6 +394,19 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				val = rhsVals[i]
 			} else {
 				val = &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+			}
+
+			// 単一受け取り時、右辺がタプルであれば先頭要素（インデックス0）を自動抽出
+			if len(stmt.Left) == 1 && val != nil {
+				if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
+					elemVal := s.root.nextReg(tup.Types[0])
+					s.root.emit(&hir.InstrExtractValue{
+						Dst:   elemVal,
+						Agg:   val,
+						Index: 0,
+					})
+					val = elemVal
+				}
 			}
 
 			var elemType sema.Type = sema.TypeInt
@@ -414,15 +519,77 @@ func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
 }
 
 func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
-	xVal := s.root.Expr.LowerExpr(fr.X)
+	targetExpr := fr.X
+	var isAsyncRecv bool = false
+	if recvExpr, okRecv := fr.X.(*ast.ReceiveExpr); okRecv {
+		isAsyncRecv = true
+		targetExpr = recvExpr.Expr
+	}
+
+	xVal := s.root.Expr.LowerExpr(targetExpr)
 	xType := xVal.Type()
 
-	if _, _, isBeh := s.root.semaCtx.CheckMapBehavior(xType); isBeh {
-		objPtr := s.root.Expr.LowerStructPtr(fr.X)
-		initFnName, initFn, finalRecv, hasInit := s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
-		nextFnName, nextFn, _, hasNext := s.root.Call.ResolveMethod(xType, "Next", objPtr)
+	// 1. AsyncIterable (for v := range <-stream)
+	if isAsyncRecv {
+		var hasInit, hasNextChan bool
+		var initFnName, nextChanFnName string
+		var nextChanFn *sema.FuncType
+		var finalRecv hir.Value
 
-		if hasInit && hasNext && initFn != nil && nextFn != nil {
+		objPtr := s.root.Expr.LowerStructPtr(targetExpr)
+		initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
+		nextChanFnName, nextChanFn, _, hasNextChan = s.root.Call.ResolveMethod(xType, "NextChannel", objPtr)
+
+		if strings.Contains(xType.TypeName(), "__") {
+			parts := strings.SplitN(strings.TrimPrefix(xType.TypeName(), "*"), "__", 2)
+			baseName := parts[0]
+			typeSuffix := parts[1]
+			specInit := fmt.Sprintf("%s_InitIterator__%s", baseName, typeSuffix)
+			specNextChan := fmt.Sprintf("%s_NextChannel__%s", baseName, typeSuffix)
+			if fn, ok := s.root.semaCtx.Functions[specInit]; ok {
+				initFnName = specInit
+				hasInit = true
+				_ = fn
+			}
+			if fn, ok := s.root.semaCtx.Functions[specNextChan]; ok {
+				nextChanFnName = specNextChan
+				nextChanFn = fn
+				hasNextChan = true
+			}
+		}
+
+		if (!hasInit || !hasNextChan) && strings.Contains(xType.TypeName(), "__") {
+			baseName := strings.Split(strings.TrimPrefix(xType.TypeName(), "*"), "__")[0]
+			if st, _ := s.root.semaCtx.LookupStruct(baseName); st != nil {
+				if !hasInit {
+					initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(st, "InitIterator", objPtr)
+				}
+				if !hasNextChan {
+					nextChanFnName, nextChanFn, _, hasNextChan = s.root.Call.ResolveMethod(st, "NextChannel", objPtr)
+				}
+			}
+		}
+
+		if hasInit && hasNextChan && nextChanFn != nil {
+			if finalRecv == nil {
+				finalRecv = objPtr
+			}
+			if initFnMeta := s.root.semaCtx.Functions[initFnName]; initFnMeta != nil && len(initFnMeta.ParamTypes) > 0 {
+				_, isPtrExpected := initFnMeta.ParamTypes[0].(*sema.PointerType)
+				_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+				if isPtrExpected && !isPtrActual {
+					allocaTmp := s.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+					s.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+					s.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+					finalRecv = allocaTmp
+				} else if !isPtrExpected && isPtrActual {
+					ptrType := finalRecv.Type().(*sema.PointerType)
+					loadReg := s.root.nextReg(ptrType.Base)
+					s.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+					finalRecv = loadReg
+				}
+			}
+
 			sizeReg := s.root.nextReg(sema.TypeInt)
 			s.root.emit(&hir.InstrCallStatic{Dst: sizeReg, CalleeName: initFnName, Args: []hir.Value{finalRecv, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}}})
 
@@ -430,12 +597,24 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			s.root.emit(&hir.InstrAllocaDynamic{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
 			s.root.emit(&hir.InstrCallStatic{CalleeName: initFnName, Args: []hir.Value{finalRecv, bufReg}})
 
+			var elemType sema.Type = sema.TypeInt
+			if len(nextChanFn.ReturnTypes) >= 1 {
+				ret0 := nextChanFn.ReturnTypes[0]
+				if ch, ok := ret0.(*sema.ChanType); ok {
+					elemType = ch.Elem
+				} else if tup, ok := ret0.(*sema.TupleType); ok && len(tup.Types) > 0 {
+					if ch, okCh := tup.Types[0].(*sema.ChanType); okCh {
+						elemType = ch.Elem
+					}
+				}
+			}
+
 			var oldKeySym, oldValSym hir.Value
 			var oldKeyTyp, oldValTyp sema.Type
 			var hasOldKey, hasOldVal bool
 
 			var kPtr, vPtr hir.Value
-			if fr.Key != nil {
+			if fr.Key != nil && fr.Value != nil {
 				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
 					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
 					oldKeyTyp = s.root.symbolTypes[kId.Value]
@@ -446,25 +625,39 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 					s.root.symbols[kId.Value] = kPtr
 					s.root.symbolTypes[kId.Value] = sema.TypeInt
 				}
-			}
-			if fr.Value != nil {
 				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
 					oldValSym, hasOldVal = s.root.symbols[vId.Value]
 					oldValTyp = s.root.symbolTypes[vId.Value]
 
-					vReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, vId.Value)
-					s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: sema.TypeInt})
+					vReg := s.root.nextReg(&sema.PointerType{Base: elemType}, vId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: elemType})
 					vPtr = vReg
 					s.root.symbols[vId.Value] = vPtr
-					s.root.symbolTypes[vId.Value] = sema.TypeInt
+					s.root.symbolTypes[vId.Value] = elemType
+				}
+			} else if fr.Key != nil {
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: elemType}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: elemType})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = elemType
 				}
 			}
 
-			condBB := s.root.newBlock("mapbeh.cond")
-			bodyBB := s.root.newBlock("mapbeh.body")
-			endBB := s.root.newBlock("mapbeh.end")
+			idxAlloca := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "asynciter.idx")
+			s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
+			s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
-			s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: condBB})
+			condBB := s.root.newBlock("asynciter.cond")
+			bodyBB := s.root.newBlock("asynciter.body")
+			postBB := s.root.newBlock("asynciter.post")
+			endBB := s.root.newBlock("asynciter.end")
+
+			s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: postBB})
 			defer func() {
 				s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
 			}()
@@ -472,33 +665,59 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			s.root.terminate(&hir.InstrJump{Target: condBB.Label})
 
 			s.root.setBlock(condBB)
-			retTupleType := nextFn.ReturnTypes[0]
+			var retTupleType sema.Type
+			if len(nextChanFn.ReturnTypes) == 1 {
+				retTupleType = nextChanFn.ReturnTypes[0]
+			} else {
+				retTupleType = &sema.TupleType{Types: nextChanFn.ReturnTypes}
+			}
 			nextRes := s.root.nextReg(retTupleType)
-			s.root.emit(&hir.InstrCallStatic{Dst: nextRes, CalleeName: nextFnName, Args: []hir.Value{finalRecv, bufReg}})
+			s.root.emit(&hir.InstrCallStatic{Dst: nextRes, CalleeName: nextChanFnName, Args: []hir.Value{finalRecv, bufReg}})
 			okReg := s.root.nextReg(sema.TypeBool)
-			s.root.emit(&hir.InstrExtractValue{Dst: okReg, Agg: nextRes, Index: 2})
+			s.root.emit(&hir.InstrExtractValue{Dst: okReg, Agg: nextRes, Index: 1})
 			s.root.terminate(&hir.InstrBranch{Cond: okReg, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
 
 			s.root.setBlock(bodyBB)
-			if kPtr != nil {
-				kPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-				s.root.emit(&hir.InstrExtractValue{Dst: kPtrReg, Agg: nextRes, Index: 0})
-				kValReg := s.root.nextReg(sema.TypeInt)
-				s.root.emit(&hir.InstrLoad{Dst: kValReg, Ptr: kPtrReg})
-				s.root.emit(&hir.InstrStore{Val: kValReg, Ptr: kPtr})
-			}
-			if vPtr != nil {
-				vPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-				s.root.emit(&hir.InstrExtractValue{Dst: vPtrReg, Agg: nextRes, Index: 1})
-				vValReg := s.root.nextReg(sema.TypeInt)
-				s.root.emit(&hir.InstrLoad{Dst: vValReg, Ptr: vPtrReg})
-				s.root.emit(&hir.InstrStore{Val: vValReg, Ptr: vPtr})
+			chReg := s.root.nextReg(&sema.ChanType{Elem: elemType})
+			s.root.emit(&hir.InstrExtractValue{Dst: chReg, Agg: nextRes, Index: 0})
+
+			// チャネルから要素を受信待機
+			tmpAlloca := s.root.nextReg(&sema.PointerType{Base: elemType})
+			s.root.emit(&hir.InstrAlloca{Dst: tmpAlloca, AllocType: elemType})
+			chRaw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			s.root.emit(&hir.InstrCast{Dst: chRaw, Val: chReg, ToType: &sema.PointerType{Base: sema.TypeByte}})
+			tmpRaw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			s.root.emit(&hir.InstrCast{Dst: tmpRaw, Val: tmpAlloca, ToType: &sema.PointerType{Base: sema.TypeByte}})
+			s.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_chan_recv", Args: []hir.Value{chRaw, tmpRaw}})
+			elemVal := s.root.nextReg(elemType)
+			s.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: tmpAlloca})
+
+			curIdx := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrLoad{Dst: curIdx, Ptr: idxAlloca})
+
+			if fr.Key != nil && fr.Value != nil {
+				if kPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: curIdx, Ptr: kPtr})
+				}
+				if vPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: elemVal, Ptr: vPtr})
+				}
+			} else if fr.Key != nil {
+				if kPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: elemVal, Ptr: kPtr})
+				}
 			}
 
 			s.LowerStmt(fr.Body)
 			if s.root.curBlock.Terminator == nil {
-				s.root.terminate(&hir.InstrJump{Target: condBB.Label})
+				s.root.terminate(&hir.InstrJump{Target: postBB.Label})
 			}
+
+			s.root.setBlock(postBB)
+			incIdx := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrBinary{Dst: incIdx, Op: hir.OpAdd, L: curIdx, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+			s.root.emit(&hir.InstrStore{Val: incIdx, Ptr: idxAlloca})
+			s.root.terminate(&hir.InstrJump{Target: condBB.Label})
 
 			s.root.setBlock(endBB)
 			if fr.Key != nil {
@@ -527,7 +746,316 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		}
 	}
 
-	// 組み込み map[K]V の走査
+	// 2. ユーザー定義コレクション (Iterable / MapBehavior: InitIterator + Next) の走査
+	var hasInit, hasNext bool
+	var initFnName, nextFnName string
+	var nextFn *sema.FuncType
+	var finalRecv hir.Value
+
+	objPtr := s.root.Expr.LowerStructPtr(targetExpr)
+	initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
+	nextFnName, nextFn, _, hasNext = s.root.Call.ResolveMethod(xType, "Next", objPtr)
+
+	if strings.Contains(xType.TypeName(), "__") {
+		parts := strings.SplitN(strings.TrimPrefix(xType.TypeName(), "*"), "__", 2)
+		baseName := parts[0]
+		typeSuffix := parts[1]
+		specInit := fmt.Sprintf("%s_InitIterator__%s", baseName, typeSuffix)
+		specNext := fmt.Sprintf("%s_Next__%s", baseName, typeSuffix)
+		if fn, ok := s.root.semaCtx.Functions[specInit]; ok {
+			initFnName = specInit
+			hasInit = true
+			_ = fn
+		}
+		if fn, ok := s.root.semaCtx.Functions[specNext]; ok {
+			nextFnName = specNext
+			nextFn = fn
+			hasNext = true
+		}
+	}
+
+	if (!hasInit || !hasNext) && strings.Contains(xType.TypeName(), "__") {
+		baseName := strings.Split(strings.TrimPrefix(xType.TypeName(), "*"), "__")[0]
+		if st, _ := s.root.semaCtx.LookupStruct(baseName); st != nil {
+			if !hasInit {
+				initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(st, "InitIterator", objPtr)
+			}
+			if !hasNext {
+				nextFnName, nextFn, _, hasNext = s.root.Call.ResolveMethod(st, "Next", objPtr)
+			}
+		}
+	}
+
+	if hasInit && hasNext && initFnName != "" && nextFnName != "" {
+		if finalRecv == nil {
+			finalRecv = objPtr
+		}
+		if initFnMeta := s.root.semaCtx.Functions[initFnName]; initFnMeta != nil && len(initFnMeta.ParamTypes) > 0 {
+			_, isPtrExpected := initFnMeta.ParamTypes[0].(*sema.PointerType)
+			_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+			if isPtrExpected && !isPtrActual {
+				allocaTmp := s.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+				s.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+				s.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+				finalRecv = allocaTmp
+			} else if !isPtrExpected && isPtrActual {
+				ptrType := finalRecv.Type().(*sema.PointerType)
+				loadReg := s.root.nextReg(ptrType.Base)
+				s.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+				finalRecv = loadReg
+			}
+		}
+
+		sizeReg := s.root.nextReg(sema.TypeInt)
+		s.root.emit(&hir.InstrCallStatic{Dst: sizeReg, CalleeName: initFnName, Args: []hir.Value{finalRecv, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}}})
+
+		bufReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		s.root.emit(&hir.InstrAllocaDynamic{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
+		s.root.emit(&hir.InstrCallStatic{CalleeName: initFnName, Args: []hir.Value{finalRecv, bufReg}})
+
+		var retTupleType sema.Type
+		var retTypes []sema.Type
+		if nextFn != nil && len(nextFn.ReturnTypes) > 0 {
+			if len(nextFn.ReturnTypes) == 1 {
+				retTupleType = nextFn.ReturnTypes[0]
+				if tup, okTup := retTupleType.(*sema.TupleType); okTup {
+					retTypes = tup.Types
+				} else {
+					retTypes = []sema.Type{retTupleType}
+				}
+			} else {
+				retTupleType = &sema.TupleType{Types: nextFn.ReturnTypes}
+				retTypes = nextFn.ReturnTypes
+			}
+		} else {
+			// デフォルト推論: (val, ok)
+			retTypes = []sema.Type{sema.TypeInt, sema.TypeBool}
+			retTupleType = &sema.TupleType{Types: retTypes}
+		}
+
+		numReturns := len(retTypes)
+		okIndex := numReturns - 1
+
+		var elemType sema.Type = sema.TypeInt
+		if numReturns == 2 {
+			elemType = retTypes[0]
+			if pt, isPtr := elemType.(*sema.PointerType); isPtr {
+				elemType = pt.Base
+			}
+		} else if numReturns >= 3 {
+			elemType = retTypes[1]
+			if pt, isPtr := elemType.(*sema.PointerType); isPtr {
+				elemType = pt.Base
+			}
+		}
+
+		var oldKeySym, oldValSym hir.Value
+		var oldKeyTyp, oldValTyp sema.Type
+		var hasOldKey, hasOldVal bool
+
+		var kPtr, vPtr hir.Value
+		if numReturns >= 3 {
+			// (key, val, ok) の Map スタイル
+			keyType := retTypes[0]
+			if pt, isPtr := keyType.(*sema.PointerType); isPtr {
+				keyType = pt.Base
+			}
+			valType := retTypes[1]
+			if pt, isPtr := valType.(*sema.PointerType); isPtr {
+				valType = pt.Base
+			}
+
+			if fr.Key != nil && fr.Value != nil {
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: keyType}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: keyType})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = keyType
+				}
+				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+					oldValSym, hasOldVal = s.root.symbols[vId.Value]
+					oldValTyp = s.root.symbolTypes[vId.Value]
+
+					vReg := s.root.nextReg(&sema.PointerType{Base: valType}, vId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: valType})
+					vPtr = vReg
+					s.root.symbols[vId.Value] = vPtr
+					s.root.symbolTypes[vId.Value] = valType
+				}
+			} else if fr.Key != nil {
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: keyType}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: keyType})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = keyType
+				}
+			}
+		} else {
+			// (elem, ok) のコレクション・リストスタイル
+			if fr.Key != nil && fr.Value != nil {
+				// 2変数の場合: 1つ目はインデックス (int), 2つ目は値 (elemType)
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: sema.TypeInt})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = sema.TypeInt
+				}
+				if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+					oldValSym, hasOldVal = s.root.symbols[vId.Value]
+					oldValTyp = s.root.symbolTypes[vId.Value]
+
+					vReg := s.root.nextReg(&sema.PointerType{Base: elemType}, vId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: vReg, AllocType: elemType})
+					vPtr = vReg
+					s.root.symbols[vId.Value] = vPtr
+					s.root.symbolTypes[vId.Value] = elemType
+				}
+			} else if fr.Key != nil {
+				// 1変数の場合: コレクション走査では値 (elemType) を直接受け取る
+				if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+					oldKeySym, hasOldKey = s.root.symbols[kId.Value]
+					oldKeyTyp = s.root.symbolTypes[kId.Value]
+
+					kReg := s.root.nextReg(&sema.PointerType{Base: elemType}, kId.Value)
+					s.root.emit(&hir.InstrAlloca{Dst: kReg, AllocType: elemType})
+					kPtr = kReg
+					s.root.symbols[kId.Value] = kPtr
+					s.root.symbolTypes[kId.Value] = elemType
+				}
+			}
+		}
+
+		idxAlloca := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "iter.idx")
+		s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
+		s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
+
+		condBB := s.root.newBlock("iter.cond")
+		bodyBB := s.root.newBlock("iter.body")
+		postBB := s.root.newBlock("iter.post")
+		endBB := s.root.newBlock("iter.end")
+
+		s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: postBB})
+		defer func() {
+			s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		}()
+
+		s.root.terminate(&hir.InstrJump{Target: condBB.Label})
+
+		s.root.setBlock(condBB)
+		nextRes := s.root.nextReg(retTupleType)
+		s.root.emit(&hir.InstrCallStatic{Dst: nextRes, CalleeName: nextFnName, Args: []hir.Value{finalRecv, bufReg}})
+		okReg := s.root.nextReg(sema.TypeBool)
+		s.root.emit(&hir.InstrExtractValue{Dst: okReg, Agg: nextRes, Index: okIndex})
+		s.root.terminate(&hir.InstrBranch{Cond: okReg, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
+
+		s.root.setBlock(bodyBB)
+		curIdx := s.root.nextReg(sema.TypeInt)
+		s.root.emit(&hir.InstrLoad{Dst: curIdx, Ptr: idxAlloca})
+
+		if numReturns >= 3 {
+			// MapBehavior: Index 0=Key, Index 1=Val
+			if kPtr != nil {
+				kPtrReg := s.root.nextReg(retTypes[0])
+				s.root.emit(&hir.InstrExtractValue{Dst: kPtrReg, Agg: nextRes, Index: 0})
+				if pt, isPtr := retTypes[0].(*sema.PointerType); isPtr {
+					kValReg := s.root.nextReg(pt.Base)
+					s.root.emit(&hir.InstrLoad{Dst: kValReg, Ptr: kPtrReg})
+					s.root.emit(&hir.InstrStore{Val: kValReg, Ptr: kPtr})
+				} else {
+					s.root.emit(&hir.InstrStore{Val: kPtrReg, Ptr: kPtr})
+				}
+			}
+			if vPtr != nil {
+				vPtrReg := s.root.nextReg(retTypes[1])
+				s.root.emit(&hir.InstrExtractValue{Dst: vPtrReg, Agg: nextRes, Index: 1})
+				if pt, isPtr := retTypes[1].(*sema.PointerType); isPtr {
+					vValReg := s.root.nextReg(pt.Base)
+					s.root.emit(&hir.InstrLoad{Dst: vValReg, Ptr: vPtrReg})
+					s.root.emit(&hir.InstrStore{Val: vValReg, Ptr: vPtr})
+				} else {
+					s.root.emit(&hir.InstrStore{Val: vPtrReg, Ptr: vPtr})
+				}
+			}
+		} else {
+			// Collection/List: Index 0=Elem
+			var elemVal hir.Value
+			ret0Type := retTypes[0]
+			if pt, isPtr := ret0Type.(*sema.PointerType); isPtr && elemType != nil && pt.Base.TypeName() == elemType.TypeName() {
+				pElem := s.root.nextReg(ret0Type)
+				s.root.emit(&hir.InstrExtractValue{Dst: pElem, Agg: nextRes, Index: 0})
+				valReg := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: valReg, Ptr: pElem})
+				elemVal = valReg
+			} else {
+				valReg := s.root.nextReg(ret0Type)
+				s.root.emit(&hir.InstrExtractValue{Dst: valReg, Agg: nextRes, Index: 0})
+				elemVal = valReg
+			}
+
+			if fr.Key != nil && fr.Value != nil {
+				if kPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: curIdx, Ptr: kPtr})
+				}
+				if vPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: elemVal, Ptr: vPtr})
+				}
+			} else if fr.Key != nil {
+				if kPtr != nil {
+					s.root.emit(&hir.InstrStore{Val: elemVal, Ptr: kPtr})
+				}
+			}
+		}
+
+		s.LowerStmt(fr.Body)
+		if s.root.curBlock.Terminator == nil {
+			s.root.terminate(&hir.InstrJump{Target: postBB.Label})
+		}
+
+		s.root.setBlock(postBB)
+		incIdx := s.root.nextReg(sema.TypeInt)
+		s.root.emit(&hir.InstrBinary{Dst: incIdx, Op: hir.OpAdd, L: curIdx, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+		s.root.emit(&hir.InstrStore{Val: incIdx, Ptr: idxAlloca})
+		s.root.terminate(&hir.InstrJump{Target: condBB.Label})
+
+		s.root.setBlock(endBB)
+		if fr.Key != nil {
+			if kId, ok := fr.Key.(*ast.Identifier); ok && kId.Value != "_" {
+				if hasOldKey {
+					s.root.symbols[kId.Value] = oldKeySym
+					s.root.symbolTypes[kId.Value] = oldKeyTyp
+				} else {
+					delete(s.root.symbols, kId.Value)
+					delete(s.root.symbolTypes, kId.Value)
+				}
+			}
+		}
+		if fr.Value != nil {
+			if vId, ok := fr.Value.(*ast.Identifier); ok && vId.Value != "_" {
+				if hasOldVal {
+					s.root.symbols[vId.Value] = oldValSym
+					s.root.symbolTypes[vId.Value] = oldValTyp
+				} else {
+					delete(s.root.symbols, vId.Value)
+					delete(s.root.symbolTypes, vId.Value)
+				}
+			}
+		}
+		return
+	}
+
+	// 3. 組み込み map[K]V の走査
 	if mp, isMap := xType.(*sema.MapType); isMap {
 		mapStructType := &sema.StructType{Name: "__hike_map"}
 		mapPtrType := &sema.PointerType{Base: mapStructType}
@@ -635,8 +1163,8 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 			s.root.emit(&hir.InstrGetFieldPtr{Dst: pVal, BasePtr: curE, FieldIndex: 2, FieldName: "val"})
 			rawVal := s.root.nextReg(sema.TypeInt)
 			s.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: pVal})
-			realVal := s.root.coerceFromI64(rawVal, mp.Value)
-			s.root.emit(&hir.InstrStore{Val: realVal, Ptr: vPtr})
+			realKeyVal := s.root.coerceFromI64(rawVal, mp.Value)
+			s.root.emit(&hir.InstrStore{Val: realKeyVal, Ptr: vPtr})
 		}
 
 		s.LowerStmt(fr.Body)
@@ -686,6 +1214,7 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		return
 	}
 
+	// 4. スライス、配列、文字列の走査
 	var elemType sema.Type = sema.TypeByte
 	var lenVal hir.Value = nil
 	var dataPtr hir.Value = nil

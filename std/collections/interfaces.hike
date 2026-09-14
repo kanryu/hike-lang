@@ -1,0 +1,46 @@
+package collections
+
+// Collection は要素数取得とクリアを提供する基本インターフェース
+type Collection interface {
+	Len() int
+	IsEmpty() bool
+	Clear()
+}
+
+// Indexable は添字参照構文 (val := obj[key] / val, ok := obj[key]) を解禁するインターフェース
+type Indexable[K, V] interface {
+	Get(key K) (V, bool)
+}
+
+// IndexAssignable は添字代入構文 (obj[key] = val) を解禁するインターフェース
+// 必要に応じて成功可否を返すことも可能だが、代入文との整合上 void (戻り値なし) が一般的
+type IndexAssignable[K, V] interface {
+	Set(key K, val V)
+}
+
+// Sliceable はスライス切り出し構文 (sub := obj[low:high] / sub, ok := obj[low:high]) を解禁するインターフェース
+type Sliceable[T] interface {
+	Slice(low int, high int) (T, bool)
+}
+
+// Iterator はステートマシン型イテレータの規約
+type Iterator[T] interface {
+	HasNext() bool
+	Next() T
+}
+
+// Iterable は同期 for-range 構文 (for v := range obj) を解禁するインターフェース
+type Iterable[T] interface {
+	InitIterator(buf *byte) int
+	Next(buf *byte) (*T, bool)
+}
+
+// AsyncIterable は非同期 for-range 構文 (for v := range <-obj) を解禁するインターフェース
+type AsyncIterable[T] interface {
+	// InitIterator は反復用ステートおよび待機ハンドルの初期化を行う
+	// buf に nil を渡した場合は必要なバッファサイズ（バイト数）を返す
+	InitIterator(buf *byte) int
+
+	// NextChannel は次の要素が送られてくるチャネルと反復継続フラグを返す
+	NextChannel(buf *byte) (chan T, bool)
+}

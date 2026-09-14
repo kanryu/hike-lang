@@ -255,7 +255,6 @@ func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
 func (fl *FloatLiteral) String() string       { return fl.Token.Literal }
 
 // CharLiteral は1文字分のUTF-8文字列（string型）を表す文字リテラルノード
-// 必要に応じてアンサインドインテジャー（uint）へのキャストで CodePoint を利用可能
 type CharLiteral struct {
 	Token     token.Token
 	Value     string // UTF-8 エンコードされた1文字の文字列 (例: "a", "\n", "あ")
@@ -459,9 +458,10 @@ func (pt *PointerType) expressionNode()      {}
 func (pt *PointerType) TokenLiteral() string { return pt.Token.Literal }
 
 type StructType struct {
-	Token       token.Token
-	FieldTokens []token.Token
-	Fields      []*FieldDecl
+	Token               token.Token
+	FieldTokens         []token.Token
+	Fields              []*FieldDecl
+	BuiltinCapabilities map[string]bool // 組み込みインターフェース (Indexable, Sliceable, Iterable 等) の充足マップ
 }
 
 func (st *StructType) typeExprNode()        {}

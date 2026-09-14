@@ -21,7 +21,7 @@ const (
 	LESSGREATER // >, <, <=, >=
 	SUM         // +, -
 	PRODUCT     // *, /
-	PREFIX      // -X or !X
+	PREFIX      // -X or !X or <-X
 	CALL        // myFunction(X)
 	INDEX       // array[index], .field
 )
@@ -90,8 +90,8 @@ func isBasicTypeName(name string) bool {
 	switch name {
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"float32", "float64",
-		"string", "cstring", "bool", "byte", "rune", "any", "error":
+		"float", "float32", "float64",
+		"string", "cstring", "bool", "byte", "rune", "any", "error", "void":
 		return true
 	}
 	return false
@@ -110,6 +110,10 @@ func isTypeLikeExpr(e ast.Expression) bool {
 			return true
 		}
 		return false
+	case *ast.GenericInstExpr:
+		return isTypeLikeExpr(expr.Left)
+	case *ast.NamedType:
+		return true
 	case *ast.PointerType, *ast.SliceType, *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
 		return true
 	case *ast.PrefixExpr:
@@ -348,9 +352,9 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	return &ast.NamedType{Token: p.curToken, Package: nil, Name: &ast.Identifier{Token: p.curToken, Value: "int"}}
 }
 
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 // 式パース (Expression / Pratt Parsing)
-// -----------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
@@ -450,10 +454,21 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			}
 		}
 
-		if !p.expectPeek(token.LBRACE) {
-			return nil
+		// 波括弧が続かない場合は関数型（FuncType）として受理 (例: sizeof(func(int) bool))
+		if !p.peekTokenIs(token.LBRACE) {
+			paramTypeExprs := make([]ast.TypeExpr, len(params))
+			for i, param := range params {
+				paramTypeExprs[i] = param.Type
+			}
+			return &ast.FuncType{
+				Token:       tok,
+				ParamTypes:  paramTypeExprs,
+				IsVariadic:  isVariadic,
+				ReturnTypes: returnTypes,
+			}
 		}
 
+		p.expectPeek(token.LBRACE)
 		body := p.parseBlockStmt()
 		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
 
@@ -787,6 +802,26 @@ func exprToTypeExpr(e ast.Expression) ast.TypeExpr {
 	}
 	if id, ok := e.(*ast.Identifier); ok {
 		return &ast.NamedType{Token: id.Token, Name: id}
+	}
+	if gen, ok := e.(*ast.GenericInstExpr); ok {
+		var pkgId *ast.Identifier
+		var nameId *ast.Identifier
+		if id, okId := gen.Left.(*ast.Identifier); okId {
+			nameId = id
+		} else if mem, okMem := gen.Left.(*ast.MemberExpr); okMem {
+			if p, okP := mem.Object.(*ast.Identifier); okP {
+				pkgId = p
+				nameId = mem.Field
+			}
+		}
+		if nameId != nil {
+			return &ast.NamedType{
+				Token:    gen.Token,
+				Package:  pkgId,
+				Name:     nameId,
+				TypeArgs: gen.TypeArgs,
+			}
+		}
 	}
 	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		base := exprToTypeExpr(pref.Right)

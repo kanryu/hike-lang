@@ -1,0 +1,220 @@
+package list
+
+// Node は双方向連結リストの個別要素ノード
+type Node[T] struct {
+	Value T
+	Prev  *Node[T]
+	Next  *Node[T]
+}
+
+// List は双方向連結リストのコンテナ構造体
+type List[T] struct {
+	head *Node[T]
+	tail *Node[T]
+	len  int
+}
+
+// New は新しい空のリストを生成する
+func New[T]() *List[T] {
+	return &List[T]{
+		head: nil,
+		tail: nil,
+		len:  0,
+	}
+}
+
+// Len はリスト内の要素数を返す (Collection準拠)
+func (l *List[T]) Len() int {
+	return l.len
+}
+
+// IsEmpty はリストが空かどうかを判定する (Collection準拠)
+func (l *List[T]) IsEmpty() bool {
+	return l.len == 0
+}
+
+// Clear はリストの全要素を破棄する (Collection準拠)
+func (l *List[T]) Clear() {
+	l.head = nil
+	l.tail = nil
+	l.len = 0
+}
+
+// PushBack はリストの末尾に要素を追加する
+func (l *List[T]) PushBack(val T) *Node[T] {
+	node := &Node[T]{
+		Value: val,
+		Prev:  l.tail,
+		Next:  nil,
+	}
+
+	if l.tail != nil {
+		l.tail.Next = node
+	} else {
+		l.head = node
+	}
+	l.tail = node
+	l.len++
+	return node
+}
+
+// PushFront はリストの先頭に要素を追加する
+func (l *List[T]) PushFront(val T) *Node[T] {
+	node := &Node[T]{
+		Value: val,
+		Prev:  nil,
+		Next:  l.head,
+	}
+
+	if l.head != nil {
+		l.head.Prev = node
+	} else {
+		l.tail = node
+	}
+	l.head = node
+	l.len++
+	return node
+}
+
+// PopBack はリストの末尾要素を取り出して削除する
+func (l *List[T]) PopBack() (T, bool) {
+	if l.tail == nil {
+		var zero T
+		return zero, false
+	}
+
+	node := l.tail
+	l.tail = node.Prev
+	if l.tail != nil {
+		l.tail.Next = nil
+	} else {
+		l.head = nil
+	}
+	l.len--
+	return node.Value, true
+}
+
+// PopFront はリストの先頭要素を取り出して削除する
+func (l *List[T]) PopFront() (T, bool) {
+	if l.head == nil {
+		var zero T
+		return zero, false
+	}
+
+	node := l.head
+	l.head = node.Next
+	if l.head != nil {
+		l.head.Prev = nil
+	} else {
+		l.tail = nil
+	}
+	l.len--
+	return node.Value, true
+}
+
+// getNode は指定インデックスのノードを取得する内部ヘルパー (双方向走査最適化)
+func (l *List[T]) getNode(index int) *Node[T] {
+	if index < 0 || index >= l.len {
+		return nil
+	}
+
+	// 先頭側・末尾側の近い方から走査
+	if index < l.len/2 {
+		cur := l.head
+		for i := 0; i < index; i++ {
+			cur = cur.Next
+		}
+		return cur
+	} else {
+		cur := l.tail
+		for i := l.len - 1; i > index; i-- {
+			cur = cur.Prev
+		}
+		return cur
+	}
+}
+
+// Get は添字構文 (list[i]) による要素取得を提供する (Indexable準拠)
+func (l *List[T]) Get(index int) (T, bool) {
+	node := l.getNode(index)
+	if node == nil {
+		var zero T
+		return zero, false
+	}
+	return node.Value, true
+}
+
+// Set は添字代入構文 (list[i] = val) による要素更新を提供する (IndexAssignable準拠)
+func (l *List[T]) Set(index int, val T) {
+	node := l.getNode(index)
+	if node == nil {
+		return
+	}
+	node.Value = val
+}
+
+// Slice はスライス構文 (sub := list[low:high]) を解禁する (Sliceable準拠)
+// 計算量は O(N) (走査 O(low) + ノード生成 O(high - low))
+func (l *List[T]) Slice(low int, high int) (*List[T], bool) {
+	// 境界値チェック
+	if low < 0 || high > l.len || low > high {
+		return nil, false
+	}
+
+	result := New[T]()
+	targetCount := high - low
+	if targetCount == 0 {
+		return result, true // 空スライスの生成
+	}
+
+	// 切り出し開始ノードまで走査
+	cur := l.getNode(low)
+	if cur == nil {
+		return nil, false
+	}
+
+	// 指定要素数分だけ値を複製して新リストへ追加
+	for i := 0; i < targetCount && cur != nil; i++ {
+		result.PushBack(cur.Value)
+		cur = cur.Next
+	}
+
+	return result, true
+}
+
+// -----------------------------------------------------------------------------
+// for-range (Iterable) サポート実装
+// -----------------------------------------------------------------------------
+
+// ListIterState は反復走査の現在位置を保持する内部構造体
+type ListIterState[T] struct {
+	current *Node[T]
+}
+
+// InitIterator は反復走査用ステートの初期化を行う (Iterable準拠)
+func (l *List[T]) InitIterator(buf *byte) int {
+	stateSize := 8 // ポインタサイズ (64bit環境想定)
+	if buf == nil {
+		return stateSize
+	}
+
+	statePtr := (*ListIterState[T])(buf)
+	statePtr.current = l.head
+	return stateSize
+}
+
+// Next は反復走査の次要素を取り出す (Iterable準拠)
+func (l *List[T]) Next(buf *byte) (*T, bool) {
+	if buf == nil {
+		return nil, false
+	}
+
+	statePtr := (*ListIterState[T])(buf)
+	if statePtr.current == nil {
+		return nil, false
+	}
+
+	valPtr := &statePtr.current.Value
+	statePtr.current = statePtr.current.Next
+	return valPtr, true
+}

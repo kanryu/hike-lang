@@ -412,7 +412,9 @@ func (p *Parser) parseExternFuncDecl() *ast.ExternFuncDecl {
 		efn.TargetCName = p.parseIdentifier()
 	}
 
-	p.nextToken()
+	if p.peekTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
 	if p.curTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
@@ -519,6 +521,9 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 		p.nextToken()
 		cfn.TargetCName = p.parseIdentifier()
 		p.nextToken()
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+		}
 	} else if p.peekTokenIs(token.LBRACE) || p.curTokenIs(token.LBRACE) {
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
@@ -637,6 +642,9 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	} else {
 		stmt.Type = p.parseTypeExpr()
 		p.nextToken()
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+		}
 	}
 	p.log(fmt.Sprintf("[%d:%d] Parsed type declaration: %s", stmt.Token.Line, stmt.Token.Col, stmt.Name.Value))
 	return stmt
@@ -1114,9 +1122,9 @@ func (p *Parser) parseForStmt() ast.Statement {
 		var cond ast.Expression = nil
 		if !p.curTokenIs(token.SEMICOLON) {
 			cond = p.parseExpression(LOWEST)
-		}
-		if !p.expectPeek(token.SEMICOLON) {
-			return nil
+			if !p.expectPeek(token.SEMICOLON) {
+				return nil
+			}
 		}
 		p.nextToken()
 
@@ -1125,7 +1133,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 			post = p.parseAssignOrExprStmt()
 		}
 		p.allowStructLit = oldAllow
-		if p.peekTokenIs(token.LBRACE) {
+		if !p.curTokenIs(token.LBRACE) && p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
 		}
 		body := p.parseBlockStmt()
@@ -1414,6 +1422,8 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 			}
 			return &ast.AssignStmt{Token: assignTok, Left: lefts, Right: rights}
 		}
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] syntax error: unexpected comma in statement, expected assignment", p.curToken.Line, p.curToken.Col))
+		return nil
 	}
 
 	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
