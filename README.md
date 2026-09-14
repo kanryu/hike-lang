@@ -28,12 +28,12 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 ## Key Features
 
 * **Go-Inspired Ergonomics**: Multi-return values, slices, structs, type inference (`:=`), and generic type parameters.
-* **Zero Runtime Overhead**: No GC pauses, no background scheduler, and standard C memory layout.
+* **Zero Runtime Overhead**: No GC pauses, no always-on language scheduler, and standard C memory layout. Runtime support is emitted as internal LLVM functions, so unused facilities can be eliminated from the final binary; programs that do not use runtime-backed features need no runtime code.
 * **Compile-Time Monomorphization**: Generic functions and types are fully specialized during compilation without dynamic dispatch penalties.
 * **First-Class C-ABI Support**: Emits pure C-ABI binaries and automatically emits matching `.h` headers for C/C++ host integration.
 * **2-Pass Stack Iterators**: Custom containers can provide zero-allocation `for-range` traversal using compile-time stack allocation (`alloca`).
 * **Closures with Escape Analysis**: Lexical closures capture by reference. Variables escaping their stack lifetime are promoted to the heap, unified under a 2-word fat pointer ABI.
-* **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`)[cite: 2, 3].
+* **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`).
 * **Standalone WebAssembly Target**: Emits `wasm32-unknown-unknown` via Clang without requiring external WASI-SDK installations.
 * **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB step debugging.
 
@@ -380,6 +380,16 @@ func (d *CustomDictionary[K, V]) Len() int {
     return len(d.Entries)
 }
 
+func (d *CustomDictionary[K, V]) Delete(key K) {
+    for i := 0; i < len(d.Entries); i = i + 1 {
+        if d.Entries[i].Key == key {
+            d.Entries[i] = d.Entries[len(d.Entries)-1]
+            d.Entries = d.Entries[:len(d.Entries)-1]
+            return
+        }
+    }
+}
+
 // --- 2-Pass Iterator Methods ---
 
 type DictIterator struct {
@@ -422,7 +432,61 @@ func DemoMapBehavior() {
 
 ---
 
-### 9. First-Class Functions, Closures & Escape Analysis
+### 10. Concurrency, Channels & Streaming
+
+`Async` schedules a closure for asynchronous execution and returns a typed one-shot task handle. The receive operator `<-` waits for completion and unpacks the return value or values.
+
+```go
+task := Async(func() int {
+    return 40 + 2
+})
+
+result := <-task
+```
+
+Channels are typed synchronization queues. They can be used directly for producer/consumer pipelines, including staged streaming downloads:
+
+```go
+type Download struct {
+    Blocks chan int
+}
+
+func (d *Download) InitIterator(buf *byte) int {
+    return 0
+}
+
+func (d *Download) NextChannel(buf *byte) (chan int, bool) {
+    return d.Blocks, true
+}
+
+func download() *Download {
+    result := &Download{Blocks: make(chan int, 3)}
+    Async(func() int {
+        result.Blocks <- 10
+        result.Blocks <- 20
+        result.Blocks <- 30
+        return 0
+    })
+    return result
+}
+
+func consume() int {
+    total := 0
+    stream := download()
+    for block := range <-stream {
+        total = total + block
+    }
+    return total
+}
+```
+
+The `InitIterator` and `NextChannel` method pair is the `AsyncIterable[T]` protocol defined in `std/collections`. `for value := range <-stream` receives blocks in channel order and can stop early with `break`.
+
+Current limitation: asynchronous range lowering resolves these methods on the concrete stream type. Interface-typed streams such as a value returned as `collections.AsyncIterable[int]` are not yet supported reliably and should remain concrete until interface dispatch is extended for this path.
+
+---
+
+### 11. First-Class Functions, Closures & Escape Analysis
 
 Functions can be passed as values, returned from factories, or defined inline as closures.
 
@@ -878,19 +942,27 @@ Pressing **`F5`** compiles the active `.hike` file and launches the debug sessio
 ## CLI Reference (`hikec`)
 
 ```text
-Usage: hikec <command> [options] <source.hike...>
+Usage: hikec <command> [options] <source.hike... | directory>
 
 Commands:
-  emit-ir   Compiles Hike code into target LLVM IR (.ll) (default)
-  build     Invokes Clang to compile Hike code directly to an executable or .wasm
-  run       Builds into a temporary binary and executes it immediately
+  go        Compile a directory of .go.hike files into one .syso object
+  emit-ir   Generate target LLVM IR (.ll) (default for a source input)
+  build     Compile Hike source into a native or WebAssembly binary via Clang
+  run       Build and immediately execute a native or WebAssembly program
 
-Options:
-  -o <path>       Output binary or IR path
-  -target <name>  Compilation target (windows, linux, darwin, wasm32)
-  -header <path>  Export C/C++ header (.h)
-  -g              Emit DWARF debug metadata
-  -v, --verbose   Enable verbose logs
+Options for emit-ir, build, and run:
+  -o <path>       Output IR, binary, or WebAssembly path
+  -header <path>  Export a C/C++ header (.h)
+  -target <name>  windows, windows-msvc, linux, darwin, wasm32, or wasm64
+  -cflags <flags> Additional flags passed to Clang
+  -g              Generate DWARF debug metadata
+  -v              Enable verbose logging
+  -vv             Enable detailed instruction-level logging
+
+Options for go:
+  -o <path>       Output .syso path
+  -target <name>  Target platform
+  -v, -vv         Enable verbose logging
 
 ```
 
@@ -898,7 +970,7 @@ Options:
 
 ## Roadmap
 
-* [ ] Dynamic interface dispatch (`vtable`)
+* [ ] Interface-valued `AsyncIterable` dispatch for `for value := range <-stream`
 
 
 * [ ] Memory management utilities (Arena allocator integrations)
