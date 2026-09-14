@@ -1186,6 +1186,9 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 // -------------------------------------------------------------
 
 func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
+	if node.WithCarry && (node.Operator == "<<" || node.Operator == ">>") {
+		return e.lowerShiftWithCarry(node)
+	}
 	if node.Operator == "&&" {
 		resAlloca := e.root.nextReg(&sema.PointerType{Base: sema.TypeBool}, "land.res")
 		e.root.emit(&hir.InstrAlloca{Dst: resAlloca, AllocType: sema.TypeBool})
@@ -1411,6 +1414,54 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	dst := e.root.nextReg(resType)
 	e.root.emit(&hir.InstrBinary{Dst: dst, Op: op, L: leftVal, R: rightVal})
 	return dst
+}
+
+func (e *ExprLowerer) lowerShiftWithCarry(node *ast.BinaryExpr) hir.Value {
+	leftVal := e.LowerExpr(node.Left)
+	rightVal := e.LowerExpr(node.Right)
+	valueType := leftVal.Type()
+	valueReg := e.root.nextReg(valueType)
+	shiftOp := hir.OpShl
+	if node.Operator == ">>" {
+		shiftOp = hir.OpShr
+	}
+	e.root.emit(&hir.InstrBinary{Dst: valueReg, Op: shiftOp, L: leftVal, R: rightVal})
+
+	var carryReg *hir.Reg
+	if node.Operator == "<<" {
+		width := integerBitWidth(valueType.LLVMType())
+		carryReg = e.root.nextReg(valueType)
+		e.root.emit(&hir.InstrBinary{
+			Dst:          carryReg,
+			Op:           hir.OpShr,
+			L:            leftVal,
+			R:            &hir.ConstInt{Val: int64(width - 1), Typ: valueType},
+			LogicalShift: true,
+		})
+	} else {
+		carryReg = e.root.nextReg(valueType)
+		e.root.emit(&hir.InstrBinary{
+			Dst: carryReg,
+			Op:  hir.OpAnd,
+			L:   leftVal,
+			R:   &hir.ConstInt{Val: 1, Typ: valueType},
+		})
+	}
+
+	tupleType := &sema.TupleType{Types: []sema.Type{valueType, valueType}}
+	tuple0 := e.root.nextReg(tupleType)
+	e.root.emit(&hir.InstrInsertValue{Dst: tuple0, Agg: e.root.defaultConstValue(tupleType), Val: valueReg, Index: 0})
+	tuple := e.root.nextReg(tupleType)
+	e.root.emit(&hir.InstrInsertValue{Dst: tuple, Agg: tuple0, Val: carryReg, Index: 1})
+	return tuple
+}
+
+func integerBitWidth(llvmType string) int {
+	var width int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(llvmType, "i"), "%d", &width); err != nil || width <= 0 {
+		panic(fmt.Sprintf("[Lower Error] shift requires a sized integer type, got '%s'", llvmType))
+	}
+	return width
 }
 
 func (e *ExprLowerer) LowerAsyncExpr(ae *ast.AsyncExpr) hir.Value {

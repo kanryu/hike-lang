@@ -1074,6 +1074,10 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 
 	case *ast.BinaryExpr:
+		if e.WithCarry && (e.Operator == "<<" || e.Operator == ">>") {
+			valueType := c.InferExprType(e.Left, locals)
+			return &TupleType{Types: []Type{valueType, valueType}}
+		}
 		switch e.Operator {
 		case "==", "!=", "<", "<=", ">", ">=":
 			return TypeBool

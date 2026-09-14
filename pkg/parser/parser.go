@@ -935,6 +935,7 @@ func (p *Parser) parseVarStmt() ast.Statement {
 			p.nextToken()
 			rights = append(rights, p.parseExpression(LOWEST))
 		}
+		markShiftWithCarry(lefts, rights)
 		return &ast.AssignStmt{
 			Token: varTok,
 			Left:  lefts,
@@ -1420,6 +1421,7 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 					break
 				}
 			}
+			markShiftWithCarry(lefts, rights)
 			return &ast.AssignStmt{Token: assignTok, Left: lefts, Right: rights}
 		}
 		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] syntax error: unexpected comma in statement, expected assignment", p.curToken.Line, p.curToken.Col))
@@ -1427,4 +1429,14 @@ func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	}
 
 	return &ast.ExprStmt{Token: startTok, Expr: leftExpr}
+}
+
+// markShiftWithCarry enables the optional second result when a shift is
+// unpacked into two assignment targets, for example: value, carry := x << 1.
+func markShiftWithCarry(lefts []ast.Expression, rights []ast.Expression) {
+	if len(lefts) == 2 && len(rights) == 1 {
+		if shift, ok := rights[0].(*ast.BinaryExpr); ok && (shift.Operator == "<<" || shift.Operator == ">>") {
+			shift.WithCarry = true
+		}
+	}
 }

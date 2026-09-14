@@ -212,10 +212,11 @@ func (i *InstrStore) String() string {
 }
 
 type InstrBinary struct {
-	Dst *Reg
-	Op  Opcode
-	L   Value
-	R   Value
+	Dst          *Reg
+	Op           Opcode
+	L            Value
+	R            Value
+	LogicalShift bool
 }
 
 func (i *InstrBinary) Result() *Reg { return i.Dst }
