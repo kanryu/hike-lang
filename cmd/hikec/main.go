@@ -8,7 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"hikec-go/pkg/cgen"
+	"hikec-go/pkg/codegen"
+	gocode "hikec-go/pkg/codegen/go"
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/target"
 )
@@ -87,7 +88,7 @@ func main() {
 // go: ディレクトリ内の *.go.hike を集約して単一 .syso を生成
 // -----------------------------------------------------------------------------
 func runGo(args []string) {
-	opts := compiler.GoBuildOptions{
+	opts := gocode.GoBuildOptions{
 		Dir:        ".",
 		TargetName: getDefaultTargetName(),
 	}
@@ -114,7 +115,7 @@ func runGo(args []string) {
 		}
 	}
 
-	if err := compiler.BuildGoPackage(opts); err != nil {
+	if err := gocode.BuildGoPackage(opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -201,7 +202,7 @@ func runEmitIR(args []string) {
 	}
 
 	if outputHeader != "" {
-		headerCode := cgen.GenerateHeader(prog, semaCtx, outputHeader)
+		headerCode := codegen.GenerateHeader(prog, semaCtx, outputHeader)
 		if err := os.WriteFile(outputHeader, []byte(headerCode), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Header write error: %v\n", err)
 			os.Exit(1)
@@ -325,7 +326,7 @@ func runBuild(args []string) {
 	// Wasm ターゲット時は runtime.js を自動生成して配置
 	if tgt.IsWasm {
 		runtimePath := filepath.Join(filepath.Dir(outputBin), "runtime.js")
-		if err := compiler.WriteWasmJSRuntime(runtimePath); err != nil {
+		if err := codegen.WriteWasmJSRuntime(runtimePath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to generate runtime.js: %v\n", err)
 		} else if !strings.Contains(outputBin, "hike_run_") && verbose {
 			fmt.Printf("Generated Wasm JS Runtime -> %s\n", runtimePath)

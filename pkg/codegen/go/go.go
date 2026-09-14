@@ -1,4 +1,4 @@
-package compiler
+package gocode
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/lexer"
 	"hikec-go/pkg/parser"
 	"hikec-go/pkg/target"
@@ -65,7 +66,7 @@ func BuildGoPackage(opts GoBuildOptions) error {
 	}
 
 	// 3. コンパイラインスタンスの準備
-	comp := New(tgt)
+	comp := compiler.New(tgt)
 	comp.SetVerbose(opts.Verbose)
 
 	// 4. LLVM IR へのコンパイル
