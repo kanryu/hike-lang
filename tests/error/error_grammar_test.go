@@ -95,3 +95,102 @@ func main() int {
 }
 `, ExpectedError: "does not support indexing"})
 }
+
+func TestGrammar_UndefinedInitializer(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    value := missingInitializer
+    return value
+}
+`, ExpectedError: "undefined: missingInitializer"})
+}
+
+func TestGrammar_BoolInitializerMismatch(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    var enabled bool = 1
+    return 0
+}
+`, ExpectedError: "cannot use int as bool"})
+}
+
+func TestGrammar_StringInitializerMismatch(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    var label string = true
+    return 0
+}
+`, ExpectedError: "cannot use int as string"})
+}
+
+func TestGrammar_MapVariableWithoutImport(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    values map[string]int
+    return 0
+}
+`, ExpectedError: "requires importing 'std/maps'"})
+}
+
+func TestGrammar_MapMakeWithDifferentTypesWithoutImport(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    values := make(map[int]string)
+    return 0
+}
+`, ExpectedError: "requires importing 'std/maps'"})
+}
+
+func TestGrammar_UndefinedCallArgument(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    return printf(missingFormat)
+}
+`, ExpectedError: "undefined: printf"})
+}
+
+func TestGrammar_UndefinedValueInBinaryExpression(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    return knownValue + missingOperand
+}
+`, ExpectedError: "undefined: knownValue"})
+}
+
+func TestGrammar_InvalidArrayIndexTarget(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    return true[0]
+}
+`, ExpectedError: "type 'bool' does not support indexing"})
+}
+
+func TestGrammar_InvalidPointerTarget(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    return *true
+}
+`, ExpectedError: "cannot dereference non-pointer type bool"})
+}
+
+func TestGrammar_MultipleUndefinedArguments(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    return missingFunction(firstMissing, secondMissing)
+}
+`, ExpectedErrorLines: []string{
+		"undefined: missingFunction",
+		"undefined: firstMissing",
+		"undefined: secondMissing",
+	}})
+}

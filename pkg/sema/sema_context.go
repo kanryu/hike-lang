@@ -1988,7 +1988,12 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		if left == TypeString || left == TypeCString {
 			return TypeInt
 		}
-		if _, directInteger := e.Left.(*ast.IntegerLiteral); !directInteger {
+		_, directInteger := e.Left.(*ast.IntegerLiteral)
+		directBool := false
+		if ident, ok := e.Left.(*ast.Identifier); ok {
+			directBool = ident.Value == "true" || ident.Value == "false"
+		}
+		if !directInteger && !directBool {
 			return TypeInt
 		}
 		if _, ok := left.(*SliceType); !ok {
