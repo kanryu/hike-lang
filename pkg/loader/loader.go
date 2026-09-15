@@ -18,6 +18,7 @@ type Loader struct {
 	visitedFiles map[string]bool
 	visitedPkgs  map[string]bool
 	verbose      bool
+	buildTags    map[string]bool
 }
 
 func New(rootDir string) *Loader {
@@ -36,12 +37,18 @@ func New(rootDir string) *Loader {
 		module:       module,
 		visitedFiles: make(map[string]bool),
 		visitedPkgs:  make(map[string]bool),
+		buildTags:    defaultBuildTags(),
 		verbose:      false,
 	}
 }
 
 func (l *Loader) SetVerbose(v bool) {
 	l.verbose = v
+}
+
+// SetBuildTags overrides the target tags used by source-file selection.
+func (l *Loader) SetBuildTags(tags map[string]bool) {
+	l.buildTags = tags
 }
 
 func (l *Loader) log(msg string) {
@@ -86,6 +93,9 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 			}
 			fileQueue = append(fileQueue, files...)
 		} else {
+			if !l.fileAllowed(absPath) {
+				continue
+			}
 			fileQueue = append(fileQueue, absPath)
 			dirFiles, _ := l.findHikeFilesInDir(filepath.Dir(absPath))
 			for _, df := range dirFiles {
@@ -169,8 +179,9 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 
 	var files []string
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".hike") {
-			files = append(files, filepath.Join(dir, entry.Name()))
+		path := filepath.Join(dir, entry.Name())
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".hike") && l.fileAllowed(path) {
+			files = append(files, path)
 		}
 	}
 	return files, nil

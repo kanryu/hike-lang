@@ -69,6 +69,8 @@ func TestMain(m *testing.M) {
 
 type HikeTestCase struct {
 	Source       string
+	Files        map[string]string
+	Target       string
 	ExpectedOut  string
 	ExpectedExit int
 }
@@ -88,6 +90,12 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 	srcPath := filepath.Join(tmpDir, "main.hike")
 	if err := os.WriteFile(srcPath, []byte(tc.Source), 0644); err != nil {
 		t.Fatalf("ソース書き込み失敗: %v", err)
+	}
+	for name, source := range tc.Files {
+		path := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+			t.Fatalf("追加ソース書き込み失敗 (%s): %v", name, err)
+		}
 	}
 
 	// hike.mod の自動解決
@@ -115,7 +123,12 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 	}
 
 	// 実行
-	runCmd := exec.Command(hikecBin, "run", srcPath)
+	commandArgs := []string{"run"}
+	if tc.Target != "" {
+		commandArgs = append(commandArgs, "-target", tc.Target)
+	}
+	commandArgs = append(commandArgs, srcPath)
+	runCmd := exec.Command(hikecBin, commandArgs...)
 	runCmd.Dir = tmpDir
 	var stdout, stderr bytes.Buffer
 	runCmd.Stdout = &stdout

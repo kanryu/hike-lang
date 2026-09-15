@@ -85,6 +85,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	// 1. パッケージ探索・構文解析フェーズ
 	_ = c.safeExecute(primaryFile, func() error {
 		ld := loader.New(rootDir)
+		ld.SetTarget(c.target)
 		ld.SetVerbose(c.verbose)
 		p, err := ld.Load(entryPaths...)
 		if err != nil {
