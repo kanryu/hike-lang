@@ -350,6 +350,17 @@ type CallExpr struct {
 	HasEllipsis bool
 }
 
+type InlineAsmExpr struct {
+	Token             token.Token
+	Template          string
+	OutputConstraints string
+	InputConstraints  string
+	Operands          []Expression
+}
+
+func (ie *InlineAsmExpr) expressionNode()      {}
+func (ie *InlineAsmExpr) TokenLiteral() string { return ie.Token.Literal }
+
 func (ce *CallExpr) expressionNode()      {}
 func (ce *CallExpr) TokenLiteral() string { return ce.Token.Literal }
 

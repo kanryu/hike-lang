@@ -78,6 +78,7 @@ const (
 	CFUNC       = "CFUNC"
 	EXTERN      = "EXTERN" // 外部C言語等の関数宣言用 (extern func)
 	JFUNC       = "JFUNC"  // WASM向けインラインJavaScript関数用 (jfunc)
+	INLINEASM   = "INLINEASM"
 	PASSTHROUGH = "PASSTHROUGH"
 	MAP         = "MAP"
 	CHAN        = "CHAN"

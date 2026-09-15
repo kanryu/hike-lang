@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,7 +138,11 @@ func buildConstraint(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, line := range strings.Split(string(b), "\n") {
+	return buildConstraintText(string(b))
+}
+
+func buildConstraintText(content string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		if strings.HasPrefix(line, "package ") {
 			break
@@ -153,6 +158,32 @@ func buildConstraint(path string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func validateInlineAsmBuildConstraint(path string, content []byte, tags map[string]bool) error {
+	text := strings.ToLower(string(content))
+	feature := ""
+	switch {
+	case strings.Contains(text, "aesenc"), strings.Contains(text, "aesdec"), strings.Contains(text, "aesni"):
+		feature = "amd64"
+	case strings.Contains(text, "pclmul"):
+		feature = "amd64"
+	case strings.Contains(text, "rdrand"), strings.Contains(text, "rdseed"):
+		feature = "amd64"
+	case strings.Contains(text, "sha256rnds2"), strings.Contains(text, "sha256msg"):
+		feature = "amd64"
+	}
+	if feature == "" {
+		return nil
+	}
+	expr, ok := buildConstraintText(string(content))
+	if !ok || !strings.Contains(expr, feature) {
+		return fmt.Errorf("%s: inline assembly using %s requires a matching //go:build %s constraint", path, feature, feature)
+	}
+	if !tags[feature] {
+		return fmt.Errorf("%s: inline assembly using %s is not supported by the selected target", path, feature)
+	}
+	return nil
 }
 
 type buildToken struct{ kind, value string }

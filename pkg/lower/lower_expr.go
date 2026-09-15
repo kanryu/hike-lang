@@ -167,6 +167,14 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.NilLiteral:
 		return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
 
+	case *ast.InlineAsmExpr:
+		args := make([]hir.Value, len(node.Operands))
+		for i, operand := range node.Operands {
+			args[i] = e.LowerExpr(operand)
+		}
+		e.root.emit(&hir.InstrInlineAsm{Template: node.Template, OutputConstraints: node.OutputConstraints, InputConstraints: node.InputConstraints, Args: args})
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeVoid}
+
 	case *ast.ImplicitCastExpr:
 		targetT := e.root.semaCtx.ResolveType(node.TargetType)
 

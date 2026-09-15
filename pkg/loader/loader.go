@@ -120,6 +120,9 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read file %s: %w", curFile, err)
 		}
+		if err := validateInlineAsmBuildConstraint(curFile, content, l.buildTags); err != nil {
+			return nil, err
+		}
 
 		lx := lexer.New(string(content))
 		p := parser.New(lx)

@@ -1239,6 +1239,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			}
 			return TypeVoid
 		}
+		return TypeVoid
+	case *ast.InlineAsmExpr:
+		return TypeVoid
 
 	case *ast.StructLiteral:
 		return c.ResolveType(e.Type)
@@ -1875,6 +1878,13 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		return TypeBad
 	}
 	switch e := expr.(type) {
+	case *ast.InlineAsmExpr:
+		for _, operand := range e.Operands {
+			if IsBad(c.InferExprTypeWithDiag(operand, locals, reporter, filename)) {
+				return TypeBad
+			}
+		}
+		return TypeVoid
 	case *ast.IntegerLiteral, *ast.CharLiteral:
 		return TypeInt
 	case *ast.FloatLiteral:

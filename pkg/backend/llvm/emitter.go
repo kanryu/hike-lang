@@ -731,6 +731,25 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			}
 		}
 
+	case *hir.InstrInlineAsm:
+		if e.isWasmTarget() {
+			panic("inline assembly is not supported for WebAssembly targets")
+		}
+		lowerTemplate := strings.ToLower(i.Template)
+		if strings.Contains(lowerTemplate, "aes") && !strings.Contains(strings.ToLower(e.targetTriple), "x86_64") {
+			panic("AES inline assembly requires an x86_64 target and a matching build constraint")
+		}
+		constraints := i.OutputConstraints
+		if constraints != "" && i.InputConstraints != "" {
+			constraints += ","
+		}
+		constraints += i.InputConstraints
+		args := make([]string, len(i.Args))
+		for idx, arg := range i.Args {
+			args[idx] = fmt.Sprintf("%s %s", arg.Type().LLVMType(), e.formatVal(arg))
+		}
+		e.b.WriteString(fmt.Sprintf("  call void asm sideeffect \"%s\", \"%s\"(%s)\n", encodeLLVMAsmString(normalizeInlineAsmTemplate(i.Template)), encodeLLVMAsmString(constraints), strings.Join(args, ", ")))
+
 	case *hir.InstrCallIndirect:
 		e.emitCallIndirect(i)
 
@@ -1377,4 +1396,41 @@ func encodeLLVMString(str string) string {
 	}
 	encoded.WriteString("\\00")
 	return encoded.String()
+}
+
+func encodeLLVMAsmString(str string) string {
+	var encoded strings.Builder
+	for i := 0; i < len(str); i++ {
+		switch str[i] {
+		case '\n':
+			encoded.WriteString("\\0A")
+		case '\t':
+			encoded.WriteString("\\09")
+		case '\r':
+			encoded.WriteString("\\0D")
+		case '"':
+			encoded.WriteString("\\22")
+		case '\\':
+			encoded.WriteString("\\5C")
+		default:
+			if str[i] < 32 || str[i] > 126 {
+				encoded.WriteString(fmt.Sprintf("\\%02X", str[i]))
+			} else {
+				encoded.WriteByte(str[i])
+			}
+		}
+	}
+	return encoded.String()
+}
+
+func normalizeInlineAsmTemplate(template string) string {
+	var out strings.Builder
+	for i := 0; i < len(template); i++ {
+		if template[i] == '%' && i+1 < len(template) && template[i+1] >= '0' && template[i+1] <= '9' {
+			out.WriteByte('$')
+		} else {
+			out.WriteByte(template[i])
+		}
+	}
+	return out.String()
 }

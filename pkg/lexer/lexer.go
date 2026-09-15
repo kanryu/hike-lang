@@ -160,6 +160,12 @@ func (l *Lexer) NextToken() token.Token {
 
 	startCol := l.col
 	startLine := l.line
+	if l.ch == '*' && strings.HasPrefix(l.input[l.position:], "**asm**") {
+		for i := 0; i < len("**asm**"); i++ {
+			l.readChar()
+		}
+		return l.emitToken(token.Token{Type: token.INLINEASM, Literal: "**asm**", Line: startLine, Col: startCol})
+	}
 
 	switch l.ch {
 	case '=':

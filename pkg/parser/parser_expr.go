@@ -402,6 +402,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseCharLiteral()
 	case token.STRING:
 		leftExp = p.parseStringLiteral()
+	case token.INLINEASM:
+		leftExp = p.parseInlineAsmExpr()
 	case token.NIL:
 		leftExp = &ast.NilLiteral{Token: p.curToken}
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
@@ -600,6 +602,38 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	}
 
 	return leftExp
+}
+
+func (p *Parser) parseInlineAsmExpr() ast.Expression {
+	asmTok := p.curToken
+	result := &ast.InlineAsmExpr{Token: asmTok}
+	if !p.expectPeek(token.LPAREN) {
+		return result
+	}
+	readString := func() string {
+		if !p.peekTokenIs(token.STRING) {
+			p.errors = append(p.errors, "inline asm expects string arguments")
+			return ""
+		}
+		p.nextToken()
+		return p.curToken.Literal
+	}
+	result.Template = readString()
+	if p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+	}
+	result.OutputConstraints = readString()
+	if p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+	}
+	result.InputConstraints = readString()
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		result.Operands = append(result.Operands, p.parseExpression(LOWEST))
+	}
+	p.expectPeek(token.RPAREN)
+	return result
 }
 
 func (p *Parser) parseIdentifier() *ast.Identifier {

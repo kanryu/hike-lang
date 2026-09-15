@@ -230,6 +230,16 @@ type InstrUnary struct {
 	Val Value
 }
 
+type InstrInlineAsm struct {
+	Template          string
+	OutputConstraints string
+	InputConstraints  string
+	Args              []Value
+}
+
+func (i *InstrInlineAsm) Result() *Reg   { return nil }
+func (i *InstrInlineAsm) String() string { return fmt.Sprintf("inlineasm %q", i.Template) }
+
 func (i *InstrUnary) Result() *Reg { return i.Dst }
 func (i *InstrUnary) String() string {
 	return fmt.Sprintf("  %s = %s %s", i.Dst, i.Op, i.Val)
