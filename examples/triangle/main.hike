@@ -2,7 +2,7 @@ package main
 
 // jfunc declarations are emitted into this program's generated runtime.js.
 // The compiler runtime itself remains WebGPU-agnostic.
-jfunc webgpu_create_context(canvas *byte, canvasLen int, width int, height int) int {
+jfunc webgpu_init_runtime() {
     if (!globalThis.__hikeTriangle) {
         globalThis.__hikeTriangle = {
             nextContext: 1,
@@ -99,6 +99,9 @@ jfunc webgpu_create_context(canvas *byte, canvasLen int, width int, height int) 
             },
         };
     }
+}
+
+jfunc webgpu_create_context(canvas *byte, canvasLen int, width int, height int) int {
     var bridge = globalThis.__hikeTriangle;
     var id = new TextDecoder("utf-8").decode(new Uint8Array(wasmMemory.buffer, Number(canvas), Number(canvasLen)));
     runtime.log("webgpu_create_context:canvas", { id: id, width: Number(width), height: Number(height) });
@@ -135,6 +138,7 @@ jfunc webgpu_create_context(canvas *byte, canvasLen int, width int, height int) 
     });
     return handle;
 }
+
 
 jfunc webgpu_create_buffer(context int, size int, usage int) int {
     return globalThis.__hikeTriangle.createBuffer(context, size, usage);
@@ -185,6 +189,7 @@ var pipeline int
 var bindGroup int
 
 cfunc InitApp() {
+    webgpu_init_runtime()
     vertices := []float32{
         0.0, 0.8, 0.0, 1.0, 0.2, 0.3,
         -0.69282, -0.4, 0.0, 0.2, 1.0, 0.4,
