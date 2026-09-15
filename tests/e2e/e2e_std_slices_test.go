@@ -146,3 +146,29 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// &buf[0] must point to the first element of the slice, while subsequent
+// indexed addresses must advance to the corresponding elements.
+func TestStd_Slices_AddressOfFirstElement(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    buf := []byte{10, 20, 30, 40}
+    first := &buf[0]
+    second := &buf[1]
+    *first = 101
+    *second = 202
+    printf("%d,%d,%d,%d\n", buf[0], buf[1], buf[2], buf[3])
+    return 0
+}
+`,
+		ExpectedOut:  "101,202,30,40",
+		ExpectedExit: 0,
+	})
+}
