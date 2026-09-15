@@ -1,32 +1,220 @@
 package main
 
-import "github.com/kanryu/hike-gpu-webgpu/webgpu"
+// jfunc declarations are emitted into this program's generated runtime.js.
+// The compiler runtime itself remains WebGPU-agnostic.
+jfunc webgpu_create_context(canvas *byte, canvasLen int, width int, height int) int {
+    if (!globalThis.__hikeTriangle) {
+        globalThis.__hikeTriangle = {
+            nextContext: 1,
+            contexts: new Map(),
+            dispatch: function(ctx, operation) {
+                if (ctx.ready) { operation(); } else { ctx.pending.push(operation); }
+            },
+            flush: function(ctx) {
+                var pending = ctx.pending; ctx.pending = [];
+                for (var i = 0; i < pending.length; i = i + 1) { pending[i](); }
+            },
+            createBuffer: function(handle, size, usage) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx) { return 0; }
+                var id = ctx.nextObject; ctx.nextObject = ctx.nextObject + 1; ctx.objects.set(id, null);
+                globalThis.__hikeTriangle.dispatch(ctx, function() {
+                    var descriptor = Object.create(null);
+                    descriptor.size = Number(size); descriptor.usage = Number(usage);
+                    ctx.objects.set(id, ctx.device.createBuffer(descriptor));
+                });
+                return id;
+            },
+            writeBuffer: function(handle, buffer, ptr, count) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx) { return; }
+                var bytes = new Uint8Array(wasmMemory.buffer, Number(ptr), Number(count) * 4).slice();
+                globalThis.__hikeTriangle.dispatch(ctx, function() {
+                    ctx.device.queue.writeBuffer(ctx.objects.get(Number(buffer)), 0, bytes);
+                });
+            },
+            createShaderModule: function(handle, ptr, length) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx) { return 0; }
+                var code = new TextDecoder("utf-8").decode(new Uint8Array(wasmMemory.buffer, Number(ptr), Number(length)));
+                runtime.log("webgpu:shader:source", { length: code.length, code: code });
+                var id = ctx.nextObject; ctx.nextObject = ctx.nextObject + 1; ctx.objects.set(id, null);
+                globalThis.__hikeTriangle.dispatch(ctx, function() {
+                    var descriptor = Object.create(null); descriptor.code = code;
+                    ctx.objects.set(id, ctx.device.createShaderModule(descriptor));
+                });
+                return id;
+            },
+            createRenderPipeline: function(handle, shader, stride) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx) { return 0; }
+                var id = ctx.nextObject; ctx.nextObject = ctx.nextObject + 1; ctx.objects.set(id, null);
+                globalThis.__hikeTriangle.dispatch(ctx, function() {
+                    var module = ctx.objects.get(Number(shader));
+                    var attribute0 = Object.create(null); attribute0.shaderLocation = 0; attribute0.offset = 0; attribute0.format = "float32x3";
+                    var attribute1 = Object.create(null); attribute1.shaderLocation = 1; attribute1.offset = 12; attribute1.format = "float32x3";
+                    var attributes = []; attributes.push(attribute0); attributes.push(attribute1);
+                    var bufferLayout = Object.create(null); bufferLayout.arrayStride = Number(stride); bufferLayout.attributes = attributes;
+                    var buffers = []; buffers.push(bufferLayout);
+                    var vertex = Object.create(null); vertex.module = module; vertex.entryPoint = "vs"; vertex.buffers = buffers;
+                    var target = Object.create(null); target.format = ctx.format;
+                    var targets = []; targets.push(target);
+                    var fragment = Object.create(null); fragment.module = module; fragment.entryPoint = "fs"; fragment.targets = targets;
+                    var primitive = Object.create(null); primitive.topology = "triangle-list";
+                    var descriptor = Object.create(null); descriptor.layout = "auto"; descriptor.vertex = vertex; descriptor.fragment = fragment; descriptor.primitive = primitive;
+                    ctx.objects.set(id, ctx.device.createRenderPipeline(descriptor));
+                });
+                return id;
+            },
+            createBindGroup: function(handle, pipeline, uniformBuffer) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx) { return 0; }
+                var id = ctx.nextObject; ctx.nextObject = ctx.nextObject + 1; ctx.objects.set(id, null);
+                globalThis.__hikeTriangle.dispatch(ctx, function() {
+                    var pipelineObject = ctx.objects.get(Number(pipeline));
+                    var resource = Object.create(null); resource.buffer = ctx.objects.get(Number(uniformBuffer));
+                    var entry = Object.create(null); entry.binding = 0; entry.resource = resource;
+                    var entries = []; entries.push(entry);
+                    var descriptor = Object.create(null); descriptor.layout = pipelineObject.getBindGroupLayout(0); descriptor.entries = entries;
+                    ctx.objects.set(id, ctx.device.createBindGroup(descriptor));
+                });
+                return id;
+            },
+            commandDraw: function(handle, pipeline, bindGroup, vertexBuffer, vertexCount) {
+                var ctx = globalThis.__hikeTriangle.contexts.get(Number(handle));
+                if (!ctx || !ctx.ready) { return; }
+                var encoder = ctx.device.createCommandEncoder();
+                var attachment = Object.create(null);
+                attachment.view = ctx.gpuContext.getCurrentTexture().createView();
+                var clearValue = Object.create(null); clearValue.r = 0.03; clearValue.g = 0.05; clearValue.b = 0.1; clearValue.a = 1;
+                attachment.clearValue = clearValue; attachment.loadOp = "clear"; attachment.storeOp = "store";
+                var colorAttachments = []; colorAttachments.push(attachment);
+                var passDescriptor = Object.create(null); passDescriptor.colorAttachments = colorAttachments;
+                var pass = encoder.beginRenderPass(passDescriptor);
+                pass.setPipeline(ctx.objects.get(Number(pipeline)));
+                pass.setVertexBuffer(0, ctx.objects.get(Number(vertexBuffer)));
+                pass.setBindGroup(0, ctx.objects.get(Number(bindGroup)));
+                pass.draw(Number(vertexCount)); pass.end();
+                ctx.device.queue.submit([encoder.finish()]);
+            },
+        };
+    }
+    var bridge = globalThis.__hikeTriangle;
+    var id = new TextDecoder("utf-8").decode(new Uint8Array(wasmMemory.buffer, Number(canvas), Number(canvasLen)));
+    runtime.log("webgpu_create_context:canvas", { id: id, width: Number(width), height: Number(height) });
+    var handle = bridge.nextContext; bridge.nextContext = bridge.nextContext + 1;
+    var canvasElement = document.getElementById(id);
+    var ctx = Object.create(null);
+    ctx.canvas = canvasElement; ctx.width = Number(width); ctx.height = Number(height); ctx.ready = false;
+    ctx.pending = []; ctx.nextObject = 1; ctx.objects = new Map();
+    bridge.contexts.set(handle, ctx);
+    if (!canvasElement) { return handle; }
+    canvasElement.width = ctx.width; canvasElement.height = ctx.height;
+    (async function() {
+        runtime.log("webgpu:requestAdapter:begin", {});
+        if (!navigator.gpu) { throw new Error("WebGPU is not available"); }
+        var adapter = await navigator.gpu.requestAdapter();
+        runtime.log("webgpu:requestAdapter:return", { available: Boolean(adapter) });
+        if (!adapter) { throw new Error("No WebGPU adapter was found"); }
+        ctx.device = await adapter.requestDevice();
+        runtime.log("webgpu:requestDevice:return", { available: Boolean(ctx.device) });
+        ctx.gpuContext = canvasElement.getContext("webgpu");
+        ctx.format = navigator.gpu.getPreferredCanvasFormat();
+        var configureDescriptor = Object.create(null);
+        configureDescriptor.device = ctx.device; configureDescriptor.format = ctx.format; configureDescriptor.alphaMode = "opaque";
+        ctx.gpuContext.configure(configureDescriptor);
+        runtime.log("webgpu:context.configure:return", { format: ctx.format });
+        ctx.ready = true; bridge.flush(ctx);
+        var status = document.getElementById("status");
+        if (status) { status.textContent = "WebGPU active — rotating triangle"; }
+    })().catch(function(error) {
+        runtime.log("webgpu:init:error", { message: error.message });
+        var status = document.getElementById("status");
+        if (status) { status.textContent = "WebGPU initialization failed: " + error.message; }
+        console.error("[Hike WebGPU]", error);
+    });
+    return handle;
+}
+
+jfunc webgpu_create_buffer(context int, size int, usage int) int {
+    return globalThis.__hikeTriangle.createBuffer(context, size, usage);
+}
+
+jfunc webgpu_write_buffer(context int, buffer int, data *float32, count int) {
+    globalThis.__hikeTriangle.writeBuffer(context, buffer, data, count);
+}
+
+jfunc webgpu_create_shader_module(context int, code string, codeLen int) int {
+    return globalThis.__hikeTriangle.createShaderModule(context, code, codeLen);
+}
+
+jfunc webgpu_create_render_pipeline(context int, shader int, stride int) int {
+    return globalThis.__hikeTriangle.createRenderPipeline(context, shader, stride);
+}
+
+jfunc webgpu_create_bind_group(context int, pipeline int, uniformBuffer int) int {
+    return globalThis.__hikeTriangle.createBindGroup(context, pipeline, uniformBuffer);
+}
+
+jfunc webgpu_command_draw(context int, pipeline int, bindGroup int, vertexBuffer int, vertexCount int) {
+    globalThis.__hikeTriangle.commandDraw(context, pipeline, bindGroup, vertexBuffer, vertexCount);
+}
+
+jfunc webgpu_resize_context(context int, width int, height int) {
+    var ctx = globalThis.__hikeTriangle.contexts.get(Number(context));
+    if (!ctx || !ctx.canvas) { return; }
+    ctx.width = Number(width); ctx.height = Number(height);
+    ctx.canvas.width = ctx.width; ctx.canvas.height = ctx.height;
+    if (ctx.ready) {
+        var configureDescriptor = Object.create(null);
+        configureDescriptor.device = ctx.device; configureDescriptor.format = ctx.format; configureDescriptor.alphaMode = "opaque";
+        ctx.gpuContext.configure(configureDescriptor);
+    }
+}
+
+jfunc webgpu_destroy_context(context int) {
+    var ctx = globalThis.__hikeTriangle.contexts.get(Number(context));
+    if (ctx && ctx.device) { ctx.device.destroy(); }
+    globalThis.__hikeTriangle.contexts.delete(Number(context));
+}
 
 var context int
+var vertexBuffer int
+var uniformBuffer int
+var pipeline int
+var bindGroup int
 
-// InitApp is called by the browser after the wasm module is instantiated.
 cfunc InitApp() {
-	context = webgpu.NewContext("gpu-canvas", 960, 640)
+    vertices := []float32{
+        0.0, 0.8, 0.0, 1.0, 0.2, 0.3,
+        -0.69282, -0.4, 0.0, 0.2, 1.0, 0.4,
+        0.69282, -0.4, 0.0, 0.2, 0.5, 1.0,
+    }
+    shaderCode := "struct Uniforms { angle: f32, };\n@group(0) @binding(0) var<uniform> uniforms: Uniforms;\nstruct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec3<f32>, };\n@vertex fn vs(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>) -> VertexOutput {\nlet c = cos(uniforms.angle); let s = sin(uniforms.angle);\nlet x = c * position.x - s * position.y;\nlet y = s * position.x + c * position.y;\nvar output: VertexOutput; output.position = vec4<f32>(x, y, position.z, 1.0);\noutput.color = color; return output; }\n@fragment fn fs(input: VertexOutput) -> @location(0) vec4<f32> { return vec4<f32>(input.color, 1.0); }"
+    context = webgpu_create_context("gpu-canvas", 10, 960, 640)
+    vertexBuffer = webgpu_create_buffer(context, 72, 40)
+    webgpu_write_buffer(context, vertexBuffer, &vertices[0], len(vertices))
+    uniformBuffer = webgpu_create_buffer(context, 16, 72)
+    shader := webgpu_create_shader_module(context, shaderCode, len(shaderCode))
+    pipeline = webgpu_create_render_pipeline(context, shader, 24)
+    bindGroup = webgpu_create_bind_group(context, pipeline, uniformBuffer)
 }
 
-// RenderFrame is called once per animation frame by the browser.
 cfunc RenderFrame(angle float64) {
-	if context != 0 {
-		webgpu.RenderTriangle(context, angle)
-	}
+    if context != 0 {
+        uniform := []float32{float32(angle)}
+        webgpu_write_buffer(context, uniformBuffer, &uniform[0], len(uniform))
+        webgpu_command_draw(context, pipeline, bindGroup, vertexBuffer, 3)
+    }
 }
 
-// Resize keeps the WebGPU canvas backing buffer in sync with the browser.
 cfunc Resize(width int, height int) {
-	if context != 0 {
-		webgpu.Resize(context, width, height)
-	}
+    if context != 0 { webgpu_resize_context(context, width, height); }
 }
 
-// Shutdown releases the browser-side GPU resources.
 cfunc Shutdown() {
-	if context != 0 {
-		webgpu.Close(context)
-		context = 0
-	}
+    if context != 0 {
+        webgpu_destroy_context(context)
+        context = 0
+    }
 }

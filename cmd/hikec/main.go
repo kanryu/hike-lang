@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"hikec-go/pkg/ast"
 	"hikec-go/pkg/codegen"
 	gocode "hikec-go/pkg/codegen/go"
 	"hikec-go/pkg/compiler"
@@ -273,6 +274,21 @@ func runBuild(args []string) {
 		os.Exit(1)
 	}
 
+	// Collect jfunc declarations for the generated wasm runtime. The normal
+	// emit-ir path remains authoritative for LLVM output; this frontend pass
+	// only supplies source-owned JavaScript bindings to runtime.js.
+	var runtimeProgram *ast.Program
+	if tgt.IsWasm {
+		frontend := compiler.New(tgt)
+		frontend.SetVerbose(verbose)
+		_, _, program, compileErr := frontend.CompileToLLVM(sourceFiles...)
+		if compileErr != nil {
+			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
+			os.Exit(1)
+		}
+		runtimeProgram = program
+	}
+
 	tempLL := filepath.Join(os.TempDir(), fmt.Sprintf("hike_build_%d.ll", os.Getpid()))
 	defer os.Remove(tempLL)
 
@@ -326,7 +342,7 @@ func runBuild(args []string) {
 	// Wasm ターゲット時は runtime.js を自動生成して配置
 	if tgt.IsWasm {
 		runtimePath := filepath.Join(filepath.Dir(outputBin), "runtime.js")
-		if err := codegen.WriteWasmJSRuntime(runtimePath); err != nil {
+		if err := codegen.WriteWasmJSRuntime(runtimePath, runtimeProgram); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to generate runtime.js: %v\n", err)
 		} else if !strings.Contains(outputBin, "hike_run_") && verbose {
 			fmt.Printf("Generated Wasm JS Runtime -> %s\n", runtimePath)
