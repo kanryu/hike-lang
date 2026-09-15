@@ -31,6 +31,7 @@ func printUsage() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  go          Compile all .go.hike files in directory into a single .syso object")
 	fmt.Println("  emit-ir     Generate LLVM IR from Hike source (default)")
+	fmt.Println("  emit-js     Generate the WebAssembly JavaScript runtime")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary via Clang")
 	fmt.Println("  run         Build and immediately execute the Hike program (supports native and Wasm via Node.js)")
 	fmt.Println("\nOptions for go:")
@@ -42,6 +43,7 @@ func printUsage() {
 	fmt.Println("  -o <path>        Output file path (default: <source>.ll, <source>.wasm, or executable)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
+	fmt.Println("  -wasm-mode <mode> WebAssembly runtime mode: normal or concurrent")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -v               Enable verbose logging")
@@ -71,6 +73,9 @@ func main() {
 	case "emit-ir":
 		cmdArgs = os.Args[2:]
 		runEmitIR(cmdArgs)
+	case "emit-js":
+		cmdArgs = os.Args[2:]
+		runEmitJS(cmdArgs)
 	case "build":
 		cmdArgs = os.Args[2:]
 		runBuild(cmdArgs)
@@ -129,6 +134,7 @@ func runEmitIR(args []string) {
 	outputLL := ""
 	outputHeader := ""
 	targetName := getDefaultTargetName()
+	wasmMode := "normal"
 	verbose := false
 	var sourceFiles []string
 
@@ -151,6 +157,11 @@ func runEmitIR(args []string) {
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
 			parts := strings.SplitN(arg, "=", 2)
 			targetName = parts[1]
+		} else if (arg == "-wasm-mode" || arg == "--wasm-mode") && i+1 < len(args) {
+			wasmMode = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode=") {
+			wasmMode = strings.SplitN(arg, "=", 2)[1]
 		} else if arg == "-cflags" && i+1 < len(args) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
@@ -171,15 +182,19 @@ func runEmitIR(args []string) {
 		fmt.Fprintln(os.Stderr, "Error: no input files provided for emit-ir")
 		os.Exit(1)
 	}
+	if wasmMode != "normal" && wasmMode != "concurrent" {
+		fmt.Fprintf(os.Stderr, "Error: invalid -wasm-mode %q (want normal or concurrent)\n", wasmMode)
+		os.Exit(1)
+	}
 
 	tgt, err := target.ParseTarget(targetName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
 	}
-
 	comp := compiler.New(tgt)
 	comp.SetVerbose(verbose)
+	comp.SetWasmMode(wasmMode)
 
 	llvmIR, semaCtx, prog, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
@@ -215,6 +230,79 @@ func runEmitIR(args []string) {
 }
 
 // -----------------------------------------------------------------------------
+// emit-js: WebAssembly runtime.js 生成
+// -----------------------------------------------------------------------------
+func runEmitJS(args []string) {
+	output := ""
+	targetName := "wasm32"
+	wasmMode := "normal"
+	verbose := false
+	var sourceFiles []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-o" && i+1 < len(args):
+			output = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "-o="):
+			output = strings.TrimPrefix(arg, "-o=")
+		case (arg == "-target" || arg == "--target") && i+1 < len(args):
+			targetName = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target="):
+			targetName = strings.SplitN(arg, "=", 2)[1]
+		case (arg == "-wasm-mode" || arg == "--wasm-mode") && i+1 < len(args):
+			wasmMode = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode="):
+			wasmMode = strings.SplitN(arg, "=", 2)[1]
+		case arg == "-vv" || arg == "--vv":
+			verbose = true
+			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
+		case arg == "-v" || arg == "--verbose":
+			verbose = true
+		case !strings.HasPrefix(arg, "-"):
+			sourceFiles = append(sourceFiles, arg)
+		}
+	}
+	if len(sourceFiles) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: no input files provided for emit-js")
+		os.Exit(1)
+	}
+	tgt, err := target.ParseTarget(targetName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
+		os.Exit(1)
+	}
+	if !tgt.IsWasm {
+		fmt.Fprintln(os.Stderr, "Error: emit-js requires a WebAssembly target")
+		os.Exit(1)
+	}
+	if wasmMode != "normal" && wasmMode != "concurrent" {
+		fmt.Fprintf(os.Stderr, "Error: invalid -wasm-mode %q (want normal or concurrent)\n", wasmMode)
+		os.Exit(1)
+	}
+	comp := compiler.New(tgt)
+	comp.SetVerbose(verbose)
+	comp.SetWasmMode(wasmMode)
+	_, _, program, err := comp.CompileToLLVM(sourceFiles...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
+		os.Exit(1)
+	}
+	if output == "" {
+		output = filepath.Join(filepath.Dir(sourceFiles[0]), "runtime.js")
+	}
+	if err := codegen.WriteWasmJSRuntimeMode(output, wasmMode, program); err != nil {
+		fmt.Fprintf(os.Stderr, "Runtime write error: %v\n", err)
+		os.Exit(1)
+	}
+	if verbose {
+		fmt.Printf("Generated WebAssembly JS Runtime -> %s (mode: %s)\n", output, wasmMode)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // build: Clang を呼び出して実行可能バイナリを出力する
 // -----------------------------------------------------------------------------
 func runBuild(args []string) {
@@ -223,6 +311,7 @@ func runBuild(args []string) {
 	extraCflags := ""
 	debugInfo := false
 	verbose := false
+	wasmMode := "normal"
 	var passThroughArgs []string
 	var sourceFiles []string
 
@@ -240,6 +329,13 @@ func runBuild(args []string) {
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
 			targetName = strings.SplitN(arg, "=", 2)[1]
 			passThroughArgs = append(passThroughArgs, "-target", targetName)
+		} else if (arg == "-wasm-mode" || arg == "--wasm-mode") && i+1 < len(args) {
+			wasmMode = args[i+1]
+			passThroughArgs = append(passThroughArgs, "-wasm-mode", wasmMode)
+			i++
+		} else if strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode=") {
+			wasmMode = strings.SplitN(arg, "=", 2)[1]
+			passThroughArgs = append(passThroughArgs, "-wasm-mode", wasmMode)
 		} else if arg == "-cflags" && i+1 < len(args) {
 			extraCflags = args[i+1]
 			i++
@@ -273,6 +369,10 @@ func runBuild(args []string) {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
 	}
+	if wasmMode != "normal" && wasmMode != "concurrent" {
+		fmt.Fprintf(os.Stderr, "Error: invalid -wasm-mode %q (want normal or concurrent)\n", wasmMode)
+		os.Exit(1)
+	}
 
 	// Collect jfunc declarations for the generated wasm runtime. The normal
 	// emit-ir path remains authoritative for LLVM output; this frontend pass
@@ -281,6 +381,7 @@ func runBuild(args []string) {
 	if tgt.IsWasm {
 		frontend := compiler.New(tgt)
 		frontend.SetVerbose(verbose)
+		frontend.SetWasmMode(wasmMode)
 		_, _, program, compileErr := frontend.CompileToLLVM(sourceFiles...)
 		if compileErr != nil {
 			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
@@ -342,7 +443,7 @@ func runBuild(args []string) {
 	// Wasm ターゲット時は runtime.js を自動生成して配置
 	if tgt.IsWasm {
 		runtimePath := filepath.Join(filepath.Dir(outputBin), "runtime.js")
-		if err := codegen.WriteWasmJSRuntime(runtimePath, runtimeProgram); err != nil {
+		if err := codegen.WriteWasmJSRuntimeMode(runtimePath, wasmMode, runtimeProgram); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to generate runtime.js: %v\n", err)
 		} else if !strings.Contains(outputBin, "hike_run_") && verbose {
 			fmt.Printf("Generated Wasm JS Runtime -> %s\n", runtimePath)

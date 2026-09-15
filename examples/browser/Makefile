@@ -12,7 +12,7 @@ all: build
 build: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(HIKEC) build -target wasm32 $(SRC) -o $(TARGET)
+	$(HIKEC) build -target wasm32 -wasm-mode=normal $(SRC) -o $(TARGET)
 
 serve: build
 	@echo "Starting local server at http://localhost:$(PORT) ..."

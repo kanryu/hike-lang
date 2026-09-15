@@ -214,12 +214,15 @@ func (efd *ExternFuncDecl) TokenLiteral() string { return efd.Token.Literal }
 
 // JFuncDecl は WASM 向けのインライン JavaScript 関数（jfunc）を表すノード
 type JFuncDecl struct {
-	Token       token.Token
-	Name        *Identifier
-	Params      []*ParamDecl
-	ReturnTypes []TypeExpr
-	JSBody      string // 波括弧内の未パース raw JavaScript 文字列
-	InternalKey string
+	Token         token.Token
+	Name          *Identifier
+	Params        []*ParamDecl
+	ReturnTypes   []TypeExpr
+	JSBody        string // 通常の本文
+	MainJSBody    string // main { ... } 本文
+	WorkerJSBody  string // worker { ... } 本文
+	HasDirectives bool
+	InternalKey   string
 }
 
 func (jfd *JFuncDecl) declNode()            {}

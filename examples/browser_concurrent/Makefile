@@ -19,13 +19,13 @@ all: build
 build: main.wasm
 
 main.wasm: main.hike
-	$(HIKEC) build -target $(TARGET) -o main.wasm main.hike
+	$(HIKEC) build -target $(TARGET) -wasm-mode=concurrent -o main.wasm main.hike
 
 # 2. ビルドしてそのまま開発サーバーを立ち上げる
 dev: build serve
 
 # 3. SharedArrayBuffer用ヘッダー（COOP/COEP）を付与した開発サーバーの起動
-serve:
+serve: build
 	@$(PYTHON) server.py $(PORT)
 
 # 4. 生成バイナリおよび中間IRのクリーンアップ

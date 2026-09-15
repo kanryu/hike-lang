@@ -461,16 +461,7 @@ func (p *Parser) parseJFuncDecl() *ast.JFuncDecl {
 		}
 		startIdx := p.curIdx()
 		bodyTokens, nextIdx := p.cutBraceBlock(startIdx)
-		var jsCode string
-		for i := 1; i < len(bodyTokens)-1; i++ {
-			tok := bodyTokens[i]
-			if tok.Type == token.STRING {
-				jsCode += "\"" + tok.Literal + "\" "
-			} else {
-				jsCode += tok.Literal + " "
-			}
-		}
-		jfn.JSBody = jsCode
+		jfn.JSBody, jfn.MainJSBody, jfn.WorkerJSBody, jfn.HasDirectives = parseJFuncBodies(bodyTokens[1 : len(bodyTokens)-1])
 		p.jumpTo(nextIdx)
 	} else {
 		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected '{' in jfunc declaration", p.curToken.Line, p.curToken.Col))
@@ -479,6 +470,55 @@ func (p *Parser) parseJFuncDecl() *ast.JFuncDecl {
 	}
 
 	return jfn
+}
+
+func jfuncTokensToJS(tokens []token.Token) string {
+	var jsCode string
+	for _, tok := range tokens {
+		if tok.Type == token.STRING {
+			jsCode += "\"" + tok.Literal + "\" "
+		} else {
+			jsCode += tok.Literal + " "
+		}
+	}
+	return jsCode
+}
+
+func parseJFuncBodies(tokens []token.Token) (string, string, string, bool) {
+	mainBody, workerBody := "", ""
+	hasDirectives := false
+	for i := 0; i+1 < len(tokens); i++ {
+		if tokens[i].Type != token.IDENT || (tokens[i].Literal != "main" && tokens[i].Literal != "worker") || tokens[i+1].Type != token.LBRACE {
+			continue
+		}
+		hasDirectives = true
+		depth := 0
+		end := i + 1
+		for ; end < len(tokens); end++ {
+			if tokens[end].Type == token.LBRACE {
+				depth++
+			} else if tokens[end].Type == token.RBRACE {
+				depth--
+				if depth == 0 {
+					break
+				}
+			}
+		}
+		body := ""
+		if end > i+1 {
+			body = jfuncTokensToJS(tokens[i+2 : end])
+		}
+		if tokens[i].Literal == "main" {
+			mainBody = body
+		} else {
+			workerBody = body
+		}
+		i = end
+	}
+	if !hasDirectives {
+		return jfuncTokensToJS(tokens), "", "", false
+	}
+	return "", mainBody, workerBody, true
 }
 
 func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {

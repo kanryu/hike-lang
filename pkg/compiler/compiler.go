@@ -20,6 +20,7 @@ import (
 type Compiler struct {
 	target   *target.Target
 	verbose  bool
+	wasmMode string
 	reporter *diag.Reporter
 }
 
@@ -30,7 +31,16 @@ func New(tgt *target.Target) *Compiler {
 	return &Compiler{
 		target:   tgt,
 		verbose:  false,
+		wasmMode: "normal",
 		reporter: diag.NewReporter(),
+	}
+}
+
+func (c *Compiler) SetWasmMode(mode string) {
+	if mode == "concurrent" {
+		c.wasmMode = mode
+	} else {
+		c.wasmMode = "normal"
 	}
 }
 
@@ -96,6 +106,13 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	})
 	if c.reporter.HasErrors() {
 		return nil, nil, nil, c.reporter
+	}
+	if c.target != nil && c.target.IsWasm && c.wasmMode != "concurrent" {
+		for _, decl := range rawProg.Decls {
+			if jfn, ok := decl.(*ast.JFuncDecl); ok && jfn.HasDirectives {
+				return nil, nil, nil, fmt.Errorf("jfunc %s uses main/worker directives and requires -wasm-mode=concurrent", jfn.Name.Value)
+			}
+		}
 	}
 
 	// 2. 意味解析・型検査フェーズ
