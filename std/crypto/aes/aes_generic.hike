@@ -1,0 +1,8 @@
+//go:build !amd64 || (amd64 && !(windows || linux || darwin))
+
+package aes
+
+// encryptBlockFast uses the portable implementation on non-amd64 targets.
+func encryptBlockFast(roundKeys []byte, dst []byte, src []byte) {
+	encryptBlockSoftware(roundKeys, dst, src)
+}

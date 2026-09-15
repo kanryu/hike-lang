@@ -50,20 +50,20 @@ The compiler automatically defines tags based on the `-target` triple:
 
 ---
 
-## 2. Inline Assembly (`__asm__`)
+## 2. Inline Assembly (`**asm**`)
 
 Hike provides direct hardware access via LLVM inline assembly without requiring vector types (such as `__m128i`) in the Hike type system.
 
 ### Design Principles
 
-* **Function-Level Scope:** The `__asm__` call occupies the entire function body. The function acts as a clean, zero-overhead wrapper.
+* **Function-Level Scope:** The `**asm**` call occupies the function body. The function acts as a clean, zero-overhead wrapper.
 * **Direct Operand Passing:** All input and output operands are mapped directly to function arguments.
 * **Target Enforcement:** Architecture-specific instructions (such as AES-NI, PCLMULQDQ, RDRAND, RDSEED, SHA extensions) require appropriate build tags (e.g., `amd64`). Compiling them for incompatible targets like `wasm32` triggers a compile-time error.
 
 ### Syntax
 
 ```go
-__asm__(
+**asm**(
     "assembly template",
     "output constraints",
     "input constraints",
@@ -107,7 +107,7 @@ package aes
 
 // Native amd64 execution using AES-NI instructions
 func EncryptBlock(roundKeys *byte, dst *byte, src *byte) {
-    __asm__(
+    **asm**(
         // Load plaintext into %xmm0 and XOR with round 0 key
         "movups (%2), %%xmm0 \n"
         "movups (%0), %%xmm1 \n"

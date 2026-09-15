@@ -1,0 +1,27 @@
+//go:build amd64 && (windows || linux || darwin)
+
+package aes
+
+// encryptBlockFast uses AES-NI. The round keys are laid out by NewCipher as
+// ten consecutive 16-byte AES-128 round keys after the initial key.
+func encryptBlockFast(roundKeys []byte, dst []byte, src []byte) {
+	**asm**(
+		"movups (%2), %%xmm0\n",
+		"movups (%0), %%xmm1\n",
+		"pxor %%xmm1, %%xmm0\n",
+		"aesenc 16(%0), %%xmm0\n",
+		"aesenc 32(%0), %%xmm0\n",
+		"aesenc 48(%0), %%xmm0\n",
+		"aesenc 64(%0), %%xmm0\n",
+		"aesenc 80(%0), %%xmm0\n",
+		"aesenc 96(%0), %%xmm0\n",
+		"aesenc 112(%0), %%xmm0\n",
+		"aesenc 128(%0), %%xmm0\n",
+		"aesenc 144(%0), %%xmm0\n",
+		"aesenclast 160(%0), %%xmm0\n",
+		"movups %%xmm0, (%1)\n",
+		"",
+		"r,r,r",
+		&roundKeys[0], &dst[0], &src[0]
+	)
+}

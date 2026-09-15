@@ -120,15 +120,20 @@ func invMixColumns(state []byte) {
 	}
 }
 
+// encryptBlockSoftware encrypts one block using the portable Hike implementation.
+func encryptBlockSoftware(roundKeys []byte, dst []byte, src []byte) {
+	state := make([]byte, 16)
+	for i := 0; i < 16; i = i + 1 { state[i] = src[i] }
+	addRoundKey(state, roundKeys, 0)
+	for round := 1; round < 10; round = round + 1 { subBytes(state); shiftRows(state); mixColumns(state); addRoundKey(state, roundKeys, round) }
+	subBytes(state); shiftRows(state); addRoundKey(state, roundKeys, 10)
+	for i := 0; i < 16; i = i + 1 { dst[i] = state[i] }
+}
+
 // Encrypt encrypts one 16-byte block from src into dst.
 func (c *Cipher) Encrypt(dst []byte, src []byte) {
 	if c == nil || len(src) < BlockSize || len(dst) < BlockSize { return }
-	state := make([]byte, 16)
-	for i := 0; i < 16; i = i + 1 { state[i] = src[i] }
-	addRoundKey(state, c.roundKeys, 0)
-	for round := 1; round < 10; round = round + 1 { subBytes(state); shiftRows(state); mixColumns(state); addRoundKey(state, c.roundKeys, round) }
-	subBytes(state); shiftRows(state); addRoundKey(state, c.roundKeys, 10)
-	for i := 0; i < 16; i = i + 1 { dst[i] = state[i] }
+	encryptBlockFast(c.roundKeys, dst, src)
 }
 
 // Decrypt decrypts one 16-byte block from src into dst.

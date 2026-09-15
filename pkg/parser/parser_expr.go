@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/token"
@@ -610,28 +611,42 @@ func (p *Parser) parseInlineAsmExpr() ast.Expression {
 	if !p.expectPeek(token.LPAREN) {
 		return result
 	}
-	readString := func() string {
+	skipSemicolons := func() {
+		for p.peekTokenIs(token.SEMICOLON) {
+			p.nextToken()
+		}
+	}
+	stringArgs := []string{}
+	for {
+		skipSemicolons()
 		if !p.peekTokenIs(token.STRING) {
-			p.errors = append(p.errors, "inline asm expects string arguments")
-			return ""
+			break
 		}
 		p.nextToken()
-		return p.curToken.Literal
+		stringArgs = append(stringArgs, p.curToken.Literal)
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			if p.peekTokenIs(token.STRING) {
+				continue
+			}
+			break
+		}
 	}
-	result.Template = readString()
-	if p.peekTokenIs(token.COMMA) {
-		p.nextToken()
+	if len(stringArgs) < 3 {
+		p.errors = append(p.errors, "inline asm expects a template, output constraints, and input constraints")
+		return result
 	}
-	result.OutputConstraints = readString()
-	if p.peekTokenIs(token.COMMA) {
-		p.nextToken()
-	}
-	result.InputConstraints = readString()
-	for p.peekTokenIs(token.COMMA) {
-		p.nextToken()
+	result.Template = strings.Join(stringArgs[:len(stringArgs)-2], "")
+	result.OutputConstraints = stringArgs[len(stringArgs)-2]
+	result.InputConstraints = stringArgs[len(stringArgs)-1]
+	for p.curTokenIs(token.COMMA) || p.peekTokenIs(token.COMMA) {
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+		}
 		p.nextToken()
 		result.Operands = append(result.Operands, p.parseExpression(LOWEST))
 	}
+	skipSemicolons()
 	p.expectPeek(token.RPAREN)
 	return result
 }

@@ -1426,6 +1426,13 @@ func encodeLLVMAsmString(str string) string {
 func normalizeInlineAsmTemplate(template string) string {
 	var out strings.Builder
 	for i := 0; i < len(template); i++ {
+		if template[i] == '%' && i+1 < len(template) && template[i+1] == '%' {
+			// Accept the doubled register spelling commonly used by GCC-style
+			// inline assembly while emitting LLVM's single-percent spelling.
+			out.WriteByte('%')
+			i++
+			continue
+		}
 		if template[i] == '%' && i+1 < len(template) && template[i+1] >= '0' && template[i+1] <= '9' {
 			out.WriteByte('$')
 		} else {
