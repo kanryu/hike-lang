@@ -1,0 +1,32 @@
+package main
+
+import "github.com/kanryu/hike-gpu-webgpu/webgpu"
+
+var context int
+
+// InitApp is called by the browser after the wasm module is instantiated.
+cfunc InitApp() {
+	context = webgpu.NewContext("gpu-canvas", 960, 640)
+}
+
+// RenderFrame is called once per animation frame by the browser.
+cfunc RenderFrame(angle float64) {
+	if context != 0 {
+		webgpu.RenderTriangle(context, angle)
+	}
+}
+
+// Resize keeps the WebGPU canvas backing buffer in sync with the browser.
+cfunc Resize(width int, height int) {
+	if context != 0 {
+		webgpu.Resize(context, width, height)
+	}
+}
+
+// Shutdown releases the browser-side GPU resources.
+cfunc Shutdown() {
+	if context != 0 {
+		webgpu.Close(context)
+		context = 0
+	}
+}

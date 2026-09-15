@@ -865,7 +865,7 @@ search.entry:
 search.body:
   %p_ehash = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
   %ehash = load i32, i32* %p_ehash
-  %hash_match = icmp eq i64 %ehash, %hash
+  %hash_match = icmp eq i32 %ehash, %hash
   br i1 %hash_match, label %search.key_check, label %search.next
 search.key_check:
   %p_ekey = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
