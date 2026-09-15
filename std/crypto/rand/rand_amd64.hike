@@ -1,0 +1,16 @@
+//go:build amd64 && (windows || linux || darwin)
+package rand
+
+// These declarations are lowered to LLVM x86 hardware-random intrinsics.
+func rdrand32() (uint32, uint32)
+func rdseed32() (uint32, uint32)
+
+// Uint32 returns a hardware-generated 32-bit value and its success flag.
+func Uint32() (uint32, uint32) {
+	return rdrand32()
+}
+
+// SeedUint32 returns a hardware-generated seed value and its success flag.
+func SeedUint32() (uint32, uint32) {
+	return rdseed32()
+}

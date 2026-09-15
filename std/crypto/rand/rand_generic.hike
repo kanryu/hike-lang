@@ -1,0 +1,15 @@
+//go:build !amd64
+package rand
+
+var state uint32 = 0x9e3779b9
+
+// Uint32 provides a portable fallback. It is not suitable as a cryptographic
+// entropy source; use an operating-system-backed implementation for security.
+func Uint32() (uint32, uint32) {
+	state = state*1664525 + 1013904223
+	return state, 0
+}
+
+func SeedUint32() (uint32, uint32) {
+	return Uint32()
+}

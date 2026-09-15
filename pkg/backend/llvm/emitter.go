@@ -321,9 +321,74 @@ func llvmIntrinsicName(name string) string {
 		return "llvm.floor.f64"
 	case "ceil":
 		return "llvm.ceil.f64"
+	case "rdrand32":
+		return "llvm.x86.rdrand.32"
+	case "rdrand64":
+		return "llvm.x86.rdrand.64"
+	case "rdseed32":
+		return "llvm.x86.rdseed.32"
+	case "rdseed64":
+		return "llvm.x86.rdseed.64"
+	case "aesenc":
+		return "llvm.x86.aesni.aesenc"
+	case "aesenclast":
+		return "llvm.x86.aesni.aesenclast"
+	case "aesdec":
+		return "llvm.x86.aesni.aesdec"
+	case "aesdeclast":
+		return "llvm.x86.aesni.aesdeclast"
+	case "pclmulqdq":
+		return "llvm.x86.pclmulqdq"
+	case "sha256rnds2":
+		return "llvm.x86.sha256rnds2"
+	case "sha256msg1":
+		return "llvm.x86.sha256msg1"
+	case "sha256msg2":
+		return "llvm.x86.sha256msg2"
 	default:
 		return ""
 	}
+}
+
+func llvmIntrinsicFeature(name string) string {
+	switch name {
+	case "rdrand32", "rdrand64":
+		return "+rdrnd"
+	case "rdseed32", "rdseed64":
+		return "+rdseed"
+	case "aesenc", "aesenclast", "aesdec", "aesdeclast":
+		return "+aes"
+	case "pclmulqdq":
+		return "+pclmul"
+	case "sha256rnds2", "sha256msg1", "sha256msg2":
+		return "+sha"
+	default:
+		return ""
+	}
+}
+
+func (e *Emitter) intrinsicFeatures(fn *hir.Function) string {
+	features := make(map[string]bool)
+	for _, bb := range fn.Blocks {
+		for _, inst := range bb.Instructions {
+			if call, ok := inst.(*hir.InstrCallStatic); ok {
+				if feature := llvmIntrinsicFeature(call.CalleeName); feature != "" {
+					features[feature] = true
+				}
+			}
+		}
+	}
+	if len(features) == 0 {
+		return ""
+	}
+	ordered := []string{"+aes", "+pclmul", "+rdrnd", "+rdseed", "+sha"}
+	selected := make([]string, 0, len(features))
+	for _, feature := range ordered {
+		if features[feature] {
+			selected = append(selected, feature)
+		}
+	}
+	return strings.Join(selected, ",")
 }
 
 func (e *Emitter) emitFunction(fn *hir.Function) {
@@ -355,7 +420,11 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 		storageClass = "dllexport "
 	}
 
-	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s) {\n", storageClass, retTypeStr, fn.Name, strings.Join(params, ", ")))
+	featureAttr := ""
+	if features := e.intrinsicFeatures(fn); features != "" {
+		featureAttr = fmt.Sprintf(" \"target-features\"=\"%s\"", features)
+	}
+	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s {\n", storageClass, retTypeStr, fn.Name, strings.Join(params, ", "), featureAttr))
 
 	for _, bb := range fn.Blocks {
 		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
