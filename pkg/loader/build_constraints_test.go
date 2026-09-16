@@ -46,7 +46,7 @@ func TestFilenameAndExpressionBuildConstraints(t *testing.T) {
 func TestInlineAsmRequiresArchitectureConstraint(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "unsafe.hike")
-	source := "package main\nfunc f() { __asm__{\"aesenc\", \"\", \"\"} }\n"
+	source := "package main\nfunc f() { __asm__{ params: \"aesenc\", \"\", \"\", \"\" } }\n"
 	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
 		t.Fatal(err)
 	}

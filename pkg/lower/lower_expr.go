@@ -172,7 +172,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		for i, operand := range node.Operands {
 			args[i] = e.LowerExpr(operand)
 		}
-		e.root.emit(&hir.InstrInlineAsm{Template: node.Template, OutputConstraints: node.OutputConstraints, InputConstraints: node.InputConstraints, Args: args})
+		e.root.emit(&hir.InstrInlineAsm{Template: node.Template, OutputConstraints: node.OutputConstraints, InputConstraints: node.InputConstraints, ClobberConstraints: node.ClobberConstraints, Args: args})
 		return &hir.ConstInt{Val: 0, Typ: sema.TypeVoid}
 
 	case *ast.ImplicitCastExpr:

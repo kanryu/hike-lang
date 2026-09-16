@@ -646,6 +646,24 @@ func (p *Parser) parseInlineAsmExpr() ast.Expression {
 	if !p.expectPeek(token.LBRACE) {
 		return result
 	}
+	if !p.peekTokenIs(token.IDENT) || p.peekToken.Literal != "params" {
+		p.errors = append(p.errors, "inline asm expects a params: operand list")
+		return result
+	}
+	p.nextToken()
+	if !p.expectPeek(token.COLON) {
+		return result
+	}
+	if !p.peekTokenIs(token.STRING) && !p.peekTokenIs(token.SEMICOLON) {
+		for {
+			p.nextToken()
+			result.Operands = append(result.Operands, p.parseExpression(LOWEST))
+			if !p.peekTokenIs(token.COMMA) {
+				break
+			}
+			p.nextToken()
+		}
+	}
 	skipSemicolons := func() {
 		for p.peekTokenIs(token.SEMICOLON) {
 			p.nextToken()
@@ -667,20 +685,14 @@ func (p *Parser) parseInlineAsmExpr() ast.Expression {
 			break
 		}
 	}
-	if len(stringArgs) < 3 {
-		p.errors = append(p.errors, "inline asm expects a template, output constraints, and input constraints")
+	if len(stringArgs) < 4 {
+		p.errors = append(p.errors, "inline asm expects a template, output constraints, input constraints, and clobbers")
 		return result
 	}
-	result.Template = strings.Join(stringArgs[:len(stringArgs)-2], "")
-	result.OutputConstraints = stringArgs[len(stringArgs)-2]
-	result.InputConstraints = stringArgs[len(stringArgs)-1]
-	for p.curTokenIs(token.COMMA) || p.peekTokenIs(token.COMMA) {
-		if p.peekTokenIs(token.COMMA) {
-			p.nextToken()
-		}
-		p.nextToken()
-		result.Operands = append(result.Operands, p.parseExpression(LOWEST))
-	}
+	result.Template = strings.Join(stringArgs[:len(stringArgs)-3], "")
+	result.OutputConstraints = stringArgs[len(stringArgs)-3]
+	result.InputConstraints = stringArgs[len(stringArgs)-2]
+	result.ClobberConstraints = stringArgs[len(stringArgs)-1]
 	skipSemicolons()
 	p.expectPeek(token.RBRACE)
 	return result

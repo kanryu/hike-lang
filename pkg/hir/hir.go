@@ -257,10 +257,11 @@ type InstrUnary struct {
 }
 
 type InstrInlineAsm struct {
-	Template          string
-	OutputConstraints string
-	InputConstraints  string
-	Args              []Value
+	Template           string
+	OutputConstraints  string
+	InputConstraints   string
+	ClobberConstraints string
+	Args               []Value
 }
 
 func (i *InstrInlineAsm) Result() *Reg   { return nil }

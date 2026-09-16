@@ -11,10 +11,16 @@ package main
 func printf(format string, ...) int
 
 func main() int {
-    __asm__{"nop", "", ""}
+    __asm__{
+        params:
+        "nop", "", "", ""
+    }
     buf := []byte{0}
     ptr := &buf[0]
-    __asm__{"", "", "r", ptr}
+    __asm__{
+        params: ptr
+        "", "", "r", "~{memory}"
+    }
     printf("ASM=1\n")
     return 0
 }

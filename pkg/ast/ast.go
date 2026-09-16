@@ -371,11 +371,12 @@ type CallExpr struct {
 }
 
 type InlineAsmExpr struct {
-	Token             token.Token
-	Template          string
-	OutputConstraints string
-	InputConstraints  string
-	Operands          []Expression
+	Token              token.Token
+	Template           string
+	OutputConstraints  string
+	InputConstraints   string
+	ClobberConstraints string
+	Operands           []Expression
 }
 
 func (ie *InlineAsmExpr) expressionNode()      {}

@@ -64,10 +64,11 @@ Hike provides direct hardware access via LLVM inline assembly without requiring 
 
 ```go
 __asm__{
+    params: operand0, operand1, operand2
     "assembly template",
     "output constraints",
     "input constraints",
-    operands...
+	"clobber constraints",
 }
 
 ```
@@ -76,6 +77,7 @@ __asm__{
 
 * `%0`, `%1`, ... are automatically converted to LLVM positional tokens (`$0`, `$1`, ...).
 * Hardware register names with leading `%` (e.g., `%xmm0`, `%rax`, `%ecx`) are preserved as-is.
+* Operand references `%0`, `%1`, ... are converted to LLVM's `$0`, `$1`, ... syntax; all other template text is preserved.
 
 ---
 
@@ -108,30 +110,31 @@ package aes
 // Native amd64 execution using AES-NI instructions
 func EncryptBlock(roundKeys *byte, dst *byte, src *byte) {
     __asm__{
+        params: roundKeys, dst, src
         // Load plaintext into %xmm0 and XOR with round 0 key
-        "movups (%2), %%xmm0 \n"
-        "movups (%0), %%xmm1 \n"
-        "pxor   %%xmm1, %%xmm0 \n"
+        "movups (%2), %xmm0 \n"
+        "movups (%0), %xmm1 \n"
+        "pxor   %xmm1, %xmm0 \n"
 
         // Rounds 1-9
-        "aesenc 16(%0), %%xmm0 \n"
-        "aesenc 32(%0), %%xmm0 \n"
-        "aesenc 48(%0), %%xmm0 \n"
-        "aesenc 64(%0), %%xmm0 \n"
-        "aesenc 80(%0), %%xmm0 \n"
-        "aesenc 96(%0), %%xmm0 \n"
-        "aesenc 112(%0), %%xmm0 \n"
-        "aesenc 128(%0), %%xmm0 \n"
-        "aesenc 144(%0), %%xmm0 \n"
+        "aesenc 16(%0), %xmm0 \n"
+        "aesenc 32(%0), %xmm0 \n"
+        "aesenc 48(%0), %xmm0 \n"
+        "aesenc 64(%0), %xmm0 \n"
+        "aesenc 80(%0), %xmm0 \n"
+        "aesenc 96(%0), %xmm0 \n"
+        "aesenc 112(%0), %xmm0 \n"
+        "aesenc 128(%0), %xmm0 \n"
+        "aesenc 144(%0), %xmm0 \n"
 
         // Last round (no MixColumns)
-        "aesenclast 160(%0), %%xmm0 \n"
+        "aesenclast 160(%0), %xmm0 \n"
 
         // Store ciphertext back to dst
-        "movups %%xmm0, (%1) \n",
+        "movups %xmm0, (%1) \n",
         "",        // No outputs (writes directly to memory via dst pointer)
         "r,r,r",   // Operands passed in general-purpose registers
-        roundKeys, dst, src
+        "~{xmm0},~{xmm1},~{memory}" // Registers and memory modified by the assembly
     }
 }
 

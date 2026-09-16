@@ -771,6 +771,10 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 			constraints += ","
 		}
 		constraints += i.InputConstraints
+		if constraints != "" && i.ClobberConstraints != "" {
+			constraints += ","
+		}
+		constraints += i.ClobberConstraints
 		args := make([]string, len(i.Args))
 		for idx, arg := range i.Args {
 			args[idx] = fmt.Sprintf("%s %s", arg.Type().LLVMType(), e.formatVal(arg))
@@ -1453,14 +1457,8 @@ func encodeLLVMAsmString(str string) string {
 func normalizeInlineAsmTemplate(template string) string {
 	var out strings.Builder
 	for i := 0; i < len(template); i++ {
-		if template[i] == '%' && i+1 < len(template) && template[i+1] == '%' {
-			// Accept the doubled register spelling commonly used by GCC-style
-			// inline assembly while emitting LLVM's single-percent spelling.
-			out.WriteByte('%')
-			i++
-			continue
-		}
 		if template[i] == '%' && i+1 < len(template) && template[i+1] >= '0' && template[i+1] <= '9' {
+			// Hike uses %N for the Nth operand; LLVM inline asm uses $N.
 			out.WriteByte('$')
 		} else {
 			out.WriteByte(template[i])
