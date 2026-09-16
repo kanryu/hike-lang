@@ -160,11 +160,11 @@ func (l *Lexer) NextToken() token.Token {
 
 	startCol := l.col
 	startLine := l.line
-	if l.ch == '*' && strings.HasPrefix(l.input[l.position:], "**asm**") {
-		for i := 0; i < len("**asm**"); i++ {
+	if l.ch == '_' && strings.HasPrefix(l.input[l.position:], "__asm__") {
+		for i := 0; i < len("__asm__"); i++ {
 			l.readChar()
 		}
-		return l.emitToken(token.Token{Type: token.INLINEASM, Literal: "**asm**", Line: startLine, Col: startCol})
+		return l.emitToken(token.Token{Type: token.INLINEASM, Literal: "__asm__", Line: startLine, Col: startCol})
 	}
 
 	switch l.ch {

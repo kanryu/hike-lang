@@ -5,7 +5,7 @@ package aes
 // encryptBlockFast uses AES-NI. The round keys are laid out by NewCipher as
 // ten consecutive 16-byte AES-128 round keys after the initial key.
 func encryptBlockFast(roundKeys []byte, dst []byte, src []byte) {
-	**asm**(
+	__asm__{
 		"movups (%2), %%xmm0\n",
 		"movups (%0), %%xmm1\n",
 		"pxor %%xmm1, %%xmm0\n",
@@ -23,5 +23,5 @@ func encryptBlockFast(roundKeys []byte, dst []byte, src []byte) {
 		"",
 		"r,r,r",
 		&roundKeys[0], &dst[0], &src[0]
-	)
+	}
 }

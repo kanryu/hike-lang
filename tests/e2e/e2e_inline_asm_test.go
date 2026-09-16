@@ -11,10 +11,10 @@ package main
 func printf(format string, ...) int
 
 func main() int {
-    **asm**("nop", "", "")
+    __asm__{"nop", "", ""}
     buf := []byte{0}
     ptr := &buf[0]
-    **asm**("", "", "r", ptr)
+    __asm__{"", "", "r", ptr}
     printf("ASM=1\n")
     return 0
 }

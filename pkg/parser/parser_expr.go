@@ -643,7 +643,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 func (p *Parser) parseInlineAsmExpr() ast.Expression {
 	asmTok := p.curToken
 	result := &ast.InlineAsmExpr{Token: asmTok}
-	if !p.expectPeek(token.LPAREN) {
+	if !p.expectPeek(token.LBRACE) {
 		return result
 	}
 	skipSemicolons := func() {
@@ -682,7 +682,7 @@ func (p *Parser) parseInlineAsmExpr() ast.Expression {
 		result.Operands = append(result.Operands, p.parseExpression(LOWEST))
 	}
 	skipSemicolons()
-	p.expectPeek(token.RPAREN)
+	p.expectPeek(token.RBRACE)
 	return result
 }
 
