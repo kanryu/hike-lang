@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -18,6 +19,26 @@ type Transformer struct {
 	newSpecializedDecls   []ast.Decl
 	localTypes            map[string]ast.TypeExpr
 	verboseLevel          int
+}
+
+func specializationArgName(typ sema.Type) string {
+	if cv, ok := typ.(*sema.ConstValueType); ok {
+		return fmt.Sprintf("const_%d", cv.Value)
+	}
+	return strings.ReplaceAll(typ.TypeName(), "*", "ptr_")
+}
+
+func semaTypeToAstType(tok token.Token, typ sema.Type) ast.TypeExpr {
+	switch resolved := typ.(type) {
+	case *sema.ArrayType:
+		return &ast.ArrayType{Token: tok, Len: int64(resolved.Len), Elem: semaTypeToAstType(tok, resolved.Elem)}
+	case *sema.PointerType:
+		return &ast.PointerType{Token: tok, Base: semaTypeToAstType(tok, resolved.Base)}
+	case *sema.SliceType:
+		return &ast.SliceType{Token: tok, Elem: semaTypeToAstType(tok, resolved.Elem)}
+	default:
+		return &ast.NamedType{Token: tok, Name: &ast.Identifier{Token: tok, Value: typ.TypeName()}}
+	}
 }
 
 func (t *Transformer) SetVerboseLevel(level int) {
@@ -63,7 +84,9 @@ func (t *Transformer) Transform() (*ast.Program, error) {
 		t.emittedSpecialization[fnMeta.Name] = true
 
 		// 特殊化関数内部でさらに別のジェネリクス呼び出しが発生している可能性を走査
+		logger.LogVerbose2("[Verbose2] Transform specialized body before: name=%s params=%v returns=%v body=%#v\n", fnMeta.Name, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
 		t.transformFuncDecl(fnMeta.SpecializedAst)
+		logger.LogVerbose2("[Verbose2] Transform specialized body after: name=%s params=%v returns=%v body=%#v\n", fnMeta.Name, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
 		t.newSpecializedDecls = append(t.newSpecializedDecls, fnMeta.SpecializedAst)
 	}
 
@@ -120,15 +143,31 @@ func (t *Transformer) collectTypesPass() {
 				typeParamNames[i] = tp.Name.Value
 			}
 
-			tmplStruct := &sema.StructType{
-				Name:                qualifiedName,
-				TypeParams:          typeParamNames,
-				TypeArgs:            []sema.Type{},
-				Fields:              []sema.Field{},
-				Template:            typeDecl,
-				IsSpecialized:       false,
-				Specializations:     make(map[string]*sema.StructType),
-				BuiltinCapabilities: make(map[string]*sema.FuncType),
+			tmplStruct, _ := t.semaCtx.LookupStruct(qualifiedName)
+			if tmplStruct == nil {
+				tmplStruct = &sema.StructType{
+					Name:                qualifiedName,
+					TypeArgs:            []sema.Type{},
+					Fields:              []sema.Field{},
+					IsSpecialized:       false,
+					Specializations:     make(map[string]*sema.StructType),
+					BuiltinCapabilities: make(map[string]*sema.FuncType),
+				}
+			}
+			// Preserve fields, InternalKey, and specializations produced by Sema.
+			tmplStruct.Name = qualifiedName
+			if tmplStruct.InternalKey == "" {
+				if parts := strings.SplitN(qualifiedName, "_", 2); len(parts) == 2 {
+					tmplStruct.InternalKey = parts[0] + "/" + parts[1]
+				} else {
+					tmplStruct.InternalKey = qualifiedName
+				}
+			}
+			tmplStruct.TypeParams = typeParamNames
+			tmplStruct.ConstTypeParams = sema.ConstTypeParamsFromAST(typeDecl.TypeParams)
+			tmplStruct.Template = typeDecl
+			if tmplStruct.Specializations == nil {
+				tmplStruct.Specializations = make(map[string]*sema.StructType)
 			}
 			t.semaCtx.Structs[qualifiedName] = tmplStruct
 			t.semaCtx.Structs[rawName] = tmplStruct
@@ -489,6 +528,14 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 		expr.Index = t.transformExpr(expr.Index)
 		leftType := t.inferExprTypeExpr(expr.Left)
 		if leftType != nil {
+			// A specialized type is already canonicalized by Sema.  Recover its
+			// arguments from StructType instead of reparsing the mangled name;
+			// splitting "const_8" into "const" and "8" loses the const kind.
+			if resolved, ok := t.semaCtx.ResolveType(leftType).(*sema.StructType); ok && resolved.IsSpecialized && len(resolved.TypeArgs) > 0 {
+				structName := strings.SplitN(resolved.Name, "__", 2)[0]
+				t.triggerMethodSpecialization(structName, "Get", resolved.TypeArgs)
+				return expr
+			}
 			structName, typeArgs, _ := extractStructAndTypeArgs(leftType)
 			if structName != "" && len(typeArgs) > 0 {
 				var semaTypeArgs []sema.Type
@@ -573,6 +620,7 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 // -------------------------------------------------------------
 
 func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
+	logger.LogVerbose2("[Verbose2] Transform call input: function=%T (%#v) args=%d\n", call.Function, call.Function, len(call.Args))
 	call.Function = t.transformExpr(call.Function)
 	for i, arg := range call.Args {
 		call.Args[i] = t.transformExpr(arg)
@@ -830,7 +878,7 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 
 	argNames := []string{}
 	for _, typ := range typeArgs {
-		name := strings.ReplaceAll(typ.TypeName(), "*", "ptr_")
+		name := specializationArgName(typ)
 		name = strings.ReplaceAll(name, "[]", "slice_")
 		argNames = append(argNames, name)
 	}
@@ -876,9 +924,14 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	orderedTypeArgs := []ast.TypeExpr{}
 	for i, tpName := range typeParamNames {
 		if i < len(typeArgs) {
-			tNode := &ast.NamedType{
-				Token: template.Token,
-				Name:  &ast.Identifier{Token: template.Token, Value: typeArgs[i].TypeName()},
+			var tNode ast.TypeExpr
+			if cv, ok := typeArgs[i].(*sema.ConstValueType); ok {
+				tNode = &ast.ConstArg{
+					Token: template.Token,
+					Expr:  &ast.IntegerLiteral{Token: template.Token, Value: cv.Value},
+				}
+			} else {
+				tNode = semaTypeToAstType(template.Token, typeArgs[i])
 			}
 			typeMap[tpName] = tNode
 			orderedTypeArgs = append(orderedTypeArgs, tNode)
@@ -886,6 +939,7 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	}
 
 	cloned := t.cloneFuncDecl(template, specializedName, typeMap, orderedTypeArgs)
+	logger.LogVerbose2("[Verbose2] Transform specialization: base=%s -> %s typeArgs=%v returns=%v\n", baseName, specializedName, orderedTypeArgs, cloned.ReturnTypes)
 
 	fnType := &sema.FuncType{
 		Name:            specializedName,
@@ -905,9 +959,11 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	}
 
 	for _, p := range cloned.Params {
+		logger.LogVerbose2("[Verbose2] Transform resolve specialized param: name=%s ast=%#v\n", p.Name.Value, p.Type)
 		fnType.ParamTypes = append(fnType.ParamTypes, t.semaCtx.ResolveType(p.Type))
 	}
 	for _, rt := range cloned.ReturnTypes {
+		logger.LogVerbose2("[Verbose2] Transform resolve specialized return: ast=%T value=%+v\n", rt, rt)
 		fnType.ReturnTypes = append(fnType.ReturnTypes, t.semaCtx.ResolveType(rt))
 	}
 
@@ -965,6 +1021,9 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 		return nil
 	}
 	switch node := typ.(type) {
+	case *ast.ConstArg:
+		logger.LogVerbose2("[Verbose2] Transform ConstArg substitution: expr=%T (%+v)\n", node.Expr, node.Expr)
+		return &ast.ConstArg{Token: node.Token, Expr: t.substituteAstExpr(node.Expr, typeMap, orderedTypeArgs)}
 	case *ast.NamedType:
 		if node.Package == nil && len(node.TypeArgs) == 0 {
 			if rep, ok := typeMap[node.Name.Value]; ok {
@@ -1222,6 +1281,13 @@ func (t *Transformer) substituteAstStmt(s ast.Statement, typeMap map[string]ast.
 func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast.TypeExpr, orderedTypeArgs []ast.TypeExpr) ast.Expression {
 	if e == nil {
 		return nil
+	}
+	if id, ok := e.(*ast.Identifier); ok {
+		if replacement, exists := typeMap[id.Value]; exists {
+			if constArg, isConst := replacement.(*ast.ConstArg); isConst {
+				return constArg.Expr
+			}
+		}
 	}
 
 	if te, ok := e.(ast.TypeExpr); ok {
@@ -1535,6 +1601,17 @@ func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
 			Elem:  parseSimpleTypeExpr(tok, strings.TrimPrefix(typeName, "[]")),
 		}
 	}
+	if strings.HasPrefix(typeName, "[") {
+		if end := strings.Index(typeName, "]"); end > 1 {
+			if length, err := strconv.ParseInt(typeName[1:end], 10, 64); err == nil {
+				return &ast.ArrayType{
+					Token: tok,
+					Len:   length,
+					Elem:  parseSimpleTypeExpr(tok, typeName[end+1:]),
+				}
+			}
+		}
+	}
 	idx := strings.Index(typeName, "[")
 	if idx != -1 && strings.HasSuffix(typeName, "]") {
 		base := typeName[:idx]
@@ -1785,8 +1862,22 @@ func extractStructAndTypeArgs(typ ast.TypeExpr) (structName string, typeArgs []a
 			}
 			argsParts := strings.Split(parts[1], "_")
 			var args []ast.TypeExpr
-			for _, p := range argsParts {
+			for i := 0; i < len(argsParts); i++ {
+				p := argsParts[i]
 				if p != "" {
+					if p == "const" && i+1 < len(argsParts) {
+						if value, err := strconv.ParseInt(argsParts[i+1], 10, 64); err == nil {
+							args = append(args, &ast.ConstArg{Token: named.Token, Expr: &ast.IntegerLiteral{Token: named.Token, Value: value}})
+							i++
+							continue
+						}
+					}
+					if strings.HasPrefix(p, "const_") {
+						if value, err := strconv.ParseInt(strings.TrimPrefix(p, "const_"), 10, 64); err == nil {
+							args = append(args, &ast.ConstArg{Token: named.Token, Expr: &ast.IntegerLiteral{Token: named.Token, Value: value}})
+							continue
+						}
+					}
 					args = append(args, parseSimpleTypeExpr(named.Token, p))
 				}
 			}
