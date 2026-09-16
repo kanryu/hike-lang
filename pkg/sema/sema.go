@@ -119,6 +119,14 @@ func (t *TypeParamType) TypeName() string { return t.Name }
 func (t *TypeParamType) LLVMType() string { return "i8*" }
 func (t *TypeParamType) Size() int        { return PointerSize }
 
+type ConstValueType struct {
+	Value int64
+}
+
+func (t *ConstValueType) TypeName() string { return fmt.Sprintf("const<%d>", t.Value) }
+func (t *ConstValueType) LLVMType() string { return "void" }
+func (t *ConstValueType) Size() int        { return 0 }
+
 type PointerType struct {
 	Base Type
 }
@@ -156,6 +164,7 @@ type StructType struct {
 	Name                string
 	InternalKey         string
 	TypeParams          []string
+	ConstTypeParams     map[string]bool
 	TypeArgs            []Type
 	Fields              []Field
 	Template            *ast.TypeDecl
@@ -503,11 +512,54 @@ func collectTypeParamsFromNode(t ast.TypeExpr, out map[string]bool) {
 	}
 }
 
+func constTypeParams(params []*ast.TypeParam) map[string]bool {
+	result := make(map[string]bool)
+	for _, param := range params {
+		if param != nil {
+			if named, ok := param.Constraint.(*ast.NamedType); ok && named.Name != nil && named.Name.Value == "uint" {
+				result[param.Name.Value] = true
+			}
+		}
+	}
+	return result
+}
+
+func astTypeContainsParam(t ast.TypeExpr, name string) bool {
+	switch node := t.(type) {
+	case *ast.NamedType:
+		if node.Package == nil && node.Name != nil && node.Name.Value == name {
+			return true
+		}
+		for _, arg := range node.TypeArgs {
+			if astTypeContainsParam(arg, name) {
+				return true
+			}
+		}
+	case *ast.PointerType:
+		return astTypeContainsParam(node.Base, name)
+	case *ast.SliceType:
+		return astTypeContainsParam(node.Elem, name)
+	case *ast.ArrayType:
+		return astTypeContainsParam(node.Elem, name)
+	case *ast.MapType:
+		return astTypeContainsParam(node.Key, name) || astTypeContainsParam(node.Value, name)
+	}
+	return false
+}
+
+// ConstTypeParamsFromAST exposes declaration constraints to the transformation
+// pass, which also creates the provisional generic type entry.
+func ConstTypeParamsFromAST(params []*ast.TypeParam) map[string]bool {
+	return constTypeParams(params)
+}
+
 func typeToTypeExpr(t Type) ast.TypeExpr {
 	if t == nil {
 		return nil
 	}
 	switch v := t.(type) {
+	case *ConstValueType:
+		return &ast.ConstArg{Expr: &ast.IntegerLiteral{Value: v.Value}}
 	case *PointerType:
 		return &ast.PointerType{Base: typeToTypeExpr(v.Base)}
 	case *SliceType:
@@ -731,6 +783,13 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			}
 
 			internalKey := BuildInternalKey(prog.Package, rawName, "")
+			// Imported declarations are merged into the main AST, so recover the
+			// package-qualified key from the loader's qualified name.
+			if prog.Package == "main" {
+				if parts := strings.SplitN(qualifiedName, "_", 2); len(parts) == 2 {
+					internalKey = parts[0] + "/" + parts[1]
+				}
+			}
 			td.InternalKey = internalKey
 
 			if _, ok := td.Type.(*ast.InterfaceType); ok {
@@ -755,6 +814,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 					Name:                qualifiedName,
 					InternalKey:         internalKey,
 					TypeParams:          tParams,
+					ConstTypeParams:     constTypeParams(td.TypeParams),
 					Fields:              []Field{},
 					Template:            td,
 					Specializations:     make(map[string]*StructType),
@@ -951,7 +1011,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 						typeName := getBaseTypeName(f.Type)
 						if targetSt, _ := ctx.LookupStruct(typeName); targetSt != nil && targetSt.IsGeneric() {
 							for _, tp := range targetSt.TypeParams {
-								if !contains(st.TypeParams, tp) {
+								if astTypeContainsParam(f.Type, tp) && !contains(st.TypeParams, tp) {
 									st.TypeParams = append(st.TypeParams, tp)
 									ctx.GenericTypes[st.Name] = st.Template
 									changed = true
@@ -986,7 +1046,7 @@ func Analyze(prog *ast.Program) (*Context, error) {
 			if recvTypeName != "" {
 				if st, _ := ctx.LookupStruct(recvTypeName); st != nil {
 					for _, tp := range fn.TypeParams {
-						if !contains(st.TypeParams, tp) {
+						if fn.Template != nil && fn.Template.Receiver != nil && astTypeContainsParam(fn.Template.Receiver.Type, tp) && !contains(st.TypeParams, tp) {
 							st.TypeParams = append(st.TypeParams, tp)
 							ctx.GenericTypes[st.Name] = st.Template
 							changed = true

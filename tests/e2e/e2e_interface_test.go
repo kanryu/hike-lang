@@ -189,3 +189,170 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// 5. Indexable 構造体を二重に適用した固定長行列アクセスのテスト。
+// Matrix.Get は行ポインターを返し、Row.Get は列要素を返すため、
+// matrix[row][column] が二段階の組み込みインターフェース解決になる。
+func TestInterface_NestedIndexableMatrix(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func malloc(size int) *byte
+func free(ptr *byte)
+func printf(format string, ...) int
+
+type Row struct {
+    data *int
+}
+
+
+func (r *Row) Get(column int) int {
+    return r.data[column]
+}
+
+func (r *Row) Set(column int, value int) {
+    p := r.data + column
+    *p = value
+}
+
+type Matrix struct {
+    rows *Row
+}
+
+func (m *Matrix) Get(row int) *Row {
+    return m.rows + row
+}
+
+func (m *Matrix) Set(row int, value *Row) {
+    p := m.rows + row
+    *p = *value
+}
+
+func main() int {
+    var data *int = malloc(4 * 8)
+    p := data + 0
+    *p = 11
+    p = data + 1
+    *p = 12
+    p = data + 2
+    *p = 13
+    p = data + 3
+    *p = 21
+    p = data + 4
+    *p = 22
+    p = data + 5
+    *p = 23
+    p = data + 6
+    *p = 31
+    p = data + 7
+    *p = 32
+
+    var rows *Row = malloc(3 * 8)
+    row := rows + 0
+    row.data = data
+    row = rows + 1
+    row.data = data + 3
+    row = rows + 2
+    row.data = data + 6
+
+    var matrix *Matrix = malloc(8)
+    matrix.rows = rows
+
+    first := matrix[0][0]
+    middle := matrix[1][2]
+    last := matrix[2][1]
+    replacement := rows + 1
+    matrix[1] = replacement
+    matrix[1][2] = 99
+    middleAfterSet := matrix[1][2]
+    printf("MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, middleAfterSet)
+
+    free((*byte)(data))
+    free((*byte)(rows))
+    free((*byte)(matrix))
+    return 0
+}
+`,
+		ExpectedOut:  "MATRIX=11,23,32;SET=99",
+		ExpectedExit: 0,
+	})
+}
+
+// 6. 型引数と末尾const引数を持つ Matrix[int, 8, 8] の二重Get/Setを検証する。
+func TestInterface_ConstGenericMatrixInstantiation(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func malloc(size int) *byte
+func free(ptr *byte)
+func printf(format string, ...) int
+
+type Row struct {
+    data *int
+}
+
+func (r *Row) Get(column int) int {
+    return r.data[column]
+}
+
+func (r *Row) Set(column int, value int) {
+    p := r.data + column
+    *p = value
+}
+
+type Matrix[T, Rows uint, Cols uint] struct {
+    rows *Row
+}
+
+func (m *Matrix[T, Rows, Cols]) Get(row int) *Row {
+    return m.rows + row
+}
+
+func (m *Matrix[T, Rows, Cols]) Set(row int, value *Row) {
+    p := m.rows + row
+    *p = *value
+}
+
+func main() int {
+    var data *int = malloc(8 * 8 * 8)
+    p := data + 0
+    *p = 1
+    p = data + 28
+    *p = 29
+    p = data + 63
+    *p = 64
+
+    var rows *Row = malloc(8 * 8)
+    row := rows + 0
+    row.data = data
+    row = rows + 3
+    row.data = data + 24
+    row = rows + 7
+    row.data = data + 56
+
+    matrix := Matrix[int, 8, 8]{rows: rows}
+    first := matrix[0][0]
+    middle := matrix[3][4]
+    last := matrix[7][7]
+    replacement := rows + 3
+    matrix[3] = replacement
+    matrix[3][4] = 99
+    middleAfterSet := matrix[3][4]
+    printf("CONST_MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, middleAfterSet)
+
+    free((*byte)(data))
+    free((*byte)(rows))
+    return 0
+}
+`,
+		ExpectedOut:  "CONST_MATRIX=1,29,64;SET=99",
+		ExpectedExit: 0,
+	})
+}
+

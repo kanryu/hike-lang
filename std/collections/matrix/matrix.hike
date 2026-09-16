@@ -1,0 +1,34 @@
+package matrix
+
+// Matrix は連続した要素領域を行単位で参照する固定長行列です。
+// Rows と Cols は uint 制約付きconstジェネリック引数です。
+type Row[T] struct {
+    Data *T
+}
+
+type Matrix[T, Rows uint, Cols uint] struct {
+    rows Row[T]
+}
+
+// New は要素領域の先頭ポインターを受け取り、Matrix値を初期化します。
+func New[T, Rows uint, Cols uint](data *T) Matrix[T, Rows, Cols] {
+    return Matrix[T, Rows, Cols]{rows: Row[T]{Data: data}}
+}
+
+func (r *Row[T]) Get(column int) T {
+    return r.Data[column]
+}
+
+func (r *Row[T]) Set(column int, value T) {
+    p := r.Data + column
+    *p = value
+}
+
+func (m *Matrix[T, Rows, Cols]) Get(row int) Row[T] {
+    return Row[T]{Data: m.rows.Data + (row * Cols)}
+}
+
+func (m *Matrix[T, Rows, Cols]) Set(row int, value Row[T]) {
+    p := m.rows.Data + (row * Cols)
+    p[0] = value.Data[0]
+}

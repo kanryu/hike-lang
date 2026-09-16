@@ -339,6 +339,18 @@ type GenericInstExpr struct {
 	TypeArgs []TypeExpr
 }
 
+// ConstArg is a value argument of a const-generic instantiation.  It is kept
+// separate from TypeExpr so semantic analysis can reject arbitrary runtime
+// expressions while still preserving the source expression for diagnostics.
+type ConstArg struct {
+	Token token.Token
+	Expr  Expression
+}
+
+func (ca *ConstArg) typeExprNode()        {}
+func (ca *ConstArg) expressionNode()      {}
+func (ca *ConstArg) TokenLiteral() string { return ca.Token.Literal }
+
 func (ge *GenericInstExpr) expressionNode()      {}
 func (ge *GenericInstExpr) TokenLiteral() string { return ge.Token.Literal }
 
@@ -564,8 +576,9 @@ func (ft *FutureType) expressionNode()      {}
 func (ft *FutureType) TokenLiteral() string { return ft.Token.Literal }
 
 type TypeParam struct {
-	Token token.Token
-	Name  *Identifier
+	Token      token.Token
+	Name       *Identifier
+	Constraint TypeExpr // optional constraint, e.g. Rows int
 }
 
 func (tp *TypeParam) typeExprNode()        {}

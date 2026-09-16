@@ -631,10 +631,21 @@ func (p *Parser) parseTypeParams() []*ast.TypeParam {
 	for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
 		if p.curTokenIs(token.IDENT) {
 			ident := p.parseIdentifier()
-			params = append(params, &ast.TypeParam{
+			param := &ast.TypeParam{
 				Token: ident.Token,
 				Name:  ident,
-			})
+			}
+			// Constraints use the compact form `Rows int` (and accept
+			// `Rows: int` for readability).  They are metadata on the
+			// declaration; instantiation arguments are still parsed separately.
+			if p.peekTokenIs(token.COLON) {
+				p.nextToken()
+			}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "uint" {
+				p.nextToken()
+				param.Constraint = p.parseTypeExpr()
+			}
+			params = append(params, param)
 		}
 		if p.peekTokenIs(token.COMMA) {
 			p.nextToken()

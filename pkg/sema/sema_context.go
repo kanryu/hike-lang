@@ -232,6 +232,7 @@ func (c *Context) RegisterTypeDecl(td *ast.TypeDecl, pkgName string) {
 		tmplStruct := &StructType{
 			Name:                qualifiedName,
 			TypeParams:          typeParamNames,
+			ConstTypeParams:     constTypeParams(td.TypeParams),
 			TypeArgs:            []Type{},
 			Fields:              []Field{},
 			Template:            td,
@@ -353,6 +354,8 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	}
 
 	switch t := expr.(type) {
+	case *ast.ConstArg:
+		return c.resolveConstArg(t)
 	case *ast.NamedType:
 		name := t.Name.Value
 		if t.Package != nil {
@@ -384,7 +387,6 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		if name == "error" {
 			return c.Interfaces["error"]
 		}
-
 		if st, canonicalName := c.LookupStruct(name); st != nil {
 			if st.IsGeneric() {
 				if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
@@ -403,27 +405,72 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				resolvedArgs := make([]Type, len(t.TypeArgs))
 				argNames := []string{}
 				typeMap := make(map[string]Type)
+				seenConst := false
 				for i, arg := range t.TypeArgs {
-					resolvedArg := c.ResolveType(arg)
+					if seenConst {
+						if named, ok := arg.(*ast.NamedType); ok && named.Package == nil {
+							if _, exists := c.Constants[named.Name.Value]; !exists {
+								panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing and use a const variable", t.Token.Line, t.Token.Col))
+							}
+						}
+					}
+					resolvedArg, isConst := c.resolveGenericArg(arg)
+					paramName := st.TypeParams[i]
+					if st.ConstTypeParams[paramName] && !isConst {
+						panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires an integer constant argument", t.Token.Line, t.Token.Col, paramName))
+					}
+					if !st.ConstTypeParams[paramName] && isConst {
+						panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a type argument", t.Token.Line, t.Token.Col, paramName))
+					}
+					if st.ConstTypeParams[paramName] {
+						if cv, ok := resolvedArg.(*ConstValueType); ok && cv.Value < 0 {
+							panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a non-negative uint constant", t.Token.Line, t.Token.Col, paramName))
+						}
+					}
+					if isConst {
+						if i == 0 {
+							panic(fmt.Sprintf("[Sema Error] line %d:%d: a generic instantiation requires at least one type argument before const arguments", t.Token.Line, t.Token.Col))
+						}
+						seenConst = true
+					} else if seenConst {
+						panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing", t.Token.Line, t.Token.Col))
+					}
+					if resolvedArg == TypeVoid && isConst {
+						panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be integer literals or const variables", t.Token.Line, t.Token.Col))
+					}
 					resolvedArgs[i] = resolvedArg
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
-					typeMap[st.TypeParams[i]] = resolvedArg
+					argNames = append(argNames, specializationArgName(resolvedArg))
+					if !isConst {
+						typeMap[st.TypeParams[i]] = resolvedArg
+					}
 				}
 
 				specKey := strings.Join(argNames, "_")
 				if existingSt, ok := st.Specializations[specKey]; ok {
+					if existingSt.InternalKey == "" {
+						existingSt.InternalKey = specializedInternalKeyFor(st, canonicalName, resolvedArgs)
+					}
+					c.Structs[existingSt.Name] = existingSt
+					logGenericTypeResolution(name, existingSt)
 					return existingSt
 				}
 
 				specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
+				specializedInternalKey := specializedInternalKeyFor(st, canonicalName, resolvedArgs)
 				if existingSt, ok := c.Structs[specializedName]; ok {
 					st.Specializations[specKey] = existingSt
+					if existingSt.InternalKey == "" {
+						existingSt.InternalKey = specializedInternalKey
+					}
+					logGenericTypeResolution(name, existingSt)
 					return existingSt
 				}
 
 				newSt := &StructType{
 					Name:                specializedName,
+					InternalKey:         specializedInternalKey,
 					TypeParams:          st.TypeParams,
+					ConstTypeParams:     st.ConstTypeParams,
 					TypeArgs:            resolvedArgs,
 					Fields:              []Field{},
 					Template:            st.Template,
@@ -433,6 +480,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				}
 				c.Structs[specializedName] = newSt
 				st.Specializations[specKey] = newSt
+				logGenericTypeResolution(name, newSt)
 
 				if st.Template != nil {
 					if stAst, ok := st.Template.Type.(*ast.StructType); ok {
@@ -477,7 +525,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				for i, arg := range t.TypeArgs {
 					resolvedArg := c.ResolveType(arg)
 					resolvedArgs[i] = resolvedArg
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
+					argNames = append(argNames, specializationArgName(resolvedArg))
 					typeMap[iface.TypeParams[i]] = resolvedArg
 				}
 
@@ -638,11 +686,80 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	panic(fmt.Sprintf("[Sema Error] unknown type expression node %T", expr))
 }
 
+func (c *Context) resolveGenericArg(arg ast.TypeExpr) (Type, bool) {
+	if constArg, ok := arg.(*ast.ConstArg); ok {
+		return c.resolveConstArg(constArg), true
+	}
+	if named, ok := arg.(*ast.NamedType); ok && named.Package == nil {
+		if value, exists := c.Constants[named.Name.Value]; exists {
+			return &ConstValueType{Value: value}, true
+		}
+	}
+	return c.ResolveType(arg), false
+}
+
+func specializationArgName(t Type) string {
+	if value, ok := t.(*ConstValueType); ok {
+		return fmt.Sprintf("const_%d", value.Value)
+	}
+	return strings.ReplaceAll(t.TypeName(), "*", "Ptr")
+}
+
+func specializedInternalKeyFor(template *StructType, canonicalName string, args []Type) string {
+	base := template.InternalKey
+	if base == "" {
+		base = canonicalName
+		if parts := strings.SplitN(base, "_", 2); len(parts) == 2 {
+			base = parts[0] + "/" + parts[1]
+		}
+	}
+	parts := make([]string, len(args))
+	for i, arg := range args {
+		if cv, ok := arg.(*ConstValueType); ok {
+			parts[i] = fmt.Sprintf("%d", cv.Value)
+		} else if arg != nil {
+			parts[i] = arg.TypeName()
+		}
+	}
+	return base + "@" + strings.Join(parts, "@")
+}
+
+func logGenericTypeResolution(source string, resolved *StructType) {
+	if resolved == nil {
+		return
+	}
+	argNames := make([]string, len(resolved.TypeArgs))
+	for i, arg := range resolved.TypeArgs {
+		if arg != nil {
+			argNames[i] = arg.TypeName()
+		}
+	}
+	logger.LogVerbose2("[Verbose2] Sema generic type: %s[%s] -> name=%s internal=%s ir=%s\n",
+		source, strings.Join(argNames, ","), resolved.Name, resolved.InternalKey, MangleInternalKeyToIR(resolved.InternalKey))
+}
+
+func (c *Context) resolveConstArg(arg *ast.ConstArg) Type {
+	if arg == nil || arg.Expr == nil {
+		return TypeVoid
+	}
+	switch expr := arg.Expr.(type) {
+	case *ast.IntegerLiteral:
+		return &ConstValueType{Value: expr.Value}
+	case *ast.Identifier:
+		if value, ok := c.Constants[expr.Value]; ok {
+			return &ConstValueType{Value: value}
+		}
+	}
+	return TypeVoid
+}
+
 func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Type {
 	if t == nil {
 		return TypeVoid
 	}
 	switch node := t.(type) {
+	case *ast.ConstArg:
+		return c.resolveConstArg(node)
 	case *ast.NamedType:
 		if node.Package == nil && len(node.TypeArgs) == 0 {
 			if replacement, ok := subst[node.Name.Value]; ok {
@@ -664,7 +781,7 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 				for i, arg := range node.TypeArgs {
 					resolvedArg := c.ResolveTypeWithSubst(arg, subst)
 					resolvedArgs = append(resolvedArgs, resolvedArg)
-					argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
+					argNames = append(argNames, specializationArgName(resolvedArg))
 					if i < len(st.TypeParams) {
 						typeMap[st.TypeParams[i]] = resolvedArg
 					}
@@ -673,7 +790,7 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 				for _, tp := range st.TypeParams {
 					if resolvedArg, ok := subst[tp]; ok {
 						resolvedArgs = append(resolvedArgs, resolvedArg)
-						argNames = append(argNames, strings.ReplaceAll(resolvedArg.TypeName(), "*", "Ptr"))
+						argNames = append(argNames, specializationArgName(resolvedArg))
 						typeMap[tp] = resolvedArg
 					}
 				}

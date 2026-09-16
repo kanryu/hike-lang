@@ -633,65 +633,28 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 // -------------------------------------------------------------
 
 func (c *CallLowerer) getOrSpecializeFunc(baseName string, typeArgs []sema.Type) (string, *sema.FuncType) {
+	// Generic monomorphization belongs to Transform. Lower only resolves the
+	// already materialized function recorded in the semantic context.
 	var typeSuffixes []string
 	for _, t := range typeArgs {
-		cleanName := strings.ReplaceAll(t.TypeName(), "*", "ptr_")
+		cleanName := ""
+		if cv, ok := t.(*sema.ConstValueType); ok {
+			cleanName = fmt.Sprintf("const_%d", cv.Value)
+		} else {
+			cleanName = strings.ReplaceAll(t.TypeName(), "*", "ptr_")
+		}
 		cleanName = strings.ReplaceAll(cleanName, "[]", "slice_")
 		typeSuffixes = append(typeSuffixes, cleanName)
 	}
 	specName := baseName + "_" + strings.Join(typeSuffixes, "_")
 
-	if fn, _ := c.root.semaCtx.LookupFunction(specName); fn != nil {
+	if fn, canonical := c.root.semaCtx.LookupFunction(specName); fn != nil {
+		if canonical != "" {
+			return canonical, fn
+		}
 		return specName, fn
 	}
-
-	tmplDecl := c.root.semaCtx.GenericFuncs[baseName]
-	if tmplDecl == nil {
-		if fn, _ := c.root.semaCtx.LookupFunction(baseName); fn != nil && fn.Template != nil {
-			tmplDecl = fn.Template
-		}
-	}
-
-	if tmplDecl == nil {
-		return "", nil
-	}
-
-	subst := make(map[string]sema.Type)
-	for i, tp := range tmplDecl.TypeParams {
-		if i < len(typeArgs) {
-			subst[tp.Name.Value] = typeArgs[i]
-		}
-	}
-
-	specAst := c.substFuncDecl(tmplDecl, specName, subst)
-
-	paramTypes := make([]sema.Type, len(specAst.Params))
-	for i, p := range specAst.Params {
-		paramTypes[i] = c.root.semaCtx.ResolveType(p.Type)
-	}
-	returnTypes := make([]sema.Type, len(specAst.ReturnTypes))
-	for i, rt := range specAst.ReturnTypes {
-		returnTypes[i] = c.root.semaCtx.ResolveType(rt)
-	}
-
-	specFnType := &sema.FuncType{
-		Name:            specName,
-		InternalKey:     sema.BuildInternalKey(c.root.prog.Package, specName, ""),
-		IRName:          specName,
-		ParamTypes:      paramTypes,
-		ReturnTypes:     returnTypes,
-		IsSpecialized:   true,
-		SpecializedAst:  specAst,
-		Specializations: make(map[string]*sema.FuncType),
-	}
-
-	c.root.semaCtx.Functions[specName] = specFnType
-
-	prevCurFunc := c.root.curFunc
-	c.LowerFunc(specAst)
-	c.root.curFunc = prevCurFunc
-
-	return specName, specFnType
+	return "", nil
 }
 
 func (c *CallLowerer) substFuncDecl(tmpl *ast.FuncDecl, newName string, subst map[string]sema.Type) *ast.FuncDecl {
@@ -765,6 +728,8 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 		return nil
 	}
 	switch v := t.(type) {
+	case *sema.ConstValueType:
+		return &ast.ConstArg{Expr: &ast.IntegerLiteral{Value: v.Value}}
 	case *sema.PointerType:
 		return &ast.PointerType{Base: semaTypeToTypeExpr(v.Base)}
 	case *sema.SliceType:
@@ -868,6 +833,7 @@ func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
 // -------------------------------------------------------------
 
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
+	logger.LogVerbose2("[Verbose2] Lower call input: function=%T (%+v) args=%d\\n", call.Function, call.Function, len(call.Args))
 	// 0. ジェネリクス関数の明示的型引数適用呼び出し (例: Add[float64](a, b))
 	if genInst, ok := call.Function.(*ast.GenericInstExpr); ok {
 		var baseName string
@@ -882,6 +848,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		}
 
 		if baseName != "" {
+			logger.LogVerbose2("[Verbose2] Lower generic call: base=%s typeArgs=%v\\n", baseName, genInst.TypeArgs)
 			typeArgs := make([]sema.Type, len(genInst.TypeArgs))
 			for i, ta := range genInst.TypeArgs {
 				typeArgs[i] = c.root.semaCtx.ResolveType(ta)
@@ -889,6 +856,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 			specName, specFn := c.getOrSpecializeFunc(baseName, typeArgs)
 			if specFn != nil {
+				logger.LogVerbose2("[Verbose2] Lower generic call resolved: callee=%s returnTypes=%v\\n", specName, specFn.ReturnTypes)
 				callArgs := c.fillDefaultArgs(call.Args, c.getFuncParams(specFn, specName))
 				isCVarArg := specFn.IsCFunc || (specFn.IsVariadic && specFn.VariadicElem == nil)
 				args := c.lowerArgs(callArgs, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)

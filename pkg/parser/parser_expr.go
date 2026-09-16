@@ -236,7 +236,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.nextToken()
 			p.nextToken()
 			for !p.curTokenIs(token.RBRACKET) && !p.curTokenIs(token.EOF) {
-				typeArgs = append(typeArgs, p.parseTypeExpr())
+				typeArgs = append(typeArgs, p.parseGenericTypeArg())
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()
 					p.nextToken()
@@ -920,13 +920,11 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 
 	if p.peekTokenIs(token.COMMA) {
 		args := []ast.TypeExpr{}
-		if tArg := exprToTypeExpr(indexOrLow); tArg != nil {
-			args = append(args, tArg)
-		}
+		args = append(args, genericTypeArg(indexOrLow))
 		for p.peekTokenIs(token.COMMA) {
 			p.nextToken()
 			p.nextToken()
-			args = append(args, p.parseTypeExpr())
+			args = append(args, p.parseGenericTypeArg())
 		}
 		p.expectPeek(token.RBRACKET)
 		genExpr := &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: args}
@@ -966,6 +964,34 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	}
 
 	return &ast.IndexExpr{Token: tok, Left: left, Index: indexOrLow}
+}
+
+func (p *Parser) parseGenericTypeArg() ast.TypeExpr {
+	arg := p.parseExpression(LOWEST)
+	return genericTypeArg(arg)
+}
+
+func genericTypeArg(arg ast.Expression) ast.TypeExpr {
+	if typ := exprToTypeExpr(arg); typ != nil {
+		return typ
+	}
+	if arg == nil {
+		return &ast.ConstArg{}
+	}
+	var tok token.Token
+	switch n := arg.(type) {
+	case *ast.IntegerLiteral:
+		tok = n.Token
+	case *ast.Identifier:
+		tok = n.Token
+	case *ast.BinaryExpr:
+		tok = n.Token
+	case *ast.PrefixExpr:
+		tok = n.Token
+	default:
+		tok = token.Token{}
+	}
+	return &ast.ConstArg{Token: tok, Expr: arg}
 }
 
 func (p *Parser) parseMemberExpr(obj ast.Expression) ast.Expression {
