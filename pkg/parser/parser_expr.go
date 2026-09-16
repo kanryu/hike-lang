@@ -267,6 +267,12 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.nextToken()
 			elem := p.parseTypeExpr()
 			return &ast.ArrayType{Token: tok, Len: arrLen, Elem: elem}
+		} else if p.peekTokenIs(token.ELLIPSIS) {
+			p.nextToken()
+			p.expectPeek(token.RBRACKET)
+			p.nextToken()
+			elem := p.parseTypeExpr()
+			return &ast.ArrayType{Token: tok, Len: -1, Elem: elem}
 		} else if p.expectPeek(token.RBRACKET) {
 			p.nextToken()
 			elem := p.parseTypeExpr()
@@ -498,6 +504,35 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			elem := p.parseTypeExpr()
 			arrT := &ast.ArrayType{Token: tok, Len: arrLen, Elem: elem}
 
+			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
+				p.nextToken()
+				elements := []ast.Expression{}
+				if !p.peekTokenIs(token.RBRACE) {
+					p.nextToken()
+					for {
+						elements = append(elements, p.parseExpression(LOWEST))
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RBRACE) {
+								break
+							}
+							p.nextToken()
+						} else {
+							break
+						}
+					}
+				}
+				p.expectPeek(token.RBRACE)
+				leftExp = &ast.ArrayLiteral{Token: tok, Type: arrT, Elements: elements}
+			} else {
+				leftExp = arrT
+			}
+		} else if p.peekTokenIs(token.ELLIPSIS) {
+			p.nextToken()
+			p.expectPeek(token.RBRACKET)
+			p.nextToken()
+			elem := p.parseTypeExpr()
+			arrT := &ast.ArrayType{Token: tok, Len: -1, Elem: elem}
 			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
 				p.nextToken()
 				elements := []ast.Expression{}

@@ -1362,7 +1362,12 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return c.ResolveType(e.Type)
 
 	case *ast.ArrayLiteral:
-		return c.ResolveType(e.Type)
+		resolved := c.ResolveType(e.Type)
+		if array, ok := resolved.(*ArrayType); ok && array.Len < 0 {
+			array.Len = len(e.Elements)
+			e.Type.Len = int64(array.Len)
+		}
+		return resolved
 
 	case *ast.SliceLiteral:
 		return c.ResolveType(e.Type)
