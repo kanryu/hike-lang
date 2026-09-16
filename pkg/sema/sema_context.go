@@ -24,6 +24,7 @@ type Context struct {
 	typeIDs            map[string]int64
 	nextTypeID         int64
 	HasMapImport       bool
+	RegionModeEnabled  bool
 	diagnosticPackages map[string]bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持

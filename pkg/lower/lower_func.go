@@ -173,7 +173,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 			ptrReg := c.root.nextReg(&sema.PointerType{Base: recvType}, fn.Receiver.Name.Value)
 			if fn.Receiver.IsEscaped {
 				sizeVal := &hir.ConstInt{Val: int64(recvType.Size()), Typ: sema.TypeInt}
-				c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: recvType})
+				c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: recvType, KeepOnHeap: true})
 			} else {
 				c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: recvType})
 			}
@@ -195,7 +195,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 			ptrReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
 			if p.IsEscaped || c.root.escapedVars[p.Name.Value] {
 				sizeVal := &hir.ConstInt{Val: int64(pType.Size()), Typ: sema.TypeInt}
-				c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType})
+				c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType, KeepOnHeap: true})
 			} else {
 				c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: pType})
 			}
@@ -567,7 +567,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	if len(captures) > 0 {
 		envSize := len(captures) * sema.PointerSize
 		envRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		c.root.emit(&hir.InstrHeapAlloc{Dst: envRaw, Size: &hir.ConstInt{Val: int64(envSize), Typ: sema.TypeInt}, AllocType: sema.TypeByte})
+		c.root.emit(&hir.InstrHeapAlloc{Dst: envRaw, Size: &hir.ConstInt{Val: int64(envSize), Typ: sema.TypeInt}, AllocType: sema.TypeByte, KeepOnHeap: true})
 
 		envTyped := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
 		c.root.emit(&hir.InstrCast{Dst: envTyped, Val: envRaw, ToType: &sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}})

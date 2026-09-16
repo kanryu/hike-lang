@@ -11,12 +11,28 @@ import (
 // AnalyzeWithReporter は通常の意味解析に加えて、回復可能な型エラーを
 // Reporter に蓄積します。エラーがあっても同じブロックの後続文を検査します。
 func AnalyzeWithReporter(prog *ast.Program, reporter *diag.Reporter, filename string) (*Context, error) {
+	return AnalyzeWithReporterMode(prog, reporter, filename, false)
+}
+
+// AnalyzeWithReporterMode additionally gates the optional region API.
+func AnalyzeWithReporterMode(prog *ast.Program, reporter *diag.Reporter, filename string, regionEnabled bool) (*Context, error) {
 	ctx, err := Analyze(prog)
 	if err != nil {
 		if reporter != nil {
 			reporter.AddRaw(filename, err.Error())
 		}
 		return nil, nil
+	}
+	ctx.RegionModeEnabled = regionEnabled
+	if !regionEnabled {
+		for _, imp := range prog.Imports {
+			if strings.Trim(imp.Path, "\"`") == "std/alloc/region" {
+				if reporter != nil {
+					reporter.AddRaw(filename, "region allocation API requires --alloc=region")
+				}
+				return nil, nil
+			}
+		}
 	}
 	if reporter != nil {
 		ctx.collectDiagnostics(prog, reporter, filename)

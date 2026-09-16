@@ -33,12 +33,16 @@ type Lowerer struct {
 	itabs         map[string]*hir.ItabDef
 	escapedVars   map[string]bool
 	is32Bit       bool // Compilerから伝播される32bitターゲットフラグ
+	regionMode    bool
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
 	Expr *ExprLowerer
 	Call *CallLowerer
 }
+
+// SetRegionMode enables arena allocation for compiler-generated heap values.
+func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l := &Lowerer{
@@ -114,9 +118,11 @@ func (l *Lowerer) Lower() *hir.Program {
 				globalInits = nil
 			}
 			l.Call.LowerFunc(d)
+			l.finishRegionFunction()
 
 		case *ast.CFuncDecl:
 			l.Call.LowerCFunc(d)
+			l.finishRegionFunction()
 
 		case *ast.ExternFuncDecl:
 			l.Call.LowerExternFunc(d)
@@ -159,6 +165,44 @@ func (l *Lowerer) Lower() *hir.Program {
 	}
 
 	return l.hirProg
+}
+
+// finishRegionFunction performs the conservative first region inference pass.
+// All compiler-generated allocations in one lexical function region are grouped
+// together. Explicit malloc/free calls remain untouched, and future escape
+// analysis can promote individual allocations back to the heap here.
+func (l *Lowerer) finishRegionFunction() {
+	if !l.regionMode || l.curFunc == nil || l.curFunc.IsExtern || len(l.curFunc.Blocks) == 0 {
+		return
+	}
+	region := l.nextReg(&sema.PointerType{Base: sema.TypeByte}, "region")
+	first := l.curFunc.Blocks[0]
+	first.Instructions = append([]hir.Instruction{&hir.InstrRegionBegin{Dst: region}}, first.Instructions...)
+	for _, bb := range l.curFunc.Blocks {
+		// A value returned from this function outlives its region. Promote the
+		// allocation back to the ordinary heap before rewriting instructions.
+		returned := make(map[*hir.Reg]bool)
+		if ret, ok := bb.Terminator.(*hir.InstrReturn); ok {
+			for _, val := range ret.Vals {
+				if reg, ok := val.(*hir.Reg); ok {
+					returned[reg] = true
+				}
+			}
+		}
+		for n, inst := range bb.Instructions {
+			if a, ok := inst.(*hir.InstrHeapAlloc); ok && returned[a.Dst] {
+				a.KeepOnHeap = true
+			}
+			if a, ok := inst.(*hir.InstrHeapAlloc); ok && !a.KeepOnHeap {
+				bb.Instructions[n] = &hir.InstrRegionAlloc{Dst: a.Dst, Region: region, Size: a.Size, AllocType: a.AllocType}
+			}
+		}
+		if bb.Terminator != nil {
+			if _, ok := bb.Terminator.(*hir.InstrReturn); ok {
+				bb.Instructions = append(bb.Instructions, &hir.InstrRegionEnd{Region: region})
+			}
+		}
+	}
 }
 
 // -------------------------------------------------------------

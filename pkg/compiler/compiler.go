@@ -18,10 +18,11 @@ import (
 )
 
 type Compiler struct {
-	target   *target.Target
-	verbose  bool
-	wasmMode string
-	reporter *diag.Reporter
+	target     *target.Target
+	verbose    bool
+	wasmMode   string
+	regionMode bool
+	reporter   *diag.Reporter
 }
 
 func New(tgt *target.Target) *Compiler {
@@ -47,6 +48,9 @@ func (c *Compiler) SetWasmMode(mode string) {
 func (c *Compiler) SetVerbose(v bool) {
 	c.verbose = v
 }
+
+// SetRegionMode enables the optional --alloc=region arena allocator.
+func (c *Compiler) SetRegionMode(enabled bool) { c.regionMode = enabled }
 
 func (c *Compiler) Reporter() *diag.Reporter {
 	return c.reporter
@@ -117,7 +121,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 
 	// 2. 意味解析・型検査フェーズ
 	_ = c.safeExecute(primaryFile, func() error {
-		ctx, err := sema.AnalyzeWithReporter(rawProg, c.reporter, primaryFile)
+		ctx, err := sema.AnalyzeWithReporterMode(rawProg, c.reporter, primaryFile, c.regionMode)
 		if err != nil {
 			return err
 		}
@@ -147,6 +151,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
+		lw.SetRegionMode(c.regionMode)
 		hirProg = lw.Lower()
 		return nil
 	})
@@ -205,7 +210,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 	// 1. Sema フェーズ (エラーが出ても最後まで回す)
 	var semaCtx *sema.Context
 	_ = c.safeExecute(filename, func() error {
-		ctx, err := sema.AnalyzeWithReporter(prog, c.reporter, filename)
+		ctx, err := sema.AnalyzeWithReporterMode(prog, c.reporter, filename, c.regionMode)
 		if err != nil {
 			return err
 		}
@@ -243,6 +248,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
+		lw.SetRegionMode(c.regionMode)
 		hirProg = lw.Lower()
 		return nil
 	})

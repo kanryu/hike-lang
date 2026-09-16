@@ -94,6 +94,25 @@ func RunHikeCompileErrorCase(t *testing.T, tc HikeCompileErrorCase) {
 	if err := os.WriteFile(srcPath, []byte(tc.Source), 0644); err != nil {
 		t.Fatalf("ソース書き込み失敗: %v", err)
 	}
+	// Imported standard modules must be available to error cases as well.
+	stdDir := filepath.Join(projectRoot, "std")
+	relStd, relErr := filepath.Rel(tmpDir, stdDir)
+	if relErr != nil {
+		relStd = stdDir
+	}
+	var modBuilder strings.Builder
+	modBuilder.WriteString("module error-runner\n\nhike 0.1.0\n\n")
+	modBuilder.WriteString(fmt.Sprintf("replace std => %s\n", filepath.ToSlash(relStd)))
+	if entries, readErr := os.ReadDir(stdDir); readErr == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				modBuilder.WriteString(fmt.Sprintf("replace std/%s => %s/%s\n", entry.Name(), filepath.ToSlash(relStd), entry.Name()))
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "hike.mod"), []byte(modBuilder.String()), 0644); err != nil {
+		t.Fatalf("hike.mod書き込み失敗: %v", err)
+	}
 
 	cmd := exec.Command(hikecBin, "emit-ir", srcPath)
 	cmd.Dir = tmpDir

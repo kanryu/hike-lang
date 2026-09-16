@@ -571,6 +571,33 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 	intLLVM := sema.TypeInt.LLVMType()
 
 	switch i := inst.(type) {
+	case *hir.InstrRegionBegin:
+		name := "__hike_region_begin"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @%s()\n", i.Dst, name))
+
+	case *hir.InstrRegionAlloc:
+		sizeLLVM := intLLVM
+		if e.isWasmTarget() {
+			sizeLLVM = "i32"
+		}
+		name := "__hike_region_alloc"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		raw := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @%s(i8* %s, %s %s)\n", raw, name, e.formatVal(i.Region), sizeLLVM, e.formatVal(i.Size)))
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, raw, i.AllocType.LLVMType()))
+
+	case *hir.InstrRegionEnd:
+		name := "__hike_region_end"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @%s(i8* %s)\n", name, e.formatVal(i.Region)))
+
 	case *hir.InstrAlloca:
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", i.Dst, i.AllocType.LLVMType()))
 

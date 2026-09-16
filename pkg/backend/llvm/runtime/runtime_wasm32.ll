@@ -7,6 +7,88 @@ declare noalias i8* @malloc(i32)
 declare noalias i8* @calloc(i32, i32)
 declare void @free(i8*)
 
+@__hike_region_active_stat = internal global i64 0
+@__hike_region_begin_count_stat = internal global i64 0
+@__hike_region_end_count_stat = internal global i64 0
+@__hike_region_allocated_bytes_stat = internal global i64 0
+@__hike_region_released_bytes_stat = internal global i64 0
+define internal i32 @__hike_region_active_count() {
+entry:
+  %v = load i64, i64* @__hike_region_active_stat
+  %r = trunc i64 %v to i32
+  ret i32 %r
+}
+define internal i32 @__hike_region_begin_count() {
+entry:
+  %v = load i64, i64* @__hike_region_begin_count_stat
+  %r = trunc i64 %v to i32
+  ret i32 %r
+}
+define internal i32 @__hike_region_end_count() {
+entry:
+  %v = load i64, i64* @__hike_region_end_count_stat
+  %r = trunc i64 %v to i32
+  ret i32 %r
+}
+define internal i32 @__hike_region_allocated_bytes() {
+entry:
+  %v = load i64, i64* @__hike_region_allocated_bytes_stat
+  %r = trunc i64 %v to i32
+  ret i32 %r
+}
+define internal i32 @__hike_region_released_bytes() {
+entry:
+  %v = load i64, i64* @__hike_region_released_bytes_stat
+  %r = trunc i64 %v to i32
+  ret i32 %r
+}
+
+%struct.__hike_region32 = type { i8*, i32, i32 }
+define internal i8* @__hike_region_begin32() {
+entry:
+  %r = call i8* @malloc(i32 12)
+  %buf = call i8* @malloc(i32 65536)
+  %rp = bitcast i8* %r to %struct.__hike_region32*
+  %p0 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 0
+  store i8* %buf, i8** %p0
+  %p1 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 1
+  store i32 0, i32* %p1
+  %p2 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 2
+  store i32 65536, i32* %p2
+  ret i8* %r
+}
+define internal i8* @__hike_region_alloc32(i8* %r, i32 %n) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_region32*
+  %p1 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 1
+  %old = load i32, i32* %p1
+  %aligned0 = add i32 %old, 7
+  %aligned = and i32 %aligned0, -8
+  %next = add i32 %aligned, %n
+  %p2 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 2
+  %cap = load i32, i32* %p2
+  %ok = icmp ule i32 %next, %cap
+  br i1 %ok, label %in, label %fallback
+in:
+  %p0 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  %ret = getelementptr i8, i8* %buf, i32 %aligned
+  store i32 %next, i32* %p1
+  ret i8* %ret
+fallback:
+  %heap = call i8* @malloc(i32 %n)
+  ret i8* %heap
+}
+define internal void @__hike_region_end32(i8* %r) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_region32*
+  %p0 = getelementptr %struct.__hike_region32, %struct.__hike_region32* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  call void @free(i8* %buf)
+  call void @free(i8* %r)
+  ret void
+}
+
 ; --- POSIX / WASM Host Threading & Synchronization Imports ---
 declare i32 @hike_thread_spawn(void (i8*)*, i8*)
 declare i8* @hike_event_create()

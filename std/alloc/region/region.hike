@@ -1,0 +1,14 @@
+package region
+
+// Runtime statistics for --alloc=region tests and diagnostics.
+func __hike_region_active_count() int
+func __hike_region_begin_count() int
+func __hike_region_end_count() int
+func __hike_region_allocated_bytes() int
+func __hike_region_released_bytes() int
+
+func ActiveCount() int { return __hike_region_active_count() }
+func BeginCount() int { return __hike_region_begin_count() }
+func EndCount() int { return __hike_region_end_count() }
+func AllocatedBytes() int { return __hike_region_allocated_bytes() }
+func ReleasedBytes() int { return __hike_region_released_bytes() }

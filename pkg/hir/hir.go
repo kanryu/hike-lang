@@ -184,7 +184,33 @@ type InstrHeapAlloc struct {
 	Dst       *Reg
 	Size      Value
 	AllocType sema.Type
+	// KeepOnHeap is true for values that escape the current function.
+	KeepOnHeap bool
 }
+
+// InstrRegionBegin/Alloc/End are emitted only when region allocation is enabled.
+// The handle is function-local, while the arena itself is reclaimed in O(1).
+type InstrRegionBegin struct{ Dst *Reg }
+
+func (i *InstrRegionBegin) Result() *Reg   { return i.Dst }
+func (i *InstrRegionBegin) String() string { return fmt.Sprintf("  %s = region_begin", i.Dst) }
+
+type InstrRegionAlloc struct {
+	Dst       *Reg
+	Region    Value
+	Size      Value
+	AllocType sema.Type
+}
+
+func (i *InstrRegionAlloc) Result() *Reg { return i.Dst }
+func (i *InstrRegionAlloc) String() string {
+	return fmt.Sprintf("  %s = region_alloc %s, %s", i.Dst, i.AllocType.TypeName(), i.Size)
+}
+
+type InstrRegionEnd struct{ Region Value }
+
+func (i *InstrRegionEnd) Result() *Reg   { return nil }
+func (i *InstrRegionEnd) String() string { return fmt.Sprintf("  region_end %s", i.Region) }
 
 func (i *InstrHeapAlloc) Result() *Reg { return i.Dst }
 func (i *InstrHeapAlloc) String() string {

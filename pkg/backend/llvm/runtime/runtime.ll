@@ -9,6 +9,104 @@ declare noalias i8* @malloc(i64)
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)
 
+@__hike_region_active_stat = internal global i64 0
+@__hike_region_begin_count_stat = internal global i64 0
+@__hike_region_end_count_stat = internal global i64 0
+@__hike_region_allocated_bytes_stat = internal global i64 0
+@__hike_region_released_bytes_stat = internal global i64 0
+define internal i64 @__hike_region_active_count() {
+entry:
+  %v = load i64, i64* @__hike_region_active_stat
+  ret i64 %v
+}
+define internal i64 @__hike_region_begin_count() {
+entry:
+  %v = load i64, i64* @__hike_region_begin_count_stat
+  ret i64 %v
+}
+define internal i64 @__hike_region_end_count() {
+entry:
+  %v = load i64, i64* @__hike_region_end_count_stat
+  ret i64 %v
+}
+define internal i64 @__hike_region_allocated_bytes() {
+entry:
+  %v = load i64, i64* @__hike_region_allocated_bytes_stat
+  ret i64 %v
+}
+define internal i64 @__hike_region_released_bytes() {
+entry:
+  %v = load i64, i64* @__hike_region_released_bytes_stat
+  ret i64 %v
+}
+
+; Per-function bump arena. The single end call releases the arena in O(1).
+%struct.__hike_region = type { i8*, i64, i64 }
+define internal i8* @__hike_region_begin() {
+entry:
+  %bc = load i64, i64* @__hike_region_begin_count_stat
+  %bc1 = add i64 %bc, 1
+  store i64 %bc1, i64* @__hike_region_begin_count_stat
+  %ac = load i64, i64* @__hike_region_active_stat
+  %ac1 = add i64 %ac, 1
+  store i64 %ac1, i64* @__hike_region_active_stat
+  %r = call i8* @malloc(i64 24)
+  %buf = call i8* @malloc(i64 65536)
+  %rp = bitcast i8* %r to %struct.__hike_region*
+  %p0 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 0
+  store i8* %buf, i8** %p0
+  %p1 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 1
+  store i64 0, i64* %p1
+  %p2 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 2
+  store i64 65536, i64* %p2
+  ret i8* %r
+}
+define internal i8* @__hike_region_alloc(i8* %r, i64 %n) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_region*
+  %p1 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 1
+  %old = load i64, i64* %p1
+  %aligned0 = add i64 %old, 7
+  %aligned = and i64 %aligned0, -8
+  %next = add i64 %aligned, %n
+  %p2 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 2
+  %cap = load i64, i64* %p2
+  %ok = icmp ule i64 %next, %cap
+  br i1 %ok, label %in, label %fallback
+in:
+  %p0 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  %ret = getelementptr i8, i8* %buf, i64 %aligned
+  store i64 %next, i64* %p1
+  %ab = load i64, i64* @__hike_region_allocated_bytes_stat
+  %ab1 = add i64 %ab, %n
+  store i64 %ab1, i64* @__hike_region_allocated_bytes_stat
+  ret i8* %ret
+fallback:
+  %heap = call i8* @malloc(i64 %n)
+  ret i8* %heap
+}
+define internal void @__hike_region_end(i8* %r) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_region*
+  %p0 = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  %usedp = getelementptr %struct.__hike_region, %struct.__hike_region* %rp, i32 0, i32 1
+  %used = load i64, i64* %usedp
+  %rel = load i64, i64* @__hike_region_released_bytes_stat
+  %rel1 = add i64 %rel, %used
+  store i64 %rel1, i64* @__hike_region_released_bytes_stat
+  %ec = load i64, i64* @__hike_region_end_count_stat
+  %ec1 = add i64 %ec, 1
+  store i64 %ec1, i64* @__hike_region_end_count_stat
+  %ac = load i64, i64* @__hike_region_active_stat
+  %ac1 = sub i64 %ac, 1
+  store i64 %ac1, i64* @__hike_region_active_stat
+  call void @free(i8* %buf)
+  call void @free(i8* %r)
+  ret void
+}
+
 ; ------------------------------------------------------------------------------
 ; Pure Memory & String Builtin Implementations (64-bit Native, Libc-Free)
 ; ------------------------------------------------------------------------------

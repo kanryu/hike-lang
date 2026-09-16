@@ -44,6 +44,7 @@ func printUsage() {
 	fmt.Println("  -header <path>   Output C/C++ header file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
 	fmt.Println("  -wasm-mode <mode> WebAssembly runtime mode: normal or concurrent")
+	fmt.Println("  --alloc=<mode> Allocation mode: heap (default) or region")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -v               Enable verbose logging")
@@ -135,6 +136,7 @@ func runEmitIR(args []string) {
 	outputHeader := ""
 	targetName := getDefaultTargetName()
 	wasmMode := "normal"
+	regionMode := false
 	verbose := false
 	var sourceFiles []string
 
@@ -162,6 +164,8 @@ func runEmitIR(args []string) {
 			i++
 		} else if strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode=") {
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
+		} else if arg == "--alloc=region" || arg == "-alloc=region" {
+			regionMode = true
 		} else if arg == "-cflags" && i+1 < len(args) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
@@ -195,6 +199,7 @@ func runEmitIR(args []string) {
 	comp := compiler.New(tgt)
 	comp.SetVerbose(verbose)
 	comp.SetWasmMode(wasmMode)
+	comp.SetRegionMode(regionMode)
 
 	llvmIR, semaCtx, prog, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
@@ -236,6 +241,7 @@ func runEmitJS(args []string) {
 	output := ""
 	targetName := "wasm32"
 	wasmMode := "normal"
+	regionMode := false
 	verbose := false
 	var sourceFiles []string
 	for i := 0; i < len(args); i++ {
@@ -256,6 +262,8 @@ func runEmitJS(args []string) {
 			i++
 		case strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode="):
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
+		case arg == "--alloc=region" || arg == "-alloc=region":
+			regionMode = true
 		case arg == "-vv" || arg == "--vv":
 			verbose = true
 			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
@@ -285,6 +293,7 @@ func runEmitJS(args []string) {
 	comp := compiler.New(tgt)
 	comp.SetVerbose(verbose)
 	comp.SetWasmMode(wasmMode)
+	comp.SetRegionMode(regionMode)
 	_, _, program, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
@@ -312,6 +321,7 @@ func runBuild(args []string) {
 	debugInfo := false
 	verbose := false
 	wasmMode := "normal"
+	regionMode := false
 	var passThroughArgs []string
 	var sourceFiles []string
 
@@ -336,6 +346,8 @@ func runBuild(args []string) {
 		} else if strings.HasPrefix(arg, "-wasm-mode=") || strings.HasPrefix(arg, "--wasm-mode=") {
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
 			passThroughArgs = append(passThroughArgs, "-wasm-mode", wasmMode)
+		} else if arg == "--alloc=region" || arg == "-alloc=region" {
+			regionMode = true
 		} else if arg == "-cflags" && i+1 < len(args) {
 			extraCflags = args[i+1]
 			i++
@@ -382,6 +394,7 @@ func runBuild(args []string) {
 		frontend := compiler.New(tgt)
 		frontend.SetVerbose(verbose)
 		frontend.SetWasmMode(wasmMode)
+		frontend.SetRegionMode(regionMode)
 		_, _, program, compileErr := frontend.CompileToLLVM(sourceFiles...)
 		if compileErr != nil {
 			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
@@ -394,6 +407,9 @@ func runBuild(args []string) {
 	defer os.Remove(tempLL)
 
 	emitArgs := append([]string{"-o", tempLL}, passThroughArgs...)
+	if regionMode {
+		emitArgs = append(emitArgs, "--alloc=region")
+	}
 	runEmitIR(emitArgs)
 
 	srcBase := strings.TrimSuffix(filepath.Base(sourceFiles[0]), filepath.Ext(sourceFiles[0]))
@@ -473,6 +489,8 @@ func runRun(args []string) {
 			i++
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {
 			targetName = strings.SplitN(arg, "=", 2)[1]
+		} else if arg == "--alloc=region" || arg == "-alloc=region" {
+			// Forwarded to build, which forwards it to emit-ir.
 		}
 	}
 

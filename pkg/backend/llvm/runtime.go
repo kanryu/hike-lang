@@ -43,6 +43,10 @@ func IsRuntimeSymbol(name string) bool {
 var RuntimeLLVMSymbols = map[string]bool{
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
+	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
+	"__hike_region_begin32": true, "__hike_region_alloc32": true, "__hike_region_end32": true,
+	"__hike_region_active_count": true, "__hike_region_begin_count": true, "__hike_region_end_count": true,
+	"__hike_region_allocated_bytes": true, "__hike_region_released_bytes": true,
 
 	// 純粋メモリ & 文字列操作内部実装 (64-bit) (define internal)
 	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
