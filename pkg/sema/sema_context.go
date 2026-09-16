@@ -11,9 +11,13 @@ import (
 )
 
 type Context struct {
-	Structs            map[string]*StructType
-	Interfaces         map[string]*InterfaceType
-	Functions          map[string]*FuncType
+	Structs    map[string]*StructType
+	Interfaces map[string]*InterfaceType
+	Functions  map[string]*FuncType
+	// Methods is indexed by the complete receiver type and method name.  Method
+	// lookup must not use a suffix scan of Functions: two packages can legally
+	// define the same method for different receiver types.
+	Methods            map[string]*FuncType
 	Globals            map[string]Type
 	Constants          map[string]int64
 	FloatConstants     map[string]float64
@@ -36,6 +40,7 @@ func NewContext() *Context {
 		Structs:        make(map[string]*StructType),
 		Interfaces:     make(map[string]*InterfaceType),
 		Functions:      make(map[string]*FuncType),
+		Methods:        make(map[string]*FuncType),
 		Globals:        make(map[string]Type),
 		Constants:      make(map[string]int64),
 		FloatConstants: make(map[string]float64),
@@ -113,36 +118,28 @@ func (c *Context) LookupInterface(name string) (*InterfaceType, string) {
 	return nil, ""
 }
 
-// LookupMethod はレシーバ型名とメソッド名から内部論理キー (@StructName) を基に対象メソッドを探索する
-func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncType, string) {
-	isPtr := strings.HasPrefix(recvTypeName, "*")
-	rawRecv := strings.TrimPrefix(recvTypeName, "*")
+func methodLookupKey(recvTypeName, methodName string) string {
+	return recvTypeName + "#" + methodName
+}
 
-	// InternalKey を唯一の正規名として照合する。suffix 探索は同名型を
-	// 誤って選ぶため行わず、receiver とメソッドの完全な構造だけを見る。
-	for _, fn := range c.Functions {
-		if fn == nil || fn.InternalKey == "" {
-			continue
-		}
-		parts := strings.SplitN(fn.InternalKey, "@", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		fnPart := parts[0]
-		if dot := strings.LastIndex(fnPart, "."); dot != -1 {
-			fnPart = fnPart[dot+1:]
-		}
-		if fnPart != methodName {
-			continue
-		}
-		storedRecv := parts[1]
-		if storedRecv == recvTypeName || storedRecv == rawRecv ||
-			(isPtr && storedRecv == "*"+rawRecv) {
-			return fn, fn.InternalKey
-		}
+// RegisterMethod はレシーバーの完全な型名を含むキーでメソッドを登録する。
+func (c *Context) RegisterMethod(recvTypeName, methodName string, fn *FuncType) {
+	if recvTypeName == "" || methodName == "" || fn == nil {
+		return
+	}
+	c.Methods[methodLookupKey(recvTypeName, methodName)] = fn
+}
+
+// LookupMethod はレシーバーの完全な型名とメソッド名で対象メソッドを探索する。
+// Functions の suffix 探索は同名メソッドを誤選択するため、ここでは行わない。
+func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncType, string) {
+	if fn, ok := c.Methods[methodLookupKey(recvTypeName, methodName)]; ok {
+		return fn, fn.InternalKey
 	}
 
-	// 互換用の canonical 名は完全一致だけを許可する。
+	// 旧形式で構築されたコンテキストとの互換性。こちらも完全一致のみ。
+	isPtr := strings.HasPrefix(recvTypeName, "*")
+	rawRecv := strings.TrimPrefix(recvTypeName, "*")
 	legacyName := CanonicalMethodName(rawRecv, methodName)
 	if fn, ok := c.Functions[legacyName]; ok {
 		return fn, legacyName
@@ -168,7 +165,7 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 		if strings.Contains(k, "@") {
 			parts := strings.SplitN(k, "@", 2)
 			fnPart := parts[0]
-			if fnPart == name || strings.HasSuffix(fnPart, "."+name) {
+			if fnPart == name || strings.HasSuffix(fnPart, "/"+name) || strings.HasSuffix(fnPart, "."+name) {
 				return v, k
 			}
 		}

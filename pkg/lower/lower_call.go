@@ -1348,7 +1348,22 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		_, isLocal := c.root.symbols[fnId.Value]
 		_, isGlobal := c.root.semaCtx.Globals[fnId.Value]
 		if !isLocal && !isGlobal {
-			targetFn, canonicalName := c.root.semaCtx.LookupFunction(fnId.Value)
+			// パッケージ内の未修飾関数呼び出しは、現在の関数名から
+			// パッケージ接頭辞を補って先に完全修飾名で解決する。
+			// LookupFunction のサフィックス検索だけに任せると、同名の
+			// md5_compress / sha256_compress がmapの反復順で入れ替わる。
+			lookupName := fnId.Value
+			var targetFn *sema.FuncType
+			var canonicalName string
+			if c.root.curFunc != nil {
+				if sep := strings.IndexByte(c.root.curFunc.Name, '_'); sep > 0 {
+					qualified := c.root.curFunc.Name[:sep] + "_" + fnId.Value
+					targetFn, canonicalName = c.root.semaCtx.LookupFunction(qualified)
+				}
+			}
+			if targetFn == nil {
+				targetFn, canonicalName = c.root.semaCtx.LookupFunction(lookupName)
+			}
 			if targetFn != nil {
 				params := c.getFuncParams(targetFn, canonicalName)
 				callArgs := c.fillDefaultArgs(call.Args, params)

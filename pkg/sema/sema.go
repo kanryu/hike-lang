@@ -362,9 +362,12 @@ func IsBad(t Type) bool {
 func BuildInternalKey(pkg string, ident string, structName string) string {
 	base := ident
 	if pkg != "" {
-		base = pkg + "." + ident
+		base = pkg + "/" + ident
 	}
 	if structName != "" {
+		if strings.HasPrefix(structName, "*") {
+			return base + "@@" + strings.TrimPrefix(structName, "*")
+		}
 		return base + "@" + structName
 	}
 	return base
@@ -374,16 +377,22 @@ func MangleInternalKeyToIR(key string) string {
 	if key == "" {
 		return ""
 	}
-	if strings.Contains(key, "@") {
-		parts := strings.SplitN(key, "@", 2)
-		fnPart := parts[0]
-		structPart := parts[1]
+	if at := strings.IndexByte(key, '@'); at >= 0 {
+		fnPart := key[:at]
+		recvPart := key[at:]
 
-		isPtr := strings.HasPrefix(structPart, "*")
-		rawStruct := strings.TrimPrefix(structPart, "*")
+		isPtr := strings.HasPrefix(recvPart, "@@")
+		rawStruct := strings.TrimPrefix(recvPart, "@@")
+		if !isPtr {
+			rawStruct = strings.TrimPrefix(rawStruct, "@")
+		}
 
 		var pkg, fn string
-		if dot := strings.LastIndex(fnPart, "."); dot != -1 {
+		if slash := strings.LastIndex(fnPart, "/"); slash != -1 {
+			pkg = fnPart[:slash]
+			fn = fnPart[slash+1:]
+		} else if dot := strings.LastIndex(fnPart, "."); dot != -1 {
+			// 旧形式との互換性。
 			pkg = fnPart[:dot]
 			fn = fnPart[dot+1:]
 		} else {
@@ -401,7 +410,8 @@ func MangleInternalKeyToIR(key string) string {
 		return fmt.Sprintf("%s%s_%s", rawStruct, ptrSuffix, fn)
 	}
 
-	clean := strings.ReplaceAll(key, ".", "_")
+	clean := strings.ReplaceAll(key, "/", "_")
+	clean = strings.ReplaceAll(clean, ".", "_")
 	clean = strings.ReplaceAll(clean, "*", "_ptr")
 	clean = strings.ReplaceAll(clean, "(", "")
 	clean = strings.ReplaceAll(clean, ")", "")
@@ -839,6 +849,15 @@ func Analyze(prog *ast.Program) (*Context, error) {
 				Specializations: make(map[string]*FuncType),
 			}
 			ctx.Functions[fnName] = fnType
+			if isMethod {
+				// メソッドはレシーバー型を含む専用インデックスにも登録する。
+				ctx.RegisterMethod(structNameWithPtr, fd.Name.Value, fnType)
+				// 型名が解決前の別名で参照されるケースも保持するが、LookupMethod
+				// はまず静的に解決された完全型名のキーを使用する。
+				if !strings.HasPrefix(structNameWithPtr, "*") && origRecvName != structNameWithPtr {
+					ctx.RegisterMethod(origRecvName, fd.Name.Value, fnType)
+				}
+			}
 			if origRecvName != "" {
 				aliasMethodName := CanonicalMethodName(origRecvName, fd.Name.Value)
 				if aliasMethodName != fnName {

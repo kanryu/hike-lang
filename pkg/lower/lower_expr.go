@@ -309,6 +309,19 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			if fn, ok := e.root.semaCtx.Functions[name]; ok {
 				return fn, name
 			}
+			// パッケージ内の未修飾呼び出し（例: md5.Sum 内の
+			// compress）は、現在の関数と同じパッケージを最優先する。
+			// 全関数名をサフィックス検索すると、md5_compress と
+			// sha256_compress のような同名関数の選択がmapの反復順に
+			// 依存し、生成IRと実行結果が不定になる。
+			if e.root.curFunc != nil {
+				if sep := strings.IndexByte(e.root.curFunc.Name, '_'); sep > 0 {
+					qualified := e.root.curFunc.Name[:sep] + "_" + name
+					if fn, ok := e.root.semaCtx.Functions[qualified]; ok {
+						return fn, qualified
+					}
+				}
+			}
 			targetSuffix := "_" + name
 			for fnName, fn := range e.root.semaCtx.Functions {
 				if strings.HasSuffix(fnName, targetSuffix) {
@@ -784,6 +797,44 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 
 	baseType := baseVal.Type()
 
+	// 配列インデックス [N]T。組み込みコレクションのレシーバー解決より
+	// 前に処理し、配列全体を一時領域へコピーしない。
+	if ar, isArr := baseType.(*sema.ArrayType); isArr {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		basePtr := e.LowerLValue(node.Left)
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: ar.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: basePtr, Index: idxVal})
+		elemVal := e.root.nextReg(ar.Elem)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	// 組み込み文字列の添字アクセスも、コレクションのレシーバー解決を
+	// 行わず直接要素を参照する。
+	if baseType == sema.TypeString || baseType == sema.TypeCString {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+		elemVal := e.root.nextReg(sema.TypeByte)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
+	// 組み込みスライスの添字アクセスは、スライスヘッダーからデータ
+	// ポインターを取り出して直接要素を読む。
+	if sl, isSlice := baseType.(*sema.SliceType); isSlice {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
+		typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: typedPtr.Type()})
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
+		elemVal := e.root.nextReg(sl.Elem)
+		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
+		return elemVal
+	}
+
 	// 1. 組み込み map[K]V
 	if mp, isMap := baseType.(*sema.MapType); isMap {
 		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
@@ -905,31 +956,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		}
 	}
 
-	// 4. 文字列インデックス (byte 取得)
-	if baseType == sema.TypeString || baseType == sema.TypeCString {
-		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
-		elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
-		elemVal := e.root.nextReg(sema.TypeByte)
-		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-		return elemVal
-	}
-
-	// 5. スライスインデックス
-	if sl, isSlice := baseType.(*sema.SliceType); isSlice {
-		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
-		rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
-		typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: sl.Elem}})
-		elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
-		elemVal := e.root.nextReg(sl.Elem)
-		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-		return elemVal
-	}
-
-	// 6. ポインタインデックス (配列ポインタ *[N]T または 汎用ポインタ *T)
+	// ポインタインデックス (配列ポインタ *[N]T または 汎用ポインタ *T)
 	if pt, isPtr := baseType.(*sema.PointerType); isPtr {
 		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
 		if arrType, isArr := pt.Base.(*sema.ArrayType); isArr {
@@ -942,20 +969,6 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		elemPtr := e.root.nextReg(pt)
 		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
 		elemVal := e.root.nextReg(pt.Base)
-		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
-		return elemVal
-	}
-
-	// 7. 配列インデックス [N]T (一時領域を確保してロード)
-	if ar, isArr := baseType.(*sema.ArrayType); isArr {
-		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
-		allocaTmp := e.root.nextReg(&sema.PointerType{Base: ar})
-		e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: ar})
-		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: allocaTmp})
-
-		elemPtr := e.root.nextReg(&sema.PointerType{Base: ar.Elem})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: allocaTmp, Index: idxVal})
-		elemVal := e.root.nextReg(ar.Elem)
 		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
 		return elemVal
 	}

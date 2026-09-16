@@ -1,6 +1,8 @@
 package ast
 
 import (
+	"strings"
+
 	"hikec-go/pkg/token"
 )
 
@@ -57,15 +59,18 @@ func (ice *ImplicitCastExpr) expressionNode()      {}
 func (ice *ImplicitCastExpr) TokenLiteral() string { return ice.Token.Literal }
 
 // -----------------------------------------------------------------------------
-// 内部シンボルキー生成ヘルパー (Package.Identifier@StructName)
+// 内部シンボルキー生成ヘルパー (Package/Identifier@StructName)
 // -----------------------------------------------------------------------------
 
 func BuildInternalKey(pkg string, ident string, structName string) string {
 	base := ident
 	if pkg != "" {
-		base = pkg + "." + ident
+		base = pkg + "/" + ident
 	}
 	if structName != "" {
+		if strings.HasPrefix(structName, "*") {
+			return base + "@@" + strings.TrimPrefix(structName, "*")
+		}
 		return base + "@" + structName
 	}
 	return base

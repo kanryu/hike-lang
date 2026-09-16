@@ -22,6 +22,7 @@ func leftRotate(x uint32, n int) uint32 {
 	if n == 20 { return (x << 20) | (x >> 12) }
 	if n == 21 { return (x << 21) | (x >> 11) }
 	if n == 22 { return (x << 22) | (x >> 10) }
+	if n == 23 { return (x << 23) | (x >> 9) }
 	return x
 }
 
