@@ -1080,6 +1080,19 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 		case "string":
 			if len(call.Args) > 0 {
+				// Construct a string directly from a byte pointer and explicit
+				// length. This avoids the temporary []byte and its extra copy.
+				if len(call.Args) == 2 {
+					ptrVal := c.root.Expr.LowerExpr(call.Args[0])
+					lenVal := c.root.Expr.LowerExpr(call.Args[1])
+					dst := c.root.nextReg(sema.TypeString)
+					c.root.emit(&hir.InstrCallStatic{
+						Dst:        dst,
+						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+						Args:       []hir.Value{ptrVal, lenVal},
+					})
+					return dst
+				}
 				argVal := c.root.Expr.LowerExpr(call.Args[0])
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
 					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -1102,6 +1115,19 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 		case "cstring":
 			if len(call.Args) > 0 {
+				// cstring(ptr, len) uses the same NUL-terminated runtime
+				// representation, but preserves the cstring static type.
+				if len(call.Args) == 2 {
+					ptrVal := c.root.Expr.LowerExpr(call.Args[0])
+					lenVal := c.root.Expr.LowerExpr(call.Args[1])
+					dst := c.root.nextReg(sema.TypeCString)
+					c.root.emit(&hir.InstrCallStatic{
+						Dst:        dst,
+						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+						Args:       []hir.Value{ptrVal, lenVal},
+					})
+					return dst
+				}
 				argVal := c.root.Expr.LowerExpr(call.Args[0])
 				if argVal.Type() == sema.TypeCString {
 					return argVal

@@ -206,7 +206,10 @@ __HIKE_JFUNCS_WORKER__
 // =============================================================================
 // 2. メインスレッド コンテキスト (ブラウザ DOM / クライアント側)
 // =============================================================================
-if (typeof window !== 'undefined') {
+// Keep the same runtime usable from browser pages and Node-based E2E tests.
+// Node does not define window, but it can still load the generated runtime
+// through CommonJS.
+if (typeof window !== 'undefined' || (typeof module !== 'undefined' && module.exports)) {
     // Lightweight main-thread runtime. Application-specific host functions
     // are injected from jfunc declarations in the Hike source program.
     class HikeRuntime {
@@ -235,7 +238,13 @@ if (typeof window !== 'undefined') {
                     return ptr;
                 },
                 free: () => {},
-                hike_thread_spawn: () => 0,
+                hike_thread_spawn: (fnIdx, paramPtr) => {
+                    const table = runtime.instance && (runtime.instance.exports.__indirect_function_table || runtime.instance.exports.table);
+                    const thunk = table && table.get(Number(fnIdx));
+                    if (!thunk) return -1;
+                    thunk(paramPtr);
+                    return 0;
+                },
                 hike_event_create: () => 1,
                 hike_event_signal: () => {},
                 hike_event_wait: () => 0,
@@ -254,6 +263,10 @@ __HIKE_JFUNCS__
             }
             const ptr = this.heap;
             this.heap += (Number(size) + 15) & ~15;
+            if (this.instance && this.memory && this.heap > this.memory.buffer.byteLength) {
+                const missing = this.heap - this.memory.buffer.byteLength;
+                this.memory.grow(Math.ceil(missing / 65536));
+            }
             return ptr;
         }
 
@@ -301,7 +314,7 @@ __HIKE_JFUNCS__
         }
     }
 
-    window.HikeRuntime = HikeRuntime;
+    if (typeof window !== 'undefined') window.HikeRuntime = HikeRuntime;
 
     class HikeConcurrentRuntime {
         /**
@@ -320,7 +333,7 @@ __HIKE_JFUNCS__
             this.onLog = options.onLog || (() => {});
             this.worker = null;
             this.memory = null;
-            window.__hikeActiveRuntime = this;
+            globalThis.__hikeActiveRuntime = this;
         }
 
         /**
@@ -384,14 +397,18 @@ __HIKE_JFUNCS__
     }
 
     // グローバル公開API
-    window.HikeConcurrentRuntime = HikeConcurrentRuntime;
-    window.setHikeHeapSizeKB = (sizeKB) => {
+    if (typeof window !== 'undefined') window.HikeConcurrentRuntime = HikeConcurrentRuntime;
+    globalThis.setHikeHeapSizeKB = (sizeKB) => {
         heapSizeKB = Number(sizeKB);
-        if (window.__hikeActiveRuntime) {
-            window.__hikeActiveRuntime.setHeapSizeKB(heapSizeKB);
+        if (globalThis.__hikeActiveRuntime) {
+            globalThis.__hikeActiveRuntime.setHeapSizeKB(heapSizeKB);
         }
     };
-    window.getHikeHeapSizeKB = () => heapSizeKB;
+    globalThis.getHikeHeapSizeKB = () => heapSizeKB;
+
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { HikeRuntime, HikeConcurrentRuntime };
+    }
 }
 	`
 	if mode != "concurrent" {
