@@ -25,6 +25,38 @@ func TestParseSimpleTypeExprPreservesFixedArray(t *testing.T) {
 	}
 }
 
+func TestInferredArrayLiteralGetsInitializerLength(t *testing.T) {
+	program := parser.New(lexer.New(`
+package main
+
+func main() int {
+	lut := [...]byte{1, 2, 4}
+    return int(lut[2])
+}
+`)).ParseProgram()
+	ctx, err := sema.Analyze(program)
+	if err != nil {
+		t.Fatalf("sema.Analyze() failed: %v", err)
+	}
+	var mainFn *ast.FuncDecl
+	for _, decl := range program.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Value == "main" {
+			mainFn = fn
+		}
+	}
+	if mainFn == nil || mainFn.Body == nil || len(mainFn.Body.Statements) == 0 {
+		t.Fatal("main function body was not parsed")
+	}
+	assignment, ok := mainFn.Body.Statements[0].(*ast.AssignStmt)
+	if !ok {
+		t.Fatalf("first statement = %T, want *ast.AssignStmt", mainFn.Body.Statements[0])
+	}
+	array, ok := ctx.InferExprType(assignment.Right[0], nil).(*sema.ArrayType)
+	if !ok || array.Len != 3 || array.TypeName() != "[3]byte" {
+		t.Fatalf("inferred array type = %T %v, want [3]byte", ctx.InferExprType(assignment.Right[0], nil), array)
+	}
+}
+
 func TestExtractStructAndTypeArgsPreservesConstArgument(t *testing.T) {
 	typ := &ast.NamedType{
 		Token: token.Token{},
