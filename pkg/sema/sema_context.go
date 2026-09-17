@@ -133,25 +133,47 @@ func (c *Context) RegisterMethod(recvTypeName, methodName string, fn *FuncType) 
 // LookupMethod はレシーバーの完全な型名とメソッド名で対象メソッドを探索する。
 // Functions の suffix 探索は同名メソッドを誤選択するため、ここでは行わない。
 func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncType, string) {
-	if fn, ok := c.Methods[methodLookupKey(recvTypeName, methodName)]; ok {
-		return fn, fn.InternalKey
+	// The loader qualifies package types (for example exec_Cmd), while a
+	// receiver declaration inside that package may still refer to Cmd. Try the
+	// resolved name first, then its package-local spelling, preserving pointer
+	// qualification in every candidate.
+	for _, candidate := range receiverTypeCandidates(recvTypeName) {
+		if fn, ok := c.Methods[methodLookupKey(candidate, methodName)]; ok {
+			return fn, fn.InternalKey
+		}
 	}
 
 	// 旧形式で構築されたコンテキストとの互換性。こちらも完全一致のみ。
-	isPtr := strings.HasPrefix(recvTypeName, "*")
-	rawRecv := strings.TrimPrefix(recvTypeName, "*")
-	legacyName := CanonicalMethodName(rawRecv, methodName)
-	if fn, ok := c.Functions[legacyName]; ok {
-		return fn, legacyName
-	}
-	if isPtr {
-		ptrLegacy := CanonicalMethodName(rawRecv+"_ptr", methodName)
-		if fn, ok := c.Functions[ptrLegacy]; ok {
-			return fn, ptrLegacy
+	for _, candidate := range receiverTypeCandidates(recvTypeName) {
+		isPtr := strings.HasPrefix(candidate, "*")
+		rawRecv := strings.TrimPrefix(candidate, "*")
+		legacyName := CanonicalMethodName(rawRecv, methodName)
+		if fn, ok := c.Functions[legacyName]; ok {
+			return fn, legacyName
+		}
+		if isPtr {
+			ptrLegacy := CanonicalMethodName(rawRecv+"_ptr", methodName)
+			if fn, ok := c.Functions[ptrLegacy]; ok {
+				return fn, ptrLegacy
+			}
 		}
 	}
 
 	return nil, ""
+}
+
+func receiverTypeCandidates(recvTypeName string) []string {
+	candidates := []string{recvTypeName}
+	isPtr := strings.HasPrefix(recvTypeName, "*")
+	raw := strings.TrimPrefix(recvTypeName, "*")
+	if idx := strings.LastIndex(raw, "_"); idx >= 0 && idx+1 < len(raw) {
+		short := raw[idx+1:]
+		if isPtr {
+			short = "*" + short
+		}
+		candidates = append(candidates, short)
+	}
+	return candidates
 }
 
 func (c *Context) LookupFunction(name string) (*FuncType, string) {
@@ -1431,8 +1453,9 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 	if iface, ok := targetType.(*InterfaceType); ok {
 		if _, isNil := expr.(*ast.NilLiteral); !isNil && !iface.IsAny() {
 			if !c.Implements(actualType, iface) {
-				panic(fmt.Sprintf("[Sema Error] type '%s' does not implement interface '%s'",
-					actualType.TypeName(), iface.TypeName()))
+				line, col := expressionPosition(expr)
+				panic(fmt.Sprintf("[Sema Error] line %d:%d: type '%s' does not implement interface '%s'",
+					line, col, actualType.TypeName(), iface.TypeName()))
 			}
 		}
 	}
@@ -1452,6 +1475,25 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 		Expr:       expr,
 		Kind:       kind,
 		TargetType: targetNode,
+	}
+}
+
+func expressionPosition(expr ast.Expression) (int, int) {
+	switch n := expr.(type) {
+	case *ast.Identifier:
+		return n.Token.Line, n.Token.Col
+	case *ast.IntegerLiteral:
+		return n.Token.Line, n.Token.Col
+	case *ast.StringLiteral:
+		return n.Token.Line, n.Token.Col
+	case *ast.CharLiteral:
+		return n.Token.Line, n.Token.Col
+	case *ast.MemberExpr:
+		return n.Token.Line, n.Token.Col
+	case *ast.CallExpr:
+		return n.Token.Line, n.Token.Col
+	default:
+		return 0, 0
 	}
 }
 

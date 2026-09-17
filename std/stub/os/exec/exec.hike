@@ -7,6 +7,14 @@ type Cmd struct {
     Stderr *byte
 }
 
+type ExitError struct {
+    Code int
+}
+
+func (e *ExitError) ExitCode() int {
+    return e.Code
+}
+
 func Command(name string, args ...string) *Cmd {
     return &Cmd{Path: name, Args: args}
 }

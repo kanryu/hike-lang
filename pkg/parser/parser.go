@@ -235,11 +235,27 @@ func (p *Parser) ParseProgram() *ast.Program {
 			}
 
 		case token.VAR:
-			vd := p.parseVarDecl()
-			if vd != nil {
-				prog.Decls = append(prog.Decls, vd)
+			if p.peekTokenIs(token.LPAREN) {
+				// Go-style grouped variable declarations: var ( A = ...; B = ... ).
+				p.nextToken() // '('
+				for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
+					p.nextToken()
+					if p.curTokenIs(token.SEMICOLON) {
+						continue
+					}
+					vd := p.parseVarSpec()
+					if vd != nil {
+						prog.Decls = append(prog.Decls, vd)
+					}
+				}
+				p.nextToken() // ')'
+			} else {
+				vd := p.parseVarDecl()
+				if vd != nil {
+					prog.Decls = append(prog.Decls, vd)
+				}
+				p.nextToken()
 			}
-			p.nextToken()
 
 		case token.SEMICOLON:
 			// トップレベルの改行・セミコロンをスキップ
@@ -624,6 +640,17 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 func (p *Parser) parseVarDecl() *ast.VarDecl {
 	decl := &ast.VarDecl{Token: p.curToken}
 	p.nextToken()
+	return p.parseVarSpecWithToken(decl.Token)
+}
+
+// parseVarSpec parses one variable specification with the current token on
+// its identifier. It is shared by single and grouped var declarations.
+func (p *Parser) parseVarSpec() *ast.VarDecl {
+	return p.parseVarSpecWithToken(p.curToken)
+}
+
+func (p *Parser) parseVarSpecWithToken(tok token.Token) *ast.VarDecl {
+	decl := &ast.VarDecl{Token: tok}
 	decl.Name = p.parseIdentifier()
 	p.nextToken()
 
@@ -1112,7 +1139,11 @@ func (p *Parser) parseForStmt() ast.Statement {
 	p.allowStructLit = false
 
 	if p.curTokenIs(token.RANGE) {
+		// A range expression is a complete expression. Restore composite
+		// literal parsing here so forms such as `range []string{"a", "b"}`
+		// are not mistaken for a multi-assignment.
 		p.nextToken()
+		p.allowStructLit = p.curTokenIs(token.LBRACKET) || p.curTokenIs(token.MAP)
 		x := p.parseExpression(LOWEST)
 		p.allowStructLit = oldAllow
 		if !p.expectPeek(token.LBRACE) {
@@ -1145,6 +1176,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 					if p.peekTokenIs(token.RANGE) {
 						p.nextToken()
 						p.nextToken()
+						p.allowStructLit = p.curTokenIs(token.LBRACKET) || p.curTokenIs(token.MAP)
 						x := p.parseExpression(LOWEST)
 						p.allowStructLit = oldAllow
 						if !p.expectPeek(token.LBRACE) {
@@ -1169,6 +1201,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 				if p.peekTokenIs(token.RANGE) {
 					p.nextToken()
 					p.nextToken()
+					p.allowStructLit = p.curTokenIs(token.LBRACKET) || p.curTokenIs(token.MAP)
 					x := p.parseExpression(LOWEST)
 					p.allowStructLit = oldAllow
 					if !p.expectPeek(token.LBRACE) {

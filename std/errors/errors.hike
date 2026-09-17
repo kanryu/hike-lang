@@ -1,13 +1,13 @@
 package errors
 
 type errorString struct {
-	s *byte
+	s string
 }
 
-func (e *errorString) Error() *byte {
+func (e *errorString) Error() string {
 	return e.s
 }
 
-func New(text *byte) error {
+func New(text string) error {
 	return &errorString{s: text}
 }
