@@ -759,6 +759,7 @@ func (p *Parser) parseConstDecl() []ast.Decl {
 			p.nextToken()
 			p.nextToken()
 			valExpr = p.parseExpression(LOWEST)
+			valExpr = replaceIota(valExpr, 0)
 		}
 		decls = append(decls, &ast.ConstDecl{
 			Token: name.Token,
