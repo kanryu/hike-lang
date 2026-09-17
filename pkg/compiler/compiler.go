@@ -8,6 +8,7 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/backend/llvm"
+	"hikec-go/pkg/backend/wabt"
 	"hikec-go/pkg/diag"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/loader"
@@ -193,6 +194,16 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	}
 
 	return llvmIR, semaCtx, concreteProg, nil
+}
+
+// CompileToWAT lowers the source through HIR and emits WebAssembly text
+// directly. It intentionally does not pass through LLVM or Clang.
+func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *ast.Program, error) {
+	hirProg, semaCtx, concreteProg, err := c.CompileToHIR(entryPaths...)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return wabt.New(hirProg, semaCtx).Emit(), semaCtx, concreteProg, nil
 }
 
 // Compile はコンパイルを実行し、エラーが発生した場合は Go コンパイラ形式で stderr に出力して終了します

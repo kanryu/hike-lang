@@ -12,6 +12,7 @@ import (
 	"hikec-go/pkg/codegen"
 	gocode "hikec-go/pkg/codegen/go"
 	"hikec-go/pkg/compiler"
+	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
 )
 
@@ -30,19 +31,19 @@ func printUsage() {
 	fmt.Println("Usage: hikec <command> [options] <source.hike... | directory>")
 	fmt.Println("\nCommands:")
 	fmt.Println("  go          Compile all .go.hike files in directory into a single .syso object")
-	fmt.Println("  emit-ir     Generate LLVM IR from Hike source (default)")
+	fmt.Println("  emit-ir     Generate LLVM IR or Wabt WAT from Hike source (default)")
 	fmt.Println("  emit-js     Generate the WebAssembly JavaScript runtime")
-	fmt.Println("  build       Compile Hike source into a native/Wasm binary via Clang")
+	fmt.Println("  build       Compile Hike source into a native/Wasm binary (Wabt uses wat2wasm)")
 	fmt.Println("  run         Build and immediately execute the Hike program (supports native and Wasm via Node.js)")
 	fmt.Println("\nOptions for go:")
 	fmt.Println("  -o <path>        Output .syso file path")
-	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32)")
+	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wabt)")
 	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
 	fmt.Println("\nOptions for emit-ir / build / run:")
 	fmt.Println("  -o <path>        Output file path (default: <source>.ll, <source>.wasm, or executable)")
 	fmt.Println("  -header <path>   Output C/C++ header file path")
-	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
+	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64, wabt)")
 	fmt.Println("  -wasm-mode <mode> WebAssembly runtime mode: normal or concurrent")
 	fmt.Println("  --alloc=<mode> Allocation mode: heap (default) or region")
 	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
@@ -210,7 +211,16 @@ func runEmitIR(args []string) {
 	comp.SetRegionMode(regionMode)
 	comp.SetGoHikeMode(goHikeMode)
 
-	llvmIR, semaCtx, prog, err := comp.CompileToLLVM(sourceFiles...)
+	var llvmIR string
+	var semaCtx *sema.Context
+	var prog *ast.Program
+	if tgt.Name == target.TargetWabt.Name {
+		var wat string
+		wat, semaCtx, prog, err = comp.CompileToWAT(sourceFiles...)
+		llvmIR = wat
+	} else {
+		llvmIR, semaCtx, prog, err = comp.CompileToLLVM(sourceFiles...)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
 		os.Exit(1)
@@ -221,6 +231,9 @@ func runEmitIR(args []string) {
 		ext := filepath.Ext(srcPath)
 		base := strings.TrimSuffix(filepath.Base(srcPath), ext)
 		outputLL = base + ".ll"
+		if tgt.Name == target.TargetWabt.Name {
+			outputLL = base + ".wat"
+		}
 	}
 
 	if err := os.WriteFile(outputLL, []byte(llvmIR), 0644); err != nil {
@@ -239,6 +252,13 @@ func runEmitIR(args []string) {
 		}
 		if verbose {
 			fmt.Printf("Generated C/C++ Header -> %s\n", outputHeader)
+		}
+	}
+	if tgt.Name == target.TargetWabt.Name {
+		runtimePath := filepath.Join(filepath.Dir(outputLL), "runtime.js")
+		if err := codegen.WriteWasmJSRuntimeMode(runtimePath, wasmMode, prog); err != nil {
+			fmt.Fprintf(os.Stderr, "Runtime write error: %v\n", err)
+			os.Exit(1)
 		}
 	}
 }
@@ -413,7 +433,13 @@ func runBuild(args []string) {
 		frontend.SetWasmMode(wasmMode)
 		frontend.SetRegionMode(regionMode)
 		frontend.SetGoHikeMode(goHikeMode)
-		_, _, program, compileErr := frontend.CompileToLLVM(sourceFiles...)
+		var program *ast.Program
+		var compileErr error
+		if tgt.Name == target.TargetWabt.Name {
+			_, _, program, compileErr = frontend.CompileToWAT(sourceFiles...)
+		} else {
+			_, _, program, compileErr = frontend.CompileToLLVM(sourceFiles...)
+		}
 		if compileErr != nil {
 			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
 			os.Exit(1)
@@ -441,37 +467,47 @@ func runBuild(args []string) {
 		}
 	}
 
-	var clangArgs []string
-	if tgt.IsWasm {
-		clangArgs = []string{
-			"--target=" + tgt.Triple,
-			"-O2", "-nostdlib",
-			"-Wl,--no-entry", "-Wl,--export-all", "-Wl,--allow-undefined",
-			tempLL, "-o", outputBin,
+	if tgt.Name == target.TargetWabt.Name {
+		cmd := exec.Command("wat2wasm", tempLL, "-o", outputBin)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "wat2wasm build failed: %v\n", err)
+			os.Exit(1)
 		}
 	} else {
-		opt := "-O2"
-		if debugInfo {
-			opt = "-O0"
-			clangArgs = append(clangArgs, "-g")
+		var clangArgs []string
+		if tgt.IsWasm {
+			clangArgs = []string{
+				"--target=" + tgt.Triple,
+				"-O2", "-nostdlib",
+				"-Wl,--no-entry", "-Wl,--export-all", "-Wl,--allow-undefined",
+				tempLL, "-o", outputBin,
+			}
+		} else {
+			opt := "-O2"
+			if debugInfo {
+				opt = "-O0"
+				clangArgs = append(clangArgs, "-g")
+			}
+			clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 		}
-		clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
-	}
 
-	if tgt.Cflags != "" {
-		clangArgs = append(clangArgs, strings.Fields(tgt.Cflags)...)
-	}
+		if tgt.Cflags != "" {
+			clangArgs = append(clangArgs, strings.Fields(tgt.Cflags)...)
+		}
 
-	if extraCflags != "" {
-		clangArgs = append(clangArgs, strings.Fields(extraCflags)...)
-	}
+		if extraCflags != "" {
+			clangArgs = append(clangArgs, strings.Fields(extraCflags)...)
+		}
 
-	cmd := exec.Command("clang", clangArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Clang build failed: %v\n", err)
-		os.Exit(1)
+		cmd := exec.Command("clang", clangArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Clang build failed: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Wasm ターゲット時は runtime.js を自動生成して配置

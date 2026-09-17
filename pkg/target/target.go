@@ -51,6 +51,14 @@ var (
 		IsWasm: true,
 		Cflags: "",
 	}
+	// TargetWabt emits WebAssembly text (WAT). The WAT is assembled by the
+	// system wat2wasm command during build/run.
+	TargetWabt = Target{
+		Name:   "wabt",
+		Triple: "wasm32-unknown-unknown",
+		IsWasm: true,
+		Cflags: "",
+	}
 )
 
 func DefaultTarget() *Target {
@@ -89,6 +97,9 @@ func ParseTarget(name string) (*Target, error) {
 		return &t, nil
 	case "wasm64", "wasm64-unknown", "wasm64-unknown-unknown":
 		t := TargetWasm64
+		return &t, nil
+	case "wabt", "wat", "wasm-text":
+		t := TargetWabt
 		return &t, nil
 	default:
 		return nil, fmt.Errorf("unknown target: %s", name)
