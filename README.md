@@ -13,6 +13,33 @@ A systems programming language with Go-like syntax that compiles to LLVM IR, gen
 
 > **Note:** Hike is currently an experimental compiler under active development. Testing and verification have been performed primarily on **Windows using MinGW-w64 (`x86_64-w64-windows-gnu`) and Clang/LLVM**.
 
+### Current project progress
+
+The compiler currently supports LLVM IR generation, native and wasm32 builds,
+generic type/function specialization, closures with escape analysis,
+interfaces, collections, inline assembly, region allocation, and an automated
+native/WASM test suite. Recent implementation work has also established a
+length-aware string representation with shared substring views, reference
+counting, and copy-on-write mutation.
+
+The project remains experimental. Region allocation is an opt-in,
+function-scoped arena strategy, and complete compiler-wide lifetime inference
+for every temporary and shared string buffer is not finished. See the linked
+design documents below for the exact implementation boundaries.
+
+### Documentation overview
+
+| Document | Summary |
+| --- | --- |
+| [`alloc-region.md`](alloc-region.md) | Region allocation, arena lifetime, escape promotion, diagnostics, examples, and limitations. |
+| [`encoding.md`](encoding.md) | UTF-8 rules, string and buffer layouts, shared substring views, reference counting, and copy-on-write. |
+| [`wasm.md`](wasm.md) | wasm32 target behavior, JavaScript runtime integration, exports, memory access, and testing. |
+| [`concurrency.md`](concurrency.md) | Async tasks, channels, worker synchronization, closure transfer, and generated task bridges. |
+| [`eventloop.md`](eventloop.md) | Event-loop abstractions built on channels, task invocation, and asynchronous result handling. |
+| [`build-constraints-and-assembly.md`](build-constraints-and-assembly.md) | Build constraints and the inline assembly syntax and lowering rules. |
+| [`without_cgo.md`](without_cgo.md) | C-ABI integration without cgo, `.syso` builds, and ownership rules at language boundaries. |
+| [`gpu/webgpu/Hike.md`](gpu/webgpu/Hike.md) | WebGPU-oriented Hike integration and GPU programming notes. |
+
 ---
 
 ## Overview
@@ -35,7 +62,43 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 * **Closures with Escape Analysis**: Lexical closures capture by reference. Variables escaping their stack lifetime are promoted to the heap, unified under a 2-word fat pointer ABI.
 * **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`).
 * **Standalone WebAssembly Target**: Emits `wasm32-unknown-unknown` via Clang without requiring external WASI-SDK installations.
+* **Optional Region Allocation**: `--alloc=region` groups eligible function-local allocations into bump arenas and releases them in O(1) at the region boundary.
+* **Length-Aware Strings**: Native strings use a fat representation with a backing pointer, byte offset, and byte length; substring views share storage and writes use copy-on-write when necessary.
 * **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB step debugging.
+
+---
+
+## Inline Assembly
+
+Hike supports function-level LLVM inline assembly through the `__asm__ { ... }`
+construct. The first line inside the block declares the operand mapping. The
+following entries are the assembly template, output constraints, input
+constraints, and clobber constraints:
+
+```go
+func encryptBlockFast(roundKeys *byte, dst *byte, src *byte) {
+    __asm__{
+        params: roundKeys, dst, src
+        "movups (%2), %xmm0\n",
+        "movups (%0), %xmm1\n",
+        "pxor %xmm1, %xmm0\n",
+        "movups %xmm0, (%1)\n",
+        "",
+        "r,r,r",
+        "~{xmm0},~{xmm1},~{memory}"
+    }
+}
+```
+
+`%0`, `%1`, and `%2` refer to the operands listed after `params:`. They are
+translated to LLVM inline-assembly operand references; other assembly text is
+preserved. Register names such as `%xmm0` remain hardware register names.
+Clobbers must declare registers and memory modified by the assembly. Native
+instructions must be protected with build constraints such as `amd64`; a
+portable implementation should be provided for targets such as wasm32.
+
+The complete build-constraint and assembly rules are documented in
+[`build-constraints-and-assembly.md`](build-constraints-and-assembly.md).
 
 ---
 
@@ -104,7 +167,7 @@ go build -o hikec.exe ./cmd/hikec
 
 ### 1. Variables, Types & Constants
 
-Hike supports explicit type declarations and local type inference via `:=`. Primitive types map to fixed-width representations: `int` (`i64`), `float64` (`double`), `byte` (`u8`), `bool` (`i1`), and `string` (`i8*`).
+Hike supports explicit type declarations and local type inference via `:=`. Primitive types map to fixed-width representations: `int` (`i64`), `float64` (`double`), `byte` (`u8`), and `bool` (`i1`). The native `string` type is a length-aware fat value: `{ i8*, i32, i32 }`, occupying 16 bytes on 64-bit targets and 12 bytes on wasm32.
 
 ```go
 package main
@@ -281,6 +344,38 @@ func DemoGenerics() {
 }
 
 ```
+
+#### ConstGenerics
+
+Hike also supports compile-time value parameters for generic types. A const
+generic declaration must contain at least one type parameter, and const
+parameters must appear after all type parameters. Const arguments are limited
+to immediate primitive values or other const-generic parameters; ordinary
+variables and expressions involving runtime values are rejected.
+
+```go
+type Matrix[T, Rows uint, Cols uint] struct {
+    data [Rows * Cols]T
+}
+
+func MatrixValue() int {
+    var m Matrix[int, 8, 8]
+    return 8 * 8
+}
+```
+
+`Matrix[int, 8, 8]` is materialized as a concrete compile-time
+specialization. The dimensions are available to layout and indexing code, so
+the resulting fixed-size matrix has no runtime dimension metadata.
+
+```go
+const Rows uint = 8
+const Cols uint = 8
+var m Matrix[int, Rows, Cols]
+```
+
+See the generic transformation and interface tests for additional examples of
+type and const-parameter specialization.
 
 ---
 
@@ -855,23 +950,89 @@ func main() int {
 
 ## WebAssembly Support
 
-Hike compiles directly to `wasm32-unknown-unknown` using Clang without requiring WASI-SDK.
+Hike compiles directly to `wasm32-unknown-unknown` through Clang without a
+WASI SDK or an external libc. The compiler emits internal LLVM runtime
+functions for memory, strings, maps, and other built-ins, then generates a
+JavaScript runtime for the selected host mode.
 
-### Build Pipeline
+The generated WASM modules are intended to run across WebAssembly host
+environments, including web browsers, Node.js, and other WASM runtimes that
+provide the standard WebAssembly JavaScript API. In a web browser, a module
+can be used immediately by referencing the generated `runtime.js` and the
+`.wasm` binary from an HTML page; the runtime handles instantiation and exposes
+the Hike exports to the page's JavaScript.
+
+### Build and run
 
 ```bash
-# 1. Generate wasm32 IR
-hikec -target wasm32 -o main.ll main.hike
+# Build main.wasm and generate runtime.js beside it.
+hikec build -target wasm32 -o main.wasm main.hike
 
-# 2. Compile to standalone .wasm with Clang
-clang --target=wasm32-unknown-unknown -O2 -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined main.ll -o app.wasm
-
-# 3. Execute in Node.js host
-node run_wasm.js
-
+# The same command can be executed through Node.js by the CLI runner.
+hikec run -target wasm32 main.hike
 ```
 
-A minimal JavaScript runner binds memory and basic C symbols (`printf`, `malloc`, `memcpy`). Complete scripts are located in `examples/wasm`.
+`build` produces the `.wasm` module and automatically writes `runtime.js` in
+the output directory. `run` builds a temporary module and starts Node.js with
+the generated runtime. This is the same host model used by the automated WASM
+tests.
+
+### Normal and concurrent runtimes
+
+Use `-wasm-mode normal` for ordinary exported functions and
+`-wasm-mode concurrent` when the program uses asynchronous tasks, workers, or
+directed JavaScript callbacks:
+
+```bash
+hikec build -target wasm32 -wasm-mode normal -o app.wasm main.hike
+hikec build -target wasm32 -wasm-mode concurrent -o app.wasm main.hike
+hikec emit-js -target wasm32 -wasm-mode concurrent -o runtime.js main.hike
+```
+
+The generated runtime is reusable from both browsers and Node.js. Browser code
+can instantiate the module and call exported `cfunc` functions in response to
+events. Node.js tests load the same generated runtime with `require` or ES
+module import and invoke the exports directly. Each WASM test keeps its
+JavaScript driver separate while sharing the runtime implementation.
+
+### JavaScript and Hike strings
+
+WASM host functions receive string data through the generated ABI bridge. Hike
+code can expose byte-pointer and length parameters when a direct host buffer
+interface is preferred, then construct a Hike string from that pair:
+
+```go
+cfunc TransformString(input *byte, length int) cstring {
+    value := string(input, length)
+    return cstring(value + " [wasm]")
+}
+```
+
+The runtime provides UTF-8 encoding/decoding helpers and access to linear
+memory. Hike `int` values use WebAssembly `i64` and should be passed from
+JavaScript as `BigInt`; `int32`, `byte`, and `bool` use `i32`-compatible values.
+Hike strings are length-aware fat values internally, while C-facing exports
+are adapted to pointer-based ABI values by the compiler.
+
+### JavaScript host example
+
+```javascript
+import { HikeRuntime } from "./runtime.js";
+import fs from "node:fs/promises";
+
+const runtime = new HikeRuntime();
+const wasm = await runtime.load("main.wasm");
+const result = wasm.AddNumbers(1234, 5678);
+console.log(result);
+```
+
+For browser integration, instantiate the generated runtime after loading the
+`.wasm` asset and call exported functions from event handlers. For Node.js,
+the `tests/wasm` suite provides examples covering maps, strings, concurrent
+workers, and JavaScript functions (`jfunc`).
+
+The full host API, memory model, and integration examples are documented in
+[`wasm.md`](wasm.md).
 
 ---
 
@@ -947,22 +1108,66 @@ Usage: hikec <command> [options] <source.hike... | directory>
 Commands:
   go        Compile a directory of .go.hike files into one .syso object
   emit-ir   Generate target LLVM IR (.ll) (default for a source input)
+  emit-js   Generate the WebAssembly JavaScript runtime.js bridge
   build     Compile Hike source into a native or WebAssembly binary via Clang
   run       Build and immediately execute a native or WebAssembly program
 
-Options for emit-ir, build, and run:
-  -o <path>       Output IR, binary, or WebAssembly path
-  -header <path>  Export a C/C++ header (.h)
-  -target <name>  windows, windows-msvc, linux, darwin, wasm32, or wasm64
-  -cflags <flags> Additional flags passed to Clang
-  -g              Generate DWARF debug metadata
-  -v              Enable verbose logging
-  -vv             Enable detailed instruction-level logging
+Common options:
+  -o <path> / -o=<path>
+                  Output path. For emit-ir this is .ll; for emit-js it is
+                  runtime.js; for build it is the executable or .wasm.
+  -target <name> / --target=<name>
+                  Target triple or shorthand: windows, windows-msvc, linux,
+                  darwin, wasm32, or wasm64.
+  -v / --verbose  Enable verbose logging.
+  -vv / --vv      Enable detailed instruction-level logging.
+
+Options for emit-ir:
+  -header <path> / --header=<path>
+                  Generate a C/C++ header for exported declarations.
+  -wasm-mode <mode> / --wasm-mode=<mode>
+                  WebAssembly runtime mode: normal or concurrent.
+  --alloc=region / -alloc=region
+                  Enable optional function-scoped region allocation.
+  -cflags <flags> / -cflags=<flags>
+                  Accepted for command compatibility; native linker flags are
+                  applied by build rather than emit-ir.
+
+Options for emit-js:
+  -wasm-mode <mode> / --wasm-mode=<mode>
+                  Generate the normal or concurrent JavaScript runtime.
+  --alloc=region / -alloc=region
+                  Compile the source with region mode enabled.
+
+Options for build:
+  -wasm-mode <mode> / --wasm-mode=<mode>
+                  WebAssembly runtime mode: normal or concurrent.
+  --alloc=region / -alloc=region
+                  Enable optional function-scoped region allocation.
+  -cflags <flags> / -cflags=<flags>
+                  Extra flags passed directly to Clang.
+  -g              Generate DWARF debug metadata and use a debug-friendly
+                  native compilation configuration.
+
+Options for run:
+  -wasm-mode <mode> / --wasm-mode=<mode>
+                  Forward the normal or concurrent mode to the WASM build.
+  --alloc=region / -alloc=region
+                  Forward region allocation mode to the build.
+  -cflags <flags> / -cflags=<flags>
+                  Forward additional Clang flags to the build.
+  -g              Forward debug information generation to the build.
 
 Options for go:
-  -o <path>       Output .syso path
-  -target <name>  Target platform
-  -v, -vv         Enable verbose logging
+  -o <path> / -o=<path>
+                  Output the aggregated `.syso` object path.
+  -target <name> / --target=<name>
+                  Target platform or triple for the generated object.
+  -v / --verbose  Enable verbose logging.
+  -vv / --vv      Enable detailed logging.
+
+Unknown non-option arguments are treated as source files or directories. The
+`emit-ir`, `emit-js`, and `build` commands require at least one input source.
 
 ```
 
@@ -973,7 +1178,8 @@ Options for go:
 * [ ] Interface-valued `AsyncIterable` dispatch for `for value := range <-stream`
 
 
-* [ ] Memory management utilities (Arena allocator integrations)
+* [x] Optional function-scoped region allocation (`--alloc=region`)
+* [ ] Complete lexical lifetime inference and release handling for every temporary/shared string buffer
 
 
 * [ ] Package registry and remote dependency resolution
@@ -988,4 +1194,3 @@ Options for go:
 ## License
 
 MIT License
-
