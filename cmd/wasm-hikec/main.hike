@@ -1,0 +1,20 @@
+// wasm-hikec is the browser-hosted HikeC entry point.
+// Package sources are supplied by JavaScript through the WASM loader.
+//
+// The Go frontend writes the generated runtime.js beside the WASM module. This
+// JFUNC is the source-level bridge used by the generated runtime: invoking the
+// Hike entry point publishes the active linear memory to the host and gives
+// JavaScript a stable hook for starting the compiled compiler.
+package main
+
+jfunc wasm_hikec_runtime_init() int {
+    if (!globalThis.__hikeWasmC) {
+        globalThis.__hikeWasmC = {};
+    }
+    globalThis.__hikeWasmC.memory = wasmMemory;
+    return 1;
+}
+
+func main() int {
+    return wasm_hikec_runtime_init()
+}
