@@ -161,6 +161,12 @@ func buildConstraintText(content string) (string, bool) {
 }
 
 func validateInlineAsmBuildConstraint(path string, content []byte, tags map[string]bool) error {
+	// Intrinsic names such as "llvm.x86.aesni.aesenc" may appear in ordinary
+	// compiler code without any inline assembly.  Only source files that
+	// actually contain Hike's inline-assembly form need architecture checks.
+	if !strings.Contains(string(content), "__asm__") {
+		return nil
+	}
 	text := strings.ToLower(string(content))
 	feature := ""
 	switch {

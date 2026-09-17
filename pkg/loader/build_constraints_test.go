@@ -58,3 +58,18 @@ func TestInlineAsmRequiresArchitectureConstraint(t *testing.T) {
 		t.Fatalf("expected architecture build constraint error, got %v", err)
 	}
 }
+
+func TestIntrinsicNamesDoNotRequireAssemblyConstraints(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "emitter.hike")
+	source := "package llvm\nfunc name() string { return \\\"llvm.x86.aesni.aesenc\\\" }\n"
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	l := New(dir)
+	win, _ := target.ParseTarget("windows")
+	l.SetTarget(win)
+	if _, err := l.Load(path); err != nil {
+		t.Fatalf("intrinsic references must not require an assembly constraint: %v", err)
+	}
+}
