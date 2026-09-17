@@ -1,0 +1,13 @@
+package sync
+
+type Once struct {
+    done bool
+}
+
+func (o *Once) Do(f func()) {
+    if o.done {
+        return
+    }
+    o.done = true
+    f()
+}

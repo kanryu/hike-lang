@@ -1,0 +1,35 @@
+package filepath
+
+import "std/strings"
+
+func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
+func Clean(p string) string { return p }
+func Base(p string) string {
+    normalized := ToSlash(p)
+    parts := strings.Split(normalized, "/")
+    if len(parts) == 0 {
+        return ""
+    }
+    return parts[len(parts)-1]
+}
+func Dir(p string) string {
+    normalized := ToSlash(p)
+    idx := strings.LastIndex(normalized, "/")
+    if idx < 0 {
+        return "."
+    }
+    return normalized[0:idx]
+}
+func Ext(p string) string {
+    name := Base(p)
+    idx := strings.LastIndex(name, ".")
+    if idx < 0 {
+        return ""
+    }
+    return name[idx:len(name)]
+}
+func Join(a string, b string) string {
+    if a == "" { return b }
+    if b == "" { return a }
+    return ToSlash(a) + "/" + b
+}

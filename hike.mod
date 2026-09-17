@@ -9,24 +9,26 @@ hike 0.1.0
 # standard-library replacements.
 
 GoReplace bytes => std/bytes
+GoReplace bufio => std/stub/bufio
+GoReplace embed => std/stub/embed
 GoReplace fmt => std/fmt
 GoReplace os => std/os
+GoReplace os/exec => std/stub/os/exec
+GoReplace path => std/stub/path
+GoReplace path/filepath => std/stub/path/filepath
 GoReplace regexp => std/regexp
+GoReplace runtime => std/stub/runtime
+GoReplace sort => std/stub/sort
 GoReplace strconv => std/strconv
 GoReplace strings => std/strings
+GoReplace sync => std/stub/sync
+GoReplace unicode => std/stub/unicode
 
-# The following Go standard-library imports currently have no corresponding
-# implementation under std/ and therefore remain unsupported by self-hosting:
+# All standard-library imports found in pkg/**/*.go now have a minimal Hike
+# compatibility module under std/stub/. The implementations intentionally cover
+# only the APIs required by the self-hosted compiler.
 #
-# - bufio
-# - embed
-# - os/exec
-# - path
-# - path/filepath
-# - runtime
-# - sort
-# - sync
-# - unicode
+# Runtime limitations are documented in the corresponding module source.
 
 # Import inventory collected from pkg/**/*.go (excluding *_test.go):
 #
@@ -38,9 +40,7 @@ GoReplace strings => std/strings
 # - strconv     -> std/strconv
 # - strings     -> std/strings
 #
-# Missing from Hike std/:
-# - bufio, embed, os/exec, path, path/filepath
-# - runtime, sort, sync, unicode
+# No standard-library package remains missing for the current pkg/**/*.go scan.
 #
 # Internal compiler packages found in the same scan:
 # - hikec-go/pkg/ast

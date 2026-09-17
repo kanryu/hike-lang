@@ -36,6 +36,23 @@ func Index(s string, substr string) int {
 	return -1
 }
 
+func LastIndex(s string, substr string) int {
+    lenS := len(s)
+    lenSub := len(substr)
+    if lenSub == 0 {
+        return lenS
+    }
+    if lenSub > lenS {
+        return -1
+    }
+    for i := lenS - lenSub; i >= 0; i-- {
+        if s[i:i+lenSub] == substr {
+            return i
+        }
+    }
+    return -1
+}
+
 func Contains(s string, substr string) bool {
 	return Index(s, substr) >= 0
 }

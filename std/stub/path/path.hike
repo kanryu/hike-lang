@@ -1,0 +1,13 @@
+package path
+
+import "std/strings"
+
+func Base(p string) string {
+    parts := strings.Split(p, "/")
+    if len(parts) == 0 {
+        return ""
+    }
+    return parts[len(parts)-1]
+}
+
+func Clean(p string) string { return p }

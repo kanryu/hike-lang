@@ -1,0 +1,22 @@
+package bufio
+
+type Scanner struct {
+    input string
+    used bool
+}
+
+func NewScanner(input *byte) *Scanner {
+    return &Scanner{}
+}
+
+func (s *Scanner) Scan() bool {
+    if s.used {
+        return false
+    }
+    s.used = true
+    return false
+}
+
+func (s *Scanner) Text() string {
+    return s.input
+}

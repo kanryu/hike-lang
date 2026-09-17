@@ -1,0 +1,12 @@
+package sort
+
+// SliceStable provides the index-based sorting API used by the compiler.
+func SliceStable[T](x []T, less func(i int, j int) bool) {
+    for i := 1; i < len(x); i = i + 1 {
+        j := i
+        for j > 0 && less(j, j-1) {
+            x[j], x[j-1] = x[j-1], x[j]
+            j = j - 1
+        }
+    }
+}

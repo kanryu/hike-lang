@@ -1,0 +1,5 @@
+package embed
+
+// FS is a compatibility placeholder for Go's embed.FS. File embedding is
+// handled as a build-time feature and is not yet provided by Hike.
+type FS struct{}
