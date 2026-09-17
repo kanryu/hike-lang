@@ -736,7 +736,16 @@ func validateDefaultParams(params []*ast.ParamDecl) error {
 
 // Analyze はプログラム全体の構文木を走査し、完全な型マップとセマンティクス情報を構築する
 func Analyze(prog *ast.Program) (*Context, error) {
+	return AnalyzeMode(prog, false)
+}
+
+// AnalyzeMode performs semantic analysis with optional self-hosting
+// compatibility behavior.
+func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	ctx := NewContext()
+	if goHikeMode {
+		ctx.HasMapImport = true
+	}
 
 	for _, imp := range prog.Imports {
 		if imp.Path == "std/map" || imp.Path == "map" || imp.Path == "std/maps" || imp.Path == "maps" {

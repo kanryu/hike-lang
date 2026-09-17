@@ -22,6 +22,7 @@ type Compiler struct {
 	verbose    bool
 	wasmMode   string
 	regionMode bool
+	goHikeMode bool
 	reporter   *diag.Reporter
 }
 
@@ -51,6 +52,9 @@ func (c *Compiler) SetVerbose(v bool) {
 
 // SetRegionMode enables the optional --alloc=region arena allocator.
 func (c *Compiler) SetRegionMode(enabled bool) { c.regionMode = enabled }
+
+// SetGoHikeMode enables compilation of Go-compatible self-hosting sources.
+func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
 
 func (c *Compiler) Reporter() *diag.Reporter {
 	return c.reporter
@@ -101,6 +105,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		ld := loader.New(rootDir)
 		ld.SetTarget(c.target)
 		ld.SetVerbose(c.verbose)
+		ld.SetGoHikeMode(c.goHikeMode)
 		p, err := ld.Load(entryPaths...)
 		if err != nil {
 			return err
@@ -121,7 +126,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 
 	// 2. 意味解析・型検査フェーズ
 	_ = c.safeExecute(primaryFile, func() error {
-		ctx, err := sema.AnalyzeWithReporterMode(rawProg, c.reporter, primaryFile, c.regionMode)
+		ctx, err := sema.AnalyzeWithReporterModes(rawProg, c.reporter, primaryFile, c.regionMode, c.goHikeMode)
 		if err != nil {
 			return err
 		}
@@ -210,7 +215,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 	// 1. Sema フェーズ (エラーが出ても最後まで回す)
 	var semaCtx *sema.Context
 	_ = c.safeExecute(filename, func() error {
-		ctx, err := sema.AnalyzeWithReporterMode(prog, c.reporter, filename, c.regionMode)
+		ctx, err := sema.AnalyzeWithReporterModes(prog, c.reporter, filename, c.regionMode, c.goHikeMode)
 		if err != nil {
 			return err
 		}

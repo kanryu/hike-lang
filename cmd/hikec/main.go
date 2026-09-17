@@ -45,10 +45,15 @@ func printUsage() {
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64)")
 	fmt.Println("  -wasm-mode <mode> WebAssembly runtime mode: normal or concurrent")
 	fmt.Println("  --alloc=<mode> Allocation mode: heap (default) or region")
+	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
+}
+
+func isGoHikeFlag(arg string) bool {
+	return arg == "-go-hike" || arg == "--go-hike" || arg == "-go-hike=1" || arg == "--go-hike=1"
 }
 
 func main() {
@@ -137,6 +142,7 @@ func runEmitIR(args []string) {
 	targetName := getDefaultTargetName()
 	wasmMode := "normal"
 	regionMode := false
+	goHikeMode := false
 	verbose := false
 	var sourceFiles []string
 
@@ -166,6 +172,8 @@ func runEmitIR(args []string) {
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
 		} else if arg == "--alloc=region" || arg == "-alloc=region" {
 			regionMode = true
+		} else if isGoHikeFlag(arg) {
+			goHikeMode = true
 		} else if arg == "-cflags" && i+1 < len(args) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
@@ -200,6 +208,7 @@ func runEmitIR(args []string) {
 	comp.SetVerbose(verbose)
 	comp.SetWasmMode(wasmMode)
 	comp.SetRegionMode(regionMode)
+	comp.SetGoHikeMode(goHikeMode)
 
 	llvmIR, semaCtx, prog, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
@@ -242,6 +251,7 @@ func runEmitJS(args []string) {
 	targetName := "wasm32"
 	wasmMode := "normal"
 	regionMode := false
+	goHikeMode := false
 	verbose := false
 	var sourceFiles []string
 	for i := 0; i < len(args); i++ {
@@ -264,6 +274,8 @@ func runEmitJS(args []string) {
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
 		case arg == "--alloc=region" || arg == "-alloc=region":
 			regionMode = true
+		case isGoHikeFlag(arg):
+			goHikeMode = true
 		case arg == "-vv" || arg == "--vv":
 			verbose = true
 			os.Setenv("HIKEC_VERBOSE_LEVEL", "2")
@@ -294,6 +306,7 @@ func runEmitJS(args []string) {
 	comp.SetVerbose(verbose)
 	comp.SetWasmMode(wasmMode)
 	comp.SetRegionMode(regionMode)
+	comp.SetGoHikeMode(goHikeMode)
 	_, _, program, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
@@ -322,6 +335,7 @@ func runBuild(args []string) {
 	verbose := false
 	wasmMode := "normal"
 	regionMode := false
+	goHikeMode := false
 	var passThroughArgs []string
 	var sourceFiles []string
 
@@ -348,6 +362,9 @@ func runBuild(args []string) {
 			passThroughArgs = append(passThroughArgs, "-wasm-mode", wasmMode)
 		} else if arg == "--alloc=region" || arg == "-alloc=region" {
 			regionMode = true
+		} else if isGoHikeFlag(arg) {
+			goHikeMode = true
+			passThroughArgs = append(passThroughArgs, "-go-hike=1")
 		} else if arg == "-cflags" && i+1 < len(args) {
 			extraCflags = args[i+1]
 			i++
@@ -395,6 +412,7 @@ func runBuild(args []string) {
 		frontend.SetVerbose(verbose)
 		frontend.SetWasmMode(wasmMode)
 		frontend.SetRegionMode(regionMode)
+		frontend.SetGoHikeMode(goHikeMode)
 		_, _, program, compileErr := frontend.CompileToLLVM(sourceFiles...)
 		if compileErr != nil {
 			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)

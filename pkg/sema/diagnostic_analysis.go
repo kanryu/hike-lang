@@ -16,7 +16,12 @@ func AnalyzeWithReporter(prog *ast.Program, reporter *diag.Reporter, filename st
 
 // AnalyzeWithReporterMode additionally gates the optional region API.
 func AnalyzeWithReporterMode(prog *ast.Program, reporter *diag.Reporter, filename string, regionEnabled bool) (*Context, error) {
-	ctx, err := Analyze(prog)
+	return AnalyzeWithReporterModes(prog, reporter, filename, regionEnabled, false)
+}
+
+// AnalyzeWithReporterModes additionally enables Go/Hike compatibility mode.
+func AnalyzeWithReporterModes(prog *ast.Program, reporter *diag.Reporter, filename string, regionEnabled, goHikeEnabled bool) (*Context, error) {
+	ctx, err := AnalyzeMode(prog, goHikeEnabled)
 	if err != nil {
 		if reporter != nil {
 			reporter.AddRaw(filename, err.Error())

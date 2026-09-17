@@ -73,3 +73,31 @@ func TestIntrinsicNamesDoNotRequireAssemblyConstraints(t *testing.T) {
 		t.Fatalf("intrinsic references must not require an assembly constraint: %v", err)
 	}
 }
+
+func TestGoHikeModeIncludesGoSources(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	source := "package main\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ordinary := New(dir)
+	program, err := ordinary.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Decls) != 0 {
+		t.Fatalf("ordinary mode must ignore .go sources, got %d declarations", len(program.Decls))
+	}
+
+	compat := New(dir)
+	compat.SetGoHikeMode(true)
+	program, err = compat.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Decls) != 1 {
+		t.Fatalf("Go/Hike mode must load .go sources, got %d declarations", len(program.Decls))
+	}
+}

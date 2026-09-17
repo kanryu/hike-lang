@@ -19,6 +19,7 @@ type Loader struct {
 	visitedPkgs  map[string]bool
 	verbose      bool
 	buildTags    map[string]bool
+	goHikeMode   bool
 }
 
 func New(rootDir string) *Loader {
@@ -32,7 +33,7 @@ func New(rootDir string) *Loader {
 		effectiveRoot = module.RootDir
 	}
 
-	return &Loader{
+	loader := &Loader{
 		rootDir:      effectiveRoot,
 		module:       module,
 		visitedFiles: make(map[string]bool),
@@ -40,10 +41,47 @@ func New(rootDir string) *Loader {
 		buildTags:    defaultBuildTags(),
 		verbose:      false,
 	}
+	if loader.goHikeMode {
+		loader.loadGoHikeBot()
+	}
+	return loader
 }
 
 func (l *Loader) SetVerbose(v bool) {
 	l.verbose = v
+}
+
+// SetGoHikeMode enables the self-hosting compatibility mode. In this mode
+// .go files are accepted as Hike source files.
+func (l *Loader) SetGoHikeMode(enabled bool) {
+	l.goHikeMode = enabled
+	if enabled {
+		l.loadGoHikeBot()
+	}
+}
+
+// loadGoHikeBot loads root-level GoReplace directives. The root hike.mod is deliberately
+// consulted only by compatibility-mode loaders, so ordinary Hike builds cannot
+// be affected by self-hosting mappings.
+func (l *Loader) loadGoHikeBot() {
+	if l.module == nil {
+		return
+	}
+	path := filepath.Join(l.module.RootDir, "hike.mod")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if !strings.HasPrefix(line, "GoReplace ") {
+			continue
+		}
+		parts := strings.Fields(strings.TrimPrefix(line, "GoReplace "))
+		if len(parts) >= 3 && parts[1] == "=>" {
+			l.module.Replaces[parts[0]] = parts[2]
+		}
+	}
 }
 
 // SetBuildTags overrides the target tags used by source-file selection.
@@ -142,6 +180,9 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		pkgImports[pkgName] = append(pkgImports[pkgName], fileProg.Imports...)
 
 		fileDir := filepath.Dir(curFile)
+		if l.goHikeMode {
+			l.applyGoHikeReplacements(string(content))
+		}
 		for _, imp := range fileProg.Imports {
 			if l.module == nil {
 				continue
@@ -183,11 +224,35 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 	var files []string
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".hike") && l.fileAllowed(path) {
+		isSource := strings.HasSuffix(entry.Name(), ".hike")
+		if l.goHikeMode {
+			isSource = isSource || strings.HasSuffix(entry.Name(), ".go")
+		}
+		if !entry.IsDir() && isSource && l.fileAllowed(path) {
 			files = append(files, path)
 		}
 	}
 	return files, nil
+}
+
+// applyGoHikeReplacements reads replacement directives embedded in Go source.
+// Both forms are accepted for generated/self-hosted sources.
+func (l *Loader) applyGoHikeReplacements(content string) {
+	if l.module == nil {
+		return
+	}
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		for _, prefix := range []string{"//go:replace ", "//hike:go-replace "} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			parts := strings.Fields(strings.TrimPrefix(line, prefix))
+			if len(parts) >= 3 && parts[1] == "=>" {
+				l.module.Replaces[parts[0]] = parts[2]
+			}
+		}
+	}
 }
 
 // manglePackageDecls はパッケージ内のトップレベル宣言を名前空間修飾（マングル）します。
