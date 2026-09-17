@@ -741,6 +741,7 @@ func (ss *SwitchStmt) TokenLiteral() string { return ss.Token.Literal }
 type TypeCaseClause struct {
 	Token token.Token
 	Types []TypeExpr
+	IsNil bool
 	Body  []Statement
 }
 

@@ -789,7 +789,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return e.LowerIndexExpr(node)
 
 	case *ast.TypeAssertExpr:
-		tup := e.LowerTypeAssertExpr(node)
+		tup := e.LowerTypeAssertExprWithPanic(node)
 		targetType := e.root.semaCtx.ResolveType(node.Target)
 		valReg := e.root.nextReg(targetType)
 		e.root.emit(&hir.InstrExtractValue{Dst: valReg, Agg: tup, Index: 0})
@@ -1631,6 +1631,17 @@ func (e *ExprLowerer) LowerReceiveExpr(re *ast.ReceiveExpr) hir.Value {
 }
 
 func (e *ExprLowerer) LowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
+	return e.lowerTypeAssertExpr(tae, false)
+}
+
+// LowerTypeAssertExprWithPanic implements Go's single-result assertion form.
+// The comma-ok form is lowered by LowerTypeAssertExpr and deliberately
+// returns the match flag instead of trapping.
+func (e *ExprLowerer) LowerTypeAssertExprWithPanic(tae *ast.TypeAssertExpr) hir.Value {
+	return e.lowerTypeAssertExpr(tae, true)
+}
+
+func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure bool) hir.Value {
 	ifaceVal := e.LowerExpr(tae.Expr)
 	ifaceType := ifaceVal.Type()
 	targetType := e.root.semaCtx.ResolveType(tae.Target)
@@ -1653,6 +1664,15 @@ func (e *ExprLowerer) LowerTypeAssertExpr(tae *ast.TypeAssertExpr) hir.Value {
 
 	matchReg := e.root.nextReg(sema.TypeBool)
 	e.root.emit(&hir.InstrBinary{Dst: matchReg, Op: hir.OpEq, L: typeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt}})
+	if trapOnFailure {
+		okBB := e.root.newBlock("typeassert.ok")
+		failBB := e.root.newBlock("typeassert.fail")
+		e.root.terminate(&hir.InstrBranch{Cond: matchReg, ThenTarget: okBB.Label, ElseTarget: failBB.Label})
+		e.root.setBlock(failBB)
+		e.root.emit(&hir.InstrCallStatic{CalleeName: "llvm.trap"})
+		e.root.terminate(&hir.InstrUnreachable{})
+		e.root.setBlock(okBB)
+	}
 
 	unpackedReg := e.root.nextReg(targetType)
 	if strings.HasSuffix(targetType.LLVMType(), "*") {

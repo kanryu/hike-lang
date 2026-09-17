@@ -356,6 +356,8 @@ func llvmIntrinsicName(name string) string {
 		return "llvm.x86.sha256msg1"
 	case "sha256msg2":
 		return "llvm.x86.sha256msg2"
+	case "llvm.trap":
+		return "llvm.trap"
 	default:
 		return ""
 	}
@@ -1347,6 +1349,9 @@ func (e *Emitter) emitTerminator(term hir.Terminator, isMain bool) {
 	case *hir.InstrBranch:
 		e.b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n",
 			e.formatVal(t.Cond), t.ThenTarget, t.ElseTarget))
+
+	case *hir.InstrUnreachable:
+		e.b.WriteString("  unreachable\n")
 
 	case *hir.InstrReturn:
 		if len(t.Vals) == 0 {

@@ -1509,7 +1509,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 	var defaultCase *ast.TypeCaseClause = nil
 
 	for _, c := range tss.Cases {
-		if len(c.Types) == 0 {
+		if len(c.Types) == 0 && !c.IsNil {
 			defaultCase = c
 			continue
 		}
@@ -1518,6 +1518,11 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		nextCaseBB := s.root.newBlock("typeswitch.case.next")
 
 		var matchedCond hir.Value = nil
+		if c.IsNil {
+			cmpReg := s.root.nextReg(sema.TypeBool)
+			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}})
+			matchedCond = cmpReg
+		}
 		for _, tExpr := range c.Types {
 			targetType := s.root.semaCtx.ResolveType(tExpr)
 			targetTypeID := s.root.semaCtx.GetTypeID(targetType)
@@ -1539,7 +1544,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		s.root.setBlock(caseBodyBB)
 		if tss.Variable != nil {
 			var valToStore hir.Value
-			if len(c.Types) == 1 {
+			if len(c.Types) == 1 && !c.IsNil {
 				targetType := s.root.semaCtx.ResolveType(c.Types[0])
 				if strings.HasSuffix(targetType.LLVMType(), "*") {
 					castVal := s.root.nextReg(targetType)

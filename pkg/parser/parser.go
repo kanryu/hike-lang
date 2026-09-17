@@ -1279,7 +1279,11 @@ func (p *Parser) parseSwitchStmt() ast.Statement {
 				if p.curTokenIs(token.CASE) {
 					p.nextToken()
 					for {
-						c.Types = append(c.Types, p.parseTypeExpr())
+						if p.curTokenIs(token.NIL) {
+							c.IsNil = true
+						} else {
+							c.Types = append(c.Types, p.parseTypeExpr())
+						}
 						if p.peekTokenIs(token.COMMA) {
 							p.nextToken()
 							p.nextToken()

@@ -356,3 +356,38 @@ func main() int {
 	})
 }
 
+// Go-compatible assertion semantics: a single-result assertion succeeds,
+// while type switches support nil and multi-type cases.
+func TestInterface_GoTypeAssertionAndSwitchSemantics(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func inspect(v any) int {
+    switch v.(type) {
+    case nil:
+        return 1
+    case int, string:
+        return 2
+    default:
+        return 3
+    }
+    return 0
+}
+
+func main() int {
+    var value any = 42
+    exact := value.(int)
+    var empty any = nil
+    printf("EXACT=%d,NIL=%d,INT=%d\n", exact, inspect(empty), inspect(value))
+    return 0
+}
+`,
+		ExpectedOut:  "EXACT=42,NIL=1,INT=2",
+		ExpectedExit: 0,
+	})
+}
