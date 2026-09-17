@@ -244,6 +244,22 @@ type InterfaceType struct {
 	Specializations map[string]*InterfaceType
 }
 
+func appendInterfaceMethods(dst []Method, src []Method) []Method {
+	for _, candidate := range src {
+		found := false
+		for _, existing := range dst {
+			if existing.Name == candidate.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst = append(dst, candidate)
+		}
+	}
+	return dst
+}
+
 func (t *InterfaceType) TypeName() string {
 	if t.Name != "" {
 		return t.Name
@@ -1123,6 +1139,11 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 
 			if it, ok := td.Type.(*ast.InterfaceType); ok {
 				methods := []Method{}
+				for _, embedded := range it.Embedded {
+					if embeddedIface, ok := ctx.ResolveType(embedded).(*InterfaceType); ok {
+						methods = appendInterfaceMethods(methods, embeddedIface.Methods)
+					}
+				}
 				for _, m := range it.Methods {
 					pts := []Type{}
 					var varElem Type = nil

@@ -144,10 +144,14 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		if p.peekTokenIs(token.LBRACE) {
 			p.nextToken()
 		}
-		it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}}
+		it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}, Embedded: []ast.TypeExpr{}}
 		for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 			p.nextToken()
 			if p.curTokenIs(token.SEMICOLON) {
+				continue
+			}
+			if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.LPAREN) {
+				it.Embedded = append(it.Embedded, p.parseTypeExpr())
 				continue
 			}
 			methodName := p.parseIdentifier()

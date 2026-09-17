@@ -554,6 +554,11 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 
 				if iface.Template != nil {
 					if itAst, ok := iface.Template.Type.(*ast.InterfaceType); ok {
+						for _, embedded := range itAst.Embedded {
+							if embeddedIface, ok := c.ResolveTypeWithSubst(embedded, typeMap).(*InterfaceType); ok {
+								newIface.Methods = appendInterfaceMethods(newIface.Methods, embeddedIface.Methods)
+							}
+						}
 						for _, m := range itAst.Methods {
 							pts := []Type{}
 							for _, p := range m.ParamTypes {
@@ -634,6 +639,11 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		return &FutureType{ReturnTypes: rts}
 	case *ast.InterfaceType:
 		methods := []Method{}
+		for _, embedded := range t.Embedded {
+			if embeddedIface, ok := c.ResolveType(embedded).(*InterfaceType); ok {
+				methods = appendInterfaceMethods(methods, embeddedIface.Methods)
+			}
+		}
 		for _, m := range t.Methods {
 			pts := []Type{}
 			var varElem Type = nil

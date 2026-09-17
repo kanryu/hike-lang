@@ -872,6 +872,13 @@ func (p *Parser) parseInterfaceMethods(it *ast.InterfaceType) {
 			p.nextToken()
 			continue
 		}
+		// An interface may embed another interface type, as in Go:
+		// type ReadWrite interface { Reader; Writer }
+		if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.LPAREN) {
+			it.Embedded = append(it.Embedded, p.parseTypeExpr())
+			p.nextToken()
+			continue
+		}
 		methodName := p.parseIdentifier()
 		p.expectPeek(token.LPAREN)
 		paramTypes := []ast.TypeExpr{}

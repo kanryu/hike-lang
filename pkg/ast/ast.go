@@ -603,6 +603,7 @@ type InterfaceType struct {
 	Token        token.Token
 	MethodTokens []token.Token
 	Methods      []*MethodSig
+	Embedded     []TypeExpr
 }
 
 func (it *InterfaceType) typeExprNode()        {}
