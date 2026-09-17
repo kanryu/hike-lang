@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"hikec-go/pkg/backend/llvm"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
 )
@@ -268,6 +269,15 @@ func (e *Emitter) set(r *hir.Reg, expr string) {
 	}
 }
 
+// functionSymbol reserves the same system/runtime names as the LLVM backend.
+// A user-defined function with one of those names gets a private WAT spelling.
+func (e *Emitter) functionSymbol(name string) string {
+	if _, userDefined := e.functionIndex[name]; userDefined && llvm.IsRuntimeSymbol(name) {
+		return "$__hike_user_" + name
+	}
+	return "$" + name
+}
+
 // Emit produces a valid WAT module for the scalar HIR instructions. Complex
 // runtime operations remain ordinary imports, allowing WABT to validate and
 // assemble the module while the runtime supplies their implementation.
@@ -283,6 +293,9 @@ func (e *Emitter) Emit() string {
 	e.b.WriteString("(module\n")
 	for _, fn := range e.p.Functions {
 		if !fn.IsExtern {
+			continue
+		}
+		if isWasmRuntime(fn.Name) {
 			continue
 		}
 		fmt.Fprintf(&e.b, "  (import \"env\" \"%s\" (func $%s", fn.Name, fn.Name)
@@ -302,6 +315,11 @@ func (e *Emitter) Emit() string {
 	// static data and the future runtime heap (malloc/memory.grow).
 	e.b.WriteString("  (memory (export \"memory\") 16)\n")
 	e.b.WriteString("  (global $__sp (mut i32) (i32.const 65536))\n")
+	e.b.WriteString("  (global $__heap (mut i32) (i32.const 131072))\n")
+	e.b.WriteString("  (global $__region_active (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__region_begin_count (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__region_end_count (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__region_released_bytes (mut i32) (i32.const 0))\n")
 	for _, g := range e.p.Globals {
 		fmt.Fprintf(&e.b, "  (global $%s (mut %s) (%s.const 0))\n", g.Name, watType(g.Typ), watType(g.Typ))
 	}
@@ -309,7 +327,7 @@ func (e *Emitter) Emit() string {
 		names := make([]string, 0, len(e.functionIndex))
 		for _, fn := range e.p.Functions {
 			if !fn.IsExtern {
-				names = append(names, "$"+fn.Name)
+				names = append(names, e.functionSymbol(fn.Name))
 			}
 		}
 		fmt.Fprintf(&e.b, "  (table funcref (elem %s))\n", strings.Join(names, " "))
@@ -317,6 +335,7 @@ func (e *Emitter) Emit() string {
 	e.emitData()
 	e.emitItabData()
 	e.emitTypeDefs()
+	e.emitRuntime()
 	for _, fn := range e.p.Functions {
 		e.function(fn)
 	}
@@ -327,8 +346,8 @@ func (e *Emitter) function(fn *hir.Function) {
 	if fn.IsExtern {
 		return
 	}
-	e.b.WriteString("  (func $")
-	e.b.WriteString(fn.Name)
+	e.b.WriteString("  (func ")
+	e.b.WriteString(e.functionSymbol(fn.Name))
 	for _, p := range fn.Params {
 		fmt.Fprintf(&e.b, " (param $%s %s)", reg(p), watType(p.Typ))
 	}
@@ -533,7 +552,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		for i, a := range x.Args {
 			args[i] = e.val(a)
 		}
-		call := "(call $" + x.CalleeName
+		call := "(call " + e.functionSymbol(x.CalleeName)
 		if len(args) > 0 {
 			call += " " + strings.Join(args, " ")
 		}
@@ -610,8 +629,13 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.set(x.Dst, "(global.get $__sp)")
 		e.b.WriteString("    (global.set $__sp (i32.add (global.get $__sp) " + e.val(x.Size) + "))\n")
 	case *hir.InstrHeapAlloc:
-		e.set(x.Dst, "(global.get $__sp)")
-		e.b.WriteString("    (global.set $__sp (i32.add (global.get $__sp) " + e.val(x.Size) + "))\n")
+		e.set(x.Dst, "(call $malloc "+e.val(x.Size)+")")
+	case *hir.InstrRegionBegin:
+		e.set(x.Dst, "(call $__hike_region_begin32)")
+	case *hir.InstrRegionAlloc:
+		e.set(x.Dst, "(call $__hike_region_alloc32 "+e.val(x.Region)+" "+e.val(x.Size)+")")
+	case *hir.InstrRegionEnd:
+		e.b.WriteString("    (call $__hike_region_end32 " + e.val(x.Region) + ")\n")
 	case *hir.InstrGetFieldPtr:
 		offset := 0
 		if p, ok := x.BasePtr.Type().(*sema.PointerType); ok {

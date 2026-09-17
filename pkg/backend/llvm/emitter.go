@@ -23,6 +23,7 @@ type Emitter struct {
 	regCount        int
 	asyncThunks     map[string]*asyncThunk
 	declaredSymbols map[string]bool
+	userSymbols     map[string]string
 }
 
 func (e *Emitter) SetVerboseLevel(level int) {
@@ -59,12 +60,20 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter
 		targetTriple:    targetTriple,
 		asyncThunks:     make(map[string]*asyncThunk),
 		declaredSymbols: make(map[string]bool),
+		userSymbols:     make(map[string]string),
 	}
 
 	for sym := range RuntimeLLVMSymbols {
 		e.declaredSymbols[sym] = true
 	}
 	return e
+}
+
+func (e *Emitter) functionSymbol(name string) string {
+	if symbol, ok := e.userSymbols[name]; ok {
+		return symbol
+	}
+	return name
 }
 
 func (e *Emitter) isWindowsTarget() bool {
@@ -84,6 +93,7 @@ func (e *Emitter) nextTmp() string {
 
 func (e *Emitter) Emit() string {
 	e.b.Reset()
+	e.collectUserSymbols()
 	e.emitPrologue()
 	e.emitTypeDefs()
 	e.emitConstants()
@@ -92,6 +102,14 @@ func (e *Emitter) Emit() string {
 	e.emitFunctions()
 	e.emitAsyncThunks()
 	return e.b.String()
+}
+
+func (e *Emitter) collectUserSymbols() {
+	for _, fn := range e.prog.Functions {
+		if !fn.IsExtern && RuntimeLLVMSymbols[fn.Name] {
+			e.userSymbols[fn.Name] = "__hike_user_" + fn.Name
+		}
+	}
 }
 
 func (e *Emitter) emitPrologue() {
@@ -231,9 +249,9 @@ func (e *Emitter) emitItabs() {
 
 			concreteSig := fmt.Sprintf("%s (%s)*", concreteRet, strings.Join(concreteParams, ", "))
 			if concreteSig == rawSig {
-				fieldValues = append(fieldValues, fmt.Sprintf("%s @%s", rawSig, m.TargetFnName))
+				fieldValues = append(fieldValues, fmt.Sprintf("%s @%s", rawSig, e.functionSymbol(m.TargetFnName)))
 			} else {
-				fieldValues = append(fieldValues, fmt.Sprintf("%s bitcast (%s @%s to %s)", rawSig, concreteSig, m.TargetFnName, rawSig))
+				fieldValues = append(fieldValues, fmt.Sprintf("%s bitcast (%s @%s to %s)", rawSig, concreteSig, e.functionSymbol(m.TargetFnName), rawSig))
 			}
 		}
 
@@ -437,7 +455,7 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 	if features := e.intrinsicFeatures(fn); features != "" {
 		featureAttr = fmt.Sprintf(" \"target-features\"=\"%s\"", features)
 	}
-	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s {\n", storageClass, retTypeStr, fn.Name, strings.Join(params, ", "), featureAttr))
+	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr))
 
 	for _, bb := range fn.Blocks {
 		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
@@ -741,6 +759,8 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		calleeName := i.CalleeName
 		if intrinsic := llvmIntrinsicName(calleeName); intrinsic != "" {
 			calleeName = intrinsic
+		} else {
+			calleeName = e.functionSymbol(calleeName)
 		}
 		args := make([]string, len(i.Args))
 		for idx, a := range i.Args {
@@ -1424,7 +1444,7 @@ func (e *Emitter) formatVal(v hir.Value) string {
 	case *hir.ConstNil:
 		return "null"
 	case *hir.GlobalVar:
-		return "@" + val.Name
+		return "@" + e.functionSymbol(val.Name)
 	default:
 		return val.String()
 	}

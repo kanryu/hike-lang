@@ -78,6 +78,32 @@ func main() int {
 	}
 }
 
+func TestWabtBuiltinMallocThroughNode(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+extern func malloc(size int) *byte
+
+func main() int {
+    _ = malloc(16)
+    return 42
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=42\n"; got != want {
+		t.Fatalf("Wabt builtin malloc output = %q, want %q", got, want)
+	}
+}
+
+func TestWabtUserFunctionCannotCollideWithRuntimeSymbol(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+func malloc(value int) int { return value + 1 }
+func main() int { return malloc(41) }
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=42\n"; got != want {
+		t.Fatalf("Wabt mangled user function output = %q, want %q", got, want)
+	}
+}
+
 func TestWabtMultiValueFunctionSignature(t *testing.T) {
 	wasm := buildWabt(t, `package main
 
