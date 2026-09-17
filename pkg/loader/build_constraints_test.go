@@ -101,3 +101,30 @@ func TestGoHikeModeIncludesGoSources(t *testing.T) {
 		t.Fatalf("Go/Hike mode must load .go sources, got %d declarations", len(program.Decls))
 	}
 }
+
+func TestGoHikeModeExcludesGoTestSources(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main_test.go"), []byte("package main\nfunc testOnly() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := New(dir)
+	loader.SetGoHikeMode(true)
+	program, err := loader.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Decls) != 1 {
+		t.Fatalf("Go/Hike production load must exclude *_test.go, got %d declarations", len(program.Decls))
+	}
+}
+
+func TestInlineAsmConstraintIgnoresDetectorText(t *testing.T) {
+	content := []byte("package loader\nfunc check() { _ = \"__asm__\" }\n")
+	if err := validateInlineAsmBuildConstraint("build_constraints.go", content, map[string]bool{}); err != nil {
+		t.Fatalf("detector text must not be treated as inline assembly: %v", err)
+	}
+}

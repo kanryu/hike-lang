@@ -89,6 +89,34 @@ func main() int {
 	})
 }
 
+// String slices appended through a variadic expansion must retain the same
+// fat-pointer representation as their source values.
+func TestHTTPFunc_AppendStringSliceRepresentation(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func collect(prefix string, values []string) string {
+    queue := []string{prefix}
+    queue = append(queue, values...)
+    return queue[1]
+}
+
+func main() int {
+    values := []string{"item"}
+    printf("VALUE=%s\n", collect("prefix", values))
+    return 0
+}
+`,
+		ExpectedOut:  "VALUE=item",
+		ExpectedExit: 0,
+	})
+}
+
 // 3. 無名関数 (FuncLit) スコープ内でのdefer即時実行の検証
 func TestHTTPFunc_Defer_InFuncLit(t *testing.T) {
 	t.Parallel()

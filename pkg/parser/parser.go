@@ -306,6 +306,45 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 			}
 			p.nextToken()
 		} else {
+			// Go permits a shared type for a comma-separated group of names:
+			// func f(first, second string). Expand the group into ordinary Hike
+			// parameter declarations so later phases need no special case.
+			if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
+				names := []*ast.Identifier{p.parseIdentifier()}
+				idx := p.curIdx()
+				typeIdx := -1
+				for idx+2 < len(p.tokens) && p.tokens[idx+1].Type == token.COMMA {
+					candidate := idx + 2
+					if p.tokens[candidate].Type != token.IDENT {
+						break
+					}
+					if candidate+1 < len(p.tokens) && p.tokens[candidate+1].Type == token.IDENT {
+						names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+						typeIdx = candidate + 1
+						break
+					}
+					names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+					idx = candidate
+				}
+				if typeIdx >= 0 && len(names) > 1 {
+					for p.curIdx() < typeIdx {
+						p.nextToken()
+					}
+					pType := p.parseTypeExpr()
+					for _, name := range names {
+						params = append(params, &ast.ParamDecl{Token: name.Token, Name: name, Type: pType})
+					}
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						if p.peekTokenIs(token.RPAREN) {
+							break
+						}
+						p.nextToken()
+						continue
+					}
+					break
+				}
+			}
 			pName := p.parseIdentifier()
 			p.nextToken()
 			paramIsVariadic := false
@@ -362,6 +401,39 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 	return params, isVariadic
 }
 
+// parseReturnTypeList parses both Hike's type-only return list and Go's
+// named-return form, such as (result string, err error). Names are currently
+// accepted for compatibility; return values remain represented by types in
+// the AST because Hike has no naked-return statement.
+func (p *Parser) parseReturnTypeList() []ast.TypeExpr {
+	returns := []ast.TypeExpr{}
+	p.nextToken() // '('
+	p.nextToken() // first name or type
+	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.IDENT) && isTypeStartToken(p.peekToken.Type) {
+			p.nextToken() // skip a named result
+		}
+		returns = append(returns, p.parseTypeExpr())
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			p.nextToken()
+		} else {
+			break
+		}
+	}
+	p.expectPeek(token.RPAREN)
+	return returns
+}
+
+func isTypeStartToken(t token.TokenType) bool {
+	switch t {
+	case token.IDENT, token.ASTERISK, token.LBRACKET, token.MAP, token.CHAN, token.INTERFACE, token.FUNC, token.ELLIPSIS:
+		return true
+	default:
+		return false
+	}
+}
+
 // -----------------------------------------------------------------------------
 // トップレベル宣言パース (ヘッダー確定 + スライスカット + エンキュー)
 // -----------------------------------------------------------------------------
@@ -388,18 +460,7 @@ func (p *Parser) parseExternFuncDecl() *ast.ExternFuncDecl {
 		!p.curTokenIs(token.ASSIGN) && !p.peekTokenIs(token.ASSIGN) &&
 		!p.curTokenIs(token.EOF) && !p.peekTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
-			p.nextToken()
-			for {
-				efn.ReturnTypes = append(efn.ReturnTypes, p.parseTypeExpr())
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					p.nextToken()
-				} else {
-					break
-				}
-			}
-			p.expectPeek(token.RPAREN)
+			efn.ReturnTypes = p.parseReturnTypeList()
 		} else {
 			p.nextToken()
 			efn.ReturnTypes = append(efn.ReturnTypes, p.parseTypeExpr())
@@ -437,18 +498,7 @@ func (p *Parser) parseJFuncDecl() *ast.JFuncDecl {
 		!p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) &&
 		!p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
-			p.nextToken()
-			for {
-				jfn.ReturnTypes = append(jfn.ReturnTypes, p.parseTypeExpr())
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					p.nextToken()
-				} else {
-					break
-				}
-			}
-			p.expectPeek(token.RPAREN)
+			jfn.ReturnTypes = p.parseReturnTypeList()
 		} else {
 			p.nextToken()
 			jfn.ReturnTypes = append(jfn.ReturnTypes, p.parseTypeExpr())
@@ -538,18 +588,7 @@ func (p *Parser) parseCFuncDecl() *ast.CFuncDecl {
 		!p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
-			p.nextToken()
-			for {
-				cfn.ReturnTypes = append(cfn.ReturnTypes, p.parseTypeExpr())
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					p.nextToken()
-				} else {
-					break
-				}
-			}
-			p.expectPeek(token.RPAREN)
+			cfn.ReturnTypes = p.parseReturnTypeList()
 		} else {
 			p.nextToken()
 			cfn.ReturnTypes = append(cfn.ReturnTypes, p.parseTypeExpr())
@@ -798,18 +837,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	fn.ReturnTypes = []ast.TypeExpr{}
 	if p.peekToken.Line == p.curToken.Line && !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			p.nextToken()
-			p.nextToken()
-			for {
-				fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					p.nextToken()
-				} else {
-					break
-				}
-			}
-			p.expectPeek(token.RPAREN)
+			fn.ReturnTypes = p.parseReturnTypeList()
 		} else if !p.peekTokenIs(token.SEMICOLON) {
 			p.nextToken()
 			fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())

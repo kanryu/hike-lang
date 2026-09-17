@@ -277,8 +277,13 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.nextToken()
 			elem := p.parseTypeExpr()
 			return &ast.ArrayType{Token: tok, Len: -1, Elem: elem}
-		} else if p.expectPeek(token.RBRACKET) {
-			p.nextToken()
+		} else {
+			if p.peekTokenIs(token.RBRACKET) {
+				p.expectPeek(token.RBRACKET)
+				p.nextToken()
+			} else {
+				p.nextToken()
+			}
 			elem := p.parseTypeExpr()
 			return &ast.SliceType{Token: tok, Elem: elem}
 		}
@@ -417,6 +422,11 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseInlineAsmExpr()
 	case token.NIL:
 		leftExp = &ast.NilLiteral{Token: p.curToken}
+	case token.LBRACE:
+		// Go permits eliding the element type inside a composite literal,
+		// for example []Method{{Name: "Error"}}. The surrounding array or
+		// slice supplies the type during semantic analysis.
+		leftExp = &ast.StructLiteral{Token: p.curToken, Fields: p.parseStructLiteralFields()}
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
 
@@ -590,8 +600,13 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			} else {
 				leftExp = arrT
 			}
-		} else if p.expectPeek(token.RBRACKET) {
-			p.nextToken()
+		} else {
+			if p.peekTokenIs(token.RBRACKET) {
+				p.expectPeek(token.RBRACKET)
+				p.nextToken()
+			} else {
+				p.nextToken()
+			}
 			elem := p.parseTypeExpr()
 			sliceT := &ast.SliceType{Token: tok, Elem: elem}
 
@@ -618,8 +633,6 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 			} else {
 				leftExp = sliceT
 			}
-		} else {
-			return nil
 		}
 
 	case token.DOT:
@@ -868,6 +881,33 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 	}
 	p.expectPeek(token.RPAREN)
 	return &ast.CallExpr{Token: tok, Function: fn, Args: args, HasEllipsis: hasEllipsis}
+}
+
+func (p *Parser) parseStructLiteralFields() []*ast.StructFieldValue {
+	fields := []*ast.StructFieldValue{}
+	if !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()
+		for {
+			var name *ast.Identifier
+			if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+				name = p.parseIdentifier()
+				p.nextToken()
+				p.nextToken()
+			}
+			fields = append(fields, &ast.StructFieldValue{Name: name, Value: p.parseExpression(LOWEST)})
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RBRACE) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RBRACE)
+	return fields
 }
 
 func (p *Parser) parseGenericStructLiteral(genExpr *ast.GenericInstExpr) ast.Expression {

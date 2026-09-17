@@ -1479,6 +1479,12 @@ func (c *CallLowerer) lowerIndirectCall(fnFatPtr hir.Value, callArgs []ast.Expre
 func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	sliceVal := c.root.Expr.LowerExpr(call.Args[0])
 	slType := sliceVal.Type().(*sema.SliceType)
+	if call.HasEllipsis && len(call.Args) == 2 {
+		srcVal := c.root.Expr.LowerExpr(call.Args[1])
+		if srcType, ok := srcVal.Type().(*sema.SliceType); ok {
+			return c.lowerAppendSlice(sliceVal, slType, srcVal, srcType)
+		}
+	}
 	elemSize := slType.Elem.Size()
 	if elemSize <= 0 {
 		elemSize = 1
@@ -1566,6 +1572,50 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: reqCap, Index: 1})
 	t3 := c.root.nextReg(slType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: resCap, Index: 2})
+	return t3
+}
+
+// lowerAppendSlice handles append(dst, src...) without treating src itself as
+// one element. Both slices use the same fat-pointer layout, so the elements
+// can be copied in one operation after allocating the combined backing store.
+func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, src hir.Value, srcType *sema.SliceType) hir.Value {
+	if dstType.Elem.TypeName() != srcType.Elem.TypeName() {
+		return dst
+	}
+	elemSize := dstType.Elem.Size()
+	if elemSize <= 0 {
+		elemSize = 1
+	}
+	oldPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	oldLen := c.root.nextReg(sema.TypeInt)
+	srcPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	srcLen := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrExtractValue{Dst: oldPtr, Agg: dst, Index: 0})
+	c.root.emit(&hir.InstrExtractValue{Dst: oldLen, Agg: dst, Index: 1})
+	c.root.emit(&hir.InstrExtractValue{Dst: srcPtr, Agg: src, Index: 0})
+	c.root.emit(&hir.InstrExtractValue{Dst: srcLen, Agg: src, Index: 1})
+	totalLen := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: totalLen, Op: hir.OpAdd, L: oldLen, R: srcLen})
+	totalBytes := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: totalBytes, Op: hir.OpMul, L: totalLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: raw, Size: totalBytes, AllocType: sema.TypeByte})
+	oldBytes := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	srcBytes := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: srcBytes, Op: hir.OpMul, L: srcLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	copyDst := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrCallStatic{Dst: copyDst, CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{raw, oldPtr, oldBytes}})
+	appendPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrGetElemPtr{Dst: appendPtr, BasePtr: raw, Index: oldBytes})
+	copySrc := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrCallStatic{Dst: copySrc, CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{appendPtr, srcPtr, srcBytes}})
+	t1 := c.root.nextReg(dstType)
+	c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(dstType), Val: raw, Index: 0})
+	t2 := c.root.nextReg(dstType)
+	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: totalLen, Index: 1})
+	t3 := c.root.nextReg(dstType)
+	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: totalLen, Index: 2})
 	return t3
 }
 

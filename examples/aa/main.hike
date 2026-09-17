@@ -1,26 +1,57 @@
 package main
 
-import "std/collections/matrix"
-
-func malloc(size int) *byte
-func free(ptr *byte)
 func printf(format string, ...) int
 
-func main() int {
-    var data *int = malloc(8 * 8 * 8)
-    p := data + 0
-    *p = 1
-    p = data + 28
-    *p = 29
-    p = data + 63
-    *p = 64
+type Block struct{}
+type FuncDecl struct {
+    Body *Block
+    Name string
+}
+type CFuncDecl struct{}
+type TypeDecl struct { Name string }
+type VarDecl struct { Name string }
+type ConstDecl struct { Name string }
 
-    m := matrix.New[int, 8, 8](data)
-    first := m[0][0]
-    middle := m[3][4]
-    last := m[7][7]
-    m[3][4] = 99
-    printf("STD_MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, m[3][4])
-    free((*byte)(data))
-    return 0
+func manglePackageDecls(pkgName string, decls []any) int {
+    count := 0
+    for _, decl := range decls {
+        switch d := decl.(type) {
+        case *FuncDecl:
+            if d.Body != nil && (pkgName != "main" || d.Name != "main") {
+                d.Name = pkgName + "_" + d.Name
+            }
+        case *CFuncDecl:
+            count = count + 1
+        case *TypeDecl:
+            if pkgName != "main" {
+                d.Name = pkgName + "_" + d.Name
+            }
+        case *VarDecl:
+            if pkgName != "main" {
+                d.Name = pkgName + "_" + d.Name
+            }
+        case *ConstDecl:
+            if pkgName != "main" {
+                d.Name = pkgName + "_" + d.Name
+            }
+        default:
+            count = count + 1
+        }
+        count = count + 1
+    }
+    return count
+}
+
+func collectFiles(entries []string) int {
+    fileQueue := []string{}
+    for _, entry := range entries {
+        files := []string{entry}
+        fileQueue = append(fileQueue, files...)
+    }
+    return len(fileQueue)
+}
+
+func main() int {
+    entries := []string{"loader.go"}
+    return manglePackageDecls("loader", []any{}) + collectFiles(entries)
 }

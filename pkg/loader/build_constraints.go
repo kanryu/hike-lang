@@ -75,6 +75,11 @@ func (l *Loader) SetTarget(tgt *target.Target) {
 
 func (l *Loader) fileAllowed(path string) bool {
 	name := filepath.Base(path)
+	// Go test files are compiled only by the test driver. In GoHike mode they
+	// must not become part of the compiler's production package either.
+	if l.goHikeMode && strings.HasSuffix(name, "_test.go") {
+		return false
+	}
 	if !filenameTagsMatch(name, l.buildTags) {
 		return false
 	}
@@ -164,7 +169,7 @@ func validateInlineAsmBuildConstraint(path string, content []byte, tags map[stri
 	// Intrinsic names such as "llvm.x86.aesni.aesenc" may appear in ordinary
 	// compiler code without any inline assembly.  Only source files that
 	// actually contain Hike's inline-assembly form need architecture checks.
-	if !strings.Contains(string(content), "__asm__") {
+	if !containsInlineAsmSyntax(string(content)) {
 		return nil
 	}
 	text := strings.ToLower(string(content))
@@ -190,6 +195,24 @@ func validateInlineAsmBuildConstraint(path string, content []byte, tags map[stri
 		return fmt.Errorf("%s: inline assembly using %s is not supported by the selected target", path, feature)
 	}
 	return nil
+}
+
+func containsInlineAsmSyntax(content string) bool {
+	for from := 0; from < len(content); {
+		i := strings.Index(content[from:], "__asm__")
+		if i < 0 {
+			return false
+		}
+		i += from + len("__asm__")
+		for i < len(content) && (content[i] == ' ' || content[i] == '\t' || content[i] == '\r' || content[i] == '\n') {
+			i++
+		}
+		if i < len(content) && content[i] == '{' {
+			return true
+		}
+		from = i
+	}
+	return false
 }
 
 type buildToken struct{ kind, value string }
