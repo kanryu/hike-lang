@@ -263,6 +263,81 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 	return sc
 }
 
+// stringParts exposes the two fields of the length-aware string value to
+// operations that still use the NUL-terminated C runtime ABI.
+func (l *Lowerer) stringParts(value hir.Value) (hir.Value, hir.Value) {
+	base, offset, length32 := l.stringViewParts(value)
+	ptr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrGetElemPtr{Dst: ptr, BasePtr: base, Index: offset})
+	length := hir.Value(length32)
+	if sema.TypeInt.LLVMType() != sema.TypeInt32.LLVMType() {
+		length64 := l.nextReg(sema.TypeInt)
+		l.emit(&hir.InstrCast{Dst: length64, Val: length32, ToType: sema.TypeInt})
+		length = length64
+	}
+	return ptr, length
+}
+
+// stringViewParts returns the backing payload pointer, byte offset, and the
+// view length.  The first field always points at the payload (the two header
+// words are immediately before it), even when the string itself is a slice.
+func (l *Lowerer) stringViewParts(value hir.Value) (hir.Value, hir.Value, hir.Value) {
+	base := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	offset := l.nextReg(sema.TypeInt32)
+	length := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrExtractValue{Dst: base, Agg: value, Index: 0})
+	l.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+	l.emit(&hir.InstrExtractValue{Dst: length, Agg: value, Index: 2})
+	return base, offset, length
+}
+
+func (l *Lowerer) makeString(ptr, length hir.Value) hir.Value {
+	return l.makeStringView(ptr, &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}, length)
+}
+
+func (l *Lowerer) makeStringView(base, offset, length hir.Value) hir.Value {
+	t1 := l.nextReg(sema.TypeString)
+	l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(sema.TypeString), Val: base, Index: 0})
+	t2 := l.nextReg(sema.TypeString)
+	if offset.Type().LLVMType() != sema.TypeInt32.LLVMType() {
+		offset32 := l.nextReg(sema.TypeInt32)
+		l.emit(&hir.InstrCast{Dst: offset32, Val: offset, ToType: sema.TypeInt32})
+		offset = offset32
+	}
+	l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: offset, Index: 1})
+	var length32Val hir.Value
+	if length.Type().LLVMType() != sema.TypeInt32.LLVMType() {
+		length32 := l.nextReg(sema.TypeInt32)
+		l.emit(&hir.InstrCast{Dst: length32, Val: length, ToType: sema.TypeInt32})
+		length32Val = length32
+	} else {
+		length32Val = length
+	}
+	t3 := l.nextReg(sema.TypeString)
+	l.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: length32Val, Index: 2})
+	return t3
+}
+
+func (l *Lowerer) stringBase(value hir.Value) hir.Value {
+	base := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrExtractValue{Dst: base, Agg: value, Index: 0})
+	return base
+}
+
+func (l *Lowerer) retainString(value hir.Value) {
+	base := l.stringBase(value)
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base}})
+}
+
+func (l *Lowerer) releaseString(value hir.Value) {
+	base := l.stringBase(value)
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base}})
+}
+
+func (l *Lowerer) isStringType(t sema.Type) bool {
+	return t == sema.TypeString || (t != nil && t.TypeName() == "string")
+}
+
 // -------------------------------------------------------------
 // 型変換・デフォルト値ユーティリティ
 // -------------------------------------------------------------
@@ -383,6 +458,11 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 }
 
 func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
+	if fromType == sema.TypeString || (fromType != nil && fromType.TypeName() == "string") {
+		ptr, _ := l.stringParts(v)
+		fromType = ptr.Type()
+		v = ptr
+	}
 	if fromType.LLVMType() == sema.TypeInt.LLVMType() {
 		return v
 	}
@@ -392,6 +472,11 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 }
 
 func (l *Lowerer) coerceFromI64(v hir.Value, toType sema.Type) hir.Value {
+	if toType == sema.TypeString || (toType != nil && toType.TypeName() == "string") {
+		ptr := l.nextReg(sema.TypeCString)
+		l.emit(&hir.InstrCast{Dst: ptr, Val: v, ToType: sema.TypeCString})
+		return l.Call.lowerCStringToString(ptr)
+	}
 	if toType.LLVMType() == sema.TypeInt.LLVMType() {
 		return v
 	}

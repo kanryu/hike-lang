@@ -124,8 +124,9 @@ func (e *Emitter) emitTypeDefs() {
 func (e *Emitter) emitConstants() {
 	for _, sc := range e.prog.StringConstants {
 		escaped := encodeLLVMString(sc.Raw)
-		e.b.WriteString(fmt.Sprintf("@%s = private unnamed_addr constant [%d x i8] c\"%s\", align 1\n",
-			sc.Label, sc.Length, escaped))
+		header := encodeStringHeader(uint32(sc.Length - 1))
+		e.b.WriteString(fmt.Sprintf("@%s = private unnamed_addr constant [%d x i8] c\"%s%s\", align 1\n",
+			sc.Label, sc.Length+8, header, escaped))
 	}
 	if len(e.prog.StringConstants) > 0 {
 		e.b.WriteString("\n")
@@ -283,7 +284,7 @@ func (e *Emitter) emitFunctions() {
 
 			retTypeStr := "void"
 			if len(fn.ReturnTypes) == 1 {
-				retTypeStr = fn.ReturnTypes[0].LLVMType()
+				retTypeStr = e.externalABIType(fn.ReturnTypes[0])
 			} else if len(fn.ReturnTypes) > 1 {
 				types := make([]string, len(fn.ReturnTypes))
 				for i, rt := range fn.ReturnTypes {
@@ -294,7 +295,7 @@ func (e *Emitter) emitFunctions() {
 
 			paramTypes := make([]string, len(fn.Params))
 			for i, p := range fn.Params {
-				paramTypes[i] = p.Typ.LLVMType()
+				paramTypes[i] = e.externalABIType(p.Typ)
 			}
 			if fn.IsVariadic {
 				paramTypes = append(paramTypes, "...")
@@ -306,6 +307,16 @@ func (e *Emitter) emitFunctions() {
 		e.declaredSymbols[fn.Name] = true
 		e.emitFunction(fn)
 	}
+}
+
+// External functions use the C representation for strings. Hike functions
+// keep the length-aware pair internally, while extern/cfunc declarations cross
+// the ABI as a single NUL-terminated pointer.
+func (e *Emitter) externalABIType(t sema.Type) string {
+	if t == sema.TypeString {
+		return sema.TypeCString.LLVMType()
+	}
+	return t.LLVMType()
 }
 
 // llvmIntrinsicName maps the portable scalar math operations exposed by
@@ -454,7 +465,11 @@ func (e *Emitter) isVariadicFunc(name string) (bool, string) {
 	if fnType != nil && fnType.IsVariadic {
 		paramTypes := make([]string, len(fnType.ParamTypes))
 		for idx, pt := range fnType.ParamTypes {
-			paramTypes[idx] = pt.LLVMType()
+			if fnType.IsExtern {
+				paramTypes[idx] = e.externalABIType(pt)
+			} else {
+				paramTypes[idx] = pt.LLVMType()
+			}
 		}
 		paramTypes = append(paramTypes, "...")
 		return true, fmt.Sprintf("(%s)", strings.Join(paramTypes, ", "))
@@ -1389,10 +1404,18 @@ func (e *Emitter) formatVal(v hir.Value) string {
 	case *hir.ConstZero:
 		return "zeroinitializer"
 	case *hir.ConstString:
-		tmp := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, %s 0, %s 0\n",
-			tmp, val.Length, val.Length, val.Label, intLLVM, intLLVM))
-		return tmp
+		ptr := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, %s 0, %s 8\n",
+			ptr, val.Length+8, val.Length+8, val.Label, intLLVM, intLLVM))
+		if val.Typ == sema.TypeString {
+			t1, t2, t3 := e.nextTmp(), e.nextTmp(), e.nextTmp()
+			llvmType := val.Typ.LLVMType()
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, llvmType, ptr))
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 0, 1\n", t2, llvmType, t1))
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 %d, 2\n", t3, llvmType, t2, val.Length-1))
+			return t3
+		}
+		return ptr
 	case *hir.ConstNil:
 		return "null"
 	case *hir.GlobalVar:
@@ -1427,6 +1450,15 @@ func encodeLLVMString(str string) string {
 	}
 	encoded.WriteString("\\00")
 	return encoded.String()
+}
+
+func encodeStringHeader(capacity uint32) string {
+	// String literals live in static storage and must never be freed.  A
+	// INT32_MIN marks such an immortal buffer; heap-created strings start at
+	// one in the runtime constructors.  -1 remains available to expose a
+	// reference-counting underflow instead of silently making it immortal.
+	return fmt.Sprintf("\\%02X\\%02X\\%02X\\%02X\\00\\00\\00\\80",
+		byte(capacity), byte(capacity>>8), byte(capacity>>16), byte(capacity>>24))
 }
 
 func encodeLLVMAsmString(str string) string {

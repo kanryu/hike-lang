@@ -609,6 +609,94 @@ entry:
 ; String Runtime Functions (64-bit)
 ; ------------------------------------------------------------------------------
 
+; Reference-count operations receive the payload pointer. The allocation
+; header is stored immediately before it: capacity at -8 and refcount at -4.
+define internal void @__hike_string_retain(i8* %data) #0 {
+entry:
+  %raw = getelementptr inbounds i8, i8* %data, i64 -8
+  %ref = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref32 = bitcast i8* %ref to i32*
+  %old = load i32, i32* %ref32
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %increment
+increment:
+  %next = add i32 %old, 1
+  store i32 %next, i32* %ref32
+  br label %done
+done:
+  ret void
+}
+
+define internal void @__hike_string_release(i8* %data) #0 {
+entry:
+  %is_null = icmp eq i8* %data, null
+  br i1 %is_null, label %done, label %decrement
+decrement:
+  %raw = getelementptr inbounds i8, i8* %data, i64 -8
+  %ref = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref32 = bitcast i8* %ref to i32*
+  %old = load i32, i32* %ref32
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %decrement_count
+decrement_count:
+  %next = sub i32 %old, 1
+  store i32 %next, i32* %ref32
+  %last = icmp eq i32 %next, 0
+  br i1 %last, label %free_buffer, label %done
+free_buffer:
+  call void @free(i8* %raw)
+  br label %done
+done:
+  ret void
+}
+
+; Return a writable string view.  A uniquely owned heap buffer is reused;
+; shared or static storage is copied and the old reference is released.
+define internal { i8*, i32, i32 } @__hike_string_writable(i8* %base, i32 %offset, i32 %len) #0 {
+entry:
+  %raw = getelementptr inbounds i8, i8* %base, i64 -8
+  %ref = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref32 = bitcast i8* %ref to i32*
+  %count = load i32, i32* %ref32
+  %unique = icmp eq i32 %count, 1
+  br i1 %unique, label %reuse, label %copy
+reuse:
+  %reuse0 = insertvalue { i8*, i32, i32 } undef, i8* %base, 0
+  %reuse1 = insertvalue { i8*, i32, i32 } %reuse0, i32 %offset, 1
+  %reuse2 = insertvalue { i8*, i32, i32 } %reuse1, i32 %len, 2
+  ret { i8*, i32, i32 } %reuse2
+copy:
+  %size64 = zext i32 %len to i64
+  %alloc_size = add i64 %size64, 9
+  %new_raw = call i8* @malloc(i64 %alloc_size)
+  %cap_ptr = bitcast i8* %new_raw to i32*
+  store i32 %len, i32* %cap_ptr
+  %new_ref = getelementptr inbounds i8, i8* %new_raw, i64 4
+  %new_ref32 = bitcast i8* %new_ref to i32*
+  store i32 1, i32* %new_ref32
+  %new_data = getelementptr inbounds i8, i8* %new_raw, i64 8
+  %offset64 = zext i32 %offset to i64
+  %src = getelementptr inbounds i8, i8* %base, i64 %offset64
+  call i8* @memcpy(i8* %new_data, i8* %src, i64 %size64)
+  %nul = getelementptr inbounds i8, i8* %new_data, i64 %size64
+  store i8 0, i8* %nul
+  %immortal = icmp eq i32 %count, -2147483648
+  br i1 %immortal, label %return_copy, label %decrement_old
+decrement_old:
+  %old_next = sub i32 %count, 1
+  %old_last = icmp eq i32 %old_next, 0
+  store i32 %old_next, i32* %ref32
+  br i1 %old_last, label %free_old, label %return_copy
+free_old:
+  call void @free(i8* %raw)
+  br label %return_copy
+return_copy:
+  %copy0 = insertvalue { i8*, i32, i32 } undef, i8* %new_data, 0
+  %copy1 = insertvalue { i8*, i32, i32 } %copy0, i32 0, 1
+  %copy2 = insertvalue { i8*, i32, i32 } %copy1, i32 %len, 2
+  ret { i8*, i32, i32 } %copy2
+}
+
 ; 文字列等価比較 (hike_streq: a == b) (64-bit)
 define internal i1 @hike_streq(i8* %a, i8* %b) #0 {
 entry:
@@ -629,6 +717,40 @@ ret_false:
   ret i1 false
 }
 
+; Length-aware string equality for fat-string views (not NUL-terminated).
+define internal i1 @hike_streq_len(i8* %a, i64 %alen, i8* %b, i64 %blen) #0 {
+entry:
+  %same_len = icmp eq i64 %alen, %blen
+  br i1 %same_len, label %compare, label %false
+compare:
+  %res = call i32 @memcmp(i8* %a, i8* %b, i64 %alen)
+  %equal = icmp eq i32 %res, 0
+  ret i1 %equal
+false:
+  ret i1 false
+}
+
+; Length-aware concatenation for fat-string views (not NUL-terminated).
+define internal i8* @hike_strcat_len(i8* %a, i64 %alen, i8* %b, i64 %blen) #0 {
+entry:
+  %total_len = add i64 %alen, %blen
+  %alloc_size = add i64 %total_len, 9
+  %raw = call i8* @malloc(i64 %alloc_size)
+  %cap_ptr = bitcast i8* %raw to i32*
+  %capacity = trunc i64 %total_len to i32
+  store i32 %capacity, i32* %cap_ptr
+  %ref_ptr = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref_ptr32 = bitcast i8* %ref_ptr to i32*
+  store i32 1, i32* %ref_ptr32
+  %buf = getelementptr inbounds i8, i8* %raw, i64 8
+  call i8* @memcpy(i8* %buf, i8* %a, i64 %alen)
+  %dst_b = getelementptr inbounds i8, i8* %buf, i64 %alen
+  call i8* @memcpy(i8* %dst_b, i8* %b, i64 %blen)
+  %null_ptr = getelementptr inbounds i8, i8* %buf, i64 %total_len
+  store i8 0, i8* %null_ptr
+  ret i8* %buf
+}
+
 ; 部分文字列の切り出し (hike_substr: s[low:high]) (64-bit)
 define internal i8* @hike_substr(i8* %s, i64 %low, i64 %high) #0 {
 entry:
@@ -638,13 +760,26 @@ check_range:
   %inv = icmp slt i64 %high, %low
   br i1 %inv, label %ret_empty, label %do_sub
 ret_empty:
-  %empty = call i8* @malloc(i64 1)
-  store i8 0, i8* %empty
-  ret i8* %empty
+	%empty_raw = call i8* @malloc(i64 9)
+ %empty_cap = bitcast i8* %empty_raw to i32*
+ store i32 0, i32* %empty_cap
+	%empty_ref = getelementptr inbounds i8, i8* %empty_raw, i64 4
+ %empty_ref32 = bitcast i8* %empty_ref to i32*
+ store i32 1, i32* %empty_ref32
+	%empty = getelementptr inbounds i8, i8* %empty_raw, i64 8
+	store i8 0, i8* %empty
+	ret i8* %empty
 do_sub:
   %len = sub i64 %high, %low
-  %alloc_size = add i64 %len, 1
-  %buf = call i8* @malloc(i64 %alloc_size)
+	%alloc_size = add i64 %len, 9
+	%raw = call i8* @malloc(i64 %alloc_size)
+	%cap_ptr = bitcast i8* %raw to i32*
+	%capacity = trunc i64 %len to i32
+	store i32 %capacity, i32* %cap_ptr
+	%ref_ptr = getelementptr inbounds i8, i8* %raw, i64 4
+ %ref_ptr32 = bitcast i8* %ref_ptr to i32*
+ store i32 1, i32* %ref_ptr32
+	%buf = getelementptr inbounds i8, i8* %raw, i64 8
   %src_ptr = getelementptr inbounds i8, i8* %s, i64 %low
   call i8* @memcpy(i8* %buf, i8* %src_ptr, i64 %len)
   %null_pos = getelementptr inbounds i8, i8* %buf, i64 %len
@@ -660,8 +795,15 @@ entry:
   %len_a = call i64 @strlen(i8* %a)
   %len_b = call i64 @strlen(i8* %b)
   %total_len = add i64 %len_a, %len_b
-  %alloc_size = add i64 %total_len, 1
-  %buf = call i8* @malloc(i64 %alloc_size)
+	%alloc_size = add i64 %total_len, 9
+	%raw = call i8* @malloc(i64 %alloc_size)
+	%cap_ptr = bitcast i8* %raw to i32*
+	%capacity = trunc i64 %total_len to i32
+	store i32 %capacity, i32* %cap_ptr
+	%ref_ptr = getelementptr inbounds i8, i8* %raw, i64 4
+	%ref_ptr32 = bitcast i8* %ref_ptr to i32*
+  store i32 1, i32* %ref_ptr32
+	%buf = getelementptr inbounds i8, i8* %raw, i64 8
   call i8* @memcpy(i8* %buf, i8* %a, i64 %len_a)
   %dst_b = getelementptr inbounds i8, i8* %buf, i64 %len_a
   call i8* @memcpy(i8* %dst_b, i8* %b, i64 %len_b)
@@ -676,12 +818,25 @@ entry:
   %null_chk = icmp eq i8* %ptr, null
   br i1 %null_chk, label %ret_empty, label %alloc
 ret_empty:
-  %empty = call i8* @malloc(i64 1)
-  store i8 0, i8* %empty
-  ret i8* %empty
+	%empty_raw = call i8* @malloc(i64 9)
+	%empty_cap = bitcast i8* %empty_raw to i32*
+  store i32 0, i32* %empty_cap
+	%empty_ref = getelementptr inbounds i8, i8* %empty_raw, i64 4
+	%empty_ref32 = bitcast i8* %empty_ref to i32*
+  store i32 1, i32* %empty_ref32
+	%empty = getelementptr inbounds i8, i8* %empty_raw, i64 8
+	store i8 0, i8* %empty
+	ret i8* %empty
 alloc:
-  %alloc_size = add i64 %len, 1
-  %buf = call i8* @malloc(i64 %alloc_size)
+	%alloc_size = add i64 %len, 9
+	%raw = call i8* @malloc(i64 %alloc_size)
+	%cap_ptr = bitcast i8* %raw to i32*
+	%capacity = trunc i64 %len to i32
+	store i32 %capacity, i32* %cap_ptr
+	%ref_ptr = getelementptr inbounds i8, i8* %raw, i64 4
+	%ref_ptr32 = bitcast i8* %ref_ptr to i32*
+  store i32 1, i32* %ref_ptr32
+	%buf = getelementptr inbounds i8, i8* %raw, i64 8
   call i8* @memcpy(i8* %buf, i8* %ptr, i64 %len)
   %null_ptr = getelementptr inbounds i8, i8* %buf, i64 %len
   store i8 0, i8* %null_ptr

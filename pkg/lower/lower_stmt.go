@@ -19,6 +19,21 @@ func NewStmtLowerer(root *Lowerer) *StmtLowerer {
 	return &StmtLowerer{root: root}
 }
 
+func (s *StmtLowerer) isStringAliasExpr(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if s.root.isStringType(s.root.symbolTypes[e.Value]) {
+			return true
+		}
+		// Global variables are resolved through the semantic context rather
+		// than the function-local symbol table.  They still participate in
+		// string aliasing and therefore need the same retain treatment.
+		return s.root.isStringType(s.root.semaCtx.Globals[e.Value])
+	default:
+		return false
+	}
+}
+
 // -----------------------------------------------------------------------------
 // 文 (Statement) のディスパッチ
 // -----------------------------------------------------------------------------
@@ -124,6 +139,9 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 	s.root.symbols[vd.Name.Value] = ptrReg
 	s.root.symbolTypes[vd.Name.Value] = targetType
 	s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
+	if s.root.isStringType(targetType) && vd.Value != nil && s.isStringAliasExpr(vd.Value) {
+		s.root.retainString(val)
+	}
 }
 
 // -------------------------------------------------------------
@@ -260,6 +278,9 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 
 			if val != nil {
 				s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
+				if s.root.isStringType(targetType) && i < len(stmt.Right) && s.isStringAliasExpr(stmt.Right[i]) {
+					s.root.retainString(val)
+				}
 			}
 		}
 		return
@@ -277,6 +298,21 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 		if idxExpr, okIdx := left.(*ast.IndexExpr); okIdx {
 			leftVal := s.root.Expr.LowerExpr(idxExpr.Left)
 			leftType := leftVal.Type()
+
+			// Strings are shared views.  Before writing through a string index,
+			// detach the visible view so aliases (including substrings) remain
+			// unchanged.  The replacement is stored in the original variable;
+			// LowerLValue below then addresses the detached buffer.
+			if s.root.isStringType(leftType) {
+				if ident, isIdent := idxExpr.Left.(*ast.Identifier); isIdent {
+					if basePtr, ok := s.root.symbols[ident.Value]; ok {
+						backing, offset, length := s.root.stringViewParts(leftVal)
+						writable := s.root.nextReg(sema.TypeString)
+						s.root.emit(&hir.InstrCallStatic{Dst: writable, CalleeName: s.root.BuiltinName("__hike_string_writable"), Args: []hir.Value{backing, offset, length}})
+						s.root.emit(&hir.InstrStore{Val: writable, Ptr: basePtr})
+					}
+				}
+			}
 
 			// 1. 組み込み map[K]V
 			if mp, isMap := leftType.(*sema.MapType); isMap {
@@ -414,6 +450,14 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				elemType = pt.Base
 			}
 			val = s.root.emitValueCoerce(val, elemType)
+			if s.root.isStringType(elemType) {
+				oldVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: oldVal, Ptr: targetPtr})
+				s.root.releaseString(oldVal)
+				if i < len(stmt.Right) && s.isStringAliasExpr(stmt.Right[i]) {
+					s.root.retainString(val)
+				}
+			}
 
 			switch op {
 			case "+=", "++":
@@ -1233,6 +1277,9 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		elemType = ar.Elem
 		lenVal = &hir.ConstInt{Val: int64(ar.Len), Typ: sema.TypeInt}
 		dataPtr = s.root.Expr.LowerLValue(fr.X)
+	} else if xType == sema.TypeString || (xType != nil && xType.TypeName() == "string") {
+		dataPtr, lenVal = s.root.stringParts(xVal)
+		elemType = sema.TypeByte
 	} else {
 		lenReg := s.root.nextReg(sema.TypeInt)
 		s.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{xVal}})
@@ -1372,8 +1419,16 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 			var cmpReg *hir.Reg
 
 			if vVal.Type() == sema.TypeString || vVal.Type() == sema.TypeCString || switchVal.Type() == sema.TypeString || switchVal.Type() == sema.TypeCString {
+				left := switchVal
+				right := vVal
+				if switchVal.Type() == sema.TypeString {
+					left, _ = s.root.stringParts(switchVal)
+				}
+				if vVal.Type() == sema.TypeString {
+					right, _ = s.root.stringParts(vVal)
+				}
 				cmpReg = s.root.nextReg(sema.TypeBool)
-				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{switchVal, vVal}})
+				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{left, right}})
 			} else {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: switchVal, R: vVal})

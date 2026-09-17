@@ -433,6 +433,31 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		baseType := baseVal.Type()
 
 		if baseType == sema.TypeString || baseType == sema.TypeCString {
+			if baseType == sema.TypeString {
+				basePtr, baseOffset, baseLen32 := e.root.stringViewParts(baseVal)
+				baseLen := hir.Value(baseLen32)
+				if sema.TypeInt.LLVMType() != sema.TypeInt32.LLVMType() {
+					baseLen64 := e.root.nextReg(sema.TypeInt)
+					e.root.emit(&hir.InstrCast{Dst: baseLen64, Val: baseLen32, ToType: sema.TypeInt})
+					baseLen = baseLen64
+				}
+				lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+				if node.Low != nil {
+					lowVal = e.LowerExpr(node.Low)
+				}
+				highVal := hir.Value(baseLen)
+				if node.High != nil {
+					highVal = e.LowerExpr(node.High)
+				}
+				newOffset := e.root.nextReg(sema.TypeInt32)
+				low32 := e.root.emitValueCoerce(lowVal, sema.TypeInt32)
+				e.root.emit(&hir.InstrBinary{Dst: newOffset, Op: hir.OpAdd, L: baseOffset, R: low32})
+				length := e.root.nextReg(sema.TypeInt)
+				e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: highVal, R: lowVal})
+				view := e.root.makeStringView(basePtr, newOffset, length)
+				e.root.retainString(view)
+				return view
+			}
 			lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
 			if node.Low != nil {
 				lowVal = e.LowerExpr(node.Low)
@@ -443,9 +468,11 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			} else {
 				e.root.emit(&hir.InstrCallStatic{Dst: highVal.(*hir.Reg), CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 			}
-			subRes := e.root.nextReg(sema.TypeString)
-			e.root.emit(&hir.InstrCallStatic{Dst: subRes, CalleeName: e.root.BuiltinName("hike_substr"), Args: []hir.Value{baseVal, lowVal, highVal}})
-			return subRes
+			raw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: e.root.BuiltinName("hike_substr"), Args: []hir.Value{baseVal, lowVal, highVal}})
+			length := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: highVal, R: lowVal})
+			return e.root.makeString(raw, length)
 		}
 
 		// ユーザー定義コレクション構造体の Sliceable (Slice(low, high int))
@@ -814,7 +841,11 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	if baseType == sema.TypeString || baseType == sema.TypeCString {
 		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
 		elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseVal, Index: idxVal})
+		basePtr := baseVal
+		if baseType == sema.TypeString {
+			basePtr, _ = e.root.stringParts(baseVal)
+		}
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: basePtr, Index: idxVal})
 		elemVal := e.root.nextReg(sema.TypeByte)
 		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
 		return elemVal
@@ -1371,14 +1402,18 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 
 	// 両辺がstring型の場合のみhike_streq / hike_strcatを呼ぶ
 	if leftVal.Type() == sema.TypeString && rightVal.Type() == sema.TypeString {
+		leftPtr, leftLen := e.root.stringParts(leftVal)
+		rightPtr, rightLen := e.root.stringParts(rightVal)
 		if node.Operator == "+" {
-			res := e.root.nextReg(sema.TypeString)
-			e.root.emit(&hir.InstrCallStatic{Dst: res, CalleeName: e.root.BuiltinName("hike_strcat"), Args: []hir.Value{leftVal, rightVal}})
-			return res
+			raw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: e.root.BuiltinName("hike_strcat_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
+			length := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+			return e.root.makeString(raw, length)
 		}
 		if node.Operator == "==" || node.Operator == "!=" {
 			eqRes := e.root.nextReg(sema.TypeBool)
-			e.root.emit(&hir.InstrCallStatic{Dst: eqRes, CalleeName: e.root.BuiltinName("hike_streq"), Args: []hir.Value{leftVal, rightVal}})
+			e.root.emit(&hir.InstrCallStatic{Dst: eqRes, CalleeName: e.root.BuiltinName("hike_streq_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
 			if node.Operator == "!=" {
 				notRes := e.root.nextReg(sema.TypeBool)
 				e.root.emit(&hir.InstrUnary{Dst: notRes, Op: hir.OpNot, Val: eqRes})

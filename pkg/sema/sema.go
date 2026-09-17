@@ -46,7 +46,12 @@ var (
 	TypeBool    = &BasicType{Name: "bool", ByteSize: 1, LLVM: "i1"}
 	TypeFloat32 = &BasicType{Name: "float32", ByteSize: 4, LLVM: "float"}
 	TypeFloat64 = &BasicType{Name: "float64", ByteSize: 8, LLVM: "double"}
-	TypeString  = &BasicType{Name: "string", ByteSize: 8, LLVM: "i8*"}
+	// string is a length-aware value. cstring remains a NUL-terminated pointer
+	// for C ABI interoperability.
+	// string is {base_ptr, offset:uint32, len:uint32} on every target.
+	// The pointer addresses the UTF-8 payload; the allocator metadata lives
+	// immediately before the owning allocation when present.
+	TypeString  = &BasicType{Name: "string", ByteSize: 16, LLVM: "{ i8*, i32, i32 }"}
 	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"}
 	TypeVoid    = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
@@ -83,7 +88,8 @@ func SetTargetArchitecture(arch string) {
 		TypeUint.LLVM = "i32"
 		TypeUintptr.ByteSize = 4
 		TypeUintptr.LLVM = "i32"
-		TypeString.ByteSize = 4
+		TypeString.ByteSize = 12
+		TypeString.LLVM = "{ i8*, i32, i32 }"
 		TypeCString.ByteSize = 4
 		PointerSize = 4
 	} else {
@@ -93,7 +99,8 @@ func SetTargetArchitecture(arch string) {
 		TypeUint.LLVM = "i64"
 		TypeUintptr.ByteSize = 8
 		TypeUintptr.LLVM = "i64"
-		TypeString.ByteSize = 8
+		TypeString.ByteSize = 16
+		TypeString.LLVM = "{ i8*, i32, i32 }"
 		TypeCString.ByteSize = 8
 		PointerSize = 8
 	}

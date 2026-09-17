@@ -123,7 +123,7 @@ func main() int {
     var label string = true
     return 0
 }
-`, ExpectedError: "cannot use int as string"})
+`, ExpectedError: "cannot use bool as string"})
 }
 
 func TestGrammar_MapVariableWithoutImport(t *testing.T) {

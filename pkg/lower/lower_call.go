@@ -174,12 +174,7 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
-	lenReg := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrCallStatic{
-		Dst:        lenReg,
-		CalleeName: c.root.BuiltinName("strlen"),
-		Args:       []hir.Value{strVal},
-	})
+	strPtr, lenReg := c.root.stringParts(strVal)
 	oneVal := &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
 	sizeReg := c.root.nextReg(sema.TypeInt)
 	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
@@ -189,7 +184,7 @@ func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
 
 	c.root.emit(&hir.InstrCallStatic{
 		CalleeName: c.root.BuiltinName("memcpy"),
-		Args:       []hir.Value{bufReg, strVal, lenReg},
+		Args:       []hir.Value{bufReg, strPtr, lenReg},
 	})
 
 	endPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -220,9 +215,7 @@ func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
 		Args:       []hir.Value{bufReg, cstrVal, sizeReg},
 	})
 
-	dst := c.root.nextReg(sema.TypeString)
-	c.root.emit(&hir.InstrCast{Dst: dst, Val: bufReg, ToType: sema.TypeString})
-	return dst
+	return c.root.makeString(bufReg, lenReg)
 }
 
 // -----------------------------------------------------------------------------
@@ -524,6 +517,9 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 			if id, ok := arg.(*ast.Identifier); ok && id.Value == "..." {
 				for _, vArg := range c.currentVarArgs {
 					vVal := c.root.Expr.LowerExpr(vArg)
+					if vVal.Type() == sema.TypeString || vVal.Type().TypeName() == "string" {
+						vVal = c.lowerStringToCString(vVal)
+					}
 					if vVal.Type() == sema.TypeBool || vVal.Type().LLVMType() == "i1" {
 						extReg := c.root.nextReg(sema.TypeInt)
 						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeInt})
@@ -542,6 +538,9 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 				continue
 			}
 			val := c.root.Expr.LowerExpr(arg)
+			if isCFunc && (val.Type() == sema.TypeString || val.Type().TypeName() == "string") {
+				val = c.lowerStringToCString(val)
+			}
 			if i >= len(paramTypes) {
 				if val.Type() == sema.TypeBool || val.Type().LLVMType() == "i1" {
 					extReg := c.root.nextReg(sema.TypeInt)
@@ -556,7 +555,7 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 					c.root.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeFloat64})
 					val = extReg
 				}
-			} else {
+			} else if !(isCFunc && (paramTypes[i] == sema.TypeString || paramTypes[i].TypeName() == "string")) {
 				val = c.root.emitValueCoerce(val, paramTypes[i])
 			}
 			args = append(args, val)
@@ -611,6 +610,9 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 	args := make([]hir.Value, len(callArgs))
 	for i, arg := range callArgs {
 		val := c.root.Expr.LowerExpr(arg)
+		if isCFunc && (val.Type() == sema.TypeString || val.Type().TypeName() == "string") {
+			val = c.lowerStringToCString(val)
+		}
 		if i < len(paramTypes) {
 			if expectedPtr, okExpected := paramTypes[i].(*sema.PointerType); okExpected {
 				if actualPtr, okActual := val.Type().(*sema.PointerType); okActual {
@@ -621,7 +623,9 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 					}
 				}
 			}
-			val = c.root.emitValueCoerce(val, paramTypes[i])
+			if !(isCFunc && (paramTypes[i] == sema.TypeString || paramTypes[i].TypeName() == "string")) {
+				val = c.root.emitValueCoerce(val, paramTypes[i])
+			}
 		}
 		args[i] = val
 	}
@@ -858,7 +862,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			if specFn != nil {
 				logger.LogVerbose2("[Verbose2] Lower generic call resolved: callee=%s returnTypes=%v\\n", specName, specFn.ReturnTypes)
 				callArgs := c.fillDefaultArgs(call.Args, c.getFuncParams(specFn, specName))
-				isCVarArg := specFn.IsCFunc || (specFn.IsVariadic && specFn.VariadicElem == nil)
+				isCVarArg := specFn.IsCFunc || specFn.IsExtern || (specFn.IsVariadic && specFn.VariadicElem == nil)
 				args := c.lowerArgs(callArgs, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid
@@ -918,13 +922,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					rawLen := c.root.nextReg(sema.TypeInt)
 					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
 					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
-					dst := c.root.nextReg(sema.TypeString)
+					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					c.root.emit(&hir.InstrCallStatic{
-						Dst:        dst,
+						Dst:        raw,
 						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
 						Args:       []hir.Value{rawPtr, rawLen},
 					})
-					return dst
+					return c.root.makeString(raw, rawLen)
 				}
 
 				if argVal.Type().LLVMType() == targetType.LLVMType() && argVal.Type() == targetType {
@@ -1065,6 +1069,10 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				return dst
 			}
 			if fnId.Value == "len" && (argVal.Type() == sema.TypeString || argVal.Type() == sema.TypeCString) {
+				if argVal.Type() == sema.TypeString {
+					_, length := c.root.stringParts(argVal)
+					return length
+				}
 				dst := c.root.nextReg(sema.TypeInt)
 				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
 				return dst
@@ -1085,13 +1093,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				if len(call.Args) == 2 {
 					ptrVal := c.root.Expr.LowerExpr(call.Args[0])
 					lenVal := c.root.Expr.LowerExpr(call.Args[1])
-					dst := c.root.nextReg(sema.TypeString)
+					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					c.root.emit(&hir.InstrCallStatic{
-						Dst:        dst,
+						Dst:        raw,
 						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
 						Args:       []hir.Value{ptrVal, lenVal},
 					})
-					return dst
+					return c.root.makeString(raw, lenVal)
 				}
 				argVal := c.root.Expr.LowerExpr(call.Args[0])
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
@@ -1099,13 +1107,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					rawLen := c.root.nextReg(sema.TypeInt)
 					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
 					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
-					dst := c.root.nextReg(sema.TypeString)
+					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					c.root.emit(&hir.InstrCallStatic{
-						Dst:        dst,
+						Dst:        raw,
 						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
 						Args:       []hir.Value{rawPtr, rawLen},
 					})
-					return dst
+					return c.root.makeString(raw, rawLen)
 				}
 				if argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring" {
 					return c.lowerCStringToString(argVal)
@@ -1171,7 +1179,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 			}
 
-			isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
+			isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
 			args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 
 			var retType sema.Type = sema.TypeVoid
@@ -1302,7 +1310,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			if len(targetFn.ParamTypes) > 1 {
 				methodParamTypes = targetFn.ParamTypes[1:]
 			}
-			isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
+			isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
 			callArgVals := c.lowerArgs(callArgs, methodParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 			args := append([]hir.Value{recvArg}, callArgVals...)
 
@@ -1373,7 +1381,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					}
 				}
 
-				isCVarArg := targetFn.IsCFunc || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
+				isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
 				args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid

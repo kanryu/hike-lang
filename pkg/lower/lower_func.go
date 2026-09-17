@@ -16,6 +16,12 @@ import (
 func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	c.root.symbols = make(map[string]hir.Value)
 	c.root.symbolTypes = make(map[string]sema.Type)
+	// Global identifiers are lowered through GlobalVar values, but their type
+	// must also be visible to statement-level alias analysis.  In particular,
+	// assigning a global string to a local variable creates another reference.
+	for name, typ := range c.root.semaCtx.Globals {
+		c.root.symbolTypes[name] = typ
+	}
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.regCount = 0
 	if fn.Body != nil {
@@ -107,7 +113,9 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 
 	if isMain {
 		argc32Reg := c.root.nextReg(&sema.BasicType{Name: "int32", ByteSize: 4, LLVM: "i32"}, "argc")
-		argvReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeString}, "argv")
+		// The process entry point receives the native C argv representation
+		// (char**), not an array of Hike string values.
+		argvReg := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}, "argv")
 		hirFn.Params = append(hirFn.Params, argc32Reg, argvReg)
 
 		argcReg := c.root.nextReg(sema.TypeInt, "argc.val")
@@ -141,10 +149,11 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 			c.root.terminate(&hir.InstrBranch{Cond: cmp, ThenTarget: loopBodyBB.Label, ElseTarget: loopEndBB.Label})
 
 			c.root.setBlock(loopBodyBB)
-			srcElemPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeString})
+			srcElemPtr := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}})
 			c.root.emit(&hir.InstrGetElemPtr{Dst: srcElemPtr, BasePtr: argvReg, Index: curI})
-			argStr := c.root.nextReg(sema.TypeString)
-			c.root.emit(&hir.InstrLoad{Dst: argStr, Ptr: srcElemPtr})
+			argCStr := c.root.nextReg(sema.TypeCString)
+			c.root.emit(&hir.InstrLoad{Dst: argCStr, Ptr: srcElemPtr})
+			argStr := c.lowerCStringToString(argCStr)
 
 			dstElemPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeString})
 			c.root.emit(&hir.InstrGetElemPtr{Dst: dstElemPtr, BasePtr: callocRes, Index: curI})

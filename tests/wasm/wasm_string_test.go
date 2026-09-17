@@ -7,14 +7,14 @@ func TestWasm32StringExecution(t *testing.T) {
 
 // The WASM boundary uses a byte pointer and an explicit UTF-8 length. Hike
 // constructs string instances directly from that pair before processing it.
-cfunc TransformString(input *byte, length int) string {
+cfunc TransformString(input *byte, length int) cstring {
     value := string(input, length)
-    return value + " [string]"
+    return cstring(value + " [string]")
 }
 
-cfunc TransformCString(input *byte, length int) string {
+cfunc TransformCString(input *byte, length int) cstring {
     raw := cstring(input, length)
-    return string(raw) + " [cstring]"
+    return cstring(string(raw) + " [cstring]")
 }
 
 jfunc JSStringLength(input string) int {
