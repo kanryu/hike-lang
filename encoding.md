@@ -13,6 +13,64 @@ The `string` type in Hike is guaranteed to be an immutable sequence of valid **U
 
 * **Non-UTF-8 Encodings:** Any byte sequence originating from non-UTF-8 character encodings (such as Shift_JIS, EUC-JP, Windows-1252, or ISO-8859-1) must **never** be loaded directly into a `string`. They must be held as `cstring` or raw byte slices (`[]byte`) and decoded into `string` via a dedicated encoding implementation.
 
+### 1.1 Runtime representation and ownership
+
+The language-level `string` value is a fat value rather than a single C
+pointer. It contains three fields:
+
+```text
+64-bit target:  { base_ptr: i8*, offset: i32, len: i32 }  // 16 bytes
+wasm32 target:  { base_ptr: i8*, offset: i32, len: i32 }  // 12 bytes
+```
+
+`base_ptr` points to the beginning of the backing buffer's UTF-8 payload,
+`offset` identifies the beginning of the current view relative to that pointer,
+and `len` is the number of bytes in the view. String indexing and slicing are
+byte-oriented; they do not operate on Unicode scalar values.
+
+The backing allocation reserves an eight-byte header immediately before the
+payload:
+
+```text
+payload - 8                    payload
+┌────────────────────┬────────────────────┬─────────────────────────┐
+│ capacity: uint32   │ refcount: int32    │ UTF-8 data ...            │
+│ offset 0           │ offset 4           │ offset 8                 │
+└────────────────────┴────────────────────┴─────────────────────────┘
+```
+
+Heap-created buffers start with a reference count of `1`. Static string
+literals use `INT32_MIN` as an immortal marker and are never released. The
+marker is deliberately not `-1`, so a reference-count underflow cannot be
+mistaken for an immortal buffer.
+
+### 1.2 Shared substring views and copy-on-write
+
+Slicing a string does not copy its bytes. For example, `s[2:5]` creates a new
+fat value that reuses `s`'s `base_ptr`, adjusts `offset`, and sets `len` to `3`.
+The backing buffer's reference count is incremented. This makes substring
+creation constant-time and avoids copying large UTF-8 buffers.
+
+Because a substring may not end at the original buffer's NUL terminator,
+internal string comparisons and concatenations use the view length explicitly
+instead of relying on `strcmp` or `strlen`.
+
+When a string view is modified through indexed assignment, the runtime checks
+the backing buffer's reference count:
+
+* With a reference count of `1`, the existing buffer is reused and the write
+  is performed at the view's offset.
+* With a reference count of `2` or greater, the visible string range is copied
+  to a new buffer before the write. Other views therefore remain unchanged.
+* Static literals and other non-unique buffers also use the copy-on-write path
+  and are never modified in place.
+
+Reference-count increments for aliases and decrements for assignments are
+implemented. Complete compiler-wide lifetime analysis for every temporary and
+shared immutable buffer, including releasing views at all scope exits, remains
+future work. Static literal storage is intentionally retained for the whole
+program lifetime.
+
 
 
 ---
