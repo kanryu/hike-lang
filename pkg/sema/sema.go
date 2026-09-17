@@ -1535,6 +1535,11 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			for _, sf := range node.Fields {
 				walkExpr(sf.Value)
 			}
+		case *ast.MapLiteral:
+			for _, entry := range node.Entries {
+				walkExpr(entry.Key)
+				walkExpr(entry.Value)
+			}
 		case *ast.CharLiteral:
 			// 文字リテラルは識別子キャプチャなし
 		}
@@ -1693,6 +1698,11 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 		case *ast.StructLiteral:
 			for _, sf := range node.Fields {
 				walkExpr(sf.Value)
+			}
+		case *ast.MapLiteral:
+			for _, entry := range node.Entries {
+				walkExpr(entry.Key)
+				walkExpr(entry.Value)
 			}
 		case *ast.CharLiteral:
 			// 文字リテラルは識別子キャプチャなし
@@ -2203,6 +2213,19 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		case *ast.StructLiteral:
 			for _, f := range n.Fields {
 				if err := checkExpr(f.Value); err != nil {
+					return err
+				}
+			}
+		case *ast.MapLiteral:
+			if !ctx.HasMapImport {
+				return fmt.Errorf("line %d:%d: map literals require importing 'std/maps'",
+					n.Token.Line, n.Token.Col)
+			}
+			for _, entry := range n.Entries {
+				if err := checkExpr(entry.Key); err != nil {
+					return err
+				}
+				if err := checkExpr(entry.Value); err != nil {
 					return err
 				}
 			}

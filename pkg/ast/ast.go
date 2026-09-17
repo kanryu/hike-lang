@@ -549,6 +549,20 @@ func (mt *MapType) typeExprNode()        {}
 func (mt *MapType) expressionNode()      {}
 func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
 
+type MapEntry struct {
+	Key   Expression
+	Value Expression
+}
+
+type MapLiteral struct {
+	Token   token.Token
+	Type    *MapType
+	Entries []*MapEntry
+}
+
+func (ml *MapLiteral) expressionNode()      {}
+func (ml *MapLiteral) TokenLiteral() string { return ml.Token.Literal }
+
 type ChanType struct {
 	Token token.Token
 	Elem  TypeExpr

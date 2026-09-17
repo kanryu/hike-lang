@@ -35,7 +35,6 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
-
 // 2. デフォルト引数 (Default Arguments) の自動補完検証
 func TestFuncCall_DefaultArguments(t *testing.T) {
 	t.Parallel()
@@ -174,6 +173,34 @@ func main() int {
 }
 `,
 		ExpectedOut:  "BEFORE=3,AFTER=2,A=1,B=0,G=3",
+		ExpectedExit: 0,
+	})
+}
+
+// Go-compatible map literal initialization must use the same map runtime as
+// make(map[K]V), including string keys and subsequent indexing.
+func TestFuncCall_MapLiteralInitialization(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    var values = map[string]int{
+        "alpha": 10,
+        "beta": 20,
+    }
+    values["gamma"] = 30
+    printf("LEN=%d,A=%d,B=%d,G=%d\n", len(values), values["alpha"], values["beta"], values["gamma"])
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=3,A=10,B=20,G=30",
 		ExpectedExit: 0,
 	})
 }

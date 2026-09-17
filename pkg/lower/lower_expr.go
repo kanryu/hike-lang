@@ -390,6 +390,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		e.root.emit(&hir.InstrLoad{Dst: resReg, Ptr: allocaReg})
 		return resReg
 
+	case *ast.MapLiteral:
+		return e.lowerMapLiteral(node)
+
 	case *ast.ArrayLiteral:
 		allocaReg := e.lowerArrayLiteralPtr(node)
 		arType := allocaReg.Type().(*sema.PointerType).Base
@@ -803,6 +806,42 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	}
 
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+}
+
+// lowerMapLiteral implements Go-compatible map[K]V{key: value, ...}
+// initialization using the same runtime representation as make(map[K]V).
+// Keeping construction here also makes map literals work in global
+// initializers, which are lowered into the generated main function.
+func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
+	mapType := e.root.semaCtx.ResolveType(node.Type)
+	mp, ok := mapType.(*sema.MapType)
+	if !ok {
+		panic("[Lower Error] map literal has non-map type")
+	}
+
+	isStr := int64(0)
+	if mp.Key == sema.TypeString {
+		isStr = 1
+	}
+	capVal := &hir.ConstInt{Val: int64(len(node.Entries)), Typ: sema.TypeInt}
+	mapVal := e.root.nextReg(mp)
+	e.root.emit(&hir.InstrCallStatic{
+		Dst:        mapVal,
+		CalleeName: "__hike_map_create",
+		Args:       []hir.Value{capVal, &hir.ConstInt{Val: isStr, Typ: sema.TypeInt}},
+	})
+
+	for _, entry := range node.Entries {
+		keyVal := e.root.Expr.LowerExpr(entry.Key)
+		valueVal := e.root.Expr.LowerExpr(entry.Value)
+		keyI64 := e.root.coerceToI64(keyVal, mp.Key)
+		valueI64 := e.root.coerceToI64(valueVal, mp.Value)
+		e.root.emit(&hir.InstrCallStatic{
+			CalleeName: "__hike_map_set",
+			Args:       []hir.Value{mapVal, keyI64, valueI64},
+		})
+	}
+	return mapVal
 }
 
 // LowerIndexExpr は添字式 (IndexExpr) を評価して HIR 値を生成する

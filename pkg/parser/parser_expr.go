@@ -482,8 +482,38 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
 
 	case token.MAP:
-		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
-			leftExp = expr
+		mapType, ok := p.parseTypeExpr().(*ast.MapType)
+		if !ok {
+			return nil
+		}
+		if p.peekTokenIs(token.LBRACE) {
+			p.nextToken()
+			entries := []*ast.MapEntry{}
+			if !p.peekTokenIs(token.RBRACE) {
+				p.nextToken()
+				for {
+					key := p.parseExpression(LOWEST)
+					if !p.expectPeek(token.COLON) {
+						break
+					}
+					p.nextToken()
+					value := p.parseExpression(LOWEST)
+					entries = append(entries, &ast.MapEntry{Key: key, Value: value})
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						if p.peekTokenIs(token.RBRACE) {
+							break
+						}
+						p.nextToken()
+					} else {
+						break
+					}
+				}
+			}
+			p.expectPeek(token.RBRACE)
+			leftExp = &ast.MapLiteral{Token: mapType.Token, Type: mapType, Entries: entries}
+		} else {
+			leftExp = mapType
 		}
 
 	case token.CHAN:

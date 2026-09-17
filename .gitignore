@@ -39,3 +39,6 @@ output_*.ll
 Thumbs.db
 desktop.ini
 oooo.log
+
+# Self-hosting migration workspace
+selfhost/

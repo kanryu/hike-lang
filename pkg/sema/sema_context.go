@@ -1361,6 +1361,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.StructLiteral:
 		return c.ResolveType(e.Type)
 
+	case *ast.MapLiteral:
+		return c.ResolveType(e.Type)
+
 	case *ast.ArrayLiteral:
 		resolved := c.ResolveType(e.Type)
 		if array, ok := resolved.(*ArrayType); ok && array.Len < 0 {
@@ -2151,6 +2154,13 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			c.InferExprTypeWithDiag(field.Value, locals, reporter, filename)
 		}
 		return TypeInt
+
+	case *ast.MapLiteral:
+		for _, entry := range e.Entries {
+			c.InferExprTypeWithDiag(entry.Key, locals, reporter, filename)
+			c.InferExprTypeWithDiag(entry.Value, locals, reporter, filename)
+		}
+		return c.ResolveType(e.Type)
 
 	case *ast.ArrayLiteral:
 		for _, element := range e.Elements {
