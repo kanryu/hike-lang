@@ -110,7 +110,14 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 			if importPath == fromMod || strings.HasPrefix(importPath, fromMod+"/") {
 				relSub := strings.TrimPrefix(importPath, fromMod)
 				relSub = strings.TrimPrefix(relSub, "/")
-				targetPath := filepath.Clean(filepath.Join(m.RootDir, targetRel, relSub))
+				// A replacement may be absolute, which is common in generated or
+				// self-hosting test modules. Do not prefix it with the module root;
+				// filepath.Join does not discard an earlier root on every platform.
+				basePath := targetRel
+				if !filepath.IsAbs(basePath) {
+					basePath = filepath.Join(m.RootDir, basePath)
+				}
+				targetPath := filepath.Clean(filepath.Join(basePath, relSub))
 				if fi, err := os.Stat(targetPath); err == nil && fi.IsDir() {
 					return targetPath, nil
 				}

@@ -102,7 +102,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		if s.Type != nil {
 			declType = c.resolveDiagnosticType(s.Type)
 			if s.Value != nil && isSimpleDiagnosticTarget(s.Type) && isDiagnosticLiteral(s.Value) && !IsBad(valueType) && !IsBad(declType) && !c.typesCompatible(declType, valueType) {
-				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", valueType.TypeName(), declType.TypeName())
+				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", typeNameOf(valueType), typeNameOf(declType))
 			}
 		} else {
 			declType = valueType
@@ -125,7 +125,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 					if s.Type != nil && len(rightTypes) > 0 && isSimpleDiagnosticTarget(s.Type) {
 						declType := c.resolveDiagnosticType(s.Type)
 						if !IsBad(valueType) && !IsBad(declType) && !c.typesCompatible(declType, valueType) {
-							reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", valueType.TypeName(), declType.TypeName())
+							reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", typeNameOf(valueType), typeNameOf(declType))
 						}
 						valueType = declType
 					}
@@ -143,7 +143,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 			if i < len(returns) && isDiagnosticLiteral(value) && !IsBad(actual) {
 				expected := c.resolveDiagnosticType(returns[i])
 				if !IsBad(expected) && !c.typesCompatible(expected, actual) {
-					reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", actual.TypeName(), expected.TypeName())
+					reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as %s", typeNameOf(actual), typeNameOf(expected))
 				}
 			}
 		}
@@ -156,7 +156,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		if _, isInteger := s.Condition.(*ast.IntegerLiteral); isInteger {
 			conditionType := c.InferExprTypeWithDiag(s.Condition, locals, reporter, filename)
 			if !IsBad(conditionType) && conditionType != TypeBool {
-				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as bool", conditionType.TypeName())
+				reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot use %s as bool", typeNameOf(conditionType))
 			}
 		}
 		c.checkDiagnosticBlock(s.Consequence, cloneTypes(locals), returns, packageNames, reporter, filename)

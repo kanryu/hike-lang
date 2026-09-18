@@ -18,6 +18,127 @@ type Type interface {
 	Size() int
 }
 
+// typeNameOf resolves the display name without invoking a method through the
+// Type interface. Go-Hike's source checker requires concrete dispatch here.
+func typeNameOf(typ Type) string {
+	if typ == nil {
+		return ""
+	}
+	switch t := typ.(type) {
+	case *BasicType:
+		return t.Name
+	case *TypeParamType:
+		return t.Name
+	case *ConstValueType:
+		return fmt.Sprintf("const<%d>", t.Value)
+	case *PointerType:
+		return "*" + typeNameOf(t.Base)
+	case *SliceType:
+		return "[]" + typeNameOf(t.Elem)
+	case *ArrayType:
+		return fmt.Sprintf("[%d]%s", t.Len, typeNameOf(t.Elem))
+	case *StructType:
+		return t.TypeName()
+	case *InterfaceType:
+		return t.TypeName()
+	case *FuncType:
+		return "func"
+	case *TupleType:
+		return "tuple"
+	case *MapType:
+		return fmt.Sprintf("map[%s]%s", typeNameOf(t.Key), typeNameOf(t.Value))
+	case *ChanType:
+		return "chan " + typeNameOf(t.Elem)
+	case *FutureType:
+		parts := make([]string, len(t.ReturnTypes))
+		for i, rt := range t.ReturnTypes {
+			parts[i] = typeNameOf(rt)
+		}
+		return fmt.Sprintf("future<(%s)>", strings.Join(parts, ", "))
+	}
+	return ""
+}
+
+// LLVMTypeOf performs concrete dispatch for Go-Hike source analysis.
+func LLVMTypeOf(typ Type) string {
+	return typeLLVMOf(typ)
+}
+
+func SizeOf(typ Type) int {
+	if typ == nil {
+		return 0
+	}
+	switch t := typ.(type) {
+	case *BasicType:
+		return t.ByteSize
+	case *TypeParamType:
+		return PointerSize
+	case *ConstValueType:
+		return 0
+	case *PointerType, *ChanType, *FutureType, *MapType:
+		return PointerSize
+	case *FuncType:
+		return PointerSize * 2
+	case *SliceType:
+		return PointerSize + SizeOf(TypeInt)*2
+	case *ArrayType:
+		return t.Len * SizeOf(t.Elem)
+	case *StructType:
+		return structSize(t)
+	case *InterfaceType:
+		return PointerSize * 2
+	case *TupleType:
+		sz := 0
+		for _, el := range t.Types {
+			sz += SizeOf(el)
+		}
+		return sz
+	}
+	return 0
+}
+
+func typeLLVMOf(typ Type) string {
+	if typ == nil {
+		return ""
+	}
+	switch t := typ.(type) {
+	case *BasicType:
+		return t.LLVM
+	case *TypeParamType:
+		return "i8*"
+	case *ConstValueType:
+		return "void"
+	case *PointerType:
+		return typeLLVMOf(t.Base) + "*"
+	case *SliceType:
+		return fmt.Sprintf("{ i8*, %s, %s }", typeLLVMOf(TypeInt), typeLLVMOf(TypeInt))
+	case *ArrayType:
+		return fmt.Sprintf("[%d x %s]", t.Len, typeLLVMOf(t.Elem))
+	case *StructType:
+		return t.LLVMType()
+	case *InterfaceType:
+		if t.IsAny() {
+			return fmt.Sprintf("{ i8*, %s }", typeLLVMOf(TypeInt))
+		}
+		return "{ i8*, i8* }"
+	case *FuncType:
+		return "{ i8*, i8* }"
+	case *TupleType:
+		parts := make([]string, len(t.Types))
+		for i, el := range t.Types {
+			parts[i] = typeLLVMOf(el)
+		}
+		return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
+	case *MapType:
+		return "%struct.__hike_map*"
+	case *ChanType:
+		return "i8*"
+	case *FutureType:
+		return "i8*"
+	}
+	return ""
+}
+
 type BasicType struct {
 	Name     string
 	ByteSize int
@@ -100,15 +221,21 @@ func setBasicTypeLayout(typ *BasicType, size int, llvm string) {
 }
 
 func IsBuiltinType(name string) bool {
-	if _, ok := BuiltinTypes[name]; ok {
-		return true
+	for builtinName := range BuiltinTypes {
+		if builtinName == name {
+			return true
+		}
 	}
 	return name == "any" || name == "error"
 }
 
 func LookupBuiltinType(name string) (Type, bool) {
-	t, ok := BuiltinTypes[name]
-	return t, ok
+	for builtinName, typ := range BuiltinTypes {
+		if builtinName == name {
+			return typ, true
+		}
+	}
+	return nil, false
 }
 
 type TypeParamType struct {
@@ -131,28 +258,28 @@ type PointerType struct {
 	Base Type
 }
 
-func (t *PointerType) TypeName() string { return "*" + t.Base.TypeName() }
-func (t *PointerType) LLVMType() string { return t.Base.LLVMType() + "*" }
+func (t *PointerType) TypeName() string { return typeNameOf(t) }
+func (t *PointerType) LLVMType() string { return typeLLVMOf(t) }
 func (t *PointerType) Size() int        { return PointerSize }
 
 type SliceType struct {
 	Elem Type
 }
 
-func (t *SliceType) TypeName() string { return "[]" + t.Elem.TypeName() }
+func (t *SliceType) TypeName() string { return typeNameOf(t) }
 func (t *SliceType) LLVMType() string {
-	return fmt.Sprintf("{ i8*, %s, %s }", TypeInt.LLVMType(), TypeInt.LLVMType())
+	return typeLLVMOf(t)
 }
-func (t *SliceType) Size() int { return PointerSize + TypeInt.Size()*2 }
+func (t *SliceType) Size() int { return PointerSize + SizeOf(TypeInt)*2 }
 
 type ArrayType struct {
 	Len  int
 	Elem Type
 }
 
-func (t *ArrayType) TypeName() string { return fmt.Sprintf("[%d]%s", t.Len, t.Elem.TypeName()) }
-func (t *ArrayType) LLVMType() string { return fmt.Sprintf("[%d x %s]", t.Len, t.Elem.LLVMType()) }
-func (t *ArrayType) Size() int        { return t.Len * t.Elem.Size() }
+func (t *ArrayType) TypeName() string { return typeNameOf(t) }
+func (t *ArrayType) LLVMType() string { return typeLLVMOf(t) }
+func (t *ArrayType) Size() int        { return t.Len * SizeOf(t.Elem) }
 
 type Field struct {
 	Name       string
@@ -173,6 +300,8 @@ type StructType struct {
 	BuiltinCapabilities map[string]*FuncType
 }
 
+func structSize(t *StructType) int { return t.Size() }
+
 func (t *StructType) TypeName() string { return t.Name }
 func (t *StructType) LLVMType() string { return "%struct." + t.Name }
 func (t *StructType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
@@ -180,7 +309,7 @@ func (t *StructType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSp
 func (t *StructType) Align() int {
 	maxAlign := 1
 	for _, f := range t.Fields {
-		fa := f.Type.Size()
+		fa := SizeOf(f.Type)
 		if fa > PointerSize {
 			fa = PointerSize
 		}
@@ -195,7 +324,7 @@ func (t *StructType) Size() int {
 	offset := 0
 	maxAlign := 1
 	for _, f := range t.Fields {
-		fsz := f.Type.Size()
+		fsz := SizeOf(f.Type)
 		if fsz <= 0 {
 			fsz = PointerSize
 		}
@@ -262,7 +391,7 @@ func (t *InterfaceType) TypeName() string {
 
 func (t *InterfaceType) LLVMType() string {
 	if t.IsAny() {
-		return fmt.Sprintf("{ i8*, %s }", TypeInt.LLVMType())
+		return typeLLVMOf(t)
 	}
 	return "{ i8*, i8* }"
 }
@@ -323,14 +452,14 @@ func (t *TupleType) TypeName() string { return "tuple" }
 func (t *TupleType) LLVMType() string {
 	types := []string{}
 	for _, el := range t.Types {
-		types = append(types, el.LLVMType())
+		types = append(types, typeLLVMOf(el))
 	}
 	return fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 }
 func (t *TupleType) Size() int {
 	sz := 0
 	for _, el := range t.Types {
-		sz += el.Size()
+		sz += SizeOf(el)
 	}
 	return sz
 }
@@ -341,7 +470,7 @@ type MapType struct {
 }
 
 func (t *MapType) TypeName() string {
-	return fmt.Sprintf("map[%s]%s", t.Key.TypeName(), t.Value.TypeName())
+	return typeNameOf(t)
 }
 func (t *MapType) LLVMType() string {
 	return "%struct.__hike_map*"
@@ -354,7 +483,7 @@ type ChanType struct {
 	Elem Type
 }
 
-func (t *ChanType) TypeName() string { return "chan " + t.Elem.TypeName() }
+func (t *ChanType) TypeName() string { return typeNameOf(t) }
 func (t *ChanType) LLVMType() string { return "i8*" }
 func (t *ChanType) Size() int        { return PointerSize }
 
@@ -363,11 +492,7 @@ type FutureType struct {
 }
 
 func (t *FutureType) TypeName() string {
-	types := make([]string, len(t.ReturnTypes))
-	for i, rt := range t.ReturnTypes {
-		types[i] = rt.TypeName()
-	}
-	return fmt.Sprintf("future<(%s)>", strings.Join(types, ", "))
+	return typeNameOf(t)
 }
 func (t *FutureType) LLVMType() string { return "i8*" }
 func (t *FutureType) Size() int        { return PointerSize }
@@ -585,7 +710,7 @@ func typeToTypeExpr(t Type) ast.TypeExpr {
 	case *MapType:
 		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value)}
 	default:
-		return &ast.NamedType{Name: &ast.Identifier{Value: v.TypeName()}}
+		return &ast.NamedType{Name: &ast.Identifier{Value: typeNameOf(v)}}
 	}
 }
 
@@ -593,7 +718,7 @@ func DetermineCast(from, to Type) (ast.CastKind, bool) {
 	if from == nil || to == nil {
 		return 0, false
 	}
-	if from == to || from.TypeName() == to.TypeName() {
+	if from == to || typeNameOf(from) == typeNameOf(to) {
 		return 0, false
 	}
 
@@ -606,8 +731,8 @@ func DetermineCast(from, to Type) (ast.CastKind, bool) {
 		}
 	}
 
-	fromLLVM := from.LLVMType()
-	toLLVM := to.LLVMType()
+	fromLLVM := typeLLVMOf(from)
+	toLLVM := typeLLVMOf(to)
 	if fromLLVM == toLLVM {
 		return 0, false
 	}
@@ -752,29 +877,10 @@ func Analyze(prog *ast.Program) (*Context, error) {
 // compatibility behavior.
 func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	ctx := NewContext()
-	if goHikeMode {
-		ctx.HasMapImport = true
-		ctx.GoHikeMode = true
-		// The Go token package declares its token kinds as a const block.  The
-		// Go-shaped parser currently does not materialize that block, so expose
-		// the names used by compiler packages as harmless integer constants.
-		for _, name := range token.GoHikeConstantNames {
-			ctx.Constants["token_"+name] = 0
-		}
-		ctx.Constants["runtime_GOOS"] = 0
-		ctx.Constants["runtime_GOARCH"] = 0
-	}
+	configureAnalyzeMode(ctx, prog, goHikeMode)
 
-	for _, imp := range prog.Imports {
-		if imp.Path == "std/map" || imp.Path == "map" || imp.Path == "std/maps" || imp.Path == "maps" {
-			ctx.HasMapImport = true
-		}
-	}
-
-	for _, decl := range prog.Decls {
-		if err := validateMapUsage(decl, ctx); err != nil {
-			return nil, err
-		}
+	if err := validateProgramMapUsage(prog, ctx); err != nil {
+		return nil, err
 	}
 
 	// Pass 1: 全ての型宣言と関数宣言を登録
@@ -888,7 +994,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 				if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
 					recvTypeName = canonical
 				} else if alias, _ := ctx.LookupAlias(recvTypeName); alias != nil {
-					recvTypeName = alias.TypeName()
+					recvTypeName = typeNameOf(alias)
 				}
 				if recvTypeName != "" {
 					fnName = CanonicalMethodName(recvTypeName, fnName)
@@ -1207,7 +1313,10 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 		progress := false
 		remaining := []*ast.ConstDecl{}
 		for _, cd := range unresolvedConsts {
-			if iVal, ok := ctx.evalConstInt(cd.Value); ok {
+			if sVal, ok := ctx.evalConstString(cd.Value); ok {
+				ctx.StringConstants[cd.Name.Value] = sVal
+				progress = true
+			} else if iVal, ok := ctx.evalConstInt(cd.Value); ok {
 				ctx.Constants[cd.Name.Value] = iVal
 				progress = true
 			} else if fVal, ok := ctx.evalConstFloat(cd.Value); ok {
@@ -1226,9 +1335,17 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	for _, decl := range prog.Decls {
 		switch d := decl.(type) {
 		case *ast.VarDecl:
-			var gType Type = TypeInt
+			var gType Type
 			if d.Type != nil {
 				gType = ctx.ResolveType(d.Type)
+			} else if d.Value != nil {
+				// Untyped package variables still carry their declared type in
+				// the initializer (for example map literals). Do not fall back
+				// to int: that makes a later map index look like int[index].
+				gType = ctx.InferExprType(d.Value, nil)
+			}
+			if gType == nil {
+				gType = TypeInt
 			}
 			ctx.Globals[d.Name.Value] = gType
 
@@ -1248,7 +1365,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 					}
 					recvTypeName = canonical
 				} else if alias, _ := ctx.LookupAlias(recvTypeName); alias != nil {
-					recvTypeName = alias.TypeName()
+					recvTypeName = typeNameOf(alias)
 				}
 				if recvTypeName != "" {
 					fnName = CanonicalMethodName(recvTypeName, fnName)
@@ -1305,7 +1422,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 						st.BuiltinCapabilities["IndexAssignable"] = fnType
 					}
 					if rawMethodName == "Slice" && len(paramTypes) == 3 && (len(returnTypes) == 1 || len(returnTypes) == 2) {
-						if paramTypes[1].TypeName() == "int" && paramTypes[2].TypeName() == "int" {
+						if typeNameOf(paramTypes[1]) == "int" && typeNameOf(paramTypes[2]) == "int" {
 							st.BuiltinCapabilities["Sliceable"] = fnType
 						}
 					}
@@ -1389,6 +1506,29 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	insertImplicitCasts(prog, ctx)
 
 	return ctx, nil
+}
+
+func validateProgramMapUsage(prog *ast.Program, ctx *Context) error {
+	for _, decl := range prog.Decls {
+		if err := validateMapUsage(decl, ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func configureAnalyzeMode(ctx *Context, prog *ast.Program, goHikeMode bool) {
+	if goHikeMode {
+		ctx.HasMapImport = true
+		ctx.GoHikeMode = true
+		ctx.Constants["runtime_GOOS"] = 0
+		ctx.Constants["runtime_GOARCH"] = 0
+	}
+	for _, imp := range prog.Imports {
+		if imp.Path == "std/map" || imp.Path == "map" || imp.Path == "std/maps" || imp.Path == "maps" {
+			ctx.HasMapImport = true
+		}
+	}
 }
 
 // -------------------------------------------------------------

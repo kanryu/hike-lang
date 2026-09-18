@@ -27,7 +27,6 @@ const (
 	INDEX       // array[index], .field
 )
 
-
 var precedences = map[token.TokenType]int{
 	token.LOR:       LOR,
 	token.LAND:      LAND,
@@ -53,15 +52,19 @@ var precedences = map[token.TokenType]int{
 }
 
 func (p *Parser) peekPrecedence() int {
-	if prec, ok := precedences[p.peekToken.Type]; ok {
-		return prec
+	for operator, precedence := range precedences {
+		if operator == p.peekToken.Type {
+			return precedence
+		}
 	}
 	return LOWEST
 }
 
 func (p *Parser) curPrecedence() int {
-	if prec, ok := precedences[p.curToken.Type]; ok {
-		return prec
+	for operator, precedence := range precedences {
+		if operator == p.curToken.Type {
+			return precedence
+		}
 	}
 	return LOWEST
 }
@@ -379,38 +382,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	switch p.curToken.Type {
 	case token.IDENT:
 		ident := p.parseIdentifier()
-		if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
-			p.nextToken()
-			namedType := &ast.NamedType{Token: ident.Token, Package: nil, Name: ident}
-			fields := []*ast.StructFieldValue{}
-			if !p.peekTokenIs(token.RBRACE) {
-				p.nextToken()
-				for {
-					var fName *ast.Identifier = nil
-					if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
-						fName = p.parseIdentifier()
-						p.nextToken()
-						p.nextToken()
-					}
-					val := p.parseExpression(LOWEST)
-					fields = append(fields, &ast.StructFieldValue{Name: fName, Value: val})
-
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						if p.peekTokenIs(token.RBRACE) {
-							break
-						}
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-			}
-			p.expectPeek(token.RBRACE)
-			leftExp = &ast.StructLiteral{Token: ident.Token, Type: namedType, Fields: fields}
-		} else {
-			leftExp = ident
-		}
+		leftExp = p.parseIdentifierExpression(ident)
 	case token.INT:
 		leftExp = p.parseIntegerLiteral()
 	case token.FLOAT:
@@ -686,6 +658,40 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	}
 
 	return leftExp
+}
+
+func (p *Parser) parseIdentifierExpression(ident *ast.Identifier) ast.Expression {
+	if !p.allowStructLit || !p.peekTokenIs(token.LBRACE) {
+		return ident
+	}
+
+	p.nextToken()
+	namedType := &ast.NamedType{Token: ident.Token, Package: nil, Name: ident}
+	fields := []*ast.StructFieldValue{}
+	if !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()
+		for {
+			var fName *ast.Identifier
+			if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+				fName = p.parseIdentifier()
+				p.nextToken()
+				p.nextToken()
+			}
+			val := p.parseExpression(LOWEST)
+			fields = append(fields, &ast.StructFieldValue{Name: fName, Value: val})
+
+			if !p.peekTokenIs(token.COMMA) {
+				break
+			}
+			p.nextToken()
+			if p.peekTokenIs(token.RBRACE) {
+				break
+			}
+			p.nextToken()
+		}
+	}
+	p.expectPeek(token.RBRACE)
+	return &ast.StructLiteral{Token: ident.Token, Type: namedType, Fields: fields}
 }
 
 func (p *Parser) parseInlineAsmExpr() ast.Expression {

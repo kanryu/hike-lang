@@ -145,7 +145,7 @@ func (e *Emitter) val(v hir.Value) string {
 func globalVarName(g *hir.GlobalVar) string       { return g.Name }
 func constStringLabel(s *hir.ConstString) string  { return s.Label }
 func itabTargetName(m hir.ItabMethodEntry) string { return m.TargetFnName }
-func boxItabName(x *hir.InstrBoxInterface) string  { return x.ItabName }
+func boxItabName(x *hir.InstrBoxInterface) string { return x.ItabName }
 
 func dataBytes(s string) string {
 	var b strings.Builder
@@ -156,10 +156,10 @@ func dataBytes(s string) string {
 }
 
 func typeSize(t sema.Type) int {
-	if t == nil || t.Size() <= 0 {
+	if t == nil || sema.SizeOf(t) <= 0 {
 		return 1
 	}
-	return t.Size()
+	return sema.SizeOf(t)
 }
 
 func (e *Emitter) emitData() {

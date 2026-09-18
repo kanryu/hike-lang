@@ -22,7 +22,12 @@ var WabtRuntimeSymbols = map[string]bool{
 }
 
 func IsWabtRuntimeSymbol(name string) bool {
-	return WabtRuntimeSymbols[name]
+	for symbol := range WabtRuntimeSymbols {
+		if symbol == name {
+			return true
+		}
+	}
+	return false
 }
 
 var wasmRuntime = map[string]runtimeFunc{

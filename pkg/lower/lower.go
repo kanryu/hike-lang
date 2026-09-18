@@ -92,16 +92,52 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 
 func astProgramPackage(prog *ast.Program) string { return prog.Package }
 
-func (l *Lowerer) moduleName() string         { return l.module }
-func semaFuncExtern(fn *sema.FuncType) bool   { return fn.IsExtern }
-func semaFuncCFunc(fn *sema.FuncType) bool    { return fn.IsCFunc }
-func semaFuncName(fn *sema.FuncType) string   { return fn.Name }
-func semaFuncIRName(fn *sema.FuncType) string { return fn.IRName }
-func semaFuncIsVariadic(fn *sema.FuncType) bool { return fn.IsVariadic }
-func semaFuncVariadicElem(fn *sema.FuncType) sema.Type { return fn.VariadicElem }
+func (l *Lowerer) moduleName() string                   { return l.module }
+func semaFuncExtern(fn *sema.FuncType) bool             { return fn.IsExtern }
+func semaFuncCFunc(fn *sema.FuncType) bool              { return fn.IsCFunc }
+func semaFuncName(fn *sema.FuncType) string             { return fn.Name }
+func semaFuncIRName(fn *sema.FuncType) string           { return fn.IRName }
+func semaFuncIsVariadic(fn *sema.FuncType) bool         { return fn.IsVariadic }
+func semaFuncVariadicElem(fn *sema.FuncType) sema.Type  { return fn.VariadicElem }
 func semaFuncCFuncAst(fn *sema.FuncType) *ast.CFuncDecl { return fn.CFuncAst }
-func semaFuncCFuncTarget(fn *sema.FuncType) string { return fn.CFuncTarget }
-func semaTypeName(typ sema.Type) string { return typ.TypeName() }
+func semaFuncCFuncTarget(fn *sema.FuncType) string      { return fn.CFuncTarget }
+func semaTypeName(typ sema.Type) string {
+	if typ == nil {
+		return ""
+	}
+	switch t := typ.(type) {
+	case *sema.BasicType:
+		return t.Name
+	case *sema.TypeParamType:
+		return t.Name
+	case *sema.ConstValueType:
+		return fmt.Sprintf("const<%d>", t.Value)
+	case *sema.PointerType:
+		return "*" + semaTypeName(t.Base)
+	case *sema.SliceType:
+		return "[]" + semaTypeName(t.Elem)
+	case *sema.ArrayType:
+		return fmt.Sprintf("[%d]%s", t.Len, semaTypeName(t.Elem))
+	case *sema.StructType:
+		return t.Name
+	case *sema.InterfaceType:
+		if t.Name != "" {
+			return t.Name
+		}
+		return "interface"
+	case *sema.FuncType:
+		return "func"
+	case *sema.TupleType:
+		return "tuple"
+	case *sema.MapType:
+		return "map[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
+	case *sema.ChanType:
+		return "chan " + semaTypeName(t.Elem)
+	case *sema.FutureType:
+		return "future"
+	}
+	return ""
+}
 func semaInterfaceName(iface *sema.InterfaceType) string { return iface.Name }
 func astIDValue(id *ast.Identifier) string {
 	if id == nil {
@@ -314,7 +350,7 @@ func (l *Lowerer) stringParts(value hir.Value) (hir.Value, hir.Value) {
 	ptr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	l.emit(&hir.InstrGetElemPtr{Dst: ptr, BasePtr: base, Index: offset})
 	length := hir.Value(length32)
-	if sema.TypeInt.LLVMType() != sema.TypeInt32.LLVMType() {
+	if sema.LLVMTypeOf(sema.TypeInt) != sema.LLVMTypeOf(sema.TypeInt32) {
 		length64 := l.nextReg(sema.TypeInt)
 		l.emit(&hir.InstrCast{Dst: length64, Val: length32, ToType: sema.TypeInt})
 		length = length64
@@ -343,14 +379,14 @@ func (l *Lowerer) makeStringView(base, offset, length hir.Value) hir.Value {
 	t1 := l.nextReg(sema.TypeString)
 	l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(sema.TypeString), Val: base, Index: 0})
 	t2 := l.nextReg(sema.TypeString)
-	if offset.Type().LLVMType() != sema.TypeInt32.LLVMType() {
+	if sema.LLVMTypeOf(offset.Type()) != sema.LLVMTypeOf(sema.TypeInt32) {
 		offset32 := l.nextReg(sema.TypeInt32)
 		l.emit(&hir.InstrCast{Dst: offset32, Val: offset, ToType: sema.TypeInt32})
 		offset = offset32
 	}
 	l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: offset, Index: 1})
 	var length32Val hir.Value
-	if length.Type().LLVMType() != sema.TypeInt32.LLVMType() {
+	if sema.LLVMTypeOf(length.Type()) != sema.LLVMTypeOf(sema.TypeInt32) {
 		length32 := l.nextReg(sema.TypeInt32)
 		l.emit(&hir.InstrCast{Dst: length32, Val: length, ToType: sema.TypeInt32})
 		length32Val = length32
@@ -379,7 +415,7 @@ func (l *Lowerer) releaseString(value hir.Value) {
 }
 
 func (l *Lowerer) isStringType(t sema.Type) bool {
-	return t == sema.TypeString || (t != nil && t.TypeName() == "string")
+	return t == sema.TypeString || semaTypeName(t) == "string"
 }
 
 // -------------------------------------------------------------
@@ -396,13 +432,13 @@ func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 	if t == sema.TypeFloat64 || t == sema.TypeFloat32 {
 		return &hir.ConstFloat{Val: 0.0, Typ: t}
 	}
-	if t == sema.TypeString || t.TypeName() == "string" {
+	if t == sema.TypeString || semaTypeName(t) == "string" {
 		return l.getStringConst("")
 	}
-	if t == sema.TypeCString || t.TypeName() == "cstring" {
+	if t == sema.TypeCString || semaTypeName(t) == "cstring" {
 		return &hir.ConstNil{Typ: t}
 	}
-	if strings.HasSuffix(t.LLVMType(), "*") {
+	if strings.HasSuffix(sema.LLVMTypeOf(t), "*") {
 		return &hir.ConstNil{Typ: t}
 	}
 	if _, isSlice := t.(*sema.SliceType); isSlice {
@@ -423,7 +459,7 @@ func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 	if _, isFunc := t.(*sema.FuncType); isFunc {
 		return &hir.ConstZero{Typ: t}
 	}
-	if strings.HasPrefix(t.LLVMType(), "{") || strings.HasPrefix(t.LLVMType(), "[") || strings.HasPrefix(t.LLVMType(), "%struct.") {
+	if strings.HasPrefix(sema.LLVMTypeOf(t), "{") || strings.HasPrefix(sema.LLVMTypeOf(t), "[") || strings.HasPrefix(sema.LLVMTypeOf(t), "%struct.") {
 		return &hir.ConstZero{Typ: t}
 	}
 	return &hir.ConstInt{Val: 0, Typ: t}
@@ -433,7 +469,10 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	if val == nil || targetType == nil {
 		return val
 	}
-	if val.Type() == targetType || val.Type().TypeName() == targetType.TypeName() {
+	if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
+		panic(fmt.Sprintf("[Lower Error] cannot coerce a nil register to %s", semaTypeName(targetType)))
+	}
+	if val.Type() == targetType || semaTypeName(val.Type()) == semaTypeName(targetType) {
 		return val
 	}
 	if targetType == sema.TypeString {
@@ -446,16 +485,16 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	}
 
 	// string -> cstring
-	if (val.Type() == sema.TypeString || val.Type().TypeName() == "string") && targetType == sema.TypeCString {
+	if (val.Type() == sema.TypeString || semaTypeName(val.Type()) == "string") && targetType == sema.TypeCString {
 		return l.Call.lowerStringToCString(val)
 	}
 
 	// cstring -> string
-	if (val.Type() == sema.TypeCString || val.Type().TypeName() == "cstring") && targetType == sema.TypeString {
+	if (val.Type() == sema.TypeCString || semaTypeName(val.Type()) == "cstring") && targetType == sema.TypeString {
 		return l.Call.lowerCStringToString(val)
 	}
 
-	if val.Type().LLVMType() == targetType.LLVMType() {
+	if sema.LLVMTypeOf(val.Type()) == sema.LLVMTypeOf(targetType) {
 		return val
 	}
 
@@ -486,7 +525,7 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
 				return dst
 			}
-			if srcIface.TypeName() == iface.TypeName() {
+			if semaTypeName(srcIface) == semaTypeName(iface) {
 				return val
 			}
 		}
@@ -510,12 +549,12 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 }
 
 func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
-	if fromType == sema.TypeString || (fromType != nil && fromType.TypeName() == "string") {
+	if fromType == sema.TypeString || semaTypeName(fromType) == "string" {
 		ptr, _ := l.stringParts(v)
 		fromType = ptr.Type()
 		v = ptr
 	}
-	if fromType.LLVMType() == sema.TypeInt.LLVMType() {
+	if sema.LLVMTypeOf(fromType) == sema.LLVMTypeOf(sema.TypeInt) {
 		return v
 	}
 	dst := l.nextReg(sema.TypeInt)
@@ -524,15 +563,15 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 }
 
 func (l *Lowerer) coerceFromI64(v hir.Value, toType sema.Type) hir.Value {
-	if toType == sema.TypeString || (toType != nil && toType.TypeName() == "string") {
-		if v != nil && v.Type() != nil && v.Type().LLVMType() == "i8*" {
+	if toType == sema.TypeString || semaTypeName(toType) == "string" {
+		if v != nil && v.Type() != nil && sema.LLVMTypeOf(v.Type()) == "i8*" {
 			return l.Call.lowerCStringToString(v)
 		}
 		ptr := l.nextReg(sema.TypeCString)
 		l.emit(&hir.InstrCast{Dst: ptr, Val: v, ToType: sema.TypeCString})
 		return l.Call.lowerCStringToString(ptr)
 	}
-	if toType.LLVMType() == sema.TypeInt.LLVMType() {
+	if sema.LLVMTypeOf(toType) == sema.LLVMTypeOf(sema.TypeInt) {
 		return v
 	}
 	dst := l.nextReg(toType)
@@ -558,7 +597,7 @@ func isNilValue(v hir.Value) bool {
 	if _, ok := v.(*hir.ConstNil); ok {
 		return true
 	}
-	if cz, ok := v.(*hir.ConstZero); ok && strings.HasSuffix(cz.Typ.LLVMType(), "*") {
+	if cz, ok := v.(*hir.ConstZero); ok && strings.HasSuffix(sema.LLVMTypeOf(cz.Typ), "*") {
 		return true
 	}
 	return v.String() == "nil" || v.String() == "null"
@@ -579,6 +618,6 @@ func (l *Lowerer) findStruct(t sema.Type) (*sema.StructType, string) {
 	if t == nil {
 		return nil, ""
 	}
-	name := strings.TrimPrefix(t.TypeName(), "*")
+	name := strings.TrimPrefix(semaTypeName(t), "*")
 	return l.findStructByName(name)
 }

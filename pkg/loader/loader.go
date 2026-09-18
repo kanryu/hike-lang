@@ -104,44 +104,12 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 
 	pkgDecls := make(map[string][]ast.Decl)
 	pkgImports := make(map[string][]*ast.ImportDecl)
+	packageOrder := make([]string, 0)
+	seenPackages := make(map[string]bool)
 
-	fileQueue := []string{}
-	for _, p := range entryPaths {
-		absPath, err := filepath.Abs(p)
-		if err != nil {
-			return nil, err
-		}
-
-		if l.module == nil || l.module.RootDir == "" {
-			l.module, _ = mod.FindModuleRoot(filepath.Dir(absPath))
-			if l.module != nil {
-				l.rootDir = l.module.RootDir
-			}
-		}
-
-		fi, err := os.Stat(absPath)
-		if err != nil {
-			return nil, err
-		}
-
-		if fi.IsDir() {
-			files, err := l.findHikeFilesInDir(absPath)
-			if err != nil {
-				return nil, err
-			}
-			fileQueue = append(fileQueue, files...)
-		} else {
-			if !l.fileAllowed(absPath) {
-				continue
-			}
-			fileQueue = append(fileQueue, absPath)
-			dirFiles, _ := l.findHikeFilesInDir(filepath.Dir(absPath))
-			for _, df := range dirFiles {
-				if df != absPath {
-					fileQueue = append(fileQueue, df)
-				}
-			}
-		}
+	fileQueue, err := l.collectEntryFiles(entryPaths)
+	if err != nil {
+		return nil, err
 	}
 
 	for len(fileQueue) > 0 {
@@ -175,6 +143,10 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		if pkgName == "" {
 			pkgName = "main"
 		}
+		if !seenPackages[pkgName] {
+			seenPackages[pkgName] = true
+			packageOrder = append(packageOrder, pkgName)
+		}
 
 		pkgDecls[pkgName] = append(pkgDecls[pkgName], fileProg.Decls...)
 		for _, decl := range fileProg.Decls {
@@ -204,7 +176,12 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		}
 	}
 
-	for pkgName, decls := range pkgDecls {
+	// Keep package discovery order.  The semantic pass also keeps a short,
+	// unqualified alias for declarations in a merged program.  Iterating the
+	// map here made that alias depend on Go's randomized map order, so an
+	// unqualified type could resolve to the wrong imported package.
+	for _, pkgName := range packageOrder {
+		decls := pkgDecls[pkgName]
 		if pkgName != "main" {
 			mangledDecls := l.manglePackageDecls(pkgName, decls)
 			combinedProg.Decls = append(combinedProg.Decls, mangledDecls...)
@@ -218,6 +195,51 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 	}
 
 	return combinedProg, nil
+}
+
+func (l *Loader) collectEntryFiles(entryPaths []string) ([]string, error) {
+	fileQueue := []string{}
+	for _, p := range entryPaths {
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			return nil, err
+		}
+		l.ensureModuleRoot(absPath)
+
+		fi, err := os.Stat(absPath)
+		if err != nil {
+			return nil, err
+		}
+		if fi.IsDir() {
+			files, err := l.findHikeFilesInDir(absPath)
+			if err != nil {
+				return nil, err
+			}
+			fileQueue = append(fileQueue, files...)
+			continue
+		}
+		if !l.fileAllowed(absPath) {
+			continue
+		}
+		fileQueue = append(fileQueue, absPath)
+		dirFiles, _ := l.findHikeFilesInDir(filepath.Dir(absPath))
+		for _, df := range dirFiles {
+			if df != absPath {
+				fileQueue = append(fileQueue, df)
+			}
+		}
+	}
+	return fileQueue, nil
+}
+
+func (l *Loader) ensureModuleRoot(absPath string) {
+	if l.module != nil && l.module.RootDir != "" {
+		return
+	}
+	l.module, _ = mod.FindModuleRoot(filepath.Dir(absPath))
+	if l.module != nil {
+		l.rootDir = l.module.RootDir
+	}
 }
 
 func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
@@ -263,10 +285,26 @@ func (l *Loader) applyGoHikeReplacements(content string) {
 // manglePackageDecls はパッケージ内のトップレベル宣言を名前空間修飾（マングル）します。
 func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl {
 	var mangled []ast.Decl
+	localTypes := make(map[string]bool)
+	for _, decl := range decls {
+		if td, ok := decl.(*ast.TypeDecl); ok && td.Name != nil {
+			localTypes[td.Name.Value] = true
+		}
+	}
 
 	for _, decl := range decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
+			qualifyLocalReceiver(pkgName, d.Receiver, localTypes)
+			for _, param := range d.Params {
+				qualifyLocalTypeExpr(pkgName, param.Type, localTypes)
+			}
+			for _, ret := range d.ReturnTypes {
+				qualifyLocalTypeExpr(pkgName, ret, localTypes)
+			}
+			for _, param := range d.TypeParams {
+				qualifyLocalTypeExpr(pkgName, param.Constraint, localTypes)
+			}
 			// 外部 C 関数（Body == nil の extern 宣言）は C ライブラリのシンボルであるためマングルしない。
 			// 実体を持つ関数（Body != nil）のみ、main パッケージ以外でパッケージ名を付与してマングルする。
 			if d.Body != nil && (pkgName != "main" || d.Name.Value != "main") {
@@ -279,6 +317,10 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			mangled = append(mangled, d)
 
 		case *ast.TypeDecl:
+			qualifyLocalTypeExpr(pkgName, d.Type, localTypes)
+			for _, param := range d.TypeParams {
+				qualifyLocalTypeExpr(pkgName, param.Constraint, localTypes)
+			}
 			if pkgName != "main" {
 				d.Name.Value = pkgName + "_" + d.Name.Value
 			}
@@ -302,4 +344,80 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 	}
 
 	return mangled
+}
+
+// qualifyLocalReceiver keeps methods attached to the package-local type after
+// declarations are namespace-mangled.  Without this, a receiver such as
+// *StructType remains unqualified in the merged program and can be resolved to
+// an imported ast.StructType with the same short name.
+func qualifyLocalReceiver(pkgName string, receiver *ast.ParamDecl, localTypes map[string]bool) {
+	if receiver == nil || receiver.Type == nil || pkgName == "" || pkgName == "main" {
+		return
+	}
+	var named *ast.NamedType
+	switch typ := receiver.Type.(type) {
+	case *ast.NamedType:
+		named = typ
+	case *ast.PointerType:
+		named, _ = typ.Base.(*ast.NamedType)
+	}
+	if named == nil || named.Package != nil || named.Name == nil || !localTypes[named.Name.Value] {
+		return
+	}
+	named.Name.Value = pkgName + "_" + named.Name.Value
+}
+
+func qualifyLocalTypeExpr(pkgName string, typ ast.TypeExpr, localTypes map[string]bool) {
+	if typ == nil || pkgName == "" || pkgName == "main" {
+		return
+	}
+	switch t := typ.(type) {
+	case *ast.NamedType:
+		if t.Package == nil && t.Name != nil && localTypes[t.Name.Value] {
+			t.Name.Value = pkgName + "_" + t.Name.Value
+		}
+		for _, arg := range t.TypeArgs {
+			qualifyLocalTypeExpr(pkgName, arg, localTypes)
+		}
+	case *ast.PointerType:
+		qualifyLocalTypeExpr(pkgName, t.Base, localTypes)
+	case *ast.SliceType:
+		qualifyLocalTypeExpr(pkgName, t.Elem, localTypes)
+	case *ast.EllipsisType:
+		qualifyLocalTypeExpr(pkgName, t.Elem, localTypes)
+	case *ast.ArrayType:
+		qualifyLocalTypeExpr(pkgName, t.Elem, localTypes)
+	case *ast.MapType:
+		qualifyLocalTypeExpr(pkgName, t.Key, localTypes)
+		qualifyLocalTypeExpr(pkgName, t.Value, localTypes)
+	case *ast.ChanType:
+		qualifyLocalTypeExpr(pkgName, t.Elem, localTypes)
+	case *ast.FutureType:
+		for _, ret := range t.ReturnTypes {
+			qualifyLocalTypeExpr(pkgName, ret, localTypes)
+		}
+	case *ast.FuncType:
+		for _, param := range t.ParamTypes {
+			qualifyLocalTypeExpr(pkgName, param, localTypes)
+		}
+		for _, ret := range t.ReturnTypes {
+			qualifyLocalTypeExpr(pkgName, ret, localTypes)
+		}
+	case *ast.InterfaceType:
+		for _, method := range t.Methods {
+			for _, param := range method.ParamTypes {
+				qualifyLocalTypeExpr(pkgName, param, localTypes)
+			}
+			for _, ret := range method.ReturnTypes {
+				qualifyLocalTypeExpr(pkgName, ret, localTypes)
+			}
+		}
+		for _, embedded := range t.Embedded {
+			qualifyLocalTypeExpr(pkgName, embedded, localTypes)
+		}
+	case *ast.StructType:
+		for _, field := range t.Fields {
+			qualifyLocalTypeExpr(pkgName, field.Type, localTypes)
+		}
+	}
 }

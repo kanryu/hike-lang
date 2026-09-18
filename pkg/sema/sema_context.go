@@ -21,6 +21,7 @@ type Context struct {
 	Methods            map[string]*FuncType
 	Globals            map[string]Type
 	Constants          map[string]int64
+	StringConstants    map[string]string
 	FloatConstants     map[string]float64
 	Aliases            map[string]Type
 	GenericTypes       map[string]*ast.TypeDecl
@@ -46,20 +47,21 @@ func astIdentifierValue(id *ast.Identifier) string {
 
 func NewContext() *Context {
 	ctx := &Context{
-		Structs:        make(map[string]*StructType),
-		Interfaces:     make(map[string]*InterfaceType),
-		Functions:      make(map[string]*FuncType),
-		Methods:        make(map[string]*FuncType),
-		Globals:        make(map[string]Type),
-		Constants:      make(map[string]int64),
-		FloatConstants: make(map[string]float64),
-		Aliases:        make(map[string]Type),
-		GenericTypes:   make(map[string]*ast.TypeDecl),
-		GenericFuncs:   make(map[string]*ast.FuncDecl),
-		TypeParams:     make(map[string]*TypeParamType),
-		typeIDs:        make(map[string]int64),
-		nextTypeID:     1,
-		ResolvedCalls:  make(map[*ast.CallExpr]*FuncType),
+		Structs:         make(map[string]*StructType),
+		Interfaces:      make(map[string]*InterfaceType),
+		Functions:       make(map[string]*FuncType),
+		Methods:         make(map[string]*FuncType),
+		Globals:         make(map[string]Type),
+		Constants:       make(map[string]int64),
+		StringConstants: make(map[string]string),
+		FloatConstants:  make(map[string]float64),
+		Aliases:         make(map[string]Type),
+		GenericTypes:    make(map[string]*ast.TypeDecl),
+		GenericFuncs:    make(map[string]*ast.FuncDecl),
+		TypeParams:      make(map[string]*TypeParamType),
+		typeIDs:         make(map[string]int64),
+		nextTypeID:      1,
+		ResolvedCalls:   make(map[*ast.CallExpr]*FuncType),
 	}
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2
@@ -87,7 +89,7 @@ func (c *Context) GetTypeID(t Type) int64 {
 	if t == nil {
 		return 0
 	}
-	name := t.TypeName()
+	name := typeNameOf(t)
 	if id, exists := c.typeIDs[name]; exists {
 		return id
 	}
@@ -105,16 +107,8 @@ func (c *Context) LookupStruct(name string) (*StructType, string) {
 	if st, ok := c.Structs[name]; ok {
 		return st, name
 	}
-	// Go-Hike imports both ast.Program and hir.Program.  Imported Go-shaped
-	// signatures can lose the package qualifier during the reduced type pass;
-	// prefer the AST program for that unqualified name because it is the source
-	// program type consumed by parser/transform/lower.
-	for _, astName := range []string{"Program", "ArrayType"} {
-		if name == astName {
-			if st, ok := c.Structs["ast_"+astName]; ok {
-				return st, "ast_" + astName
-			}
-		}
+	if st, canonical := c.lookupSpecialASTStruct(name); st != nil {
+		return st, canonical
 	}
 	keys := make([]string, 0, len(c.Structs))
 	for k := range c.Structs {
@@ -126,6 +120,21 @@ func (c *Context) LookupStruct(name string) (*StructType, string) {
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) ||
 			strings.HasSuffix(k, "."+name) || strings.HasSuffix(name, "."+k) {
 			return v, k
+		}
+	}
+	return nil, ""
+}
+
+func (c *Context) lookupSpecialASTStruct(name string) (*StructType, string) {
+	// Go-Hike imports both ast.Program and hir.Program. Imported Go-shaped
+	// signatures can lose the package qualifier during the reduced type pass;
+	// prefer the AST program for those unqualified names.
+	for _, astName := range []string{"Program", "ArrayType"} {
+		if name != astName {
+			continue
+		}
+		if st, ok := c.Structs["ast_"+astName]; ok {
+			return st, "ast_" + astName
 		}
 	}
 	return nil, ""
@@ -170,6 +179,14 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 	}
 
 	// 旧形式で構築されたコンテキストとの互換性。こちらも完全一致のみ。
+	if fn, name := c.lookupLegacyMethod(recvTypeName, methodName); fn != nil {
+		return fn, name
+	}
+
+	return nil, ""
+}
+
+func (c *Context) lookupLegacyMethod(recvTypeName, methodName string) (*FuncType, string) {
 	for _, candidate := range receiverTypeCandidates(recvTypeName) {
 		isPtr := strings.HasPrefix(candidate, "*")
 		rawRecv := strings.TrimPrefix(candidate, "*")
@@ -184,7 +201,6 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 			}
 		}
 	}
-
 	return nil, ""
 }
 
@@ -255,6 +271,18 @@ func (c *Context) LookupConstant(name string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (c *Context) LookupStringConstant(name string) (string, bool) {
+	if val, ok := c.StringConstants[name]; ok {
+		return val, true
+	}
+	for k, v := range c.StringConstants {
+		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func (c *Context) LookupFloatConstant(name string) (float64, bool) {
@@ -343,7 +371,7 @@ func (c *Context) Implements(concrete Type, iface *InterfaceType) bool {
 	}
 
 	// 具象型（ポインタ型含む）のメソッド探索
-	recvName := concrete.TypeName()
+	recvName := typeNameOf(concrete)
 	for _, im := range iface.Methods {
 		fn, _ := c.LookupMethod(recvName, im.Name)
 		if fn == nil {
@@ -392,10 +420,10 @@ func (c *Context) typesCompatible(t1, t2 Type) bool {
 	if t1 == nil || t2 == nil {
 		return t1 == t2
 	}
-	if t1 == t2 || t1.TypeName() == t2.TypeName() {
+	if t1 == t2 || typeNameOf(t1) == typeNameOf(t2) {
 		return true
 	}
-	if isIntType(t1) && isIntType(t2) && t1.Size() == t2.Size() {
+	if isIntType(t1) && isIntType(t2) && SizeOf(t1) == SizeOf(t2) {
 		return true
 	}
 	if iface2, ok := t2.(*InterfaceType); ok {
@@ -414,8 +442,8 @@ func (c *Context) typesCompatible(t1, t2 Type) bool {
 }
 
 func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
-	concreteName := concrete.TypeName()
-	interfaceName := iface.TypeName()
+	concreteName := typeNameOf(concrete)
+	interfaceName := typeNameOf(iface)
 	if strings.HasPrefix(interfaceName, "ast_") {
 		return true
 	}
@@ -814,7 +842,7 @@ func specializationArgName(t Type) string {
 	if value, ok := t.(*ConstValueType); ok {
 		return fmt.Sprintf("const_%d", value.Value)
 	}
-	return strings.ReplaceAll(t.TypeName(), "*", "Ptr")
+	return strings.ReplaceAll(typeNameOf(t), "*", "Ptr")
 }
 
 func specializedInternalKeyFor(template *StructType, canonicalName string, args []Type) string {
@@ -830,7 +858,7 @@ func specializedInternalKeyFor(template *StructType, canonicalName string, args 
 		if cv, ok := arg.(*ConstValueType); ok {
 			parts[i] = fmt.Sprintf("%d", cv.Value)
 		} else if arg != nil {
-			parts[i] = arg.TypeName()
+			parts[i] = typeNameOf(arg)
 		}
 	}
 	return base + "@" + strings.Join(parts, "@")
@@ -843,7 +871,7 @@ func logGenericTypeResolution(source string, resolved *StructType) {
 	argNames := make([]string, len(resolved.TypeArgs))
 	for i, arg := range resolved.TypeArgs {
 		if arg != nil {
-			argNames[i] = arg.TypeName()
+			argNames[i] = typeNameOf(arg)
 		}
 	}
 	logger.LogVerbose2("[Verbose2] Sema generic type: %s[%s] -> name=%s internal=%s ir=%s\n",
@@ -1017,7 +1045,7 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 		return c.ResolveType(te)
 	}
 	if id, ok := e.(*ast.Identifier); ok {
-		switch id.Value {
+		switch astIdentifierValue(id) {
 		case "int":
 			return TypeInt
 		case "int64":
@@ -1057,13 +1085,13 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 		case "any":
 			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
 		}
-		if st, _ := c.LookupStruct(id.Value); st != nil {
+		if st, _ := c.LookupStruct(astIdentifierValue(id)); st != nil {
 			return st
 		}
-		if iface, _ := c.LookupInterface(id.Value); iface != nil {
+		if iface, _ := c.LookupInterface(astIdentifierValue(id)); iface != nil {
 			return iface
 		}
-		if alias, _ := c.LookupAlias(id.Value); alias != nil {
+		if alias, _ := c.LookupAlias(astIdentifierValue(id)); alias != nil {
 			return alias
 		}
 		return nil
@@ -1181,26 +1209,29 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.NilLiteral:
 		return &PointerType{Base: TypeByte}
 	case *ast.Identifier:
-		if e.Value == "..." {
+		if astIdentifierValue(e) == "..." {
 			return TypeVoid
 		}
-		switch e.Value {
+		switch astIdentifierValue(e) {
 		case "true", "false":
 			return TypeBool
 		}
-		if t, ok := locals[e.Value]; ok {
+		if t, ok := locals[astIdentifierValue(e)]; ok {
 			return t
 		}
-		if t, ok := c.Globals[e.Value]; ok {
+		if t, ok := c.Globals[astIdentifierValue(e)]; ok {
 			return t
 		}
-		if _, ok := c.LookupConstant(e.Value); ok {
+		if _, ok := c.LookupConstant(astIdentifierValue(e)); ok {
 			return TypeInt
 		}
-		if _, ok := c.LookupFloatConstant(e.Value); ok {
+		if _, ok := c.LookupStringConstant(astIdentifierValue(e)); ok {
+			return TypeString
+		}
+		if _, ok := c.LookupFloatConstant(astIdentifierValue(e)); ok {
 			return TypeFloat64
 		}
-		if fn, ok := c.Functions[e.Value]; ok {
+		if fn, ok := c.Functions[astIdentifierValue(e)]; ok {
 			return fn
 		}
 		return TypeInt
@@ -1208,7 +1239,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.GenericInstExpr:
 		var baseName string
 		if id, ok := e.Left.(*ast.Identifier); ok {
-			baseName = id.Value
+			baseName = astIdentifierValue(id)
 		} else if mem, ok := e.Left.(*ast.MemberExpr); ok {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				baseName = pkgId.Value + "_" + mem.Field.Value
@@ -1338,6 +1369,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			if _, ok := c.LookupConstant(qualified); ok {
 				return TypeInt
 			}
+			if _, ok := c.LookupStringConstant(qualified); ok {
+				return TypeString
+			}
 			if _, ok := c.LookupFloatConstant(qualified); ok {
 				return TypeFloat64
 			}
@@ -1367,7 +1401,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			}
 		}
 
-		if fn, _ := c.LookupMethod(objType.TypeName(), e.Field.Value); fn != nil {
+		if fn, _ := c.LookupMethod(typeNameOf(objType), e.Field.Value); fn != nil {
 			return fn
 		}
 
@@ -1407,7 +1441,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			}
 		}
 		if id, ok := e.Function.(*ast.Identifier); ok {
-			switch id.Value {
+			switch astIdentifierValue(id) {
 			case "len", "cap", "sizeof", "recover": // sizeof/recover 組み込みサポート
 				return TypeInt
 			case "panic":
@@ -1452,7 +1486,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 							IsMethod:     true,
 						}
 					}
-				} else if fn, _ := c.LookupMethod(objType.TypeName(), mem.Field.Value); fn != nil {
+				} else if fn, _ := c.LookupMethod(typeNameOf(objType), mem.Field.Value); fn != nil {
 					c.ResolvedCalls[e] = fn
 				}
 			}
@@ -1537,7 +1571,7 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 			if !c.Implements(actualType, iface) {
 				line, col := expressionPosition(expr)
 				panic(fmt.Sprintf("[Sema Error] line %d:%d: type '%s' does not implement interface '%s'",
-					line, col, actualType.TypeName(), iface.TypeName()))
+					line, col, typeNameOf(actualType), typeNameOf(iface)))
 			}
 		}
 	}
@@ -1583,6 +1617,25 @@ func expressionPosition(expr ast.Expression) (int, int) {
 // 定数評価 (Constant Folding)
 // -------------------------------------------------------------
 
+func (c *Context) evalConstString(expr ast.Expression) (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	switch e := expr.(type) {
+	case *ast.StringLiteral:
+		return e.Value, true
+	case *ast.Identifier:
+		return c.LookupStringConstant(astIdentifierValue(e))
+	case *ast.MemberExpr:
+		if pkgID, ok := e.Object.(*ast.Identifier); ok {
+			if value, found := c.LookupStringConstant(pkgID.Value + "_" + e.Field.Value); found {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
 func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 	if expr == nil {
 		return 0, false
@@ -1593,7 +1646,7 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 	case *ast.CharLiteral:
 		return int64(e.CodePoint), true
 	case *ast.Identifier:
-		if val, ok := c.LookupConstant(e.Value); ok {
+		if val, ok := c.LookupConstant(astIdentifierValue(e)); ok {
 			return val, true
 		}
 	case *ast.PrefixExpr:
@@ -1645,7 +1698,7 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 		}
 	case *ast.CallExpr:
 		// sizeof(Type) または sizeof(Expr) のコンパイル時定数評価
-		if id, ok := e.Function.(*ast.Identifier); ok && id.Value == "sizeof" {
+		if id, ok := e.Function.(*ast.Identifier); ok && astIdentifierValue(id) == "sizeof" {
 			if len(e.Args) == 1 {
 				arg := e.Args[0]
 				logger.LogVerbose2("[Verbose2] Sema evalConstInt CallExpr sizeof: arg=%T (%+v)\n", arg, arg)
@@ -1665,7 +1718,7 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 					if pt, isPtr := t.(*PointerType); isPtr {
 						t = pt.Base
 					}
-					if st, _ := c.LookupStruct(t.TypeName()); st != nil {
+					if st, _ := c.LookupStruct(typeNameOf(t)); st != nil {
 						if st.IsGeneric() || len(st.Fields) == 0 {
 							logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: struct '%s' unexpanded, postponing\n", st.Name)
 							return 0, false
@@ -1677,7 +1730,7 @@ func (c *Context) evalConstInt(expr ast.Expression) (int64, bool) {
 						}
 						return 0, false
 					}
-					sz := int64(t.Size())
+					sz := int64(SizeOf(t))
 					logger.LogVerbose2("[Verbose2] Sema CallExpr sizeof: folded type size = %d\n", sz)
 					if sz > 0 {
 						return sz, true
@@ -1715,10 +1768,10 @@ func (c *Context) evalConstFloat(expr ast.Expression) (float64, bool) {
 	case *ast.CharLiteral:
 		return float64(e.CodePoint), true
 	case *ast.Identifier:
-		if val, ok := c.LookupFloatConstant(e.Value); ok {
+		if val, ok := c.LookupFloatConstant(astIdentifierValue(e)); ok {
 			return val, true
 		}
-		if val, ok := c.LookupConstant(e.Value); ok {
+		if val, ok := c.LookupConstant(astIdentifierValue(e)); ok {
 			return float64(val), true
 		}
 	case *ast.PrefixExpr:
@@ -1767,7 +1820,7 @@ func (c *Context) CheckIndexable(t Type) (keyType Type, valType Type, hasOk bool
 	if t == nil {
 		return nil, nil, false, nil
 	}
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
 	st, _ := c.LookupStruct(rawName)
@@ -1828,7 +1881,7 @@ func (c *Context) CheckIndexAssignable(t Type) (keyType Type, valType Type, fn *
 	if t == nil {
 		return nil, nil, nil
 	}
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
 	st, _ := c.LookupStruct(rawName)
@@ -1883,7 +1936,7 @@ func (c *Context) CheckSliceable(t Type) (resType Type, hasOk bool, fn *FuncType
 	if t == nil {
 		return nil, false, nil
 	}
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
 	st, _ := c.LookupStruct(rawName)
@@ -1943,7 +1996,7 @@ func (c *Context) CheckIterable(t Type) (elemType Type, fnInit *FuncType, fnNext
 	if t == nil {
 		return nil, nil, nil
 	}
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
 	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
@@ -1973,7 +2026,7 @@ func (c *Context) CheckAsyncIterable(t Type) (elemType Type, fnInit *FuncType, f
 	if t == nil {
 		return nil, nil, nil
 	}
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
 	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
@@ -2012,7 +2065,7 @@ func (c *Context) CheckMapBehavior(t Type) (Type, Type, bool) {
 		return nil, nil, false
 	}
 
-	typeName := t.TypeName()
+	typeName := typeNameOf(t)
 	typeName = strings.TrimPrefix(typeName, "*")
 
 	baseTypeName := typeName
@@ -2101,7 +2154,7 @@ func (c *Context) ResolveIndexExprType(leftType Type, indexExpr ast.Expression) 
 		return TypeByte, nil
 	}
 
-	return TypeVoid, fmt.Errorf("type '%s' does not support indexing (implement 'Indexable' with Get method to enable)", leftType.TypeName())
+	return TypeVoid, fmt.Errorf("type '%s' does not support indexing (implement 'Indexable' with Get method to enable)", typeNameOf(leftType))
 }
 
 func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) (Type, error) {
@@ -2127,7 +2180,7 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 		return resType, nil
 	}
 
-	return TypeVoid, fmt.Errorf("type '%s' does not support slicing (implement 'Sliceable' with Slice(low, high int) to enable)", leftType.TypeName())
+	return TypeVoid, fmt.Errorf("type '%s' does not support slicing (implement 'Sliceable' with Slice(low, high int) to enable)", typeNameOf(leftType))
 }
 
 func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
@@ -2151,38 +2204,41 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 	case *ast.NilLiteral:
 		return &PointerType{Base: TypeByte}
 	case *ast.Identifier:
-		if t, ok := locals[e.Value]; ok {
+		if t, ok := locals[astIdentifierValue(e)]; ok {
 			return t
 		}
-		if t, ok := c.Globals[e.Value]; ok {
+		if t, ok := c.Globals[astIdentifierValue(e)]; ok {
 			return t
 		}
-		if _, ok := c.LookupConstant(e.Value); ok {
+		if _, ok := c.LookupConstant(astIdentifierValue(e)); ok {
 			return TypeInt
 		}
-		if _, ok := c.LookupFloatConstant(e.Value); ok {
+		if _, ok := c.LookupStringConstant(astIdentifierValue(e)); ok {
+			return TypeString
+		}
+		if _, ok := c.LookupFloatConstant(astIdentifierValue(e)); ok {
 			return TypeFloat64
 		}
-		if t, ok := c.Functions[e.Value]; ok {
+		if t, ok := c.Functions[astIdentifierValue(e)]; ok {
 			return t
 		}
-		switch e.Value {
+		switch astIdentifierValue(e) {
 		case "true", "false":
 			return TypeBool
 		case "len", "cap", "append", "delete", "make", "sizeof":
-			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeInt}}
+			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeInt}}
 		case "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte":
-			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeInt}}
+			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeInt}}
 		case "string", "cstring":
-			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeString}}
+			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeString}}
 		case "bool":
-			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeBool}}
+			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeBool}}
 		case "float32", "float64":
-			return &FuncType{Name: e.Value, ReturnTypes: []Type{TypeFloat64}}
+			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeFloat64}}
 		}
 
 		// 未定義識別子: エラーを記録して TypeBad を返却
-		reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", e.Value)
+		reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", astIdentifierValue(e))
 		return TypeBad
 
 	case *ast.PrefixExpr:
@@ -2192,14 +2248,14 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		}
 		if e.Operator == "!" {
 			if right != TypeBool {
-				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot use %s as bool", right.TypeName())
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot use %s as bool", typeNameOf(right))
 				return TypeBad
 			}
 			return TypeBool
 		}
 		if e.Operator == "*" {
 			if _, ok := right.(*PointerType); !ok {
-				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot dereference non-pointer type %s", right.TypeName())
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot dereference non-pointer type %s", typeNameOf(right))
 				return TypeBad
 			}
 		}
@@ -2216,7 +2272,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 
 		if !c.typesCompatible(lt, rt) && isDiagnosticLiteral(e.Left) && isDiagnosticLiteral(e.Right) {
 			reporter.Errorf(filename, e.Token.Line, e.Token.Col, "invalid operation: %s %s %s (mismatched types %s and %s)",
-				e.Left.TokenLiteral(), e.Operator, e.Right.TokenLiteral(), lt.TypeName(), rt.TypeName())
+				e.Left.TokenLiteral(), e.Operator, e.Right.TokenLiteral(), typeNameOf(lt), typeNameOf(rt))
 			return TypeBad
 		}
 		return lt
@@ -2267,14 +2323,14 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		_, directInteger := e.Left.(*ast.IntegerLiteral)
 		directBool := false
 		if ident, ok := e.Left.(*ast.Identifier); ok {
-			directBool = ident.Value == "true" || ident.Value == "false"
+			directBool = astIdentifierValue(ident) == "true" || astIdentifierValue(ident) == "false"
 		}
 		if !directInteger && !directBool {
 			return TypeInt
 		}
 		if _, ok := left.(*SliceType); !ok {
 			if _, ok := left.(*ArrayType); !ok {
-				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "type '%s' does not support indexing", left.TypeName())
+				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "type '%s' does not support indexing", typeNameOf(left))
 				return TypeBad
 			}
 		}

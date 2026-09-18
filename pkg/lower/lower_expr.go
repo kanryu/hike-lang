@@ -194,7 +194,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 					return 0
 				}
 			}
-			if intRank(targetT.LLVMType()) > 0 {
+			if intRank(sema.LLVMTypeOf(targetT)) > 0 {
 				return &hir.ConstInt{Val: int64(cl.CodePoint), Typ: targetT}
 			}
 		}
@@ -210,7 +210,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			val = elem0
 		}
 
-		if val.Type().LLVMType() == targetT.LLVMType() {
+		if sema.LLVMTypeOf(val.Type()) == sema.LLVMTypeOf(targetT) {
 			return val
 		}
 		if iface, ok := targetT.(*sema.InterfaceType); ok {
@@ -238,7 +238,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
 					return dst
 				}
-				if srcIface.TypeName() == iface.TypeName() {
+				if semaTypeName(srcIface) == semaTypeName(iface) {
 					return val
 				}
 			}
@@ -291,6 +291,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		}
 		if name == "false" {
 			return &hir.ConstBool{Val: false, Typ: sema.TypeBool}
+		}
+		if c, ok := e.root.semaCtx.LookupStringConstant(name); ok {
+			return e.root.getStringConst(c)
 		}
 		if c, ok := e.root.semaCtx.LookupConstant(name); ok {
 			return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
@@ -386,6 +389,15 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return dst
 		}
 		val := e.LowerExpr(node.Right)
+		if val == nil {
+			panic(fmt.Sprintf("[Lower Error] unary operator '%s' produced no value for %T", node.Operator, node.Right))
+		}
+		if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
+			panic(fmt.Sprintf("[Lower Error] unary operator '%s' produced a nil register for %T at %d:%d", node.Operator, node.Right, node.Token.Line, node.Token.Col))
+		}
+		if val.Type() == nil {
+			panic(fmt.Sprintf("[Lower Error] unary operator '%s' produced an untyped value for %T at %d:%d", node.Operator, node.Right, node.Token.Line, node.Token.Col))
+		}
 		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
 			elem0 := e.root.nextReg(tup.Types[0])
 			e.root.emit(&hir.InstrExtractValue{Dst: elem0, Agg: val, Index: 0})
@@ -419,7 +431,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.SliceLiteral:
 		slType := e.root.semaCtx.ResolveType(node.Type).(*sema.SliceType)
 		count := len(node.Elements)
-		elemSize := slType.Elem.Size()
+		elemSize := sema.SizeOf(slType.Elem)
 		if elemSize <= 0 {
 			elemSize = 1
 		}
@@ -455,7 +467,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			if baseType == sema.TypeString {
 				basePtr, baseOffset, baseLen32 := e.root.stringViewParts(baseVal)
 				baseLen := hir.Value(baseLen32)
-				if sema.TypeInt.LLVMType() != sema.TypeInt32.LLVMType() {
+				if sema.LLVMTypeOf(sema.TypeInt) != sema.LLVMTypeOf(sema.TypeInt32) {
 					baseLen64 := e.root.nextReg(sema.TypeInt)
 					e.root.emit(&hir.InstrCast{Dst: baseLen64, Val: baseLen32, ToType: sema.TypeInt})
 					baseLen = baseLen64
@@ -497,8 +509,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		// ユーザー定義コレクション構造体の Sliceable (Slice(low, high int))
 		objPtr := e.LowerStructPtr(node.Left)
 		sliceFnName, sliceFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, "Slice", objPtr)
-		if strings.Contains(baseType.TypeName(), "__") {
-			parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+		if strings.Contains(semaTypeName(baseType), "__") {
+			parts := strings.SplitN(strings.TrimPrefix(semaTypeName(baseType), "*"), "__", 2)
 			baseName := parts[0]
 			typeSuffix := parts[1]
 			specSlice := fmt.Sprintf("%s_Slice_%s", baseName, typeSuffix)
@@ -508,8 +520,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				found = true
 			}
 		}
-		if !found && strings.Contains(baseType.TypeName(), "__") {
-			baseName := strings.Split(strings.TrimPrefix(baseType.TypeName(), "*"), "__")[0]
+		if !found && strings.Contains(semaTypeName(baseType), "__") {
+			baseName := strings.Split(strings.TrimPrefix(semaTypeName(baseType), "*"), "__")[0]
 			if st, _ := e.root.semaCtx.LookupStruct(baseName); st != nil {
 				sliceFnName, sliceFn, finalRecv, found = e.root.Call.ResolveMethod(st, "Slice", objPtr)
 			}
@@ -546,8 +558,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				highVal = e.root.emitValueCoerce(highVal, sema.TypeInt)
 			} else {
 				lenFnName, lenFn, lenRecv, lenFound := e.root.Call.ResolveMethod(baseType, "Len", objPtr)
-				if strings.Contains(baseType.TypeName(), "__") {
-					parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+				if strings.Contains(semaTypeName(baseType), "__") {
+					parts := strings.SplitN(strings.TrimPrefix(semaTypeName(baseType), "*"), "__", 2)
 					baseName := parts[0]
 					typeSuffix := parts[1]
 					specLen := fmt.Sprintf("%s_Len_%s", baseName, typeSuffix)
@@ -651,7 +663,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 			capVal = lenReg
 		} else {
-			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", baseType.TypeName()))
+			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", semaTypeName(baseType)))
 		}
 
 		lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
@@ -699,7 +711,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 					if pt, isPtr := t.(*sema.PointerType); isPtr {
 						t = pt.Base
 					}
-					sz := int64(t.Size())
+					sz := int64(sema.SizeOf(t))
 					if st, _ := e.root.findStruct(t); st != nil {
 						stSz := int64(st.Size())
 						if stSz > sz {
@@ -717,7 +729,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 						}
 						logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: struct '%s', size = %d\n", st.Name, sz)
 					} else {
-						logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: type '%s', size = %d\n", t.TypeName(), sz)
+						logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: type '%s', size = %d\n", semaTypeName(t), sz)
 					}
 					logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: folded to %d\n", sz)
 					return &hir.ConstInt{Val: sz, Typ: sema.TypeInt}
@@ -731,6 +743,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.MemberExpr:
 		if pkgId, okPkg := node.Object.(*ast.Identifier); okPkg {
 			qualified := pkgId.Value + "_" + node.Field.Value
+			if c, ok := e.root.semaCtx.LookupStringConstant(qualified); ok {
+				return e.root.getStringConst(c)
+			}
 			if c, ok := e.root.semaCtx.LookupConstant(qualified); ok {
 				return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
 			}
@@ -818,7 +833,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		if file == "" {
 			file = "input.hike"
 		}
-		panic(fmt.Sprintf("%s:%d:%d: field or method '%s' not found on type '%s'", file, node.Field.Token.Line, node.Field.Token.Col, node.Field.Value, baseType.TypeName()))
+		panic(fmt.Sprintf("%s:%d:%d: field or method '%s' not found on type '%s'", file, node.Field.Token.Line, node.Field.Token.Col, node.Field.Value, semaTypeName(baseType)))
 
 	case *ast.IndexExpr:
 		return e.LowerIndexExpr(node)
@@ -976,8 +991,8 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	}
 
 	getFnName, getFn, finalRecv, found := e.root.Call.ResolveMethod(baseType, "Get", objPtr)
-	if strings.Contains(baseType.TypeName(), "__") {
-		parts := strings.SplitN(strings.TrimPrefix(baseType.TypeName(), "*"), "__", 2)
+	if strings.Contains(semaTypeName(baseType), "__") {
+		parts := strings.SplitN(strings.TrimPrefix(semaTypeName(baseType), "*"), "__", 2)
 		baseName := parts[0]
 		typeSuffix := parts[1]
 		specGet := fmt.Sprintf("%s_Get_%s", baseName, typeSuffix)
@@ -987,8 +1002,8 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 			found = true
 		}
 	}
-	if !found && strings.Contains(baseType.TypeName(), "__") {
-		baseName := strings.Split(strings.TrimPrefix(baseType.TypeName(), "*"), "__")[0]
+	if !found && strings.Contains(semaTypeName(baseType), "__") {
+		baseName := strings.Split(strings.TrimPrefix(semaTypeName(baseType), "*"), "__")[0]
 		if st, _ := e.root.semaCtx.LookupStruct(baseName); st != nil {
 			getFnName, getFn, finalRecv, found = e.root.Call.ResolveMethod(st, "Get", objPtr)
 		}
@@ -1094,7 +1109,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	if file == "" {
 		file = "input.hike"
 	}
-	panic(fmt.Sprintf("%s:%d:%d: unsupported index target type: %s", file, node.Token.Line, node.Token.Col, baseType.TypeName()))
+	panic(fmt.Sprintf("%s:%d:%d: unsupported index target type: %s", file, node.Token.Line, node.Token.Col, semaTypeName(baseType)))
 }
 
 // lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
@@ -1267,7 +1282,7 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			if file == "" {
 				file = "input.hike"
 			}
-			panic(fmt.Sprintf("%s:%d:%d: type '%s' has no fields", file, node.Field.Token.Line, node.Field.Token.Col, baseType.TypeName()))
+			panic(fmt.Sprintf("%s:%d:%d: type '%s' has no fields", file, node.Field.Token.Line, node.Field.Token.Col, semaTypeName(baseType)))
 		}
 		fieldPtr, _, _, found := e.ResolveFieldPath(st, sName, basePtr, node.Field.Value)
 		if !found {
@@ -1314,7 +1329,7 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		if leftType == sema.TypeString || leftType == sema.TypeCString || (leftType != nil && (leftType.TypeName() == "string" || leftType.TypeName() == "cstring")) {
+		if leftType == sema.TypeString || leftType == sema.TypeCString || semaTypeName(leftType) == "string" || semaTypeName(leftType) == "cstring" {
 			elemPtrType := &sema.PointerType{Base: sema.TypeByte}
 			elemPtr := e.root.nextReg(elemPtrType)
 			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: leftVal, Index: idxVal})
@@ -1341,7 +1356,7 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		panic(fmt.Sprintf("[Lower Error] cannot index type '%s' as lvalue", leftType.TypeName()))
+		panic(fmt.Sprintf("[Lower Error] cannot index type '%s' as lvalue", semaTypeName(leftType)))
 
 	default:
 		panic(fmt.Sprintf("[Lower Error] expression is not an lvalue: %T", expr))
@@ -1600,7 +1615,7 @@ func (e *ExprLowerer) lowerShiftWithCarry(node *ast.BinaryExpr) hir.Value {
 
 	var carryReg *hir.Reg
 	if node.Operator == "<<" {
-		width := integerBitWidth(valueType.LLVMType())
+		width := integerBitWidth(sema.LLVMTypeOf(valueType))
 		carryReg = e.root.nextReg(valueType)
 		e.root.emit(&hir.InstrBinary{
 			Dst:          carryReg,
@@ -1751,7 +1766,7 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	}
 
 	unpackedReg := e.root.nextReg(targetType)
-	if strings.HasSuffix(targetType.LLVMType(), "*") {
+	if strings.HasSuffix(sema.LLVMTypeOf(targetType), "*") {
 		e.root.emit(&hir.InstrCast{Dst: unpackedReg, Val: dataPtrReg, ToType: targetType})
 	} else {
 		typedPtr := e.root.nextReg(&sema.PointerType{Base: targetType})

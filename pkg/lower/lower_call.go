@@ -113,6 +113,44 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 		c.root.symbolTypes[k] = v
 	}
 
+	fixedParams := c.bindInlineVariadicParams(fnDecl, call)
+
+	var varArgs []ast.Expression
+	if len(call.Args) > len(fixedParams) {
+		varArgs = call.Args[len(fixedParams):]
+	}
+	c.currentVarArgs = varArgs
+
+	retVal := c.lowerInlineVariadicBody(fnDecl)
+
+	c.currentVarArgs = prevVarArgs
+	c.root.symbols = prevSymbols
+	c.root.symbolTypes = prevTypes
+
+	return retVal
+}
+
+func (c *CallLowerer) lowerInlineVariadicBody(fnDecl *ast.FuncDecl) hir.Value {
+	var retVal hir.Value
+	if fnDecl.Body != nil {
+		for _, stmt := range fnDecl.Body.Statements {
+			if retStmt, isRet := stmt.(*ast.ReturnStmt); isRet {
+				if len(retStmt.Values) > 0 {
+					retVal = c.root.Expr.LowerExpr(retStmt.Values[0])
+				}
+				break
+			}
+			c.root.Stmt.LowerStmt(stmt)
+		}
+	}
+	if retVal == nil && len(fnDecl.ReturnTypes) > 0 {
+		retType := c.root.semaCtx.ResolveType(fnDecl.ReturnTypes[0])
+		retVal = c.root.defaultConstValue(retType)
+	}
+	return retVal
+}
+
+func (c *CallLowerer) bindInlineVariadicParams(fnDecl *ast.FuncDecl, call *ast.CallExpr) []*ast.ParamDecl {
 	var fixedParams []*ast.ParamDecl
 	for _, p := range fnDecl.Params {
 		if !p.IsVariadic {
@@ -125,7 +163,7 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 		if p.Type != nil {
 			pType = c.root.semaCtx.ResolveType(p.Type)
 		}
-		var val hir.Value = c.root.defaultConstValue(pType)
+		val := c.root.defaultConstValue(pType)
 		if i < len(call.Args) {
 			val = c.root.Expr.LowerExpr(call.Args[i])
 			val = c.root.emitValueCoerce(val, pType)
@@ -139,36 +177,7 @@ func (c *CallLowerer) inlineVariadicCall(fnDecl *ast.FuncDecl, call *ast.CallExp
 		c.root.symbols[p.Name.Value] = ptrReg
 		c.root.symbolTypes[p.Name.Value] = pType
 	}
-
-	var varArgs []ast.Expression
-	if len(call.Args) > len(fixedParams) {
-		varArgs = call.Args[len(fixedParams):]
-	}
-	c.currentVarArgs = varArgs
-
-	var retVal hir.Value = nil
-	if fnDecl.Body != nil {
-		for _, stmt := range fnDecl.Body.Statements {
-			if retStmt, isRet := stmt.(*ast.ReturnStmt); isRet {
-				if len(retStmt.Values) > 0 {
-					retVal = c.root.Expr.LowerExpr(retStmt.Values[0])
-				}
-				break
-			}
-			c.root.Stmt.LowerStmt(stmt)
-		}
-	}
-
-	if retVal == nil && len(fnDecl.ReturnTypes) > 0 {
-		retType := c.root.semaCtx.ResolveType(fnDecl.ReturnTypes[0])
-		retVal = c.root.defaultConstValue(retType)
-	}
-
-	c.currentVarArgs = prevVarArgs
-	c.root.symbols = prevSymbols
-	c.root.symbolTypes = prevTypes
-
-	return retVal
+	return fixedParams
 }
 
 // -----------------------------------------------------------------------------
@@ -364,21 +373,21 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		return "", nil, nil, false
 	}
 
-	rawTypeName := strings.TrimPrefix(recvType.TypeName(), "*")
+	rawTypeName := strings.TrimPrefix(semaTypeName(recvType), "*")
 	shortTypeName := rawTypeName
 	if idx := strings.LastIndex(rawTypeName, "_"); idx != -1 {
 		shortTypeName = rawTypeName[idx+1:]
 	}
 
-	if fn, canonical := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
+	if fn, canonical := c.root.semaCtx.LookupMethod(semaTypeName(recvType), methodName); fn != nil {
 		targetName := canonical
 		if semaFuncIRName(fn) != "" {
 			targetName = semaFuncIRName(fn)
 		}
 		return targetName, fn, curPtr, true
 	}
-	if !strings.HasPrefix(recvType.TypeName(), "*") {
-		if fn, canonical := c.root.semaCtx.LookupMethod("*"+recvType.TypeName(), methodName); fn != nil {
+	if !strings.HasPrefix(semaTypeName(recvType), "*") {
+		if fn, canonical := c.root.semaCtx.LookupMethod("*"+semaTypeName(recvType), methodName); fn != nil {
 			targetName := canonical
 			if semaFuncIRName(fn) != "" {
 				targetName = semaFuncIRName(fn)
@@ -401,7 +410,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 	}
 
 	for aliasName, aliasType := range c.root.semaCtx.Aliases {
-		if aliasType.TypeName() == rawTypeName || aliasType.TypeName() == shortTypeName {
+		if semaTypeName(aliasType) == rawTypeName || semaTypeName(aliasType) == shortTypeName {
 			candidates = append(candidates,
 				sema.CanonicalMethodName(aliasName, methodName),
 				aliasName+"_"+methodName,
@@ -422,7 +431,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 				return k, fn, curPtr, true
 			}
 			for aliasName, aliasType := range c.root.semaCtx.Aliases {
-				if aliasType.TypeName() == rawTypeName || aliasType.TypeName() == shortTypeName {
+				if semaTypeName(aliasType) == rawTypeName || semaTypeName(aliasType) == shortTypeName {
 					if strings.Contains(k, aliasName) {
 						return k, fn, curPtr, true
 					}
@@ -472,7 +481,7 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 		return c.root.defaultConstValue(slType)
 	}
 
-	elemSize := elemType.Size()
+	elemSize := sema.SizeOf(elemType)
 	if elemSize <= 0 {
 		elemSize = sema.PointerSize
 	}
@@ -515,55 +524,7 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 
 func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Type, isVariadic bool, isCFunc bool, variadicElem sema.Type, hasEllipsis bool) []hir.Value {
 	if isCFunc && isVariadic {
-		args := make([]hir.Value, 0, len(callArgs))
-		for i, arg := range callArgs {
-			if id, ok := arg.(*ast.Identifier); ok && id.Value == "..." {
-				for _, vArg := range c.currentVarArgs {
-					vVal := c.root.Expr.LowerExpr(vArg)
-					if vVal.Type() == sema.TypeString || vVal.Type().TypeName() == "string" {
-						vVal = c.lowerStringToCString(vVal)
-					}
-					if vVal.Type() == sema.TypeBool || vVal.Type().LLVMType() == "i1" {
-						extReg := c.root.nextReg(sema.TypeInt)
-						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeInt})
-						vVal = extReg
-					} else if vVal.Type() == sema.TypeByte || vVal.Type().LLVMType() == "i8" {
-						extReg := c.root.nextReg(sema.TypeInt)
-						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeInt})
-						vVal = extReg
-					} else if vVal.Type() == sema.TypeFloat32 || vVal.Type().LLVMType() == "float" {
-						extReg := c.root.nextReg(sema.TypeFloat64)
-						c.root.emit(&hir.InstrCast{Dst: extReg, Val: vVal, ToType: sema.TypeFloat64})
-						vVal = extReg
-					}
-					args = append(args, vVal)
-				}
-				continue
-			}
-			val := c.root.Expr.LowerExpr(arg)
-			if isCFunc && (val.Type() == sema.TypeString || val.Type().TypeName() == "string") {
-				val = c.lowerStringToCString(val)
-			}
-			if i >= len(paramTypes) {
-				if val.Type() == sema.TypeBool || val.Type().LLVMType() == "i1" {
-					extReg := c.root.nextReg(sema.TypeInt)
-					c.root.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeInt})
-					val = extReg
-				} else if val.Type() == sema.TypeByte || val.Type().LLVMType() == "i8" {
-					extReg := c.root.nextReg(sema.TypeInt)
-					c.root.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeInt})
-					val = extReg
-				} else if val.Type() == sema.TypeFloat32 || val.Type().LLVMType() == "float" {
-					extReg := c.root.nextReg(sema.TypeFloat64)
-					c.root.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: sema.TypeFloat64})
-					val = extReg
-				}
-			} else if !(isCFunc && (paramTypes[i] == sema.TypeString || paramTypes[i].TypeName() == "string")) {
-				val = c.root.emitValueCoerce(val, paramTypes[i])
-			}
-			args = append(args, val)
-		}
-		return args
+		return c.lowerCVariadicArgs(callArgs, paramTypes)
 	}
 
 	if isVariadic && len(paramTypes) > 0 {
@@ -578,7 +539,7 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 		if hasEllipsis {
 			if len(callArgs) > fixedCount {
 				lastArg := callArgs[fixedCount]
-				if id, ok := lastArg.(*ast.Identifier); ok && id.Value == "..." {
+				if id, ok := lastArg.(*ast.Identifier); ok && astIDValue(id) == "..." {
 					if c.root.curFunc != nil && len(c.root.curFunc.Params) > 0 && c.root.curFunc.IsVariadic {
 						parentSlice := c.root.curFunc.Params[len(c.root.curFunc.Params)-1]
 						args = append(args, parentSlice)
@@ -613,26 +574,71 @@ func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Typ
 	args := make([]hir.Value, len(callArgs))
 	for i, arg := range callArgs {
 		val := c.root.Expr.LowerExpr(arg)
-		if isCFunc && (val.Type() == sema.TypeString || val.Type().TypeName() == "string") {
+		if isCFunc && (val.Type() == sema.TypeString || semaTypeName(val.Type()) == "string") {
 			val = c.lowerStringToCString(val)
 		}
 		if i < len(paramTypes) {
 			if expectedPtr, okExpected := paramTypes[i].(*sema.PointerType); okExpected {
 				if actualPtr, okActual := val.Type().(*sema.PointerType); okActual {
-					if nestedPtr, okNested := actualPtr.Base.(*sema.PointerType); okNested && nestedPtr.Base.TypeName() == expectedPtr.Base.TypeName() {
+					if nestedPtr, okNested := actualPtr.Base.(*sema.PointerType); okNested && semaTypeName(nestedPtr.Base) == semaTypeName(expectedPtr.Base) {
 						loaded := c.root.nextReg(actualPtr.Base)
 						c.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: val})
 						val = loaded
 					}
 				}
 			}
-			if !(isCFunc && (paramTypes[i] == sema.TypeString || paramTypes[i].TypeName() == "string")) {
+			if !(isCFunc && (paramTypes[i] == sema.TypeString || semaTypeName(paramTypes[i]) == "string")) {
 				val = c.root.emitValueCoerce(val, paramTypes[i])
 			}
 		}
 		args[i] = val
 	}
 	return args
+}
+
+func (c *CallLowerer) lowerCVariadicArgs(callArgs []ast.Expression, paramTypes []sema.Type) []hir.Value {
+	args := make([]hir.Value, 0, len(callArgs))
+	for i, arg := range callArgs {
+		if id, ok := arg.(*ast.Identifier); ok && astIDValue(id) == "..." {
+			for _, vArg := range c.currentVarArgs {
+				vVal := c.root.Expr.LowerExpr(vArg)
+				if vVal.Type() == sema.TypeString || semaTypeName(vVal.Type()) == "string" {
+					vVal = c.lowerStringToCString(vVal)
+				}
+				vVal = c.promoteCVarArg(vVal)
+				args = append(args, vVal)
+			}
+			continue
+		}
+		val := c.root.Expr.LowerExpr(arg)
+		if val.Type() == sema.TypeString || semaTypeName(val.Type()) == "string" {
+			val = c.lowerStringToCString(val)
+		}
+		if i >= len(paramTypes) {
+			val = c.promoteCVarArg(val)
+		} else if !(paramTypes[i] == sema.TypeString || semaTypeName(paramTypes[i]) == "string") {
+			val = c.root.emitValueCoerce(val, paramTypes[i])
+		}
+		args = append(args, val)
+	}
+	return args
+}
+
+func (c *CallLowerer) promoteCVarArg(val hir.Value) hir.Value {
+	var target sema.Type
+	switch {
+	case val.Type() == sema.TypeBool || sema.LLVMTypeOf(val.Type()) == "i1":
+		target = sema.TypeInt
+	case val.Type() == sema.TypeByte || sema.LLVMTypeOf(val.Type()) == "i8":
+		target = sema.TypeInt
+	case val.Type() == sema.TypeFloat32 || sema.LLVMTypeOf(val.Type()) == "float":
+		target = sema.TypeFloat64
+	default:
+		return val
+	}
+	extReg := c.root.nextReg(target)
+	c.root.emit(&hir.InstrCast{Dst: extReg, Val: val, ToType: target})
+	return extReg
 }
 
 // -------------------------------------------------------------
@@ -648,7 +654,7 @@ func (c *CallLowerer) getOrSpecializeFunc(baseName string, typeArgs []sema.Type)
 		if cv, ok := t.(*sema.ConstValueType); ok {
 			cleanName = fmt.Sprintf("const_%d", cv.Value)
 		} else {
-			cleanName = strings.ReplaceAll(t.TypeName(), "*", "ptr_")
+			cleanName = strings.ReplaceAll(semaTypeName(t), "*", "ptr_")
 		}
 		cleanName = strings.ReplaceAll(cleanName, "[]", "slice_")
 		typeSuffixes = append(typeSuffixes, cleanName)
@@ -746,7 +752,7 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 	case *sema.MapType:
 		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value)}
 	default:
-		return &ast.NamedType{Name: &ast.Identifier{Value: v.TypeName()}}
+		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
 	}
 }
 
@@ -845,7 +851,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	if genInst, ok := call.Function.(*ast.GenericInstExpr); ok {
 		var baseName string
 		if id, okId := genInst.Left.(*ast.Identifier); okId {
-			baseName = id.Value
+			baseName = astIDValue(id)
 		} else if mem, okMem := genInst.Left.(*ast.MemberExpr); okMem {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				baseName = pkgId.Value + "_" + mem.Field.Value
@@ -905,18 +911,18 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 							return 0
 						}
 					}
-					if intRank(targetType.LLVMType()) > 0 {
+					if intRank(sema.LLVMTypeOf(targetType)) > 0 {
 						return &hir.ConstInt{Val: int64(cl.CodePoint), Typ: targetType}
 					}
 				}
 
 				argVal := c.root.Expr.LowerExpr(call.Args[0])
 
-				if (argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string") && targetType == sema.TypeCString {
+				if (argVal.Type() == sema.TypeString || semaTypeName(argVal.Type()) == "string") && targetType == sema.TypeCString {
 					return c.lowerStringToCString(argVal)
 				}
 
-				if (argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring") && targetType == sema.TypeString {
+				if (argVal.Type() == sema.TypeCString || semaTypeName(argVal.Type()) == "cstring") && targetType == sema.TypeString {
 					return c.lowerCStringToString(argVal)
 				}
 
@@ -935,7 +941,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return c.root.makeString(rawPtr, rawLen)
 				}
 
-				if argVal.Type().LLVMType() == targetType.LLVMType() && argVal.Type() == targetType {
+				if sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(targetType) && argVal.Type() == targetType {
 					return argVal
 				}
 
@@ -1002,7 +1008,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				if len(call.Args) >= 3 {
 					capVal = c.root.Expr.LowerExpr(call.Args[2])
 				}
-				elemSize := elemType.Size()
+				elemSize := sema.SizeOf(elemType)
 				if elemSize <= 0 {
 					elemSize = 1
 				}
@@ -1031,7 +1037,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					if pt, isPtr := t.(*sema.PointerType); isPtr {
 						t = pt.Base
 					}
-					sz := int64(t.Size())
+					sz := int64(sema.SizeOf(t))
 					if st, _ := c.root.findStruct(t); st != nil {
 						stSz := int64(st.Size())
 						if stSz > sz {
@@ -1131,13 +1137,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					})
 					return c.root.makeString(raw, rawLen)
 				}
-				if argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring" {
+				if argVal.Type() == sema.TypeCString || semaTypeName(argVal.Type()) == "cstring" {
 					return c.lowerCStringToString(argVal)
 				}
 				if ptrType, ok := argVal.Type().(*sema.PointerType); ok && ptrType.Base == sema.TypeByte {
 					return c.lowerCStringToString(argVal)
 				}
-				if argVal.Type().LLVMType() == "i8*" {
+				if sema.LLVMTypeOf(argVal.Type()) == "i8*" {
 					return c.lowerCStringToString(argVal)
 				}
 				return argVal
@@ -1162,10 +1168,10 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				if argVal.Type() == sema.TypeCString {
 					return argVal
 				}
-				if argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string" {
+				if argVal.Type() == sema.TypeString || semaTypeName(argVal.Type()) == "string" {
 					return c.lowerStringToCString(argVal)
 				}
-				if strings.HasPrefix(argVal.Type().LLVMType(), "{") {
+				if strings.HasPrefix(sema.LLVMTypeOf(argVal.Type()), "{") {
 					return c.lowerStringToCString(argVal)
 				}
 				dst := c.root.nextReg(sema.TypeCString)
@@ -1371,7 +1377,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		if file == "" {
 			file = "input.hike"
 		}
-		panic(fmt.Sprintf("%s:%d:%d: method or function field '%s' not found on type '%s'", file, mem.Field.Token.Line, mem.Field.Token.Col, mem.Field.Value, objType.TypeName()))
+		panic(fmt.Sprintf("%s:%d:%d: method or function field '%s' not found on type '%s'", file, mem.Field.Token.Line, mem.Field.Token.Col, mem.Field.Value, semaTypeName(objType)))
 	}
 
 	// 4. 単一識別子によるトップレベル関数呼び出し (例: myFunc())
@@ -1427,7 +1433,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				callee := canonicalName
 				if semaFuncCFunc(targetFn) {
 					if semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
-					callee = "__hike_impl_" + semaFuncName(targetFn)
+						callee = "__hike_impl_" + semaFuncName(targetFn)
 					} else if semaFuncCFuncTarget(targetFn) != "" {
 						callee = semaFuncCFuncTarget(targetFn)
 					} else {
@@ -1514,7 +1520,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 			return c.lowerAppendSlice(sliceVal, slType, srcVal, srcType)
 		}
 	}
-	elemSize := slType.Elem.Size()
+	elemSize := sema.SizeOf(slType.Elem)
 	if elemSize <= 0 {
 		elemSize = 1
 	}
@@ -1608,10 +1614,10 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 // one element. Both slices use the same fat-pointer layout, so the elements
 // can be copied in one operation after allocating the combined backing store.
 func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, src hir.Value, srcType *sema.SliceType) hir.Value {
-	if dstType.Elem.TypeName() != srcType.Elem.TypeName() {
+	if semaTypeName(dstType.Elem) != semaTypeName(srcType.Elem) {
 		return dst
 	}
-	elemSize := dstType.Elem.Size()
+	elemSize := sema.SizeOf(dstType.Elem)
 	if elemSize <= 0 {
 		elemSize = 1
 	}
@@ -1653,7 +1659,7 @@ func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, s
 // -------------------------------------------------------------
 
 func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.InterfaceType) *hir.ItabDef {
-	sName := strings.TrimPrefix(concreteType.TypeName(), "*")
+	sName := strings.TrimPrefix(semaTypeName(concreteType), "*")
 	sName = strings.ReplaceAll(sName, ".", "_")
 	ifName := iface.Name
 	if ifName == "" {
@@ -1673,7 +1679,7 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 
 	for _, m := range iface.Methods {
 		targetFnName, fnMeta, _, found := c.ResolveMethod(concreteType, m.Name, nil)
-		if !found && !strings.HasPrefix(concreteType.TypeName(), "*") {
+		if !found && !strings.HasPrefix(semaTypeName(concreteType), "*") {
 			targetFnName, fnMeta, _, found = c.ResolveMethod(&sema.PointerType{Base: concreteType}, m.Name, nil)
 		}
 		if found && fnMeta != nil {
