@@ -244,12 +244,15 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			}
 
 			itabName := ""
+			typeID := int64(0)
 			if !iface.IsAny() {
 				itabDef := e.root.Call.GetOrCreateItab(val.Type(), iface)
 				itabName = itabDef.GlobalName
+			} else {
+				typeID = e.root.semaCtx.GetTypeID(val.Type())
 			}
 			dst := e.root.nextReg(iface)
-			e.root.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName})
+			e.root.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName, TypeID: typeID})
 			return dst
 		}
 		dst := e.root.nextReg(targetT)

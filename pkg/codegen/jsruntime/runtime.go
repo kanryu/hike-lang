@@ -236,6 +236,34 @@ if (typeof window !== 'undefined' || (typeof module !== 'undefined' && module.ex
                     return ptr;
                 },
                 free: () => {},
+                memcpy: (dst, src, n) => {
+                    const d = new Uint8Array(runtime.memory.buffer, Number(dst), Number(n));
+                    const s = new Uint8Array(runtime.memory.buffer, Number(src), Number(n));
+                    d.set(s);
+                    return Number(dst);
+                },
+                strlen: (ptr) => {
+                    const bytes = new Uint8Array(runtime.memory.buffer);
+                    let n = 0;
+                    while (bytes[Number(ptr) + n] !== 0) n++;
+                    return n;
+                },
+                memcmp: (a, b, n) => {
+                    const bytes = new Uint8Array(runtime.memory.buffer);
+                    for (let i = 0; i < Number(n); i++) {
+                        const av = bytes[Number(a) + i];
+                        const bv = bytes[Number(b) + i];
+                        if (av !== bv) return av < bv ? -1 : 1;
+                    }
+                    return 0;
+                },
+                sqrt: (x) => Math.sqrt(Number(x)),
+                fabs: (x) => Math.abs(Number(x)),
+				floor: (x) => Math.floor(Number(x)),
+				ceil: (x) => Math.ceil(Number(x)),
+                pow: (x, y) => Math.pow(Number(x), Number(y)),
+                sin: (x) => Math.sin(Number(x)),
+                log2: (x) => Math.log2(Number(x)),
                 hike_thread_spawn: (fnIdx, paramPtr) => {
                     const table = runtime.instance && (runtime.instance.exports.__indirect_function_table || runtime.instance.exports.table);
                     const thunk = table && table.get(Number(fnIdx));

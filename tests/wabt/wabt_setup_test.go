@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -32,14 +33,32 @@ func requireTools(t *testing.T) {
 
 func buildWabt(t *testing.T, source string) string {
 	t.Helper()
+	return buildWabtProject(t, source, nil)
+}
+
+func buildWabtProject(t *testing.T, source string, files map[string]string) string {
+	t.Helper()
 	requireTools(t)
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "main.hike")
 	if err := os.WriteFile(src, []byte(source), 0644); err != nil {
 		t.Fatal(err)
 	}
+	for name, content := range files {
+		path := filepath.Join(tmp, name)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write Wabt source %s: %v", name, err)
+		}
+	}
 	wasm := filepath.Join(tmp, "main.wasm")
-	cmd := exec.Command("go", "run", "./cmd/hikec", "build", "-target", "wabt", "-o", wasm, src)
+	sources := []string{src}
+	for name := range files {
+		sources = append(sources, filepath.Join(tmp, name))
+	}
+	sort.Strings(sources[1:])
+	args := []string{"run", "./cmd/hikec", "build", "-target", "wabt", "-o", wasm}
+	args = append(args, sources...)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = projectRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Wabt build failed: %v\n%s", err, out)

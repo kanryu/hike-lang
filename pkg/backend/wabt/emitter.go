@@ -262,6 +262,14 @@ func resultTypes(r *hir.Reg) []sema.Type {
 	return []sema.Type{r.Typ}
 }
 
+func multiValueSize(types []sema.Type) int {
+	size := 0
+	for _, typ := range types {
+		size += typeSize(typ)
+	}
+	return size
+}
+
 func indirectCallResults(x *hir.InstrCallIndirect) []sema.Type { return resultTypes(x.Dst) }
 func ifaceCallResults(x *hir.InstrCallIface) []sema.Type       { return resultTypes(x.Dst) }
 func hirFunctionExtern(fn *hir.Function) bool                  { return fn.IsExtern }
@@ -415,8 +423,12 @@ func (e *Emitter) function(fn *hir.Function) {
 	for _, p := range fn.Params {
 		fmt.Fprintf(&e.b, " (param $%s %s)", reg(p), watType(p.Typ))
 	}
-	for _, rt := range fn.ReturnTypes {
-		fmt.Fprintf(&e.b, " (result %s)", watType(rt))
+	if len(fn.ReturnTypes) > 1 {
+		fmt.Fprint(&e.b, " (result i32)")
+	} else {
+		for _, rt := range fn.ReturnTypes {
+			fmt.Fprintf(&e.b, " (result %s)", watType(rt))
+		}
 	}
 	regs := map[string]bool{}
 	for _, bb := range fn.Blocks {
@@ -432,6 +444,9 @@ func (e *Emitter) function(fn *hir.Function) {
 	}
 	fmt.Fprintf(&e.b, " (local $pc i32)")
 	fmt.Fprintf(&e.b, " (local $frame_sp i32)")
+	if len(fn.ReturnTypes) > 1 {
+		fmt.Fprintf(&e.b, " (local $__ret_multi i32)")
+	}
 	e.b.WriteString("\n")
 	e.b.WriteString("    (local.set $frame_sp (global.get $__sp))\n")
 	e.emitCFG(fn)
@@ -499,6 +514,23 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hi
 		if len(x.Vals) == 0 {
 			e.defaultReturn(fn)
 		} else {
+			if len(x.Vals) > 1 {
+				size := multiValueSize(fn.ReturnTypes)
+				e.b.WriteString(fmt.Sprintf("          (local.set $__ret_multi (call $malloc (i32.const %d)))\n", size))
+				offset := 0
+				for i, value := range x.Vals {
+					if i >= len(fn.ReturnTypes) {
+						break
+					}
+					typ := fn.ReturnTypes[i]
+					ptr := fmt.Sprintf("(i32.add (local.get $__ret_multi) (i32.const %d))", offset)
+					e.b.WriteString(fmt.Sprintf("          (%s %s %s)\n", memoryOp(typ, false), ptr, e.valAs(value, typ)))
+					offset += typeSize(typ)
+				}
+				e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
+				e.b.WriteString("          (return (local.get $__ret_multi))\n")
+				break
+			}
 			e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
 			values := make([]string, len(x.Vals))
 			for i, v := range x.Vals {
@@ -545,6 +577,16 @@ func (e *Emitter) advanceSP(size int) {
 
 func aggregateField(t sema.Type, index int) (sema.Type, int, bool) {
 	switch a := t.(type) {
+	case *sema.BasicType:
+		if a == sema.TypeString {
+			switch index {
+			case 0:
+				return &sema.PointerType{Base: sema.TypeByte}, 0, true
+			case 1, 2:
+				return sema.TypeUint32, index * 4, true
+			}
+		}
+		return nil, 0, false
 	case *sema.PointerType:
 		return aggregateField(a.Base, index)
 	case *sema.StructType:
@@ -565,18 +607,47 @@ func aggregateField(t sema.Type, index int) (sema.Type, int, bool) {
 			offset += typeSize(a.Types[i])
 		}
 		return a.Types[index], offset, true
+	case *sema.ArrayType:
+		if index < 0 || index >= a.Len {
+			return nil, 0, false
+		}
+		return a.Elem, index * typeSize(a.Elem), true
+	case *sema.SliceType:
+		if index < 0 || index >= 3 {
+			return nil, 0, false
+		}
+		// wasm32 slices are represented as {data, len, cap}, all i32.
+		if index == 0 {
+			return &sema.PointerType{Base: sema.TypeByte}, 0, true
+		}
+		return sema.TypeUint32, index * 4, true
 	case *sema.FuncType:
 		if index < 0 || index >= 2 {
 			return nil, 0, false
 		}
 		return &sema.PointerType{Base: sema.TypeByte}, index * sema.PointerSize, true
+	case *sema.InterfaceType:
+		if index < 0 || index >= 2 {
+			return nil, 0, false
+		}
+		if index == 0 {
+			return &sema.PointerType{Base: sema.TypeByte}, 0, true
+		}
+		return sema.TypeInt32, 4, true
 	}
 	return nil, 0, false
 }
 
 func aggregateType(t sema.Type) bool {
-	_, _, ok := aggregateField(t, 0)
-	return ok
+	if t == sema.TypeString {
+		return true
+	}
+	switch t.(type) {
+	case *sema.StructType, *sema.TupleType, *sema.ArrayType, *sema.SliceType, *sema.FuncType, *sema.InterfaceType:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Emitter) instruction(in hir.Instruction) {
@@ -615,7 +686,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 	case *hir.InstrCallStatic:
 		args := make([]string, len(x.Args))
 		for i, a := range x.Args {
-			args[i] = e.val(a)
+			args[i] = e.callArg(a)
 		}
 		call := "(call " + e.functionSymbol(x.CalleeName)
 		if len(args) > 0 {
@@ -668,8 +739,39 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		args = append(args, itab)
 		e.set(x.Dst, fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, ifaceCallResults(x)), strings.Join(args, " ")))
 	case *hir.InstrLoad:
+		if global, ok := x.Ptr.(*hir.GlobalVar); ok {
+			e.set(x.Dst, e.val(global))
+			break
+		}
+		if aggregateType(x.Dst.Typ) {
+			// Aggregate HIR values are represented by their storage address in
+			// WAT. Loading one therefore preserves the address; copying the
+			// bytes belongs to the corresponding aggregate store.
+			e.set(x.Dst, e.valAs(x.Ptr, sema.TypeUint32))
+			break
+		}
 		e.set(x.Dst, "("+memoryOp(x.Dst.Typ, true)+" "+e.val(x.Ptr)+")")
 	case *hir.InstrStore:
+		if global, ok := x.Ptr.(*hir.GlobalVar); ok {
+			e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), e.val(x.Val)))
+			break
+		}
+		if aggregateType(x.Val.Type()) {
+			if s, ok := x.Val.(*hir.ConstString); ok {
+				base := e.val(x.Ptr)
+				e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", base, e.val(s)))
+				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", base))
+				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", base, len(s.Raw)))
+				break
+			}
+			size := typeSize(x.Val.Type())
+			if _, zero := x.Val.(*hir.ConstZero); zero {
+				e.b.WriteString(fmt.Sprintf("    (memory.fill %s (i32.const 0) (i32.const %d))\n", e.val(x.Ptr), size))
+			} else {
+				e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const %d))\n", e.val(x.Ptr), e.val(x.Val), size))
+			}
+			break
+		}
 		e.b.WriteString("    (" + memoryOp(x.Val.Type(), false) + " " + e.val(x.Ptr) + " " + e.val(x.Val) + ")\n")
 	case *hir.InstrCast:
 		e.set(x.Dst, castExpr(x.Val.Type(), x.ToType, e.val(x.Val)))
@@ -680,19 +782,38 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		} else {
 			e.set(x.Dst, "("+memoryOp(x.TargetType, true)+" "+data+")")
 		}
+	case *hir.InstrChanMake:
+		e.emitChanMake(x)
+	case *hir.InstrChanSend:
+		e.emitChanSend(x)
+	case *hir.InstrChanRecv:
+		e.emitChanRecv(x)
 	case *hir.InstrBoxInterface:
-		base := "(global.get $__sp)"
-		e.set(x.Dst, base)
+		baseBefore := "(global.get $__sp)"
+		e.set(x.Dst, baseBefore)
 		e.advanceSP(8)
 		data := e.val(x.Val)
-		if _, ok := x.Val.Type().(*sema.PointerType); !ok {
-			data = "(global.get $__sp)"
-			e.advanceSP(typeSize(x.Val.Type()))
+		dataSize := 0
+		if s, ok := x.Val.(*hir.ConstString); ok {
+			dataSize = typeSize(sema.TypeString)
+			e.advanceSP(dataSize)
+			data = fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", dataSize)
+			e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", data, e.val(s)))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", data))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", data, len(s.Raw)))
+		} else if _, ok := x.Val.Type().(*sema.PointerType); !ok {
+			dataSize = typeSize(x.Val.Type())
+			e.advanceSP(dataSize)
+			data = fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", dataSize)
 			e.b.WriteString("    (" + memoryOp(x.Val.Type(), false) + " " + data + " " + e.val(x.Val) + ")\n")
 		}
+		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", 8+dataSize)
 		e.b.WriteString("    (i32.store " + base + " " + data + ")\n")
-		itabOffset := e.itabOffsets[boxItabName(x)]
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const %d))\n", base, itabOffset))
+		typeValue := e.itabOffsets[boxItabName(x)]
+		if x.Iface != nil && x.Iface.IsAny() {
+			typeValue = int(x.TypeID)
+		}
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const %d))\n", base, typeValue))
 	case *hir.InstrAlloca:
 		e.set(x.Dst, "(global.get $__sp)")
 		e.advanceSP(typeSize(x.AllocType))
@@ -724,6 +845,19 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		}
 		e.set(x.Dst, fmt.Sprintf("(i32.add %s (i32.mul %s (i32.const %d)))", e.valAs(x.BasePtr, sema.TypeUint32), e.valAs(x.Index, sema.TypeUint32), elemSize))
 	case *hir.InstrExtractValue:
+		if s, ok := x.Agg.(*hir.ConstString); ok {
+			switch x.Index {
+			case 0:
+				e.set(x.Dst, e.val(s))
+			case 1:
+				e.set(x.Dst, "(i32.const 0)")
+			case 2:
+				e.set(x.Dst, fmt.Sprintf("(i32.const %d)", len(s.Raw)))
+			default:
+				e.set(x.Dst, "(i32.const 0)")
+			}
+			break
+		}
 		fieldType, offset, ok := aggregateField(x.Agg.Type(), x.Index)
 		if !ok {
 			e.set(x.Dst, "(i32.const 0)")
@@ -742,11 +876,67 @@ func (e *Emitter) instruction(in hir.Instruction) {
 	}
 }
 
+func chanElemSize(t sema.Type) int {
+	size := typeSize(t)
+	if size < 1 {
+		return 1
+	}
+	return size
+}
+
+func (e *Emitter) emitChanMake(x *hir.InstrChanMake) {
+	elemSize := chanElemSize(x.ElemType)
+	capVal := e.valAs(x.Cap, sema.TypeUint32)
+	alloc := fmt.Sprintf("(call $malloc (i32.add (i32.const 12) (i32.mul %s (i32.const %d))))", capVal, elemSize)
+	e.set(x.Dst, alloc)
+	base := e.val(x.Dst)
+	e.b.WriteString(fmt.Sprintf("    (i32.store %s (i32.const 0))\n", base))
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", base))
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) %s)\n", base, capVal))
+}
+
+func (e *Emitter) emitChanSend(x *hir.InstrChanSend) {
+	base := e.val(x.Chan)
+	tail := fmt.Sprintf("(i32.load (i32.add %s (i32.const 4)))", base)
+	capVal := fmt.Sprintf("(i32.load (i32.add %s (i32.const 8)))", base)
+	elemSize := chanElemSize(x.Val.Type())
+	addr := fmt.Sprintf("(i32.add (i32.add %s (i32.const 12)) (i32.mul %s (i32.const %d)))", base, tail, elemSize)
+	e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(x.Val.Type(), false), addr, e.val(x.Val)))
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.rem_u (i32.add %s (i32.const 1)) %s))\n", base, tail, capVal))
+}
+
+func (e *Emitter) emitChanRecv(x *hir.InstrChanRecv) {
+	base := e.val(x.Chan)
+	head := fmt.Sprintf("(i32.load %s)", base)
+	capVal := fmt.Sprintf("(i32.load (i32.add %s (i32.const 8)))", base)
+	elemSize := chanElemSize(x.Dst.Type())
+	addr := fmt.Sprintf("(i32.add (i32.add %s (i32.const 12)) (i32.mul %s (i32.const %d)))", base, head, elemSize)
+	e.set(x.Dst, fmt.Sprintf("(%s %s)", memoryOp(x.Dst.Type(), true), addr))
+	e.b.WriteString(fmt.Sprintf("    (i32.store %s (i32.rem_u (i32.add %s (i32.const 1)) %s))\n", base, head, capVal))
+	if x.OkDst != nil {
+		e.set(x.OkDst, "(i32.const 1)")
+	}
+}
+
+func (e *Emitter) callArg(v hir.Value) string {
+	if s, ok := v.(*hir.ConstString); ok {
+		size := typeSize(sema.TypeString)
+		e.advanceSP(size)
+		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", size)
+		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", base, e.val(s)))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", base))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", base, len(s.Raw)))
+		return base
+	}
+	return e.val(v)
+}
+
 func (e *Emitter) aggregateAddress(agg hir.Value, offset, size int) string {
 	if r, ok := agg.(*hir.Reg); ok && aggregateType(r.Typ) {
 		return fmt.Sprintf("(i32.add (local.get $%s) (i32.const %d))", reg(r), offset)
 	}
-	base := "(global.get $__sp)"
 	e.advanceSP(size)
-	return fmt.Sprintf("(i32.add %s (i32.const %d))", base, offset)
+	// The stack pointer has already advanced. Reconstruct the address of the
+	// allocation instead of re-evaluating the post-allocation $__sp value.
+	return fmt.Sprintf("(i32.add (i32.sub (global.get $__sp) (i32.const %d)) (i32.const %d))", size, offset)
 }

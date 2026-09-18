@@ -288,6 +288,7 @@ type InstrBoxInterface struct {
 	Val      Value
 	Iface    *sema.InterfaceType
 	ItabName string
+	TypeID   int64
 }
 
 func (i *InstrBoxInterface) Result() *Reg { return i.Dst }

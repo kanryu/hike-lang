@@ -531,12 +531,15 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		}
 
 		itabName := ""
+		typeID := int64(0)
 		if !iface.IsAny() {
 			itabDef := l.Call.GetOrCreateItab(val.Type(), iface)
 			itabName = itabDef.GlobalName
+		} else {
+			typeID = l.semaCtx.GetTypeID(val.Type())
 		}
 		dst := l.nextReg(iface)
-		l.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName})
+		l.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName, TypeID: typeID})
 		return dst
 	}
 	if _, isFunc := targetType.(*sema.FuncType); isFunc && isNilValue(val) {

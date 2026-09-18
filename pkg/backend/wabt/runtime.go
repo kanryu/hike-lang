@@ -20,9 +20,9 @@ var WabtRuntimeSymbols = map[string]bool{
 	"hike_streq32": true, "hike_streq_len32": true, "hike_strcat_len32": true,
 	"__hike_map_create": true, "__hike_map_len": true,
 	"__hike_map_set": true, "__hike_map_get": true,
-	"__hike_map_delete": true,
+	"__hike_map_delete":      true,
 	"__hike_string_retain32": true, "__hike_string_release32": true,
-	"llvm.trap": true,
+	"llvm.trap":           true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
 	"__hike_region_begin32": true, "__hike_region_alloc32": true, "__hike_region_end32": true,
 	"__hike_sort_strings": true,
@@ -196,21 +196,73 @@ var wasmRuntime = map[string]runtimeFunc{
     (i32.store8 (i32.add (local.get $p) (i32.add (local.get $alen) (local.get $blen))) (i32.const 0))
     (local.get $p))`},
 	"__hike_map_create": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_map_create (param $cap i32) (param $is_str i32) (result i32)
-    (local $m i32)
-    (local.set $m (call $malloc (i32.const 12)))
-    (i32.store (local.get $m) (local.get $cap))
+    (local $m i32) (local $n i32)
+    (local.set $n (select (local.get $cap) (i32.const 16) (i32.ge_u (local.get $cap) (i32.const 16))))
+    (local.set $m (call $malloc (i32.add (i32.const 16) (i32.mul (local.get $n) (i32.const 12)))))
+    (i32.store (local.get $m) (local.get $n))
     (i32.store offset=4 (local.get $m) (i32.const 0))
     (i32.store offset=8 (local.get $m) (local.get $is_str))
+    (i32.store offset=12 (local.get $m) (i32.add (local.get $m) (i32.const 16)))
+    (memory.fill (i32.add (local.get $m) (i32.const 16)) (i32.const 0) (i32.mul (local.get $n) (i32.const 12)))
     (local.get $m))`},
 	"__hike_map_len": runtimeFunc{body: `(func $__hike_map_len (param $m i32) (result i32)
     (i32.load offset=4 (local.get $m)))`},
-	"__hike_map_set": runtimeFunc{body: `(func $__hike_map_set (param $m i32) (param $key i32) (param $value i32))`},
-	"__hike_map_get": runtimeFunc{body: `(func $__hike_map_get (param $m i32) (param $key i32) (param $default i32) (result i32)
-    (local.get $default))`},
-	"__hike_map_delete": runtimeFunc{body: `(func $__hike_map_delete (param $m i32) (param $key i32))`},
-	"__hike_string_retain32": runtimeFunc{body: `(func $__hike_string_retain32 (param $s i32))`},
+	"__hike_map_set": runtimeFunc{deps: []string{"strcmp32"}, body: `(func $__hike_map_set (param $m i32) (param $key i32) (param $value i32)
+    (local $i i32) (local $n i32) (local $entry i32) (local $same i32)
+    (local.set $n (i32.load (local.get $m)))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $entry (i32.add (i32.load offset=12 (local.get $m)) (i32.mul (local.get $i) (i32.const 12))))
+      (if (i32.eqz (i32.load offset=8 (local.get $entry)))
+        (then
+          (i32.store (local.get $entry) (local.get $key))
+          (i32.store offset=4 (local.get $entry) (local.get $value))
+          (i32.store offset=8 (local.get $entry) (i32.const 1))
+          (i32.store offset=4 (local.get $m) (i32.add (i32.load offset=4 (local.get $m)) (i32.const 1)))
+          (br $done)))
+      (local.set $same (if (result i32) (i32.load offset=8 (local.get $m))
+        (then (i32.eqz (call $strcmp32 (i32.load (local.get $entry)) (local.get $key))))
+        (else (i32.eq (i32.load (local.get $entry)) (local.get $key)))))
+      (if (local.get $same) (then (i32.store offset=4 (local.get $entry) (local.get $value)) (br $done)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan))))`},
+	"__hike_map_get": runtimeFunc{deps: []string{"strcmp32"}, body: `(func $__hike_map_get (param $m i32) (param $key i32) (param $out i32) (result i32)
+    (local $i i32) (local $n i32) (local $entry i32) (local $same i32)
+    (i32.store (local.get $out) (i32.const 0))
+    (local.set $n (i32.load (local.get $m)))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $entry (i32.add (i32.load offset=12 (local.get $m)) (i32.mul (local.get $i) (i32.const 12))))
+      (if (i32.load offset=8 (local.get $entry))
+        (then
+          (local.set $same (if (result i32) (i32.load offset=8 (local.get $m))
+            (then (i32.eqz (call $strcmp32 (i32.load (local.get $entry)) (local.get $key))))
+            (else (i32.eq (i32.load (local.get $entry)) (local.get $key)))))
+          (if (local.get $same) (then (i32.store (local.get $out) (i32.load offset=4 (local.get $entry))) (br $done)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (i32.const 0))`},
+	"__hike_map_delete": runtimeFunc{deps: []string{"strcmp32"}, body: `(func $__hike_map_delete (param $m i32) (param $key i32)
+    (local $i i32) (local $n i32) (local $entry i32) (local $same i32)
+    (local.set $n (i32.load (local.get $m)))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $entry (i32.add (i32.load offset=12 (local.get $m)) (i32.mul (local.get $i) (i32.const 12))))
+      (if (i32.load offset=8 (local.get $entry))
+        (then
+          (local.set $same (if (result i32) (i32.load offset=8 (local.get $m))
+            (then (i32.eqz (call $strcmp32 (i32.load (local.get $entry)) (local.get $key))))
+            (else (i32.eq (i32.load (local.get $entry)) (local.get $key)))))
+          (if (local.get $same)
+            (then
+              (i32.store offset=8 (local.get $entry) (i32.const 0))
+              (i32.store offset=4 (local.get $m) (i32.sub (i32.load offset=4 (local.get $m)) (i32.const 1)))
+              (br $done)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan))))`},
+	"__hike_string_retain32":  runtimeFunc{body: `(func $__hike_string_retain32 (param $s i32))`},
 	"__hike_string_release32": runtimeFunc{body: `(func $__hike_string_release32 (param $s i32))`},
-	"llvm.trap": runtimeFunc{body: `(func $llvm.trap (unreachable))`},
+	"llvm.trap":               runtimeFunc{body: `(func $llvm.trap (unreachable))`},
 }
 
 func lookupWasmRuntime(name string) (runtimeFunc, bool) {
@@ -239,6 +291,9 @@ func (e *Emitter) emitRuntime() {
 		}
 	}
 	for _, fn := range e.p.Functions {
+		if len(fn.ReturnTypes) > 1 {
+			visit("malloc")
+		}
 		for _, bb := range fn.Blocks {
 			for _, in := range bb.Instructions {
 				if x, ok := in.(*hir.InstrCallStatic); ok {
@@ -246,6 +301,8 @@ func (e *Emitter) emitRuntime() {
 				}
 				switch in.(type) {
 				case *hir.InstrHeapAlloc:
+					visit("malloc")
+				case *hir.InstrChanMake:
 					visit("malloc")
 				case *hir.InstrRegionBegin:
 					visit("__hike_region_begin32")
