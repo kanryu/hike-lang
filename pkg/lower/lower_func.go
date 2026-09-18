@@ -185,7 +185,7 @@ func (c *CallLowerer) lowerMainArguments(hirFn *hir.Function) {
 	c.lowerOSArgs(argvReg, argcReg)
 }
 
-func (c *CallLowerer) lowerOSArgs(argvReg, argcReg *hir.Reg) {
+func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrCallStatic{
 		Dst:        callocRaw,

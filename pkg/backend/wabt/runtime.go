@@ -17,8 +17,15 @@ var WabtRuntimeSymbols = map[string]bool{
 	"malloc": true, "calloc": true, "free": true,
 	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
 	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
+	"hike_streq32": true, "hike_streq_len32": true, "hike_strcat_len32": true,
+	"__hike_map_create": true, "__hike_map_len": true,
+	"__hike_map_set": true, "__hike_map_get": true,
+	"__hike_map_delete": true,
+	"__hike_string_retain32": true, "__hike_string_release32": true,
+	"llvm.trap": true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
 	"__hike_region_begin32": true, "__hike_region_alloc32": true, "__hike_region_end32": true,
+	"__hike_sort_strings": true,
 }
 
 func IsWabtRuntimeSymbol(name string) bool {
@@ -111,6 +118,99 @@ var wasmRuntime = map[string]runtimeFunc{
 	"__hike_region_end_count":       {body: `(func $__hike_region_end_count (result i32) (global.get $__region_end_count))`},
 	"__hike_region_allocated_bytes": runtimeFunc{body: `(func $__hike_region_allocated_bytes (result i32) (i32.const 0))`},
 	"__hike_region_released_bytes":  runtimeFunc{body: `(func $__hike_region_released_bytes (result i32) (global.get $__region_released_bytes))`},
+	"__hike_string_less": runtimeFunc{body: `(func $__hike_string_less (param $a i32) (param $b i32) (result i32)
+    (local $pa i32) (local $pb i32) (local $la i32) (local $lb i32)
+    (local $i i32) (local $limit i32) (local $ca i32) (local $cb i32) (local $cmp i32)
+    (local.set $pa (i32.add (i32.load (local.get $a)) (i32.load offset=4 (local.get $a))))
+    (local.set $pb (i32.add (i32.load (local.get $b)) (i32.load offset=4 (local.get $b))))
+    (local.set $la (i32.load offset=8 (local.get $a)))
+    (local.set $lb (i32.load offset=8 (local.get $b)))
+    (local.set $limit (select (local.get $la) (local.get $lb) (i32.lt_u (local.get $la) (local.get $lb))))
+    (local.set $cmp (i32.const 0))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $limit)))
+      (local.set $ca (i32.load8_u (i32.add (local.get $pa) (local.get $i))))
+      (local.set $cb (i32.load8_u (i32.add (local.get $pb) (local.get $i))))
+      (if (i32.lt_u (local.get $ca) (local.get $cb)) (then (local.set $cmp (i32.const -1)) (br $done)))
+      (if (i32.gt_u (local.get $ca) (local.get $cb)) (then (local.set $cmp (i32.const 1)) (br $done)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (if (i32.eqz (local.get $cmp))
+      (then (if (i32.lt_u (local.get $la) (local.get $lb)) (then (local.set $cmp (i32.const -1)))))
+      (else))
+    (i32.lt_s (local.get $cmp) (i32.const 0)))`},
+	"__hike_sort_strings": runtimeFunc{deps: []string{"__hike_string_less"}, body: `(func $__hike_sort_strings (param $slice i32)
+    (local $data i32) (local $n i32) (local $i i32) (local $j i32)
+    (local $a i32) (local $b i32) (local $tmp i32)
+    (local.set $data (i32.load (local.get $slice)))
+    (local.set $n (i32.load offset=4 (local.get $slice)))
+    (block $outer_done (loop $outer
+      (br_if $outer_done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $j (i32.const 0))
+      (block $inner_done (loop $inner
+        (br_if $inner_done (i32.ge_u (local.get $j) (i32.sub (local.get $n) (i32.const 1))))
+        (local.set $a (i32.add (local.get $data) (i32.mul (local.get $j) (i32.const 12))))
+        (local.set $b (i32.add (local.get $a) (i32.const 12)))
+        (if (call $__hike_string_less (local.get $b) (local.get $a))
+          (then
+            (local.set $tmp (i32.load (local.get $a)))
+            (i32.store (local.get $a) (i32.load (local.get $b)))
+            (i32.store (local.get $b) (local.get $tmp))
+            (local.set $tmp (i32.load offset=4 (local.get $a)))
+            (i32.store offset=4 (local.get $a) (i32.load offset=4 (local.get $b)))
+            (i32.store offset=4 (local.get $b) (local.get $tmp))
+            (local.set $tmp (i32.load offset=8 (local.get $a)))
+            (i32.store offset=8 (local.get $a) (i32.load offset=8 (local.get $b)))
+            (i32.store offset=8 (local.get $b) (local.get $tmp))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $inner)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $outer))))`},
+	"hike_streq32": runtimeFunc{body: `(func $hike_streq32 (param $a i32) (param $b i32) (result i32)
+    (local $i i32) (local $ca i32) (local $cb i32)
+    (block $done (loop $scan
+      (local.set $ca (i32.load8_u (i32.add (local.get $a) (local.get $i))))
+      (local.set $cb (i32.load8_u (i32.add (local.get $b) (local.get $i))))
+      (br_if $done (i32.ne (local.get $ca) (local.get $cb)))
+      (br_if $done (i32.eqz (local.get $ca)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (i32.eq (local.get $ca) (local.get $cb)))`},
+	"hike_streq_len32": runtimeFunc{body: `(func $hike_streq_len32 (param $a i32) (param $alen i32) (param $b i32) (param $blen i32) (result i32)
+    (local $i i32) (local $limit i32) (local $same i32)
+    (local.set $limit (select (local.get $alen) (local.get $blen) (i32.lt_u (local.get $alen) (local.get $blen))))
+    (local.set $same (i32.const 1))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $limit)))
+      (if (i32.ne (i32.load8_u (i32.add (local.get $a) (local.get $i))) (i32.load8_u (i32.add (local.get $b) (local.get $i))))
+        (then (local.set $same (i32.const 0)) (br $done)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (i32.and (local.get $same) (i32.eq (local.get $alen) (local.get $blen))))`},
+	"hike_strcat_len32": runtimeFunc{deps: []string{"malloc"}, body: `(func $hike_strcat_len32 (param $a i32) (param $alen i32) (param $b i32) (param $blen i32) (result i32)
+    (local $p i32) (local $n i32)
+    (local.set $n (i32.add (i32.add (local.get $alen) (local.get $blen)) (i32.const 1)))
+    (local.set $p (call $malloc (local.get $n)))
+    (memory.copy (local.get $p) (local.get $a) (local.get $alen))
+    (memory.copy (i32.add (local.get $p) (local.get $alen)) (local.get $b) (local.get $blen))
+    (i32.store8 (i32.add (local.get $p) (i32.add (local.get $alen) (local.get $blen))) (i32.const 0))
+    (local.get $p))`},
+	"__hike_map_create": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_map_create (param $cap i32) (param $is_str i32) (result i32)
+    (local $m i32)
+    (local.set $m (call $malloc (i32.const 12)))
+    (i32.store (local.get $m) (local.get $cap))
+    (i32.store offset=4 (local.get $m) (i32.const 0))
+    (i32.store offset=8 (local.get $m) (local.get $is_str))
+    (local.get $m))`},
+	"__hike_map_len": runtimeFunc{body: `(func $__hike_map_len (param $m i32) (result i32)
+    (i32.load offset=4 (local.get $m)))`},
+	"__hike_map_set": runtimeFunc{body: `(func $__hike_map_set (param $m i32) (param $key i32) (param $value i32))`},
+	"__hike_map_get": runtimeFunc{body: `(func $__hike_map_get (param $m i32) (param $key i32) (param $default i32) (result i32)
+    (local.get $default))`},
+	"__hike_map_delete": runtimeFunc{body: `(func $__hike_map_delete (param $m i32) (param $key i32))`},
+	"__hike_string_retain32": runtimeFunc{body: `(func $__hike_string_retain32 (param $s i32))`},
+	"__hike_string_release32": runtimeFunc{body: `(func $__hike_string_release32 (param $s i32))`},
+	"llvm.trap": runtimeFunc{body: `(func $llvm.trap (unreachable))`},
 }
 
 func lookupWasmRuntime(name string) (runtimeFunc, bool) {
@@ -157,7 +257,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy32", "memcmp32", "strlen32", "strcmp32", "__hike_region_begin32", "__hike_region_alloc32", "__hike_region_end32", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes"}
+	order := []string{"malloc", "calloc", "free", "memcpy32", "memcmp32", "strlen32", "strcmp32", "hike_streq32", "hike_streq_len32", "hike_strcat_len32", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain32", "__hike_string_release32", "llvm.trap", "__hike_region_begin32", "__hike_region_alloc32", "__hike_region_end32", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

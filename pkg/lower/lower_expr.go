@@ -1112,9 +1112,78 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	panic(fmt.Sprintf("%s:%d:%d: unsupported index target type: %s", file, node.Token.Line, node.Token.Col, semaTypeName(baseType)))
 }
 
+func isNilNamedType(typ ast.TypeExpr) bool {
+	named, ok := typ.(*ast.NamedType)
+	return ok && named == nil
+}
+
+func annotateNestedLiteralType(expr ast.Expression, target sema.Type) {
+	if expr == nil || target == nil {
+		return
+	}
+	if pointer, ok := target.(*sema.PointerType); ok {
+		target = pointer.Base
+	}
+	switch literal := expr.(type) {
+	case *ast.StructLiteral:
+		if literal.Type == nil {
+			if named, ok := semaTypeToTypeExpr(target).(*ast.NamedType); ok {
+				literal.Type = named
+			}
+		}
+		if structType, ok := target.(*sema.StructType); ok {
+			for _, field := range literal.Fields {
+				if field == nil || field.Name == nil {
+					continue
+				}
+				for _, declared := range structType.Fields {
+					if declared.Name == field.Name.Value {
+						annotateNestedLiteralType(field.Value, declared.Type)
+						break
+					}
+				}
+			}
+		}
+	case *ast.ArrayLiteral:
+		if arrayType, ok := target.(*sema.ArrayType); ok {
+			for _, element := range literal.Elements {
+				annotateNestedLiteralType(element, arrayType.Elem)
+			}
+		}
+	case *ast.SliceLiteral:
+		if sliceType, ok := target.(*sema.SliceType); ok {
+			for _, element := range literal.Elements {
+				annotateNestedLiteralType(element, sliceType.Elem)
+			}
+		}
+	case *ast.MapLiteral:
+		if mapType, ok := target.(*sema.MapType); ok {
+			for _, entry := range literal.Entries {
+				if entry != nil {
+					annotateNestedLiteralType(entry.Value, mapType.Value)
+				}
+			}
+		}
+	}
+}
+
 // lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
 func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
+	if node.Type == nil || isNilNamedType(node.Type) {
+		panic(fmt.Sprintf("[Lower Error] struct literal has no type at %d:%d", node.Token.Line, node.Token.Col))
+	}
 	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	for _, field := range node.Fields {
+		if field == nil || field.Name == nil {
+			continue
+		}
+		for _, declared := range stType.Fields {
+			if declared.Name == field.Name.Value {
+				annotateNestedLiteralType(field.Value, declared.Type)
+				break
+			}
+		}
+	}
 	allocaReg := e.root.nextReg(&sema.PointerType{Base: stType})
 	e.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: stType})
 	e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(stType), Ptr: allocaReg})
@@ -1151,7 +1220,21 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 
 // lowerStructLiteralHeapはヒープ領域 (calloc) に構造体を確保してゼロ初期化し、ポインタを返す
 func (e *ExprLowerer) lowerStructLiteralHeap(node *ast.StructLiteral) hir.Value {
+	if node.Type == nil || isNilNamedType(node.Type) {
+		panic(fmt.Sprintf("[Lower Error] struct literal has no type at %d:%d", node.Token.Line, node.Token.Col))
+	}
 	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	for _, field := range node.Fields {
+		if field == nil || field.Name == nil {
+			continue
+		}
+		for _, declared := range stType.Fields {
+			if declared.Name == field.Name.Value {
+				annotateNestedLiteralType(field.Value, declared.Type)
+				break
+			}
+		}
+	}
 	size := int64(stType.Size())
 	if size <= 0 {
 		size = int64(sema.PointerSize)

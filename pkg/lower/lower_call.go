@@ -1186,6 +1186,14 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, japanese.NewShiftJIS)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && c.isPackageName(pkgIdent.Value) {
 			methodName := mem.Field.Value
+			if c.root.semaCtx.GoHikeMode && pkgIdent.Value == "sort" && methodName == "Strings" {
+				if len(call.Args) != 1 {
+					panic(fmt.Sprintf("[Lower Error] sort.Strings expects one argument, got %d", len(call.Args)))
+				}
+				arg := c.root.Expr.LowerExpr(call.Args[0])
+				c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_sort_strings", Args: []hir.Value{arg}})
+				return nil
+			}
 			targetFnName := pkgIdent.Value + "_" + methodName
 			targetFn, canonicalName := c.root.semaCtx.LookupFunction(targetFnName)
 			if targetFn == nil {

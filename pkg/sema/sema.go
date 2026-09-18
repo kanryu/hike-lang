@@ -444,6 +444,12 @@ func (t *FuncType) LLVMType() string { return "{ i8*, i8* }" }
 func (t *FuncType) Size() int        { return PointerSize * 2 }
 func (t *FuncType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
+func setFuncVariadicElem(fn *FuncType, elem Type) {
+	if fn != nil {
+		fn.VariadicElem = elem
+	}
+}
+
 type TupleType struct {
 	Types []Type
 }
@@ -1409,7 +1415,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
 			fnType.IsVariadic = d.IsVariadic
-			fnType.VariadicElem = variadicElem
+					setFuncVariadicElem(fnType, variadicElem)
 
 			if isMethod && origRecvName != "" {
 				if st, _ := ctx.LookupStruct(origRecvName); st != nil {
@@ -1462,7 +1468,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
 			fnType.IsVariadic = d.IsVariadic
-			fnType.VariadicElem = variadicElem
+					setFuncVariadicElem(fnType, variadicElem)
 
 		case *ast.JFuncDecl:
 			fnType := ctx.Functions[d.Name.Value]
@@ -2228,7 +2234,7 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 	case *ast.CallExpr:
 		fnType := ctx.InferExprType(expr.Function, locals)
 		if ft, ok := fnType.(*FuncType); ok {
-			if ft.IsVariadic && !ft.IsCFunc && len(ft.ParamTypes) > 0 {
+			if ft.IsVariadic && len(ft.ParamTypes) > 0 {
 				fixedCount := len(ft.ParamTypes) - 1
 				for i := 0; i < fixedCount && i < len(expr.Args); i++ {
 					expr.Args[i] = ctx.CoerceExpr(expr.Args[i], ft.ParamTypes[i], locals)
@@ -2238,11 +2244,9 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 						expr.Args[fixedCount] = ctx.CoerceExpr(expr.Args[fixedCount], ft.ParamTypes[fixedCount], locals)
 					}
 				} else {
-					elemType := ft.VariadicElem
-					if elemType == nil {
-						if sl, isSl := ft.ParamTypes[fixedCount].(*SliceType); isSl {
-							elemType = sl.Elem
-						}
+					var elemType Type
+					if sl, isSl := ft.ParamTypes[fixedCount].(*SliceType); isSl {
+						elemType = sl.Elem
 					}
 					if elemType != nil {
 						for i := fixedCount; i < len(expr.Args); i++ {

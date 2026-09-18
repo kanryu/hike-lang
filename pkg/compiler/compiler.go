@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -67,7 +68,7 @@ func (c *Compiler) Reporter() *diag.Reporter {
 func (c *Compiler) safeExecute(defaultFile string, fn func() error) error {
 	defer func() {
 		if r := recover(); r != nil {
-			msg := fmt.Sprintf("%v", r)
+			msg := fmt.Sprintf("%v\n%s", r, debug.Stack())
 			c.reporter.Add(diag.ParseDiagnostic(defaultFile, msg))
 		}
 	}()

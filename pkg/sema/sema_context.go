@@ -813,7 +813,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				if _, isSl := resolved.(*SliceType); !isSl {
 					resolved = &SliceType{Elem: resolved}
 				}
-				fnType.VariadicElem = resolved.(*SliceType).Elem
+				setFuncVariadicElem(fnType, resolved.(*SliceType).Elem)
 			}
 			fnType.ParamTypes = append(fnType.ParamTypes, resolved)
 		}
@@ -886,7 +886,7 @@ func (c *Context) resolveConstArg(arg *ast.ConstArg) Type {
 	case *ast.IntegerLiteral:
 		return &ConstValueType{Value: expr.Value}
 	case *ast.Identifier:
-		if value, ok := c.Constants[expr.Value]; ok {
+		if value, ok := c.Constants[astIdentifierValue(expr)]; ok {
 			return &ConstValueType{Value: value}
 		}
 	}
@@ -1010,7 +1010,7 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 				if _, isSl := resolved.(*SliceType); !isSl {
 					resolved = &SliceType{Elem: resolved}
 				}
-				fnType.VariadicElem = resolved.(*SliceType).Elem
+				setFuncVariadicElem(fnType, resolved.(*SliceType).Elem)
 			}
 			fnType.ParamTypes = append(fnType.ParamTypes, resolved)
 		}
@@ -1544,7 +1544,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		for i, rt := range e.ReturnTypes {
 			ft.ReturnTypes[i] = c.ResolveType(rt)
 		}
-		ft.VariadicElem = variadicElem
+		setFuncVariadicElem(ft, variadicElem)
 		return ft
 	}
 
@@ -1816,7 +1816,7 @@ func (c *Context) evalConstFloat(expr ast.Expression) (float64, bool) {
 // -------------------------------------------------------------
 
 // CheckIndexable は指定された型が Indexable (Get(key) V または Get(key) (V, bool)) を満たすか検査する
-func (c *Context) CheckIndexable(t Type) (keyType Type, valType Type, hasOk bool, fn *FuncType) {
+func (c *Context) CheckIndexable(t Type) (Type, Type, bool, *FuncType) {
 	if t == nil {
 		return nil, nil, false, nil
 	}
@@ -1835,7 +1835,7 @@ func (c *Context) CheckIndexable(t Type) (keyType Type, valType Type, hasOk bool
 		}
 	}
 
-	fn, _ = c.LookupMethod(typeName, "Get")
+	fn, _ := c.LookupMethod(typeName, "Get")
 	if fn == nil && !strings.HasPrefix(typeName, "*") {
 		fn, _ = c.LookupMethod("*"+typeName, "Get")
 	}
@@ -1877,7 +1877,7 @@ func extractIndexableSignature(fn *FuncType) (keyType Type, valType Type, hasOk 
 }
 
 // CheckIndexAssignable は指定された型が IndexAssignable (Set(key, val)) を満たすか検査する
-func (c *Context) CheckIndexAssignable(t Type) (keyType Type, valType Type, fn *FuncType) {
+func (c *Context) CheckIndexAssignable(t Type) (Type, Type, *FuncType) {
 	if t == nil {
 		return nil, nil, nil
 	}
@@ -1896,7 +1896,7 @@ func (c *Context) CheckIndexAssignable(t Type) (keyType Type, valType Type, fn *
 		}
 	}
 
-	fn, _ = c.LookupMethod(typeName, "Set")
+	fn, _ := c.LookupMethod(typeName, "Set")
 	if fn == nil && !strings.HasPrefix(typeName, "*") {
 		fn, _ = c.LookupMethod("*"+typeName, "Set")
 	}
@@ -1932,7 +1932,7 @@ func extractIndexAssignableSignature(fn *FuncType) (keyType Type, valType Type) 
 }
 
 // CheckSliceable は指定された型が Sliceable (Slice(low, high int) (T, bool) または Slice(low, high int) T) を満たすか検査する
-func (c *Context) CheckSliceable(t Type) (resType Type, hasOk bool, fn *FuncType) {
+func (c *Context) CheckSliceable(t Type) (Type, bool, *FuncType) {
 	if t == nil {
 		return nil, false, nil
 	}
@@ -1951,7 +1951,7 @@ func (c *Context) CheckSliceable(t Type) (resType Type, hasOk bool, fn *FuncType
 		}
 	}
 
-	fn, _ = c.LookupMethod(typeName, "Slice")
+	fn, _ := c.LookupMethod(typeName, "Slice")
 	if fn == nil && !strings.HasPrefix(typeName, "*") {
 		fn, _ = c.LookupMethod("*"+typeName, "Slice")
 	}
@@ -1992,19 +1992,19 @@ func extractSliceableSignature(fn *FuncType) (resType Type, hasOk bool) {
 }
 
 // CheckIterable は指定された型が Iterable (InitIterator(buf *byte) int && Next(buf *byte) (*T, bool)) を満たすか検査する
-func (c *Context) CheckIterable(t Type) (elemType Type, fnInit *FuncType, fnNext *FuncType) {
+func (c *Context) CheckIterable(t Type) (Type, *FuncType, *FuncType) {
 	if t == nil {
 		return nil, nil, nil
 	}
 	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
-	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
+	fnInit, _ := c.LookupMethod(typeName, "InitIterator")
 	if fnInit == nil {
 		fnInit, _ = c.LookupMethod("*"+rawName, "InitIterator")
 	}
 
-	fnNext, _ = c.LookupMethod(typeName, "Next")
+	fnNext, _ := c.LookupMethod(typeName, "Next")
 	if fnNext == nil {
 		fnNext, _ = c.LookupMethod("*"+rawName, "Next")
 	}
@@ -2022,19 +2022,19 @@ func (c *Context) CheckIterable(t Type) (elemType Type, fnInit *FuncType, fnNext
 }
 
 // CheckAsyncIterable は指定された型が AsyncIterable (InitIterator + NextChannel(buf *byte) (chan T, bool)) を満たすか検査する
-func (c *Context) CheckAsyncIterable(t Type) (elemType Type, fnInit *FuncType, fnNextChan *FuncType) {
+func (c *Context) CheckAsyncIterable(t Type) (Type, *FuncType, *FuncType) {
 	if t == nil {
 		return nil, nil, nil
 	}
 	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 
-	fnInit, _ = c.LookupMethod(typeName, "InitIterator")
+	fnInit, _ := c.LookupMethod(typeName, "InitIterator")
 	if fnInit == nil {
 		fnInit, _ = c.LookupMethod("*"+rawName, "InitIterator")
 	}
 
-	fnNextChan, _ = c.LookupMethod(typeName, "NextChannel")
+	fnNextChan, _ := c.LookupMethod(typeName, "NextChannel")
 	if fnNextChan == nil {
 		fnNextChan, _ = c.LookupMethod("*"+rawName, "NextChannel")
 	}
@@ -2300,7 +2300,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		// Imported package members are resolved by the loader/transformer and do
 		// not appear as local identifiers in this context.
 		if object, isIdentifier := e.Object.(*ast.Identifier); isIdentifier {
-			if !c.diagnosticPackages[object.Value] {
+			if !c.diagnosticPackages[astIdentifierValue(object)] {
 				return c.InferExprTypeWithDiag(e.Object, locals, reporter, filename)
 			}
 		} else {

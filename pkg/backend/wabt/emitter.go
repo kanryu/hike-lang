@@ -80,6 +80,10 @@ func castExpr(from, to sema.Type, expression string) string {
 		return expression
 	}
 	switch {
+	case fromType == "f32" && toType == "f64":
+		return "(f64.promote_f32 " + expression + ")"
+	case fromType == "f64" && toType == "f32":
+		return "(f32.demote_f64 " + expression + ")"
 	case fromType == "i64" && toType == "i32":
 		return "(i32.wrap_i64 " + expression + ")"
 	case fromType == "i32" && toType == "i64":
@@ -89,18 +93,32 @@ func castExpr(from, to sema.Type, expression string) string {
 		return "(i64.extend_i32_s " + expression + ")"
 	case fromType == "f64" && toType == "i32":
 		return "(i32.trunc_f64_s " + expression + ")"
+	case fromType == "f32" && toType == "i32":
+		return "(i32.trunc_f32_s " + expression + ")"
 	case fromType == "i32" && toType == "f64":
 		if unsignedInteger(from) {
 			return "(f64.convert_i32_u " + expression + ")"
 		}
 		return "(f64.convert_i32_s " + expression + ")"
+	case fromType == "i32" && toType == "f32":
+		if unsignedInteger(from) {
+			return "(f32.convert_i32_u " + expression + ")"
+		}
+		return "(f32.convert_i32_s " + expression + ")"
 	case fromType == "i64" && toType == "f64":
 		if unsignedInteger(from) {
 			return "(f64.convert_i64_u " + expression + ")"
 		}
 		return "(f64.convert_i64_s " + expression + ")"
+	case fromType == "i64" && toType == "f32":
+		if unsignedInteger(from) {
+			return "(f32.convert_i64_u " + expression + ")"
+		}
+		return "(f32.convert_i64_s " + expression + ")"
 	case fromType == "f64" && toType == "i64":
 		return "(i64.trunc_f64_s " + expression + ")"
+	case fromType == "f32" && toType == "i64":
+		return "(i64.trunc_f32_s " + expression + ")"
 	case isIntegerType(from) && isIntegerType(to):
 		if fromType == "i32" && toType == "i64" {
 			return "(i64.extend_i32_s " + expression + ")"
@@ -138,6 +156,17 @@ func (e *Emitter) val(v hir.Value) string {
 	default:
 		return "(i32.const 0)"
 	}
+}
+
+// valAs renders a value in the WebAssembly type required by the consuming
+// instruction. HIR constants are sometimes deliberately represented with the
+// language's default int type, while the surrounding operation is pointer/i32
+// sized. WAT requires both operands to have exactly the same stack type.
+func (e *Emitter) valAs(v hir.Value, target sema.Type) string {
+	if v == nil {
+		return fmt.Sprintf("(%s.const 0)", watType(target))
+	}
+	return castExpr(v.Type(), target, e.val(v))
 }
 
 // Keep field access outside the interface type-switch. Go-Hike's reduced
@@ -284,10 +313,33 @@ func (e *Emitter) set(r *hir.Reg, expr string) {
 // functionSymbol reserves the same system/runtime names as the LLVM backend.
 // A user-defined function with one of those names gets a private WAT spelling.
 func (e *Emitter) functionSymbol(name string) string {
+	if _, exists := e.functionIndex[name]; !exists {
+		if sep := strings.LastIndex(name, "_"); sep > 0 && sep+1 < len(name) {
+			pointerMethod := name[:sep] + "_ptr_sema_" + name[sep+1:]
+			if _, exists := e.functionIndex[pointerMethod]; exists {
+				name = pointerMethod
+			}
+		}
+	}
 	if _, userDefined := e.functionIndex[name]; userDefined && IsWabtRuntimeSymbol(name) {
 		return "$__hike_user_" + name
 	}
 	return "$" + name
+}
+
+func (e *Emitter) callReturnsValue(name string) bool {
+	for _, fn := range e.p.Functions {
+		if fn.Name == name {
+			return len(fn.ReturnTypes) > 0
+		}
+	}
+	switch name {
+	case "malloc", "calloc", "memcpy32", "memcmp32", "strlen32", "strcmp32",
+		"hike_streq32", "hike_streq_len32", "hike_strcat_len32", "__hike_map_create",
+		"__hike_map_len", "__hike_map_get", "__hike_string_less":
+		return true
+	}
+	return false
 }
 
 // Emit produces a valid WAT module for the scalar HIR instructions. Complex
@@ -553,7 +605,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			op = map[hir.Opcode]string{hir.OpAdd: "add", hir.OpSub: "sub", hir.OpMul: "mul", hir.OpDiv: "div", hir.OpEq: "eq", hir.OpNeq: "ne", hir.OpLt: "lt", hir.OpLe: "le", hir.OpGt: "gt", hir.OpGe: "ge"}[x.Op]
 		}
 		prefix := watType(x.L.Type())
-		e.set(x.Dst, "("+prefix+"."+op+" "+e.val(x.L)+" "+e.val(x.R)+")")
+		e.set(x.Dst, "("+prefix+"."+op+" "+e.valAs(x.L, x.L.Type())+" "+e.valAs(x.R, x.L.Type())+")")
 	case *hir.InstrUnary:
 		if x.Op == hir.OpNeg {
 			e.set(x.Dst, "("+watType(x.Val.Type())+".sub ("+watType(x.Val.Type())+".const 0) "+e.val(x.Val)+")")
@@ -570,7 +622,13 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			call += " " + strings.Join(args, " ")
 		}
 		call += ")"
-		e.set(x.Dst, call)
+		if x.Dst != nil {
+			e.set(x.Dst, call)
+		} else if e.callReturnsValue(x.CalleeName) {
+			e.b.WriteString("    (drop " + call + ")\n")
+		} else {
+			e.b.WriteString("    " + call + "\n")
+		}
 	case *hir.InstrCallIndirect:
 		params := make([]sema.Type, len(x.Args))
 		for i, a := range x.Args {
@@ -664,7 +722,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		if p, ok := x.Dst.Typ.(*sema.PointerType); ok {
 			elemSize = typeSize(p.Base)
 		}
-		e.set(x.Dst, fmt.Sprintf("(i32.add %s (i32.mul %s (i32.const %d)))", e.val(x.BasePtr), e.val(x.Index), elemSize))
+		e.set(x.Dst, fmt.Sprintf("(i32.add %s (i32.mul %s (i32.const %d)))", e.valAs(x.BasePtr, sema.TypeUint32), e.valAs(x.Index, sema.TypeUint32), elemSize))
 	case *hir.InstrExtractValue:
 		fieldType, offset, ok := aggregateField(x.Agg.Type(), x.Index)
 		if !ok {

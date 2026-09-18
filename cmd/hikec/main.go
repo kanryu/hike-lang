@@ -199,7 +199,6 @@ func runEmitIR(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: invalid -wasm-mode %q (want normal or concurrent)\n", wasmMode)
 		os.Exit(1)
 	}
-
 	tgt, err := target.ParseTarget(targetName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
@@ -422,6 +421,7 @@ func runBuild(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: invalid -wasm-mode %q (want normal or concurrent)\n", wasmMode)
 		os.Exit(1)
 	}
+	useWabtBackend := tgt.Name == target.TargetWabt.Name || (goHikeMode && tgt.IsWasm)
 
 	// Collect jfunc declarations for the generated wasm runtime. The normal
 	// emit-ir path remains authoritative for LLVM output; this frontend pass
@@ -435,7 +435,7 @@ func runBuild(args []string) {
 		frontend.SetGoHikeMode(goHikeMode)
 		var program *ast.Program
 		var compileErr error
-		if tgt.Name == target.TargetWabt.Name {
+		if useWabtBackend {
 			_, _, program, compileErr = frontend.CompileToWAT(sourceFiles...)
 		} else {
 			_, _, program, compileErr = frontend.CompileToLLVM(sourceFiles...)
@@ -451,6 +451,12 @@ func runBuild(args []string) {
 	defer os.Remove(tempLL)
 
 	emitArgs := append([]string{"-o", tempLL}, passThroughArgs...)
+	if useWabtBackend {
+		// Go-Hike wasm32 uses the WAT backend while retaining the wasm32 ABI.
+		// Append the effective target so it wins over the user-facing wasm32
+		// spelling already present in passThroughArgs.
+		emitArgs = append(emitArgs, "-target", target.TargetWabt.Name)
+	}
 	if regionMode {
 		emitArgs = append(emitArgs, "--alloc=region")
 	}
@@ -467,7 +473,7 @@ func runBuild(args []string) {
 		}
 	}
 
-	if tgt.Name == target.TargetWabt.Name {
+	if useWabtBackend {
 		cmd := exec.Command("wat2wasm", tempLL, "-o", outputBin)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

@@ -162,6 +162,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	// 右辺の先行評価
 	rhsVals := make([]hir.Value, len(stmt.Right))
 	for i, r := range stmt.Right {
+		s.annotateAssignmentLiteral(r, s.assignmentTargetType(stmt, i))
 		rhsVals[i] = s.root.Expr.LowerExpr(r)
 	}
 
@@ -444,6 +445,79 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 
 			s.root.emit(&hir.InstrStore{Val: val, Ptr: targetPtr})
+		}
+	}
+}
+
+// assignmentTargetType returns the type already known for an assignment
+// target.  Go permits eliding the type in a composite literal when the
+// surrounding assignment supplies it (for example, x = {Field: value}).
+// Recovering that context here keeps the parser conservative while ensuring
+// lowering never receives an untyped struct literal.
+func (s *StmtLowerer) assignmentTargetType(stmt *ast.AssignStmt, index int) sema.Type {
+	if stmt == nil || index >= len(stmt.Left) {
+		return nil
+	}
+	if stmt.Type != nil {
+		return s.root.semaCtx.ResolveType(stmt.Type)
+	}
+	ident, ok := stmt.Left[index].(*ast.Identifier)
+	if !ok || ident == nil {
+		return nil
+	}
+	if ptr, exists := s.root.symbols[astIDValue(ident)]; exists && ptr != nil {
+		if typ, okType := ptr.Type().(*sema.PointerType); okType {
+			return typ.Base
+		}
+	}
+	return s.root.symbolTypes[astIDValue(ident)]
+}
+
+func (s *StmtLowerer) annotateAssignmentLiteral(expr ast.Expression, target sema.Type) {
+	if expr == nil || target == nil {
+		return
+	}
+	switch literal := expr.(type) {
+	case *ast.StructLiteral:
+		if literal.Type == nil {
+			if _, ok := target.(*sema.StructType); ok {
+				if named, isNamed := semaTypeToTypeExpr(target).(*ast.NamedType); isNamed {
+					literal.Type = named
+				}
+			}
+		}
+		if structType, ok := target.(*sema.StructType); ok {
+			for _, field := range literal.Fields {
+				if field == nil || field.Name == nil {
+					continue
+				}
+				for _, declared := range structType.Fields {
+					if declared.Name == field.Name.Value {
+						s.annotateAssignmentLiteral(field.Value, declared.Type)
+						break
+					}
+				}
+			}
+		}
+	case *ast.ArrayLiteral:
+		if arrayType, ok := target.(*sema.ArrayType); ok {
+			for _, element := range literal.Elements {
+				s.annotateAssignmentLiteral(element, arrayType.Elem)
+			}
+		}
+	case *ast.SliceLiteral:
+		if sliceType, ok := target.(*sema.SliceType); ok {
+			for _, element := range literal.Elements {
+				s.annotateAssignmentLiteral(element, sliceType.Elem)
+			}
+		}
+	case *ast.MapLiteral:
+		if mapType, ok := target.(*sema.MapType); ok {
+			for _, entry := range literal.Entries {
+				if entry != nil {
+					s.annotateAssignmentLiteral(entry.Value, mapType.Value)
+				}
+			}
 		}
 	}
 }

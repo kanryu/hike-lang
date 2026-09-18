@@ -831,7 +831,12 @@ func (p *Parser) parseStringLiteral() *ast.StringLiteral {
 func (p *Parser) parsePrefixExpr() ast.Expression {
 	tok := p.curToken
 	p.nextToken()
+	oldAllow := p.allowStructLit
+	if tok.Literal == "&" {
+		p.allowStructLit = true
+	}
 	right := p.parseExpression(PREFIX)
+	p.allowStructLit = oldAllow
 	return &ast.PrefixExpr{Token: tok, Operator: tok.Literal, Right: right}
 }
 
