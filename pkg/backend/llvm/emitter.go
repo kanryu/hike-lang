@@ -1161,6 +1161,25 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		}
 		return
 	}
+	// A Hike string is a length-aware aggregate whose first field is the
+	// backing byte pointer.  Some variadic/FFI paths request its pointer view
+	// directly; lower it as extractvalue instead of rejecting an aggregate
+	// bitcast.
+	if strings.HasPrefix(fromLLVM, "{") && !strings.HasSuffix(fromLLVM, "*") && isToPtr {
+		aggregateVal := val
+		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", i.Dst, strings.TrimSuffix(fromLLVM, "*"), aggregateVal))
+		return
+	}
+	if isFromPtr && toLLVM == "{ i8*, i32, i32 }" {
+		base := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %s, 0\n", base, toLLVM, fromLLVM, val))
+		length := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call i32 @strlen(i8* %s)\n", length, val))
+		withOffset := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 0, 1\n", withOffset, toLLVM, base))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 %s, 2\n", i.Dst, toLLVM, withOffset, length))
+		return
+	}
 
 	if isFloatType(fromLLVM) && rTo > 0 {
 		e.b.WriteString(fmt.Sprintf("  %s = fptosi %s %s to %s\n", i.Dst, fromLLVM, val, toLLVM))

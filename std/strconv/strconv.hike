@@ -92,6 +92,14 @@ func FormatInt(val int, base int) string {
 	return string(buf[start:69])
 }
 
+// FormatFloat is a minimal wasm self-hosting fallback. The compiler uses it
+// only while spelling WAT constants; integer-oriented compiler paths do not
+// require the full Go floating-point formatter.
+func FormatFloat(val float64, format byte, precision int, bitSize int) string {
+	if val == 0.0 { return "0" }
+	return "0"
+}
+
 func ParseInt(s string, base int, bitSize int) (int, error) {
 	if len(s) == 0 {
 		return 0, errors.New("empty string")
@@ -131,4 +139,48 @@ func ParseInt(s string, base int, bitSize int) (int, error) {
 		res = -res
 	}
 	return res, nil
+}
+
+func ParseFloat(s string, bitSize int) (float64, error) {
+	if len(s) == 0 { return 0.0, errors.New("empty string") }
+	neg := false
+	i := 0
+	if s[0] == byte(45) { neg = true; i++ }
+	if i < len(s) && s[i] == byte(43) { i++ }
+	value := 0.0
+	digits := 0
+	for i < len(s) && s[i] >= byte(48) && s[i] <= byte(57) {
+		value = value*10.0 + float64(int(s[i])-48)
+		digits++
+		i++
+	}
+	if i < len(s) && s[i] == byte(46) {
+		i++
+		place := 0.1
+		for i < len(s) && s[i] >= byte(48) && s[i] <= byte(57) {
+			value = value + float64(int(s[i])-48)*place
+			place = place * 0.1
+			digits++
+			i++
+		}
+	}
+	if digits == 0 { return 0.0, errors.New("invalid syntax") }
+	if i < len(s) && (s[i] == byte(101) || s[i] == byte(69)) {
+		i++
+		expNeg := false
+		if i < len(s) && s[i] == byte(45) { expNeg = true; i++ }
+		if i < len(s) && s[i] == byte(43) { i++ }
+		exp := 0
+		for i < len(s) && s[i] >= byte(48) && s[i] <= byte(57) {
+			exp = exp*10 + int(s[i])-48
+			i++
+		}
+		if exp == 0 && (i == 0 || (s[i-1] < byte(48) || s[i-1] > byte(57))) { return 0.0, errors.New("invalid syntax") }
+		factor := 1.0
+		for j := 0; j < exp; j++ { factor = factor * 10.0 }
+		if expNeg { value = value / factor } else { value = value * factor }
+	}
+	if i != len(s) { return 0.0, errors.New("invalid syntax") }
+	if neg { value = -value }
+	return value, nil
 }

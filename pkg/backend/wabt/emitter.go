@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"hikec-go/pkg/backend/llvm"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
 )
@@ -120,10 +119,11 @@ func (e *Emitter) val(v hir.Value) string {
 	case *hir.Reg:
 		return "(local.get $" + reg(x) + ")"
 	case *hir.GlobalVar:
-		if index, ok := e.functionIndex[x.Name]; ok {
+		name := globalVarName(x)
+		if index, ok := e.functionIndex[name]; ok {
 			return fmt.Sprintf("(i32.const %d)", index)
 		}
-		return "(global.get $" + x.Name + ")"
+		return "(global.get $" + name + ")"
 	case *hir.ConstInt:
 		return fmt.Sprintf("(%s.const %d)", watType(x.Typ), x.Val)
 	case *hir.ConstBool:
@@ -134,11 +134,18 @@ func (e *Emitter) val(v hir.Value) string {
 	case *hir.ConstFloat:
 		return fmt.Sprintf("(%s.const %s)", watType(x.Typ), strconv.FormatFloat(x.Val, 'g', -1, 64))
 	case *hir.ConstString:
-		return fmt.Sprintf("(i32.const %d)", e.stringOffsets[x.Label])
+		return fmt.Sprintf("(i32.const %d)", e.stringOffsets[constStringLabel(x)])
 	default:
 		return "(i32.const 0)"
 	}
 }
+
+// Keep field access outside the interface type-switch. Go-Hike's reduced
+// checker otherwise may infer the switch variable as an integer value.
+func globalVarName(g *hir.GlobalVar) string       { return g.Name }
+func constStringLabel(s *hir.ConstString) string  { return s.Label }
+func itabTargetName(m hir.ItabMethodEntry) string { return m.TargetFnName }
+func boxItabName(x *hir.InstrBoxInterface) string  { return x.ItabName }
 
 func dataBytes(s string) string {
 	var b strings.Builder
@@ -208,7 +215,8 @@ func (e *Emitter) emitItabData() {
 		e.itabOffsets[itab.GlobalName] = e.nextDataOffset
 		var raw strings.Builder
 		for _, method := range itab.Methods {
-			fmt.Fprintf(&raw, "\\%02x\\%02x\\%02x\\%02x", e.functionIndex[method.TargetFnName]&255, (e.functionIndex[method.TargetFnName]>>8)&255, (e.functionIndex[method.TargetFnName]>>16)&255, (e.functionIndex[method.TargetFnName]>>24)&255)
+			name := itabTargetName(method)
+			fmt.Fprintf(&raw, "\\%02x\\%02x\\%02x\\%02x", e.functionIndex[name]&255, (e.functionIndex[name]>>8)&255, (e.functionIndex[name]>>16)&255, (e.functionIndex[name]>>24)&255)
 		}
 		fmt.Fprintf(&e.b, "  (data (i32.const %d) \"%s\")\n", e.nextDataOffset, raw.String())
 		e.nextDataOffset += len(itab.Methods) * 4
@@ -225,6 +233,10 @@ func resultTypes(r *hir.Reg) []sema.Type {
 	return []sema.Type{r.Typ}
 }
 
+func indirectCallResults(x *hir.InstrCallIndirect) []sema.Type { return resultTypes(x.Dst) }
+func ifaceCallResults(x *hir.InstrCallIface) []sema.Type       { return resultTypes(x.Dst) }
+func hirFunctionExtern(fn *hir.Function) bool                  { return fn.IsExtern }
+
 func hasEnvironment(v hir.Value) bool {
 	_, nilEnv := v.(*hir.ConstNil)
 	return v != nil && !nilEnv
@@ -240,10 +252,10 @@ func (e *Emitter) prepareTypes() {
 					for i, a := range x.Args {
 						params[i] = a.Type()
 					}
-					e.registerType(params, resultTypes(x.Dst))
+					e.registerType(params, indirectCallResults(x))
 					if hasEnvironment(x.EnvPtr) {
 						params = append([]sema.Type{&sema.PointerType{Base: sema.TypeByte}}, params...)
-						e.registerType(params, resultTypes(x.Dst))
+						e.registerType(params, indirectCallResults(x))
 					}
 				case *hir.InstrCallIface:
 					params := make([]sema.Type, 1, len(x.Args)+1)
@@ -251,7 +263,7 @@ func (e *Emitter) prepareTypes() {
 					for _, a := range x.Args {
 						params = append(params, a.Type())
 					}
-					e.registerType(params, resultTypes(x.Dst))
+					e.registerType(params, ifaceCallResults(x))
 				}
 			}
 		}
@@ -272,7 +284,7 @@ func (e *Emitter) set(r *hir.Reg, expr string) {
 // functionSymbol reserves the same system/runtime names as the LLVM backend.
 // A user-defined function with one of those names gets a private WAT spelling.
 func (e *Emitter) functionSymbol(name string) string {
-	if _, userDefined := e.functionIndex[name]; userDefined && llvm.IsRuntimeSymbol(name) {
+	if _, userDefined := e.functionIndex[name]; userDefined && IsWabtRuntimeSymbol(name) {
 		return "$__hike_user_" + name
 	}
 	return "$" + name
@@ -284,7 +296,7 @@ func (e *Emitter) functionSymbol(name string) string {
 func (e *Emitter) Emit() string {
 	index := 0
 	for _, fn := range e.p.Functions {
-		if !fn.IsExtern {
+		if !hirFunctionExtern(fn) {
 			e.functionIndex[fn.Name] = index
 			index++
 		}
@@ -292,7 +304,7 @@ func (e *Emitter) Emit() string {
 	e.prepareTypes()
 	e.b.WriteString("(module\n")
 	for _, fn := range e.p.Functions {
-		if !fn.IsExtern {
+		if !hirFunctionExtern(fn) {
 			continue
 		}
 		if isWasmRuntime(fn.Name) {
@@ -326,7 +338,7 @@ func (e *Emitter) Emit() string {
 	if len(e.functionIndex) > 0 {
 		names := make([]string, 0, len(e.functionIndex))
 		for _, fn := range e.p.Functions {
-			if !fn.IsExtern {
+			if !hirFunctionExtern(fn) {
 				names = append(names, e.functionSymbol(fn.Name))
 			}
 		}
@@ -343,7 +355,7 @@ func (e *Emitter) Emit() string {
 	return e.b.String()
 }
 func (e *Emitter) function(fn *hir.Function) {
-	if fn.IsExtern {
+	if hirFunctionExtern(fn) {
 		return
 	}
 	e.b.WriteString("  (func ")
@@ -372,8 +384,9 @@ func (e *Emitter) function(fn *hir.Function) {
 	e.b.WriteString("    (local.set $frame_sp (global.get $__sp))\n")
 	e.emitCFG(fn)
 	e.b.WriteString("  )\n")
-	if fn.Name == "main" {
-		fmt.Fprintf(&e.b, "  (export \"main\" (func $%s))\n", fn.Name)
+	if fn.Name == "main" || fn.IsCFunc {
+		exportName := fn.Name
+		fmt.Fprintf(&e.b, "  (export %q (func %s))\n", exportName, e.functionSymbol(fn.Name))
 	}
 }
 
@@ -568,7 +581,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			plainArgs = append(plainArgs, e.val(a))
 		}
 		plainArgs = append(plainArgs, e.val(x.FnPtr))
-		plainCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, resultTypes(x.Dst)), strings.Join(plainArgs, " "))
+		plainCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, indirectCallResults(x)), strings.Join(plainArgs, " "))
 		if !hasEnvironment(x.EnvPtr) {
 			e.set(x.Dst, plainCall)
 			break
@@ -576,7 +589,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		closureParams := append([]sema.Type{&sema.PointerType{Base: sema.TypeByte}}, params...)
 		closureArgs := append([]string{e.val(x.EnvPtr)}, plainArgs[:len(plainArgs)-1]...)
 		closureArgs = append(closureArgs, e.val(x.FnPtr))
-		closureCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(closureParams, resultTypes(x.Dst)), strings.Join(closureArgs, " "))
+		closureCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(closureParams, indirectCallResults(x)), strings.Join(closureArgs, " "))
 		condition := "(i32.eqz " + e.val(x.EnvPtr) + ")"
 		if x.Dst != nil {
 			e.set(x.Dst, fmt.Sprintf("(if (result %s) %s (then %s) (else %s))", watType(x.Dst.Typ), condition, plainCall, closureCall))
@@ -595,7 +608,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			args = append(args, e.val(a))
 		}
 		args = append(args, itab)
-		e.set(x.Dst, fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, resultTypes(x.Dst)), strings.Join(args, " ")))
+		e.set(x.Dst, fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, ifaceCallResults(x)), strings.Join(args, " ")))
 	case *hir.InstrLoad:
 		e.set(x.Dst, "("+memoryOp(x.Dst.Typ, true)+" "+e.val(x.Ptr)+")")
 	case *hir.InstrStore:
@@ -620,7 +633,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			e.b.WriteString("    (" + memoryOp(x.Val.Type(), false) + " " + data + " " + e.val(x.Val) + ")\n")
 		}
 		e.b.WriteString("    (i32.store " + base + " " + data + ")\n")
-		itabOffset := e.itabOffsets[x.ItabName]
+		itabOffset := e.itabOffsets[boxItabName(x)]
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const %d))\n", base, itabOffset))
 	case *hir.InstrAlloca:
 		e.set(x.Dst, "(global.get $__sp)")

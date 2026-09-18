@@ -177,6 +177,11 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		}
 
 		pkgDecls[pkgName] = append(pkgDecls[pkgName], fileProg.Decls...)
+		for _, decl := range fileProg.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				fn.Filename = curFile
+			}
+		}
 		pkgImports[pkgName] = append(pkgImports[pkgName], fileProg.Imports...)
 
 		fileDir := filepath.Dir(curFile)

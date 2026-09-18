@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	diagFileRe = regexp.MustCompile(`^(.*?):(\d+):(\d+):\s*(.*)$`)
-	diagLineRe = regexp.MustCompile(`^(?:line\s+)?(\d+):(\d+):\s*(.*)$`)
+	diagFileRe *regexp.Regexp = regexp.MustCompile(`^(.*?):(\d+):(\d+):\s*(.*)$`)
+	diagLineRe *regexp.Regexp = regexp.MustCompile(`^(?:line\s+)?(\d+):(\d+):\s*(.*)$`)
 )
 
 // Diagnostic は位置情報を含む単一のコンパイル時エラー・警告
@@ -61,6 +61,21 @@ func (r *Reporter) AddRaw(defaultFile string, raw string) {
 	if raw == "" {
 		return
 	}
+	// Loader errors identify the actual source file before the diagnostic
+	// lines. Preserve that file instead of attaching every line to the entry
+	// source passed to the compiler phase.
+	if strings.HasPrefix(raw, "parse error in ") {
+		if idx := strings.Index(raw, ":\n"); idx >= 0 {
+			file := strings.TrimPrefix(raw[:idx], "parse error in ")
+			for _, line := range strings.Split(raw[idx+2:], "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					r.errors = append(r.errors, ParseDiagnostic(file, line))
+				}
+			}
+			return
+		}
+	}
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
@@ -91,7 +106,9 @@ func (r *Reporter) FormatAll() string {
 		return ""
 	}
 	sorted := make([]Diagnostic, len(r.errors))
-	copy(sorted, r.errors)
+	for i := 0; i < len(r.errors); i++ {
+		sorted[i] = r.errors[i]
+	}
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].Filename != sorted[j].Filename {
 			return sorted[i].Filename < sorted[j].Filename

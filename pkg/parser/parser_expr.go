@@ -27,6 +27,7 @@ const (
 	INDEX       // array[index], .field
 )
 
+
 var precedences = map[token.TokenType]int{
 	token.LOR:       LOR,
 	token.LAND:      LAND,

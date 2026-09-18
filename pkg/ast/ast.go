@@ -168,6 +168,7 @@ func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
 
 type FuncDecl struct {
 	Token       token.Token
+	Filename    string
 	Receiver    *ParamDecl
 	Name        *Identifier
 	TypeParams  []*TypeParam

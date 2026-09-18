@@ -26,6 +26,9 @@ output_*.ll
 *.test
 *.prof
 /vendor/
+.go-cache*
+.region-test-*/
+.region-case-*/
 
 # IDE & Editor files
 .vscode/
@@ -42,3 +45,4 @@ oooo.log
 
 # Self-hosting migration workspace
 selfhost/
+examples/wasm_hikec/

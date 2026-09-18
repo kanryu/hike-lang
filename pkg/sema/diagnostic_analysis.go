@@ -215,11 +215,9 @@ func isSimpleDiagnosticTarget(expr ast.TypeExpr) bool {
 	return false
 }
 
-func (c *Context) resolveDiagnosticType(expr ast.TypeExpr) (typ Type) {
-	defer func() {
-		if recover() != nil {
-			typ = TypeBad
-		}
-	}()
+func (c *Context) resolveDiagnosticType(expr ast.TypeExpr) Type {
+	// ResolveType is expected to be total for diagnostic expressions.  Keep
+	// this wrapper free of a named return value because Go-Hike cannot assign
+	// to that value from a deferred recovery block.
 	return c.ResolveType(expr)
 }

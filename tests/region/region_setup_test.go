@@ -37,7 +37,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		os.Exit(1)
 	}
-	defer os.RemoveAll(base)
 	hikecBin = filepath.Join(base, "hikec")
 	if runtime.GOOS == "windows" {
 		hikecBin += ".exe"
@@ -45,9 +44,14 @@ func TestMain(m *testing.M) {
 	cmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(root, "cmd", "hikec"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "hikec build failed: %v\n%s", err, out)
+		_ = os.RemoveAll(base)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	status := m.Run()
+	// os.Exit does not run deferred calls, so remove the temporary module
+	// explicitly after all region tests have completed.
+	_ = os.RemoveAll(base)
+	os.Exit(status)
 }
 
 type regionCase struct {

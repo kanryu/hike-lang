@@ -106,6 +106,21 @@ const (
 	IMPLICIT_CAST = "IMPLICIT_CAST"
 )
 
+// GoHikeConstantNames lists the token constants exposed by the Go-compatible
+// package model. Keeping this catalogue with the token definitions prevents
+// semantic analysis from duplicating the lexical vocabulary.
+var GoHikeConstantNames = []string{
+	"ILLEGAL", "EOF", "IDENT", "INT", "FLOAT", "CHAR", "STRING",
+	"ASSIGN", "PLUS", "MINUS", "PERCENT", "BANG", "ASTERISK", "SLASH",
+	"LT", "GT", "EQ", "NEQ", "LE", "GE", "LAND", "LOR", "AMPERSAND",
+	"OR", "CARET", "SHL", "SHR", "COMMA", "SEMICOLON", "COLON", "ELLIPSIS",
+	"DEFINE", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET", "RBRACKET",
+	"PACKAGE", "IMPORT", "FUNC", "CFUNC", "EXTERN", "JFUNC", "INLINEASM",
+	"PASSTHROUGH", "MAP", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
+	"INTERFACE", "CONST", "IOTA", "RANGE", "BREAK", "CONTINUE", "IF", "ELSE",
+	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "NIL", "VAR", "IMPLICIT_CAST",
+}
+
 var keywords = map[string]TokenType{
 	"package":     PACKAGE,
 	"import":      IMPORT,

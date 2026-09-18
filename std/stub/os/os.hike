@@ -1,0 +1,9 @@
+package os
+
+// Browser-hosted compilation has no filesystem.  These are the only os
+// symbols needed by the compiler's logging path.
+var Args []string
+
+func Getenv(name string) string {
+	return ""
+}

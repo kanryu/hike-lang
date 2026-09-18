@@ -21,6 +21,43 @@ type Transformer struct {
 	verboseLevel          int
 }
 
+// identifierValue keeps field access on the concrete AST type.  The Go-Hike
+// compiler can otherwise infer a type-switch variable as an internal scalar
+// while compiling this package, producing errors such as id_Value.
+func identifierValue(id *ast.Identifier) string {
+	if id == nil {
+		return ""
+	}
+	return id.Value
+}
+
+func funcTypeName(fn *sema.FuncType) string {
+	if fn == nil {
+		return ""
+	}
+	return fn.Name
+}
+
+func funcTemplate(fn *sema.FuncType) *ast.FuncDecl {
+	if fn == nil {
+		return nil
+	}
+	return fn.Template
+}
+
+func funcSpecializations(fn *sema.FuncType) map[string]*sema.FuncType {
+	if fn == nil {
+		return nil
+	}
+	return fn.Specializations
+}
+func funcTypeParams(fn *sema.FuncType) []string {
+	if fn == nil {
+		return nil
+	}
+	return fn.TypeParams
+}
+
 func specializationArgName(typ sema.Type) string {
 	if cv, ok := typ.(*sema.ConstValueType); ok {
 		return fmt.Sprintf("const_%d", cv.Value)
@@ -77,16 +114,17 @@ func (t *Transformer) Transform() (*ast.Program, error) {
 	for len(t.specializedQueue) > 0 {
 		fnMeta := t.specializedQueue[0]
 		t.specializedQueue = t.specializedQueue[1:]
+		fnName := funcTypeName(fnMeta)
 
-		if t.emittedSpecialization[fnMeta.Name] || fnMeta.SpecializedAst == nil {
+		if t.emittedSpecialization[fnName] || fnMeta.SpecializedAst == nil {
 			continue
 		}
-		t.emittedSpecialization[fnMeta.Name] = true
+		t.emittedSpecialization[fnName] = true
 
 		// 特殊化関数内部でさらに別のジェネリクス呼び出しが発生している可能性を走査
-		logger.LogVerbose2("[Verbose2] Transform specialized body before: name=%s params=%v returns=%v body=%#v\n", fnMeta.Name, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
+		logger.LogVerbose2("[Verbose2] Transform specialized body before: name=%s params=%v returns=%v body=%#v\n", fnName, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
 		t.transformFuncDecl(fnMeta.SpecializedAst)
-		logger.LogVerbose2("[Verbose2] Transform specialized body after: name=%s params=%v returns=%v body=%#v\n", fnMeta.Name, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
+		logger.LogVerbose2("[Verbose2] Transform specialized body after: name=%s params=%v returns=%v body=%#v\n", fnName, fnMeta.SpecializedAst.Params, fnMeta.SpecializedAst.ReturnTypes, fnMeta.SpecializedAst.Body)
 		t.newSpecializedDecls = append(t.newSpecializedDecls, fnMeta.SpecializedAst)
 	}
 
@@ -155,24 +193,43 @@ func (t *Transformer) collectTypesPass() {
 				}
 			}
 			// Preserve fields, InternalKey, and specializations produced by Sema.
-			tmplStruct.Name = qualifiedName
-			if tmplStruct.InternalKey == "" {
+			setStructTypeName(tmplStruct, qualifiedName)
+			if structTypeInternalKey(tmplStruct) == "" {
 				if parts := strings.SplitN(qualifiedName, "_", 2); len(parts) == 2 {
-					tmplStruct.InternalKey = parts[0] + "/" + parts[1]
+					setStructTypeInternalKey(tmplStruct, parts[0]+"/"+parts[1])
 				} else {
-					tmplStruct.InternalKey = qualifiedName
+					setStructTypeInternalKey(tmplStruct, qualifiedName)
 				}
 			}
-			tmplStruct.TypeParams = typeParamNames
-			tmplStruct.ConstTypeParams = sema.ConstTypeParamsFromAST(typeDecl.TypeParams)
-			tmplStruct.Template = typeDecl
-			if tmplStruct.Specializations == nil {
-				tmplStruct.Specializations = make(map[string]*sema.StructType)
-			}
+			configureStructTemplate(tmplStruct, typeParamNames, sema.ConstTypeParamsFromAST(typeDecl.TypeParams), typeDecl)
 			t.semaCtx.Structs[qualifiedName] = tmplStruct
 			t.semaCtx.Structs[rawName] = tmplStruct
 		}
 		// 具象構造体は sema.Analyze で完全なフィールド情報が確定しているため、上書きしない
+	}
+}
+
+func setStructTypeName(st *sema.StructType, name string)       { st.Name = name }
+func structTypeName(st *sema.StructType) string {
+	if st == nil {
+		return ""
+	}
+	return st.Name
+}
+func structTypeParams(st *sema.StructType) []string {
+	if st == nil {
+		return nil
+	}
+	return st.TypeParams
+}
+func structTypeInternalKey(st *sema.StructType) string         { return st.InternalKey }
+func setStructTypeInternalKey(st *sema.StructType, key string) { st.InternalKey = key }
+func configureStructTemplate(st *sema.StructType, params []string, constParams map[string]bool, decl *ast.TypeDecl) {
+	st.TypeParams = params
+	st.ConstTypeParams = constParams
+	st.Template = decl
+	if st.Specializations == nil {
+		st.Specializations = make(map[string]*sema.StructType)
 	}
 }
 
@@ -267,7 +324,7 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 		if len(stmt.Left) == 1 && len(stmt.Right) == 1 {
 			if id, ok := stmt.Left[0].(*ast.Identifier); ok {
 				if inferred := t.inferExprTypeExpr(stmt.Right[0]); inferred != nil {
-					t.localTypes[id.Value] = inferred
+				t.localTypes[identifierValue(id)] = inferred
 				}
 			}
 		} else if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
@@ -278,7 +335,7 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 				if fnMeta, okResolved := t.semaCtx.ResolvedCalls[call]; okResolved && fnMeta != nil {
 					retTypes = fnMeta.ReturnTypes
 				} else if id, okId := call.Function.(*ast.Identifier); okId {
-					if fnMeta, okFn := t.semaCtx.Functions[id.Value]; okFn && fnMeta != nil {
+					if fnMeta, okFn := t.semaCtx.Functions[identifierValue(id)]; okFn && fnMeta != nil {
 						retTypes = fnMeta.ReturnTypes
 					}
 				} else if mem, okMem := call.Function.(*ast.MemberExpr); okMem {
@@ -300,8 +357,8 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 
 				if len(retTypes) == len(stmt.Left) {
 					for idx, l := range stmt.Left {
-						if id, okIdent := l.(*ast.Identifier); okIdent && id.Value != "_" {
-							t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, retTypes[idx].TypeName())
+						if id, okIdent := l.(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+							t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, retTypes[idx].TypeName())
 						}
 					}
 				}
@@ -312,20 +369,20 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 					if resolvedLeft != nil {
 						if mp, isMap := resolvedLeft.(*sema.MapType); isMap {
 							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, mp.Value.TypeName())
+								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, mp.Value.TypeName())
 								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
+								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
 								}
 							}
 						} else if _, valT, hasOk, fn := t.semaCtx.CheckIndexable(resolvedLeft); fn != nil && hasOk && valT != nil {
 							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, valT.TypeName())
+								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, valT.TypeName())
 								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
+								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
 								}
 							}
 						}
@@ -338,11 +395,11 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 					if resolvedLeft != nil {
 						if resT, hasOk, fn := t.semaCtx.CheckSliceable(resolvedLeft); fn != nil && hasOk && resT != nil {
 							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = parseSimpleTypeExpr(id.Token, resT.TypeName())
+								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, resT.TypeName())
 								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && id.Value != "_" {
-									t.localTypes[id.Value] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
+								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
 								}
 							}
 						}
@@ -350,11 +407,11 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 				}
 			} else if typeAssert, okAssert := stmt.Right[0].(*ast.TypeAssertExpr); okAssert {
 				if len(stmt.Left) >= 2 && typeAssert.Target != nil {
-					if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && id.Value != "_" {
-						t.localTypes[id.Value] = typeAssert.Target
+					if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+						t.localTypes[identifierValue(id)] = typeAssert.Target
 					}
-					if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && id.Value != "_" {
-						t.localTypes[id.Value] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
+					if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
+						t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
 					}
 				}
 			}
@@ -408,50 +465,50 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 			if resolvedX != nil {
 				if elemT, fnInit, fnNextChan := t.semaCtx.CheckAsyncIterable(resolvedX); fnInit != nil && fnNextChan != nil {
 					if stmt.Key != nil && stmt.Value != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
 						}
-						if vId, ok := stmt.Value.(*ast.Identifier); ok && vId.Value != "_" {
-							t.localTypes[vId.Value] = parseSimpleTypeExpr(vId.Token, elemT.TypeName())
+						if vId, ok := stmt.Value.(*ast.Identifier); ok && identifierValue(vId) != "_" {
+							t.localTypes[identifierValue(vId)] = parseSimpleTypeExpr(vId.Token, elemT.TypeName())
 						}
 					} else if stmt.Key != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = parseSimpleTypeExpr(kId.Token, elemT.TypeName())
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = parseSimpleTypeExpr(kId.Token, elemT.TypeName())
 						}
 					}
 				} else if elemT, fnInit, fnNext := t.semaCtx.CheckIterable(resolvedX); fnInit != nil && fnNext != nil {
 					if stmt.Key != nil && stmt.Value != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
 						}
-						if vId, ok := stmt.Value.(*ast.Identifier); ok && vId.Value != "_" {
-							t.localTypes[vId.Value] = parseSimpleTypeExpr(vId.Token, elemT.TypeName())
+						if vId, ok := stmt.Value.(*ast.Identifier); ok && identifierValue(vId) != "_" {
+							t.localTypes[identifierValue(vId)] = parseSimpleTypeExpr(vId.Token, elemT.TypeName())
 						}
 					} else if stmt.Key != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = parseSimpleTypeExpr(kId.Token, elemT.TypeName())
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = parseSimpleTypeExpr(kId.Token, elemT.TypeName())
 						}
 					}
 				} else if sl, isSlice := resolvedX.(*sema.SliceType); isSlice {
 					if stmt.Key != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = &ast.NamedType{Token: kId.Token, Name: &ast.Identifier{Token: kId.Token, Value: "int"}}
 						}
 					}
 					if stmt.Value != nil {
-						if vId, ok := stmt.Value.(*ast.Identifier); ok && vId.Value != "_" {
-							t.localTypes[vId.Value] = parseSimpleTypeExpr(vId.Token, sl.Elem.TypeName())
+						if vId, ok := stmt.Value.(*ast.Identifier); ok && identifierValue(vId) != "_" {
+							t.localTypes[identifierValue(vId)] = parseSimpleTypeExpr(vId.Token, sl.Elem.TypeName())
 						}
 					}
 				} else if mp, isMap := resolvedX.(*sema.MapType); isMap {
 					if stmt.Key != nil {
-						if kId, ok := stmt.Key.(*ast.Identifier); ok && kId.Value != "_" {
-							t.localTypes[kId.Value] = parseSimpleTypeExpr(kId.Token, mp.Key.TypeName())
+						if kId, ok := stmt.Key.(*ast.Identifier); ok && identifierValue(kId) != "_" {
+							t.localTypes[identifierValue(kId)] = parseSimpleTypeExpr(kId.Token, mp.Key.TypeName())
 						}
 					}
 					if stmt.Value != nil {
-						if vId, ok := stmt.Value.(*ast.Identifier); ok && vId.Value != "_" {
-							t.localTypes[vId.Value] = parseSimpleTypeExpr(vId.Token, mp.Value.TypeName())
+						if vId, ok := stmt.Value.(*ast.Identifier); ok && identifierValue(vId) != "_" {
+							t.localTypes[identifierValue(vId)] = parseSimpleTypeExpr(vId.Token, mp.Value.TypeName())
 						}
 					}
 				}
@@ -627,7 +684,7 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 	}
 
 	// sizeof 組み込みサポート (コンパイル時定数評価 & [Verbose2] ログ)
-	if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "sizeof" && len(call.Args) == 1 {
+	if id, ok := call.Function.(*ast.Identifier); ok && identifierValue(id) == "sizeof" && len(call.Args) == 1 {
 		arg := call.Args[0]
 		logger.LogVerbose2("[Verbose2] Transform sizeof: analyzing argument %T (%+v)\n", arg, arg)
 
@@ -658,8 +715,8 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 				if stSz > sz {
 					sz = stSz
 				}
-				if sz <= int64(sema.PointerSize) && strings.Contains(st.Name, "__") {
-					baseName := strings.Split(strings.TrimPrefix(st.Name, "*"), "__")[0]
+				if sz <= int64(sema.PointerSize) && strings.Contains(structTypeName(st), "__") {
+					baseName := strings.Split(strings.TrimPrefix(structTypeName(st), "*"), "__")[0]
 					if baseSt, _ := t.semaCtx.LookupStruct(baseName); baseSt != nil && len(baseSt.Fields) > 0 {
 						baseSz := int64(baseSt.Size())
 						if baseSz > sz {
@@ -705,8 +762,8 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			}
 		}
 	} else if id, ok := call.Function.(*ast.Identifier); ok {
-		if genTemplate := t.findGenericTemplate(id.Value); genTemplate != nil {
-			funcName = id.Value
+		if genTemplate := t.findGenericTemplate(identifierValue(id)); genTemplate != nil {
+			funcName = identifierValue(id)
 			funcToken = id.Token
 		}
 	} else if mem, ok := call.Function.(*ast.MemberExpr); ok {
@@ -733,8 +790,8 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 
 		if funcName == "" {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-				if _, isLocalVar := t.localTypes[pkgId.Value]; !isLocalVar {
-					pkgFnName := pkgId.Value + "_" + mem.Field.Value
+				if _, isLocalVar := t.localTypes[identifierValue(pkgId)]; !isLocalVar {
+					pkgFnName := identifierValue(pkgId) + "_" + mem.Field.Value
 					if genTemplate := t.findGenericTemplate(pkgFnName); genTemplate != nil {
 						funcName = pkgFnName
 						funcToken = mem.Field.Token
@@ -791,11 +848,11 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 
 func (t *Transformer) resolveTargetName(e ast.Expression) string {
 	if id, ok := e.(*ast.Identifier); ok {
-		return id.Value
+		return identifierValue(id)
 	}
 	if mem, ok := e.(*ast.MemberExpr); ok {
 		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-			return pkgId.Value + "_" + mem.Field.Value
+			return identifierValue(pkgId) + "_" + mem.Field.Value
 		}
 	}
 	return ""
@@ -855,13 +912,13 @@ func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 			return v
 		}
 	}
-	if fn, ok := t.semaCtx.Functions[name]; ok && fn != nil && fn.Template != nil && fn.IsGeneric() {
-		return fn.Template
+	if fn, ok := t.semaCtx.Functions[name]; ok && fn != nil && funcTemplate(fn) != nil && fn.IsGeneric() {
+		return funcTemplate(fn)
 	}
 	for k, fn := range t.semaCtx.Functions {
-		if fn != nil && fn.Template != nil && fn.IsGeneric() {
+		if fn != nil && funcTemplate(fn) != nil && fn.IsGeneric() {
 			if k == name || strings.HasSuffix(k, "_"+name) {
-				return fn.Template
+				return funcTemplate(fn)
 			}
 		}
 	}
@@ -885,15 +942,15 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	specKey := strings.Join(argNames, "_")
 	specializedName := fmt.Sprintf("%s_%s", baseName, specKey)
 
-	if origFnMeta != nil && origFnMeta.Specializations != nil {
-		if existing, ok := origFnMeta.Specializations[specKey]; ok {
+	if origFnMeta != nil && funcSpecializations(origFnMeta) != nil {
+		if existing, ok := funcSpecializations(origFnMeta)[specKey]; ok {
 			return existing.Name
 		}
 	}
 
 	if existing, ok := t.semaCtx.Functions[specializedName]; ok {
-		if origFnMeta != nil && origFnMeta.Specializations != nil {
-			origFnMeta.Specializations[specKey] = existing
+		if origFnMeta != nil && funcSpecializations(origFnMeta) != nil {
+			funcSpecializations(origFnMeta)[specKey] = existing
 		}
 		return specializedName
 	}
@@ -904,8 +961,8 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	}
 	if len(typeParamNames) == 0 && template.Receiver != nil {
 		recvTypeName := getBaseTypeName(template.Receiver.Type)
-		if st, _ := t.semaCtx.LookupStruct(recvTypeName); st != nil && len(st.TypeParams) > 0 {
-			typeParamNames = append(typeParamNames, st.TypeParams...)
+		if st, _ := t.semaCtx.LookupStruct(recvTypeName); st != nil && len(structTypeParams(st)) > 0 {
+			typeParamNames = append(typeParamNames, structTypeParams(st)...)
 		} else {
 			if named := getNamedTypeFromExpr(template.Receiver.Type); named != nil {
 				for _, tArg := range named.TypeArgs {
@@ -917,7 +974,7 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 		}
 	}
 	if len(typeParamNames) == 0 && origFnMeta != nil {
-		typeParamNames = origFnMeta.TypeParams
+		typeParamNames = funcTypeParams(origFnMeta)
 	}
 
 	typeMap := make(map[string]ast.TypeExpr)
@@ -968,8 +1025,8 @@ func (t *Transformer) getOrCreateSpecializedFunc(baseName string, typeArgs []sem
 	}
 
 	t.semaCtx.Functions[specializedName] = fnType
-	if origFnMeta != nil && origFnMeta.Specializations != nil {
-		origFnMeta.Specializations[specKey] = fnType
+	if origFnMeta != nil && funcSpecializations(origFnMeta) != nil {
+		funcSpecializations(origFnMeta)[specKey] = fnType
 	}
 
 	t.specializedQueue = append(t.specializedQueue, fnType)
@@ -1006,6 +1063,7 @@ func (t *Transformer) cloneFuncDecl(fn *ast.FuncDecl, newName string, typeMap ma
 	}
 	return &ast.FuncDecl{
 		Token:       fn.Token,
+		Filename:    fn.Filename,
 		Receiver:    nil,
 		Name:        &ast.Identifier{Token: fn.Name.Token, Value: newName},
 		TypeParams:  nil,
@@ -1283,7 +1341,7 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 		return nil
 	}
 	if id, ok := e.(*ast.Identifier); ok {
-		if replacement, exists := typeMap[id.Value]; exists {
+		if replacement, exists := typeMap[identifierValue(id)]; exists {
 			if constArg, isConst := replacement.(*ast.ConstArg); isConst {
 				return constArg.Expr
 			}
@@ -1768,7 +1826,7 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 		}
 
 	case *ast.CallExpr:
-		if id, ok := expr.Function.(*ast.Identifier); ok && id.Value == "sizeof" {
+		if id, ok := expr.Function.(*ast.Identifier); ok && identifierValue(id) == "sizeof" {
 			return &ast.NamedType{Token: expr.Token, Name: &ast.Identifier{Token: expr.Token, Value: "int"}}
 		}
 		if fnMeta, ok := t.semaCtx.ResolvedCalls[expr]; ok && fnMeta != nil && len(fnMeta.ReturnTypes) > 0 {
@@ -1793,7 +1851,7 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 		var tArgs []ast.TypeExpr
 
 		if id, ok := expr.Function.(*ast.Identifier); ok {
-			targetName = id.Value
+			targetName = identifierValue(id)
 		} else if idxExpr, ok := expr.Function.(*ast.IndexExpr); ok {
 			targetName = t.resolveTargetName(idxExpr.Left)
 			if tExpr := exprToTypeExpr(idxExpr.Index); tExpr != nil {

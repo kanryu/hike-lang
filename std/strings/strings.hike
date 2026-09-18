@@ -36,6 +36,37 @@ func Index(s string, substr string) int {
 	return -1
 }
 
+func IndexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func TrimPrefix(s string, prefix string) string {
+	if HasPrefix(s, prefix) {
+		return s[len(prefix):len(s)]
+	}
+	return s
+}
+
+func TrimSuffix(s string, suffix string) string {
+	if HasSuffix(s, suffix) {
+		return s[0:len(s)-len(suffix)]
+	}
+	return s
+}
+
+func Trim(s string, cutset string) string {
+	start := 0
+	end := len(s)
+	for start < end && Index(cutset, s[start:start+1]) >= 0 { start++ }
+	for end > start && Index(cutset, s[end-1:end]) >= 0 { end-- }
+	return s[start:end]
+}
+
 func LastIndex(s string, substr string) int {
     lenS := len(s)
     lenSub := len(substr)
@@ -123,6 +154,18 @@ func Split(s string, sep string) []string {
 		pos = pos + idx + lenSep
 	}
 	return res
+}
+
+func SplitN(s string, sep string, n int) []string {
+	if n <= 0 { return make([]string, 0) }
+	parts := Split(s, sep)
+	if len(parts) <= n { return parts }
+	result := make([]string, 0, n)
+	for i := 0; i < n-1; i++ { result = append(result, parts[i]) }
+	last := parts[n-1]
+	for i := n; i < len(parts); i++ { last = last + sep + parts[i] }
+	result = append(result, last)
+	return result
 }
 
 func ToUpper(s string) string {

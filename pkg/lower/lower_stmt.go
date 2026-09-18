@@ -228,6 +228,13 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 
 			// 単一受け取り時、右辺がタプルであれば先頭要素（インデックス0）を自動抽出
+			// Some Go-shaped type-switch paths can produce a typed-nil HIR
+			// register while their value is intentionally discarded.  An
+			// interface containing (*hir.Reg)(nil) is not itself nil, so check
+			// that case before calling Value.Type().
+			if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
+				val = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+			}
 			if len(stmt.Left) == 1 && val != nil {
 				if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
 					elemVal := s.root.nextReg(tup.Types[0])
@@ -430,6 +437,9 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				val = rhsVals[i]
 			} else {
 				val = &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
+			}
+			if reg, isReg := val.(*hir.Reg); isReg && (reg == nil || reg.Typ == nil) {
+				val = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 			}
 
 			// 単一受け取り時、右辺がタプルであれば先頭要素（インデックス0）を自動抽出

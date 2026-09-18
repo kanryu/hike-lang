@@ -14,6 +14,16 @@ func exit(status int)
 // CLI引数スライス
 var Args []string
 
+// Getenv is intentionally empty in the WASM-compatible Go-Hike environment;
+// browser callers do not expose a process environment.
+func Getenv(key string) string {
+	return ""
+}
+
+func Getwd() (string, error) {
+	return ".", nil
+}
+
 type File struct {
 	handle *byte
 }

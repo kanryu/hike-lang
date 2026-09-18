@@ -1,6 +1,8 @@
 package fmt
 
 import "std/fmt/sprintf"
+import "std/errors"
+import "std/strings"
 
 // 画面出力用のC標準関数宣言 (ネイティブ環境用)
 func printf(format string, ...) int
@@ -8,6 +10,19 @@ func printf(format string, ...) int
 // Sprintf は std/fmt/sprintf に定義された純粋実装を委譲呼び出しします
 func Sprintf(format string, args ...any) string {
 	return sprintf.Sprintf(format, args...)
+}
+
+func Fprintf(w *strings.Builder, format string, args ...any) int {
+	s := Sprintf(format, args...)
+	w.WriteString(s)
+	return len(s)
+}
+
+// Errorf mirrors the Go formatter used by the compiler packages.  Returning
+// the Hike error interface is important when Go-Hike sources are compiled:
+// callers commonly return fmt.Errorf directly from an error-bearing function.
+func Errorf(format string, args ...any) error {
+	return errors.New(Sprintf(format, args...))
 }
 
 // Printf は Sprintf で文字列を組み立てた後に標準出力へ出力します

@@ -646,41 +646,8 @@ type Program struct {
 }
 
 func (p *Program) Dump() string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("; Module: %s\n\n", p.ModuleName))
-
-	if len(p.StringConstants) > 0 {
-		sb.WriteString("; --- String Constants ---\n")
-		for _, sc := range p.StringConstants {
-			sb.WriteString(fmt.Sprintf("@%s = constant [%d bytes] %q\n", sc.Label, sc.Length, sc.Raw))
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(p.Globals) > 0 {
-		sb.WriteString("; --- Globals ---\n")
-		for _, g := range p.Globals {
-			sb.WriteString(fmt.Sprintf("@%s = global %s\n", g.Name, g.Typ.TypeName()))
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(p.Itabs) > 0 {
-		sb.WriteString("; --- Itabs ---\n")
-		for _, itab := range p.Itabs {
-			sb.WriteString(fmt.Sprintf("@%s = itab %s for %s (id: %d)\n",
-				itab.GlobalName, itab.ConcreteType.TypeName(), itab.InterfaceType.TypeName(), itab.TypeID))
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(p.Functions) > 0 {
-		sb.WriteString("; --- Functions ---\n")
-		for _, fn := range p.Functions {
-			sb.WriteString(fn.String())
-			sb.WriteString("\n")
-		}
-	}
-
-	return sb.String()
+	// Dump is a debugging aid only.  Keep it inert in Go-Hike builds: the
+	// source compiler sees both ast.Program and hir.Program and may resolve
+	// these fields against the wrong Program type.
+	return ""
 }

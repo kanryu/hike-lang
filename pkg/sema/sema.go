@@ -29,6 +29,8 @@ func (t *BasicType) LLVMType() string { return t.LLVM }
 func (t *BasicType) Size() int        { return t.ByteSize }
 
 var (
+	// Default layout targets 64-bit systems; SetTargetArchitecture only
+	// overrides the target-dependent values for 32-bit architectures.
 	PointerSize = 8
 
 	TypeInt     = &BasicType{Name: "int", ByteSize: 8, LLVM: "i64"}
@@ -69,6 +71,7 @@ var BuiltinTypes = map[string]Type{
 	"uint8":   TypeUint8,
 	"uintptr": TypeUintptr,
 	"byte":    TypeByte,
+	"rune":    TypeInt32,
 	"float":   TypeFloat64,
 	"float32": TypeFloat32,
 	"float64": TypeFloat64,
@@ -82,28 +85,18 @@ var BuiltinTypes = map[string]Type{
 func SetTargetArchitecture(arch string) {
 	arch = strings.ToLower(arch)
 	if arch == "wasm32" || arch == "386" || arch == "arm" || strings.HasPrefix(arch, "wasm32") {
-		TypeInt.ByteSize = 4
-		TypeInt.LLVM = "i32"
-		TypeUint.ByteSize = 4
-		TypeUint.LLVM = "i32"
-		TypeUintptr.ByteSize = 4
-		TypeUintptr.LLVM = "i32"
-		TypeString.ByteSize = 12
-		TypeString.LLVM = "{ i8*, i32, i32 }"
-		TypeCString.ByteSize = 4
+		setBasicTypeLayout(TypeInt, 4, "i32")
+		setBasicTypeLayout(TypeUint, 4, "i32")
+		setBasicTypeLayout(TypeUintptr, 4, "i32")
+		setBasicTypeLayout(TypeString, 12, "{ i8*, i32, i32 }")
+		setBasicTypeLayout(TypeCString, 4, "i8*")
 		PointerSize = 4
-	} else {
-		TypeInt.ByteSize = 8
-		TypeInt.LLVM = "i64"
-		TypeUint.ByteSize = 8
-		TypeUint.LLVM = "i64"
-		TypeUintptr.ByteSize = 8
-		TypeUintptr.LLVM = "i64"
-		TypeString.ByteSize = 16
-		TypeString.LLVM = "{ i8*, i32, i32 }"
-		TypeCString.ByteSize = 8
-		PointerSize = 8
 	}
+}
+
+func setBasicTypeLayout(typ *BasicType, size int, llvm string) {
+	typ.ByteSize = size
+	typ.LLVM = llvm
 }
 
 func IsBuiltinType(name string) bool {
@@ -761,6 +754,15 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	ctx := NewContext()
 	if goHikeMode {
 		ctx.HasMapImport = true
+		ctx.GoHikeMode = true
+		// The Go token package declares its token kinds as a const block.  The
+		// Go-shaped parser currently does not materialize that block, so expose
+		// the names used by compiler packages as harmless integer constants.
+		for _, name := range token.GoHikeConstantNames {
+			ctx.Constants["token_"+name] = 0
+		}
+		ctx.Constants["runtime_GOOS"] = 0
+		ctx.Constants["runtime_GOARCH"] = 0
 	}
 
 	for _, imp := range prog.Imports {
@@ -1683,7 +1685,7 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			name := node.Value
 			if !params[name] && !locals[name] && !seen[name] {
 				switch name {
-				case "true", "false", "nil", "len", "cap", "append", "delete", "make", "sizeof",
+				case "true", "false", "nil", "len", "cap", "append", "delete", "make", "sizeof", "panic", "recover",
 					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "cstring", "bool", "float32", "float64", "void", "any", "error":
 					return
 				}
@@ -2048,6 +2050,29 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 			insertCastsInExpr(s.X, blockLocals, ctx)
 			if s.Body != nil {
 				insertCastsInBlock(s.Body, blockLocals, ctx, retTypes)
+			}
+
+		case *ast.TypeSwitchStmt:
+			if s.Init != nil {
+				insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{s.Init}}, blockLocals, ctx, retTypes)
+			}
+			insertCastsInExpr(s.Expr, blockLocals, ctx)
+			exprType := ctx.InferExprType(s.Expr, blockLocals)
+			for _, clause := range s.Cases {
+				caseLocals := make(map[string]Type, len(blockLocals)+1)
+				for name, typ := range blockLocals {
+					caseLocals[name] = typ
+				}
+				if s.Variable != nil {
+					caseType := exprType
+					if len(clause.Types) == 1 && !clause.IsNil {
+						caseType = ctx.ResolveType(clause.Types[0])
+					}
+					caseLocals[s.Variable.Value] = caseType
+				}
+				for _, stmt := range clause.Body {
+					insertCastsInBlock(&ast.BlockStmt{Statements: []ast.Statement{stmt}}, caseLocals, ctx, retTypes)
+				}
 			}
 		}
 	}

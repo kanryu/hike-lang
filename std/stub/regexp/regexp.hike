@@ -1,0 +1,21 @@
+package regexp
+
+// Regexp is the small API surface used by the compiler diagnostics package.
+// The browser compiler does not need the full Go regexp engine; diagnostics
+// perform their own conservative fallback parsing when these methods do not
+// match.
+type Regexp struct {
+	pattern string
+}
+
+func MustCompile(pattern string) *Regexp {
+	return &Regexp{pattern: pattern}
+}
+
+func (r *Regexp) MatchString(s string) bool {
+	return false
+}
+
+func (r *Regexp) FindStringSubmatch(s string) []string {
+	return make([]string, 0)
+}

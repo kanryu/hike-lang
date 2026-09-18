@@ -2,6 +2,7 @@ package filepath
 
 import "std/strings"
 
+func Abs(p string) (string, error) { return p, nil }
 func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 func Clean(p string) string { return p }
 func Base(p string) string {

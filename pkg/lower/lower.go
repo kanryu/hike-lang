@@ -34,11 +34,33 @@ type Lowerer struct {
 	escapedVars   map[string]bool
 	is32Bit       bool // Compilerから伝播される32bitターゲットフラグ
 	regionMode    bool
+	sourceFile    string
+	module        string
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
 	Expr *ExprLowerer
 	Call *CallLowerer
+}
+
+func heapAllocDst(a *hir.InstrHeapAlloc) *hir.Reg {
+	return a.Dst
+}
+
+func heapAllocKeepOnHeap(a *hir.InstrHeapAlloc) bool {
+	return a.KeepOnHeap
+}
+
+func setHeapAllocKeepOnHeap(a *hir.InstrHeapAlloc, keep bool) {
+	a.KeepOnHeap = keep
+}
+
+func heapAllocSize(a *hir.InstrHeapAlloc) hir.Value {
+	return a.Size
+}
+
+func heapAllocType(a *hir.InstrHeapAlloc) sema.Type {
+	return a.AllocType
 }
 
 // SetRegionMode enables arena allocation for compiler-generated heap values.
@@ -48,7 +70,8 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l := &Lowerer{
 		prog:        prog,
 		semaCtx:     semaCtx,
-		hirProg:     &hir.Program{ModuleName: prog.Package},
+		hirProg:     &hir.Program{ModuleName: astProgramPackage(prog)},
+		module:      astProgramPackage(prog),
 		stringPool:  make(map[string]*hir.ConstString),
 		symbols:     make(map[string]hir.Value),
 		symbolTypes: make(map[string]sema.Type),
@@ -65,6 +88,26 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l.Call = NewCallLowerer(l)
 
 	return l
+}
+
+func astProgramPackage(prog *ast.Program) string { return prog.Package }
+
+func (l *Lowerer) moduleName() string         { return l.module }
+func semaFuncExtern(fn *sema.FuncType) bool   { return fn.IsExtern }
+func semaFuncCFunc(fn *sema.FuncType) bool    { return fn.IsCFunc }
+func semaFuncName(fn *sema.FuncType) string   { return fn.Name }
+func semaFuncIRName(fn *sema.FuncType) string { return fn.IRName }
+func semaFuncIsVariadic(fn *sema.FuncType) bool { return fn.IsVariadic }
+func semaFuncVariadicElem(fn *sema.FuncType) sema.Type { return fn.VariadicElem }
+func semaFuncCFuncAst(fn *sema.FuncType) *ast.CFuncDecl { return fn.CFuncAst }
+func semaFuncCFuncTarget(fn *sema.FuncType) string { return fn.CFuncTarget }
+func semaTypeName(typ sema.Type) string { return typ.TypeName() }
+func semaInterfaceName(iface *sema.InterfaceType) string { return iface.Name }
+func astIDValue(id *ast.Identifier) string {
+	if id == nil {
+		return ""
+	}
+	return id.Value
 }
 
 // Set32Bitはターゲットが32bit (wasm32等) であるかを設定します
@@ -117,6 +160,7 @@ func (l *Lowerer) Lower() *hir.Program {
 				d.Body.Statements = newStmts
 				globalInits = nil
 			}
+			l.sourceFile = d.Filename
 			l.Call.LowerFunc(d)
 			l.finishRegionFunction()
 
@@ -139,10 +183,10 @@ func (l *Lowerer) Lower() *hir.Program {
 	}
 
 	for _, fn := range l.semaCtx.Functions {
-		if fn.IsExtern && !fn.IsCFunc {
-			irName := fn.Name
-			if fn.IRName != "" {
-				irName = fn.IRName
+		if semaFuncExtern(fn) && !semaFuncCFunc(fn) {
+			irName := semaFuncName(fn)
+			if semaFuncIRName(fn) != "" {
+				irName = semaFuncIRName(fn)
 			}
 			if definedNames[irName] {
 				continue
@@ -190,11 +234,11 @@ func (l *Lowerer) finishRegionFunction() {
 			}
 		}
 		for n, inst := range bb.Instructions {
-			if a, ok := inst.(*hir.InstrHeapAlloc); ok && returned[a.Dst] {
-				a.KeepOnHeap = true
+			if a, ok := inst.(*hir.InstrHeapAlloc); ok && returned[heapAllocDst(a)] {
+				setHeapAllocKeepOnHeap(a, true)
 			}
-			if a, ok := inst.(*hir.InstrHeapAlloc); ok && !a.KeepOnHeap {
-				bb.Instructions[n] = &hir.InstrRegionAlloc{Dst: a.Dst, Region: region, Size: a.Size, AllocType: a.AllocType}
+			if a, ok := inst.(*hir.InstrHeapAlloc); ok && !heapAllocKeepOnHeap(a) {
+				bb.Instructions[n] = &hir.InstrRegionAlloc{Dst: heapAllocDst(a), Region: region, Size: heapAllocSize(a), AllocType: heapAllocType(a)}
 			}
 		}
 		if bb.Terminator != nil {
@@ -392,6 +436,14 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	if val.Type() == targetType || val.Type().TypeName() == targetType.TypeName() {
 		return val
 	}
+	if targetType == sema.TypeString {
+		if _, isPtr := val.Type().(*sema.PointerType); isPtr {
+			return l.Call.lowerCStringToString(val)
+		}
+		if val.Type() == sema.TypeCString {
+			return l.Call.lowerCStringToString(val)
+		}
+	}
 
 	// string -> cstring
 	if (val.Type() == sema.TypeString || val.Type().TypeName() == "string") && targetType == sema.TypeCString {
@@ -473,6 +525,9 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 
 func (l *Lowerer) coerceFromI64(v hir.Value, toType sema.Type) hir.Value {
 	if toType == sema.TypeString || (toType != nil && toType.TypeName() == "string") {
+		if v != nil && v.Type() != nil && v.Type().LLVMType() == "i8*" {
+			return l.Call.lowerCStringToString(v)
+		}
 		ptr := l.nextReg(sema.TypeCString)
 		l.emit(&hir.InstrCast{Dst: ptr, Val: v, ToType: sema.TypeCString})
 		return l.Call.lowerCStringToString(ptr)
@@ -495,6 +550,9 @@ func (l *Lowerer) coerceFromInt(v hir.Value, toType sema.Type) hir.Value {
 
 func isNilValue(v hir.Value) bool {
 	if v == nil {
+		return true
+	}
+	if r, ok := v.(*hir.Reg); ok && (r == nil || r.Typ == nil) {
 		return true
 	}
 	if _, ok := v.(*hir.ConstNil); ok {

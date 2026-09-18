@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -39,22 +40,22 @@ func (e *ExprLowerer) resolveTypeFromExpr(expr ast.Expression) sema.Type {
 		return e.root.semaCtx.ResolveType(te)
 	}
 	if id, ok := expr.(*ast.Identifier); ok {
-		if t, okT := sema.LookupBuiltinType(id.Value); okT {
+		if t, okT := sema.LookupBuiltinType(astIDValue(id)); okT {
 			return t
 		}
-		if id.Value == "any" {
+		if astIDValue(id) == "any" {
 			return &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
 		}
-		if id.Value == "error" {
+		if astIDValue(id) == "error" {
 			return e.root.semaCtx.Interfaces["error"]
 		}
-		if st, _ := e.root.semaCtx.LookupStruct(id.Value); st != nil {
+		if st, _ := e.root.semaCtx.LookupStruct(astIDValue(id)); st != nil {
 			return st
 		}
-		if iface, _ := e.root.semaCtx.LookupInterface(id.Value); iface != nil {
+		if iface, _ := e.root.semaCtx.LookupInterface(astIDValue(id)); iface != nil {
 			return iface
 		}
-		if alias, _ := e.root.semaCtx.LookupAlias(id.Value); alias != nil {
+		if alias, _ := e.root.semaCtx.LookupAlias(astIDValue(id)); alias != nil {
 			return alias
 		}
 	}
@@ -199,6 +200,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		}
 
 		val := e.LowerExpr(node.Expr)
+		if isNilValue(val) {
+			return e.root.defaultConstValue(targetT)
+		}
 
 		if tup, isTup := val.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
 			elem0 := e.root.nextReg(tup.Types[0])
@@ -255,7 +259,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.GenericInstExpr:
 		var baseName string
 		if id, ok := node.Left.(*ast.Identifier); ok {
-			baseName = id.Value
+			baseName = astIDValue(id)
 		} else if mem, ok := node.Left.(*ast.MemberExpr); ok {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				baseName = pkgId.Value + "_" + mem.Field.Value
@@ -281,25 +285,26 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
 	case *ast.Identifier:
-		if node.Value == "true" {
+		name := astIDValue(node)
+		if name == "true" {
 			return &hir.ConstBool{Val: true, Typ: sema.TypeBool}
 		}
-		if node.Value == "false" {
+		if name == "false" {
 			return &hir.ConstBool{Val: false, Typ: sema.TypeBool}
 		}
-		if c, ok := e.root.semaCtx.LookupConstant(node.Value); ok {
+		if c, ok := e.root.semaCtx.LookupConstant(name); ok {
 			return &hir.ConstInt{Val: c, Typ: sema.TypeInt}
 		}
-		if c, ok := e.root.semaCtx.LookupFloatConstant(node.Value); ok {
+		if c, ok := e.root.semaCtx.LookupFloatConstant(name); ok {
 			return &hir.ConstFloat{Val: c, Typ: sema.TypeFloat64}
 		}
-		if ptr, ok := e.root.symbols[node.Value]; ok {
+		if ptr, ok := e.root.symbols[name]; ok {
 			ptrType := ptr.Type().(*sema.PointerType)
 			dst := e.root.nextReg(ptrType.Base)
 			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
 			return dst
 		}
-		if gName, g, ok := e.lookupGlobal(node.Value); ok {
+		if gName, g, ok := e.lookupGlobal(name); ok {
 			dst := e.root.nextReg(g)
 			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
 			return dst
@@ -331,7 +336,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return nil, ""
 		}
 
-		if fn, canonicalName := lookupFn(node.Value); fn != nil {
+		if fn, canonicalName := lookupFn(name); fn != nil {
 			fatType := fn
 			callee := canonicalName
 			if fn.IsCFunc && fn.CFuncAst != nil && !fn.CFuncAst.IsAlias() {
@@ -346,10 +351,21 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return t2
 		}
 
-		if sema.IsBuiltinType(node.Value) {
+		if sema.IsBuiltinType(name) {
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
-		panic(fmt.Sprintf("[Lower Error] undefined identifier: %s", node.Value))
+		if e.root.semaCtx.GoHikeMode && (name == "len" || name == "cap") {
+			// Keep builtin names usable when the Go-shaped parser leaves the
+			// callee as a standalone identifier; normal calls are handled by
+			// CallLowerer below.
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+		}
+		if e.root.semaCtx.GoHikeMode && (name == "token" || name == "runtime") {
+			// Go-Hike package sources may use token constants in AST metadata.
+			// They do not affect generated program behavior.
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+		}
+		panic(fmt.Sprintf("[Lower Error] undefined identifier: %s", name))
 
 	case *ast.BinaryExpr:
 		return e.LowerBinaryExpr(node)
@@ -622,6 +638,18 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrCast{Dst: tPtr, Val: arrPtr, ToType: &sema.PointerType{Base: elemType}})
 			typedDataPtr = tPtr
 			capVal = &hir.ConstInt{Val: int64(arType.Len), Typ: sema.TypeInt}
+		} else if baseType == sema.TypeCString {
+			// cstring indexing/slicing operates on its NUL-terminated byte
+			// buffer, with strlen providing the implicit capacity.
+			typedDataPtr = baseVal
+			lenReg := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
+			capVal = lenReg
+		} else if ptrType, isBytePtr := baseType.(*sema.PointerType); isBytePtr && ptrType.Base == sema.TypeByte {
+			typedDataPtr = baseVal
+			lenReg := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
+			capVal = lenReg
 		} else {
 			panic(fmt.Sprintf("[Lower Error] cannot slice type %s", baseType.TypeName()))
 		}
@@ -656,7 +684,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.CallExpr:
 		// sizeof 組み込みサポート (型名・変数・ポインタ構造体に対応)
-		if id, ok := node.Function.(*ast.Identifier); ok && id.Value == "sizeof" {
+		if id, ok := node.Function.(*ast.Identifier); ok && astIDValue(id) == "sizeof" {
 			logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: ast=%T (%+v)\n", node, node)
 			if len(node.Args) == 1 {
 				arg := node.Args[0]
@@ -717,16 +745,19 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			if fn, canonical := e.root.semaCtx.LookupFunction(qualified); fn != nil {
 				fatType := fn
 				callee := canonical
-				if fn.IsCFunc && fn.CFuncAst != nil && !fn.CFuncAst.IsAlias() {
-					callee = "__hike_impl_" + fn.Name
-				} else if fn.IsExtern && fn.IRName != "" {
-					callee = fn.IRName
+				if semaFuncCFunc(fn) && semaFuncCFuncAst(fn) != nil && !semaFuncCFuncAst(fn).IsAlias() {
+					callee = "__hike_impl_" + semaFuncName(fn)
+				} else if semaFuncExtern(fn) && semaFuncIRName(fn) != "" {
+					callee = semaFuncIRName(fn)
 				}
 				t1 := e.root.nextReg(fatType)
 				e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: callee, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
 				t2 := e.root.nextReg(fatType)
 				e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
 				return t2
+			}
+			if e.root.semaCtx.GoHikeMode && (pkgId.Value == "token" || pkgId.Value == "runtime") {
+				return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 			}
 		}
 
@@ -754,7 +785,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				ParamTypes:   methodParamTypes,
 				ReturnTypes:  targetFn.ReturnTypes,
 				IsVariadic:   targetFn.IsVariadic,
-				VariadicElem: targetFn.VariadicElem,
+				VariadicElem: semaFuncVariadicElem(targetFn),
 			}
 
 			var recvPtr hir.Value = finalRecv
@@ -769,10 +800,10 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			e.root.emit(&hir.InstrCast{Dst: rawRecvPtr, Val: recvPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
 			callee := targetFnName
-			if targetFn.IsCFunc && targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
-				callee = "__hike_impl_" + targetFn.Name
-			} else if targetFn.IsExtern && targetFn.IRName != "" {
-				callee = targetFn.IRName
+			if semaFuncCFunc(targetFn) && semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
+				callee = "__hike_impl_" + semaFuncName(targetFn)
+			} else if semaFuncExtern(targetFn) && semaFuncIRName(targetFn) != "" {
+				callee = semaFuncIRName(targetFn)
 			}
 
 			fnGlobal := &hir.GlobalVar{Name: callee, Typ: &sema.PointerType{Base: sema.TypeByte}}
@@ -783,7 +814,11 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			return t2
 		}
 
-		panic(fmt.Sprintf("[Lower Error] field or method '%s' not found on type '%s'", node.Field.Value, baseType.TypeName()))
+		file := e.root.sourceFile
+		if file == "" {
+			file = "input.hike"
+		}
+		panic(fmt.Sprintf("%s:%d:%d: field or method '%s' not found on type '%s'", file, node.Field.Token.Line, node.Field.Token.Col, node.Field.Value, baseType.TypeName()))
 
 	case *ast.IndexExpr:
 		return e.LowerIndexExpr(node)
@@ -833,6 +868,18 @@ func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
 
 	for _, entry := range node.Entries {
 		keyVal := e.root.Expr.LowerExpr(entry.Key)
+		// Go permits eliding the value type in map literals (for example
+		// map[string]runtimeFunc{"malloc": { ... }}).  The Hike AST keeps
+		// that shorthand as a struct literal without Type; recover it from
+		// the map's value type before lowering the value.
+		if sl, ok := entry.Value.(*ast.StructLiteral); ok && sl.Type == nil {
+			if st, isStruct := mp.Value.(*sema.StructType); isStruct {
+				sl.Type = &ast.NamedType{
+					Token: sl.Token,
+					Name:  &ast.Identifier{Token: sl.Token, Value: st.Name},
+				}
+			}
+		}
 		valueVal := e.root.Expr.LowerExpr(entry.Value)
 		keyI64 := e.root.coerceToI64(keyVal, mp.Key)
 		valueI64 := e.root.coerceToI64(valueVal, mp.Value)
@@ -1043,7 +1090,11 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		return elemVal
 	}
 
-	panic(fmt.Sprintf("[Lower Error] unsupported index target type: %s", baseType.TypeName()))
+	file := e.root.sourceFile
+	if file == "" {
+		file = "input.hike"
+	}
+	panic(fmt.Sprintf("%s:%d:%d: unsupported index target type: %s", file, node.Token.Line, node.Token.Col, baseType.TypeName()))
 }
 
 // lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
@@ -1155,9 +1206,9 @@ func (e *ExprLowerer) lowerArrayLiteralPtr(node *ast.ArrayLiteral) hir.Value {
 
 func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 	if id, ok := expr.(*ast.Identifier); ok {
-		if ptr, exists := e.root.symbols[id.Value]; exists {
+		if ptr, exists := e.root.symbols[astIDValue(id)]; exists {
 			valueType := ptr.Type().(*sema.PointerType).Base
-			if declaredType, known := e.root.symbolTypes[id.Value]; known {
+			if declaredType, known := e.root.symbolTypes[astIDValue(id)]; known {
 				valueType = declaredType
 			}
 			if _, isPtr := valueType.(*sema.PointerType); isPtr {
@@ -1167,7 +1218,7 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 			}
 			return ptr
 		}
-		if gName, g, exists := e.lookupGlobal(id.Value); exists {
+		if gName, g, exists := e.lookupGlobal(astIDValue(id)); exists {
 			if _, isPtr := g.(*sema.PointerType); isPtr {
 				loadReg := e.root.nextReg(g)
 				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
@@ -1189,24 +1240,42 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	switch node := expr.(type) {
 	case *ast.Identifier:
-		if ptr, ok := e.root.symbols[node.Value]; ok {
+		if ptr, ok := e.root.symbols[astIDValue(node)]; ok {
 			return ptr
 		}
-		if gName, g, ok := e.lookupGlobal(node.Value); ok {
+		if gName, g, ok := e.lookupGlobal(astIDValue(node)); ok {
 			return &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}
 		}
-		panic(fmt.Sprintf("[Lower Error] undefined identifier for lvalue: %s", node.Value))
+		file := e.root.sourceFile
+		if file == "" {
+			file = "input.hike"
+		}
+		panic(fmt.Sprintf("%s:%d:%d: undefined identifier for lvalue: %s", file, node.Token.Line, node.Token.Col, astIDValue(node)))
 
 	case *ast.MemberExpr:
+		if pkgID, ok := node.Object.(*ast.Identifier); ok {
+			qualified := pkgID.Value + "_" + node.Field.Value
+			if gType, exists := e.root.semaCtx.Globals[qualified]; exists {
+				return &hir.GlobalVar{Name: qualified, Typ: &sema.PointerType{Base: gType}}
+			}
+		}
 		basePtr := e.LowerStructPtr(node.Object)
 		baseType := basePtr.Type().(*sema.PointerType).Base
 		st, sName := e.root.findStruct(baseType)
 		if st == nil {
-			panic(fmt.Sprintf("[Lower Error] type '%s' has no fields", baseType.TypeName()))
+			file := e.root.sourceFile
+			if file == "" {
+				file = "input.hike"
+			}
+			panic(fmt.Sprintf("%s:%d:%d: type '%s' has no fields", file, node.Field.Token.Line, node.Field.Token.Col, baseType.TypeName()))
 		}
 		fieldPtr, _, _, found := e.ResolveFieldPath(st, sName, basePtr, node.Field.Value)
 		if !found {
-			panic(fmt.Sprintf("[Lower Error] field '%s' not found on struct '%s'", node.Field.Value, sName))
+			file := e.root.sourceFile
+			if file == "" {
+				file = "input.hike"
+			}
+			panic(fmt.Sprintf("%s:%d:%d: field '%s' not found on struct '%s'", file, node.Field.Token.Line, node.Field.Token.Col, node.Field.Value, sName))
 		}
 		return fieldPtr
 
@@ -1221,6 +1290,13 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 
 	case *ast.ArrayLiteral:
 		return e.lowerArrayLiteralPtr(node)
+
+	case *ast.GenericInstExpr:
+		// A specialized generic variable/member may remain wrapped in a
+		// GenericInstExpr after transformation. Its storage is still the
+		// storage of the underlying expression, so resolve that expression
+		// as the lvalue rather than rejecting the wrapper.
+		return e.LowerLValue(node.Left)
 
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
@@ -1552,8 +1628,8 @@ func (e *ExprLowerer) lowerShiftWithCarry(node *ast.BinaryExpr) hir.Value {
 }
 
 func integerBitWidth(llvmType string) int {
-	var width int
-	if _, err := fmt.Sscanf(strings.TrimPrefix(llvmType, "i"), "%d", &width); err != nil || width <= 0 {
+	width, err := strconv.Atoi(strings.TrimPrefix(llvmType, "i"))
+	if err != nil || width <= 0 {
 		panic(fmt.Sprintf("[Lower Error] shift requires a sized integer type, got '%s'", llvmType))
 	}
 	return width
@@ -1704,7 +1780,7 @@ func (e *ExprLowerer) ResolveFieldPath(st *sema.StructType, sName string, curPtr
 	}
 	for i, f := range st.Fields {
 		if f.IsEmbedded {
-			embTypeName := strings.TrimPrefix(f.Type.TypeName(), "*")
+			embTypeName := strings.TrimPrefix(semaTypeName(f.Type), "*")
 			embSt, embStructName := e.root.findStructByName(embTypeName)
 			if embSt != nil {
 				gepReg := e.root.nextReg(&sema.PointerType{Base: f.Type})

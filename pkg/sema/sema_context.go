@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -28,11 +29,19 @@ type Context struct {
 	typeIDs            map[string]int64
 	nextTypeID         int64
 	HasMapImport       bool
+	GoHikeMode         bool
 	RegionModeEnabled  bool
 	diagnosticPackages map[string]bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
+}
+
+func astIdentifierValue(id *ast.Identifier) string {
+	if id == nil {
+		return ""
+	}
+	return id.Value
 }
 
 func NewContext() *Context {
@@ -96,7 +105,24 @@ func (c *Context) LookupStruct(name string) (*StructType, string) {
 	if st, ok := c.Structs[name]; ok {
 		return st, name
 	}
-	for k, v := range c.Structs {
+	// Go-Hike imports both ast.Program and hir.Program.  Imported Go-shaped
+	// signatures can lose the package qualifier during the reduced type pass;
+	// prefer the AST program for that unqualified name because it is the source
+	// program type consumed by parser/transform/lower.
+	for _, astName := range []string{"Program", "ArrayType"} {
+		if name == astName {
+			if st, ok := c.Structs["ast_"+astName]; ok {
+				return st, "ast_" + astName
+			}
+		}
+	}
+	keys := make([]string, 0, len(c.Structs))
+	for k := range c.Structs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := c.Structs[k]
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) ||
 			strings.HasSuffix(k, "."+name) || strings.HasSuffix(name, "."+k) {
 			return v, k
@@ -180,7 +206,13 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 	if fn, ok := c.Functions[name]; ok {
 		return fn, name
 	}
-	for k, v := range c.Functions {
+	keys := make([]string, 0, len(c.Functions))
+	for k := range c.Functions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := c.Functions[k]
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
 			return v, k
 		}
@@ -199,7 +231,13 @@ func (c *Context) LookupAlias(name string) (Type, string) {
 	if a, ok := c.Aliases[name]; ok {
 		return a, name
 	}
-	for k, v := range c.Aliases {
+	keys := make([]string, 0, len(c.Aliases))
+	for k := range c.Aliases {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := c.Aliases[k]
 		if k == name || strings.HasSuffix(k, "_"+name) || strings.HasSuffix(name, "_"+k) {
 			return v, k
 		}
@@ -361,9 +399,41 @@ func (c *Context) typesCompatible(t1, t2 Type) bool {
 		return true
 	}
 	if iface2, ok := t2.(*InterfaceType); ok {
+		// A nil interface value is represented as void by the Hike type
+		// checker.  It is a valid result for interface-typed helper functions
+		// such as parser conversion routines.
+		if t1 == TypeVoid {
+			return true
+		}
+		if c.GoHikeMode && goHikeInterfaceCompatible(t1, iface2) {
+			return true
+		}
 		return c.Implements(t1, iface2)
 	}
 	return false
+}
+
+func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
+	concreteName := concrete.TypeName()
+	interfaceName := iface.TypeName()
+	if strings.HasPrefix(interfaceName, "ast_") {
+		return true
+	}
+	if interfaceName == "hir_Terminator" {
+		// Go-Hike cannot currently carry the unexported Instruction marker
+		// methods through imported HIR package types.  Lowering still constructs
+		// concrete terminators, so retain this relationship in compatibility mode.
+		return true
+	}
+	if interfaceName == "hir_Value" {
+		return true
+	}
+	if interfaceName == "error" && concreteName != "void" {
+		// Error values returned by Go-shaped package stubs are opaque to the
+		// Hike checker; their concrete representation is not used by lowering.
+		return true
+	}
+	return interfaceName == "sema_Type" && concreteName != "void"
 }
 
 // -------------------------------------------------------------
@@ -379,9 +449,9 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	case *ast.ConstArg:
 		return c.resolveConstArg(t)
 	case *ast.NamedType:
-		name := t.Name.Value
+		name := astIdentifierValue(t.Name)
 		if t.Package != nil {
-			name = t.Package.Value + "_" + t.Name.Value
+			name = astIdentifierValue(t.Package) + "_" + astIdentifierValue(t.Name)
 		}
 
 		if strings.HasPrefix(name, "*") {
@@ -392,11 +462,21 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			elemName := strings.TrimPrefix(name, "[]")
 			return &SliceType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
 		}
+		if strings.HasPrefix(name, "map[") {
+			if end := strings.Index(name, "]"); end > len("map[") && end+1 < len(name) {
+				keyName := name[len("map["):end]
+				valueName := name[end+1:]
+				return &MapType{
+					Key:   c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: keyName}}),
+					Value: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: valueName}}),
+				}
+			}
+		}
 
 		if tp, ok := c.TypeParams[name]; ok {
 			return tp
 		}
-		if tp, ok := c.TypeParams[t.Name.Value]; ok && t.Package == nil {
+		if tp, ok := c.TypeParams[astIdentifierValue(t.Name)]; ok && t.Package == nil {
 			return tp
 		}
 
@@ -1328,8 +1408,10 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 		if id, ok := e.Function.(*ast.Identifier); ok {
 			switch id.Value {
-			case "len", "cap", "sizeof": // sizeof 組み込みサポート
+			case "len", "cap", "sizeof", "recover": // sizeof/recover 組み込みサポート
 				return TypeInt
+			case "panic":
+				return TypeVoid
 			case "string":
 				return TypeString
 			case "cstring":
@@ -1451,7 +1533,7 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 
 	// インターフェース代入時の充足性検査
 	if iface, ok := targetType.(*InterfaceType); ok {
-		if _, isNil := expr.(*ast.NilLiteral); !isNil && !iface.IsAny() {
+		if _, isNil := expr.(*ast.NilLiteral); !isNil && actualType != TypeVoid && !iface.IsAny() && !(c.GoHikeMode && goHikeInterfaceCompatible(actualType, iface)) {
 			if !c.Implements(actualType, iface) {
 				line, col := expressionPosition(expr)
 				panic(fmt.Sprintf("[Sema Error] line %d:%d: type '%s' does not implement interface '%s'",

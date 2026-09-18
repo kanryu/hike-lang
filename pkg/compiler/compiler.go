@@ -11,8 +11,10 @@ import (
 	"hikec-go/pkg/backend/wabt"
 	"hikec-go/pkg/diag"
 	"hikec-go/pkg/hir"
+	"hikec-go/pkg/lexer"
 	"hikec-go/pkg/loader"
 	"hikec-go/pkg/lower"
+	"hikec-go/pkg/parser"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
 	"hikec-go/pkg/transform"
@@ -102,7 +104,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	var hirProg *hir.Program
 
 	// 1. パッケージ探索・構文解析フェーズ
-	_ = c.safeExecute(primaryFile, func() error {
+	_ = c.safeExecute(primaryFile+" [load]", func() error {
 		ld := loader.New(rootDir)
 		ld.SetTarget(c.target)
 		ld.SetVerbose(c.verbose)
@@ -126,7 +128,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	}
 
 	// 2. 意味解析・型検査フェーズ
-	_ = c.safeExecute(primaryFile, func() error {
+	_ = c.safeExecute(primaryFile+" [sema]", func() error {
 		ctx, err := sema.AnalyzeWithReporterModes(rawProg, c.reporter, primaryFile, c.regionMode, c.goHikeMode)
 		if err != nil {
 			return err
@@ -139,7 +141,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	}
 
 	// 3. ジェネリクス単相化フェーズ
-	_ = c.safeExecute(primaryFile, func() error {
+	_ = c.safeExecute(primaryFile+" [transform]", func() error {
 		tf := transform.New(rawProg, semaCtx)
 		p, err := tf.Transform()
 		if err != nil {
@@ -153,7 +155,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	}
 
 	// 4. HIR への Lowering フェーズ
-	_ = c.safeExecute(primaryFile, func() error {
+	_ = c.safeExecute(primaryFile+" [lower]", func() error {
 		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
@@ -174,16 +176,12 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	if err != nil {
 		return "", nil, nil, err
 	}
-
 	targetTriple := ""
 	if c.target != nil {
 		targetTriple = c.target.Triple
 	}
-
 	primaryFile := entryPaths[0]
 	var llvmIR string
-
-	// 5. LLVM バックエンドによるコード出力フェーズ
 	_ = c.safeExecute(primaryFile, func() error {
 		emitter := llvm.New(hirProg, semaCtx, targetTriple)
 		llvmIR = emitter.Emit()
@@ -192,7 +190,6 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	if c.reporter.HasErrors() {
 		return "", nil, nil, c.reporter
 	}
-
 	return llvmIR, semaCtx, concreteProg, nil
 }
 
@@ -204,6 +201,35 @@ func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *a
 		return "", nil, nil, err
 	}
 	return wabt.New(hirProg, semaCtx).Emit(), semaCtx, concreteProg, nil
+}
+
+// CompileSourceToWAT compiles one source string without consulting the
+// filesystem. It is the browser/WASM entry point used by wasm-hikec.
+func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, error) {
+	filename := "input.hike"
+	c.reporter.Clear()
+	sema.SetTargetArchitecture(c.target.Triple)
+	parserInstance := parser.New(lexer.New(source))
+	p := parserInstance.ParseProgram()
+	if len(parserInstance.Errors()) > 0 {
+		return "", nil, fmt.Errorf("parse error in %s: %s", filename, strings.Join(parserInstance.Errors(), "\n"))
+	}
+	ctx, err := sema.AnalyzeWithReporterModes(p, c.reporter, filename, c.regionMode, c.goHikeMode)
+	if err != nil || c.reporter.HasErrors() {
+		if err != nil {
+			return "", nil, err
+		}
+		return "", nil, c.reporter
+	}
+	concrete, err := transform.New(p, ctx).Transform()
+	if err != nil {
+		return "", nil, err
+	}
+	lw := lower.New(concrete, ctx)
+	lw.Set32Bit(c.target.IsWasm)
+	lw.SetRegionMode(c.regionMode)
+	program := lw.Lower()
+	return wabt.New(program, ctx).Emit(), concrete, nil
 }
 
 // Compile はコンパイルを実行し、エラーが発生した場合は Go コンパイラ形式で stderr に出力して終了します
@@ -274,7 +300,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 	}
 
 	_ = c.safeExecute(filename, func() error {
-		emitter := llvm.New(hirProg, semaCtx, targetTriple)
+		emitter := wabt.New(hirProg, semaCtx)
 		_ = emitter.Emit()
 		return nil
 	})

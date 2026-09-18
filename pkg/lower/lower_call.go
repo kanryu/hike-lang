@@ -85,7 +85,9 @@ func (c *CallLowerer) fillDefaultArgs(callArgs []ast.Expression, params []*ast.P
 		return callArgs
 	}
 	filled := make([]ast.Expression, len(callArgs), len(params))
-	copy(filled, callArgs)
+	for i := 0; i < len(callArgs); i++ {
+		filled[i] = callArgs[i]
+	}
 	for i := len(callArgs); i < len(params); i++ {
 		if params[i].Default != nil {
 			filled = append(filled, params[i].Default)
@@ -191,9 +193,10 @@ func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
 	c.root.emit(&hir.InstrGetElemPtr{Dst: endPtr, BasePtr: bufReg, Index: lenReg})
 	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeByte}, Ptr: endPtr})
 
-	dst := c.root.nextReg(sema.TypeCString)
-	c.root.emit(&hir.InstrCast{Dst: dst, Val: bufReg, ToType: sema.TypeCString})
-	return dst
+	// cstring and *byte have the same wasm ABI representation.  The buffer
+	// already has the required pointer type; emitting an aggregate string cast
+	// here creates an invalid cast from {i8*, i32, i32} in variadic calls.
+	return bufReg
 }
 
 func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
@@ -369,16 +372,16 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 
 	if fn, canonical := c.root.semaCtx.LookupMethod(recvType.TypeName(), methodName); fn != nil {
 		targetName := canonical
-		if fn.IRName != "" {
-			targetName = fn.IRName
+		if semaFuncIRName(fn) != "" {
+			targetName = semaFuncIRName(fn)
 		}
 		return targetName, fn, curPtr, true
 	}
 	if !strings.HasPrefix(recvType.TypeName(), "*") {
 		if fn, canonical := c.root.semaCtx.LookupMethod("*"+recvType.TypeName(), methodName); fn != nil {
 			targetName := canonical
-			if fn.IRName != "" {
-				targetName = fn.IRName
+			if semaFuncIRName(fn) != "" {
+				targetName = semaFuncIRName(fn)
 			}
 			return targetName, fn, curPtr, true
 		}
@@ -393,8 +396,8 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		canonicalTarget,
 		rawTypeName + "_" + methodName,
 		shortTypeName + "_" + methodName,
-		c.root.hirProg.ModuleName + "_" + rawTypeName + "_" + methodName,
-		c.root.hirProg.ModuleName + "_" + shortTypeName + "_" + methodName,
+		c.root.moduleName() + "_" + rawTypeName + "_" + methodName,
+		c.root.moduleName() + "_" + shortTypeName + "_" + methodName,
 	}
 
 	for aliasName, aliasType := range c.root.semaCtx.Aliases {
@@ -402,7 +405,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 			candidates = append(candidates,
 				sema.CanonicalMethodName(aliasName, methodName),
 				aliasName+"_"+methodName,
-				c.root.hirProg.ModuleName+"_"+aliasName+"_"+methodName,
+				c.root.moduleName()+"_"+aliasName+"_"+methodName,
 			)
 		}
 	}
@@ -862,8 +865,8 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			if specFn != nil {
 				logger.LogVerbose2("[Verbose2] Lower generic call resolved: callee=%s returnTypes=%v\\n", specName, specFn.ReturnTypes)
 				callArgs := c.fillDefaultArgs(call.Args, c.getFuncParams(specFn, specName))
-				isCVarArg := specFn.IsCFunc || specFn.IsExtern || (specFn.IsVariadic && specFn.VariadicElem == nil)
-				args := c.lowerArgs(callArgs, specFn.ParamTypes, specFn.IsVariadic, isCVarArg, specFn.VariadicElem, call.HasEllipsis)
+				isCVarArg := semaFuncCFunc(specFn) || semaFuncExtern(specFn) || (semaFuncIsVariadic(specFn) && semaFuncVariadicElem(specFn) == nil)
+				args := c.lowerArgs(callArgs, specFn.ParamTypes, semaFuncIsVariadic(specFn), isCVarArg, semaFuncVariadicElem(specFn), call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid
 				if len(specFn.ReturnTypes) == 1 {
@@ -922,13 +925,14 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					rawLen := c.root.nextReg(sema.TypeInt)
 					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
 					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
-					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					c.root.emit(&hir.InstrCallStatic{
-						Dst:        raw,
-						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
-						Args:       []hir.Value{rawPtr, rawLen},
-					})
-					return c.root.makeString(raw, rawLen)
+					// A Hike string is a pointer/offset/length view.  The slice
+					// backing store already has the exact pointer and length needed
+					// for that view; copying through __hike_slice_to_str here used
+					// the C-string allocation path and could leave the generated
+					// native image with an invalid backing pointer.  C-string
+					// consumers still receive a terminated copy in
+					// lowerStringToCString.
+					return c.root.makeString(rawPtr, rawLen)
 				}
 
 				if argVal.Type().LLVMType() == targetType.LLVMType() && argVal.Type() == targetType {
@@ -945,6 +949,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string, cstring, )
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
+		case "panic":
+			if len(call.Args) > 0 {
+				c.root.Expr.LowerExpr(call.Args[0])
+			}
+			c.root.terminate(&hir.InstrUnreachable{})
+			return nil
+
 		case "make":
 			var chanTypeNode *ast.ChanType
 			if ct, ok := call.Args[0].(*ast.ChanType); ok {
@@ -1041,6 +1052,11 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
+		case "recover":
+			// Go-Hike has no host panic value, but compiler packages use recover
+			// only to normalize failures.  A nil opaque interface is sufficient.
+			return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+
 		case "close":
 			if len(call.Args) > 0 {
 				chVal := c.root.Expr.LowerExpr(call.Args[0])
@@ -1118,6 +1134,12 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				if argVal.Type() == sema.TypeCString || argVal.Type().TypeName() == "cstring" {
 					return c.lowerCStringToString(argVal)
 				}
+				if ptrType, ok := argVal.Type().(*sema.PointerType); ok && ptrType.Base == sema.TypeByte {
+					return c.lowerCStringToString(argVal)
+				}
+				if argVal.Type().LLVMType() == "i8*" {
+					return c.lowerCStringToString(argVal)
+				}
 				return argVal
 			}
 
@@ -1141,6 +1163,9 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return argVal
 				}
 				if argVal.Type() == sema.TypeString || argVal.Type().TypeName() == "string" {
+					return c.lowerStringToCString(argVal)
+				}
+				if strings.HasPrefix(argVal.Type().LLVMType(), "{") {
 					return c.lowerStringToCString(argVal)
 				}
 				dst := c.root.nextReg(sema.TypeCString)
@@ -1168,7 +1193,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			params := c.getFuncParams(targetFn, canonicalName)
 			callArgs := c.fillDefaultArgs(call.Args, params)
 
-			if targetFn.IsVariadic && targetFn.VariadicElem == nil {
+			if semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil {
 				if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
 					return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
 						Token:       call.Token,
@@ -1179,8 +1204,8 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 			}
 
-			isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-			args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
+			args := c.lowerArgs(callArgs, targetFn.ParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
 
 			var retType sema.Type = sema.TypeVoid
 			if len(targetFn.ReturnTypes) == 1 {
@@ -1195,17 +1220,17 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 
 			callee := canonicalName
-			if targetFn.IsCFunc {
-				if targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
-					callee = "__hike_impl_" + targetFn.Name
-				} else if targetFn.CFuncTarget != "" {
-					callee = targetFn.CFuncTarget
+			if semaFuncCFunc(targetFn) {
+				if semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
+					callee = "__hike_impl_" + semaFuncName(targetFn)
+				} else if semaFuncCFuncTarget(targetFn) != "" {
+					callee = semaFuncCFuncTarget(targetFn)
 				} else {
 					callee = "c_" + canonicalName
 				}
-			} else if targetFn.IsExtern {
-				if targetFn.IRName != "" {
-					callee = targetFn.IRName
+			} else if semaFuncExtern(targetFn) {
+				if semaFuncIRName(targetFn) != "" {
+					callee = semaFuncIRName(targetFn)
 				}
 			}
 
@@ -1232,7 +1257,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 
 			if !foundMethod {
-				panic(fmt.Sprintf("[Lower Error] method '%s' not found on interface '%s'", mem.Field.Value, iface.TypeName()))
+				panic(fmt.Sprintf("[Lower Error] method '%s' not found on interface", mem.Field.Value))
 			}
 
 			callArgs := call.Args
@@ -1310,8 +1335,8 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			if len(targetFn.ParamTypes) > 1 {
 				methodParamTypes = targetFn.ParamTypes[1:]
 			}
-			isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-			callArgVals := c.lowerArgs(callArgs, methodParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
+			callArgVals := c.lowerArgs(callArgs, methodParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
 			args := append([]hir.Value{recvArg}, callArgVals...)
 
 			var retType sema.Type = sema.TypeVoid
@@ -1342,24 +1367,28 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			}
 		}
 
-		panic(fmt.Sprintf("[Lower Error] method or function field '%s' not found on type '%s'", mem.Field.Value, objType.TypeName()))
+		file := c.root.sourceFile
+		if file == "" {
+			file = "input.hike"
+		}
+		panic(fmt.Sprintf("%s:%d:%d: method or function field '%s' not found on type '%s'", file, mem.Field.Token.Line, mem.Field.Token.Col, mem.Field.Value, objType.TypeName()))
 	}
 
 	// 4. 単一識別子によるトップレベル関数呼び出し (例: myFunc())
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
-		_, isLocal := c.root.symbols[fnId.Value]
-		_, isGlobal := c.root.semaCtx.Globals[fnId.Value]
+		_, isLocal := c.root.symbols[astIDValue(fnId)]
+		_, isGlobal := c.root.semaCtx.Globals[astIDValue(fnId)]
 		if !isLocal && !isGlobal {
 			// パッケージ内の未修飾関数呼び出しは、現在の関数名から
 			// パッケージ接頭辞を補って先に完全修飾名で解決する。
 			// LookupFunction のサフィックス検索だけに任せると、同名の
 			// md5_compress / sha256_compress がmapの反復順で入れ替わる。
-			lookupName := fnId.Value
+			lookupName := astIDValue(fnId)
 			var targetFn *sema.FuncType
 			var canonicalName string
 			if c.root.curFunc != nil {
 				if sep := strings.IndexByte(c.root.curFunc.Name, '_'); sep > 0 {
-					qualified := c.root.curFunc.Name[:sep] + "_" + fnId.Value
+					qualified := c.root.curFunc.Name[:sep] + "_" + astIDValue(fnId)
 					targetFn, canonicalName = c.root.semaCtx.LookupFunction(qualified)
 				}
 			}
@@ -1370,7 +1399,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				params := c.getFuncParams(targetFn, canonicalName)
 				callArgs := c.fillDefaultArgs(call.Args, params)
 
-				if targetFn.IsVariadic && targetFn.VariadicElem == nil {
+				if semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil {
 					if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
 						return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
 							Token:       call.Token,
@@ -1381,8 +1410,8 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					}
 				}
 
-				isCVarArg := targetFn.IsCFunc || targetFn.IsExtern || (targetFn.IsVariadic && targetFn.VariadicElem == nil)
-				args := c.lowerArgs(callArgs, targetFn.ParamTypes, targetFn.IsVariadic, isCVarArg, targetFn.VariadicElem, call.HasEllipsis)
+				isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
+				args := c.lowerArgs(callArgs, targetFn.ParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
 
 				var retType sema.Type = sema.TypeVoid
 				if len(targetFn.ReturnTypes) == 1 {
@@ -1396,17 +1425,17 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					dst = c.root.nextReg(retType)
 				}
 				callee := canonicalName
-				if targetFn.IsCFunc {
-					if targetFn.CFuncAst != nil && !targetFn.CFuncAst.IsAlias() {
-						callee = "__hike_impl_" + targetFn.Name
-					} else if targetFn.CFuncTarget != "" {
-						callee = targetFn.CFuncTarget
+				if semaFuncCFunc(targetFn) {
+					if semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
+					callee = "__hike_impl_" + semaFuncName(targetFn)
+					} else if semaFuncCFuncTarget(targetFn) != "" {
+						callee = semaFuncCFuncTarget(targetFn)
 					} else {
 						callee = "c_" + canonicalName
 					}
-				} else if targetFn.IsExtern {
-					if targetFn.IRName != "" {
-						callee = targetFn.IRName
+				} else if semaFuncExtern(targetFn) {
+					if semaFuncIRName(targetFn) != "" {
+						callee = semaFuncIRName(targetFn)
 					}
 				}
 				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
@@ -1445,7 +1474,7 @@ func (c *CallLowerer) lowerIndirectCall(fnFatPtr hir.Value, callArgs []ast.Expre
 	var paramTypes []sema.Type
 	if ft != nil {
 		isVariadic = ft.IsVariadic
-		variadicElem = ft.VariadicElem
+		variadicElem = semaFuncVariadicElem(ft)
 		paramTypes = ft.ParamTypes
 	}
 	args := c.lowerArgs(callArgs, paramTypes, isVariadic, false, variadicElem, hasEllipsis)
@@ -1648,9 +1677,9 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 			targetFnName, fnMeta, _, found = c.ResolveMethod(&sema.PointerType{Base: concreteType}, m.Name, nil)
 		}
 		if found && fnMeta != nil {
-			targetFnName = fnMeta.IRName
+			targetFnName = semaFuncIRName(fnMeta)
 			if targetFnName == "" {
-				targetFnName = fnMeta.Name
+				targetFnName = semaFuncName(fnMeta)
 			}
 		} else if !found {
 			targetFnName = sema.CanonicalMethodName(sName, m.Name)
