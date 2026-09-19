@@ -6,8 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 )
+
+var parallelTests sync.Map
 
 func projectRoot(t *testing.T) string {
 	t.Helper()
@@ -24,6 +27,12 @@ func projectRoot(t *testing.T) string {
 
 func requireTools(t *testing.T) {
 	t.Helper()
+	// Every WABT test is independent: it uses its own temporary build
+	// directory and process. Some tests call this helper both while building
+	// and while running the module, so mark each testing.T only once.
+	if _, loaded := parallelTests.LoadOrStore(t, struct{}{}); !loaded {
+		t.Parallel()
+	}
 	for _, name := range []string{"wat2wasm", "node"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skip(name + " is required for the Wabt E2E test")
