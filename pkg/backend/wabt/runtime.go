@@ -56,7 +56,16 @@ var wasmRuntime = map[string]runtimeFunc{
     (local.get $p))`},
 	"free": runtimeFunc{body: `(func $free (param $p i32))`},
 	"memcpy32": runtimeFunc{body: `(func $memcpy32 (param $dst i32) (param $src i32) (param $n i32) (result i32)
-    (memory.copy (local.get $dst) (local.get $src) (local.get $n))
+    (local $mem i32) (local $copyN i32)
+    (local.set $mem (i32.mul (memory.size) (i32.const 65536)))
+    (if (i32.or (i32.ge_u (local.get $dst) (local.get $mem)) (i32.ge_u (local.get $src) (local.get $mem)))
+      (then (return (local.get $dst))))
+    (local.set $copyN (local.get $n))
+    (if (i32.gt_u (local.get $copyN) (i32.sub (local.get $mem) (local.get $dst)))
+      (then (local.set $copyN (i32.sub (local.get $mem) (local.get $dst)))))
+    (if (i32.gt_u (local.get $copyN) (i32.sub (local.get $mem) (local.get $src)))
+      (then (local.set $copyN (i32.sub (local.get $mem) (local.get $src)))))
+    (memory.copy (local.get $dst) (local.get $src) (local.get $copyN))
     (local.get $dst))`},
 	"memcmp32": runtimeFunc{body: `(func $memcmp32 (param $a i32) (param $b i32) (param $n i32) (result i32)
     (local $i i32) (local $x i32) (local $y i32)
@@ -71,9 +80,12 @@ var wasmRuntime = map[string]runtimeFunc{
       (br $loop)))
     (i32.sub (local.get $x) (local.get $y)))`},
 	"strlen32": runtimeFunc{body: `(func $strlen32 (param $s i32) (result i32)
-    (local $p i32)
+    (local $p i32) (local $mem i32)
+    (local.set $mem (i32.mul (memory.size) (i32.const 65536)))
+    (if (i32.ge_u (local.get $s) (local.get $mem)) (then (return (i32.const 0))))
     (local.set $p (local.get $s))
     (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $p) (local.get $mem)))
       (br_if $done (i32.eqz (i32.load8_u (local.get $p))))
       (local.set $p (i32.add (local.get $p) (i32.const 1)))
       (br $loop)))
@@ -167,8 +179,13 @@ var wasmRuntime = map[string]runtimeFunc{
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $outer))))`},
 	"hike_streq32": runtimeFunc{body: `(func $hike_streq32 (param $a i32) (param $b i32) (result i32)
-    (local $i i32) (local $ca i32) (local $cb i32)
+    (local $i i32) (local $ca i32) (local $cb i32) (local $mem i32)
+    (local.set $mem (i32.mul (memory.size) (i32.const 65536)))
+    (if (i32.or (i32.ge_u (local.get $a) (local.get $mem)) (i32.ge_u (local.get $b) (local.get $mem)))
+      (then (return (i32.const 0))))
     (block $done (loop $scan
+      (br_if $done (i32.ge_u (i32.add (local.get $a) (local.get $i)) (local.get $mem)))
+      (br_if $done (i32.ge_u (i32.add (local.get $b) (local.get $i)) (local.get $mem)))
       (local.set $ca (i32.load8_u (i32.add (local.get $a) (local.get $i))))
       (local.set $cb (i32.load8_u (i32.add (local.get $b) (local.get $i))))
       (br_if $done (i32.ne (local.get $ca) (local.get $cb)))
@@ -177,8 +194,15 @@ var wasmRuntime = map[string]runtimeFunc{
       (br $scan)))
     (i32.eq (local.get $ca) (local.get $cb)))`},
 	"hike_streq_len32": runtimeFunc{body: `(func $hike_streq_len32 (param $a i32) (param $alen i32) (param $b i32) (param $blen i32) (result i32)
-    (local $i i32) (local $limit i32) (local $same i32)
+    (local $i i32) (local $limit i32) (local $same i32) (local $mem i32)
+    (local.set $mem (i32.mul (memory.size) (i32.const 65536)))
+    (if (i32.or (i32.ge_u (local.get $a) (local.get $mem)) (i32.ge_u (local.get $b) (local.get $mem)))
+      (then (return (i32.const 0))))
     (local.set $limit (select (local.get $alen) (local.get $blen) (i32.lt_u (local.get $alen) (local.get $blen))))
+    (if (i32.gt_u (local.get $limit) (i32.sub (local.get $mem) (local.get $a)))
+      (then (local.set $limit (i32.sub (local.get $mem) (local.get $a)))))
+    (if (i32.gt_u (local.get $limit) (i32.sub (local.get $mem) (local.get $b)))
+      (then (local.set $limit (i32.sub (local.get $mem) (local.get $b)))))
     (local.set $same (i32.const 1))
     (block $done (loop $scan
       (br_if $done (i32.ge_u (local.get $i) (local.get $limit)))
@@ -194,7 +218,7 @@ var wasmRuntime = map[string]runtimeFunc{
     (memory.copy (local.get $p) (local.get $a) (local.get $alen))
     (memory.copy (i32.add (local.get $p) (local.get $alen)) (local.get $b) (local.get $blen))
     (i32.store8 (i32.add (local.get $p) (i32.add (local.get $alen) (local.get $blen))) (i32.const 0))
-    (local.get $p))`},
+	(local.get $p))`},
 	"__hike_map_create": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_map_create (param $cap i32) (param $is_str i32) (result i32)
     (local $m i32) (local $n i32)
     (local.set $n (select (local.get $cap) (i32.const 16) (i32.ge_u (local.get $cap) (i32.const 16))))

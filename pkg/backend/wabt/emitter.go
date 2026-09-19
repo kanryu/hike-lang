@@ -257,7 +257,12 @@ func resultTypes(r *hir.Reg) []sema.Type {
 		return nil
 	}
 	if t, ok := r.Typ.(*sema.TupleType); ok {
-		return t.Types
+		// WABT lowers multi-value function returns to a pointer to a packed
+		// result area. Indirect calls must use that ABI as well; emitting the
+		// source tuple here would make the call_indirect type return multiple
+		// values while the surrounding HIR register expects one pointer.
+		_ = t
+		return []sema.Type{sema.TypeUint32}
 	}
 	return []sema.Type{r.Typ}
 }
@@ -387,7 +392,14 @@ func (e *Emitter) Emit() string {
 	// static data and the future runtime heap (malloc/memory.grow).
 	e.b.WriteString("  (memory (export \"memory\") 16)\n")
 	e.b.WriteString("  (global $__sp (mut i32) (i32.const 65536))\n")
-	e.b.WriteString("  (global $__heap (mut i32) (i32.const 131072))\n")
+	// Go-Hike compiler bootstrap modules perform substantial global
+	// initialization before main. Keep the heap away from that temporary stack
+	// area; malloc grows memory on demand when this address exceeds the initial
+	// module size.
+	// The self-hosted compiler uses a large temporary stack during package
+	// analysis. Keep the heap well beyond that stack to avoid corrupting its
+	// maps and AST objects.
+	e.b.WriteString("  (global $__heap (mut i32) (i32.const 67108864))\n")
 	e.b.WriteString("  (global $__region_active (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_begin_count (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_end_count (mut i32) (i32.const 0))\n")

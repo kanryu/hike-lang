@@ -1,8 +1,11 @@
 package os
 
+import "std/strings"
+
 // Browser-hosted compilation has no filesystem.  These are the only os
 // symbols needed by the compiler's logging path.
 var Args []string
+var Stderr *strings.Builder
 
 func Getenv(name string) string {
 	return ""

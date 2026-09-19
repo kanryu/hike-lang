@@ -7,11 +7,11 @@
 package main
 
 jfunc wasm_hikec_source() string {
-    return globalThis.__hikeWasmC.source || ""
+    return runtime.writeString(globalThis.__hikeWasmC.source || "")
 }
 
 jfunc wasm_hikec_publish_wat(wat string) int {
-    globalThis.__hikeWasmC.wat = wat
+    globalThis.__hikeWasmC.wat = runtime.readString(wat)
     return wat.length
 }
 
@@ -23,9 +23,22 @@ jfunc wasm_hikec_runtime_init() int {
     return 1;
 }
 
+jfunc wasm_hikec_echo_source_enabled() int {
+    if (globalThis.__hikeWasmC.echoSource) { return 1 }
+    return 0
+}
+
+jfunc wasm_hikec_debug_phase(phase int) int {
+    globalThis.__hikeWasmC.debugPhase = phase
+    runtime.log("debug-phase", { phase })
+    return phase
+}
+
 func main() int {
     wasm_hikec_runtime_init()
     source := wasm_hikec_source()
-    wat := Compile(source)
-    return wasm_hikec_publish_wat(wat)
+    if wasm_hikec_echo_source_enabled() != 0 {
+        return wasm_hikec_publish_wat(source)
+    }
+    return Compile(source)
 }

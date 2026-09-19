@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HikeC + Wabt.js</title>
+  <style>
+    body { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; font: 16px system-ui, sans-serif; background: #101522; color: #e8edf7; }
+    textarea { width: 100%; min-height: 260px; box-sizing: border-box; padding: 1rem; color: #dbeafe; background: #182235; border: 1px solid #405273; border-radius: 8px; font: 14px ui-monospace, monospace; }
+    button { margin: .75rem 0; padding: .6rem 1rem; border: 0; border-radius: 6px; background: #38bdf8; color: #082f49; font-weight: 700; cursor: pointer; }
+    pre { white-space: pre-wrap; padding: 1rem; min-height: 4rem; background: #0b1020; border-radius: 8px; }
+    .hint { color: #a9b7ce; }
+  </style>
+</head>
+<body>
+  <h1>HikeC / WAT / Wabt.js</h1>
+  <p class="hint">フォームのHikeプログラムをWasm-HikeCでWATへ変換し、Wabt.jsでWASM化して実行します。</p>
+  <textarea id="source" spellcheck="false">package main
+
+func main() int {
+    return 6 * 7
+}</textarea>
+  <br>
+  <button id="run">Compile and run</button>
+  <pre id="status">Loading Wabt.js...</pre>
+  <pre id="wat"></pre>
+
+  <!-- Wabt.js browser build. Pin the version for reproducible examples. -->
+  <script src="https://cdn.jsdelivr.net/npm/wabt@1.0.39/index.js"></script>
+  <script src="runtime.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

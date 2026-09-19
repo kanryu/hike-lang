@@ -1,0 +1,17 @@
+// Source used to build the browser-side Wasm-HikeC compiler bundle.
+// The compiler adapter exposed to app.js should implement:
+//   HikeWasmC.compile(source, { target: "wabt" })
+// and return { wat: string, runtimeJS?: string }.
+package main
+
+jfunc wasm_hikec_runtime_init() int {
+    if (!globalThis.__hikeWasmC) {
+        globalThis.__hikeWasmC = {};
+    }
+    globalThis.__hikeWasmC.memory = wasmMemory;
+    return 1;
+}
+
+func main() int {
+    return wasm_hikec_runtime_init()
+}
