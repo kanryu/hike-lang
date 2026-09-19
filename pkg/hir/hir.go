@@ -159,6 +159,14 @@ type Instruction interface {
 	Result() *Reg
 }
 
+// SourceLocation identifies the Hike source location associated with a HIR
+// instruction.
+type SourceLocation struct {
+	Filename string
+	Line     int
+	Column   int
+}
+
 type InstrAlloca struct {
 	Dst       *Reg
 	AllocType sema.Type
@@ -582,6 +590,7 @@ type ItabDef struct {
 
 type Function struct {
 	Name        string
+	Location    SourceLocation
 	Params      []*Reg
 	ReturnTypes []sema.Type
 	Blocks      []*BasicBlock
@@ -639,11 +648,12 @@ func (f *Function) String() string {
 }
 
 type Program struct {
-	ModuleName      string
-	StringConstants []*ConstString
-	Globals         []*GlobalVar
-	Itabs           []*ItabDef
-	Functions       []*Function
+	ModuleName           string
+	StringConstants      []*ConstString
+	Globals              []*GlobalVar
+	Itabs                []*ItabDef
+	Functions            []*Function
+	InstructionLocations map[Instruction]SourceLocation
 }
 
 func (p *Program) Dump() string {

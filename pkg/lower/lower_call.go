@@ -846,6 +846,10 @@ func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
 // -------------------------------------------------------------
 
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
+	if call != nil {
+		restoreLocation := c.root.setTokenLocation(c.root.sourceFile, call.Token)
+		defer restoreLocation()
+	}
 	logger.LogVerbose2("[Verbose2] Lower call input: function=%T (%+v) args=%d\\n", call.Function, call.Function, len(call.Args))
 	// 0. ジェネリクス関数の明示的型引数適用呼び出し (例: Add[float64](a, b))
 	if genInst, ok := call.Function.(*ast.GenericInstExpr); ok {

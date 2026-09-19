@@ -35,6 +35,7 @@ type Lowerer struct {
 	is32Bit       bool // Compilerから伝播される32bitターゲットフラグ
 	regionMode    bool
 	sourceFile    string
+	sourceLoc     hir.SourceLocation
 	module        string
 
 	// 分割されたサブローワー
@@ -70,7 +71,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l := &Lowerer{
 		prog:        prog,
 		semaCtx:     semaCtx,
-		hirProg:     &hir.Program{ModuleName: astProgramPackage(prog)},
+		hirProg:     &hir.Program{ModuleName: astProgramPackage(prog), InstructionLocations: make(map[hir.Instruction]hir.SourceLocation)},
 		module:      astProgramPackage(prog),
 		stringPool:  make(map[string]*hir.ConstString),
 		symbols:     make(map[string]hir.Value),
@@ -174,7 +175,7 @@ func (l *Lowerer) Lower() *hir.Program {
 	for _, decl := range l.prog.Decls {
 		if vd, ok := decl.(*ast.VarDecl); ok && vd.Value != nil {
 			globalInits = append(globalInits, &ast.AssignStmt{
-				Token: token.Token{Type: token.ASSIGN, Literal: "="},
+				Token: vd.Token,
 				Left:  []ast.Expression{vd.Name},
 				Right: []ast.Expression{vd.Value},
 			})
@@ -257,7 +258,9 @@ func (l *Lowerer) finishRegionFunction() {
 	}
 	region := l.nextReg(&sema.PointerType{Base: sema.TypeByte}, "region")
 	first := l.curFunc.Blocks[0]
-	first.Instructions = append([]hir.Instruction{&hir.InstrRegionBegin{Dst: region}}, first.Instructions...)
+	regionBegin := &hir.InstrRegionBegin{Dst: region}
+	first.Instructions = append([]hir.Instruction{regionBegin}, first.Instructions...)
+	l.recordFunctionLocation(regionBegin, l.curFunc)
 	for _, bb := range l.curFunc.Blocks {
 		// A value returned from this function outlives its region. Promote the
 		// allocation back to the ordinary heap before rewriting instructions.
@@ -274,14 +277,26 @@ func (l *Lowerer) finishRegionFunction() {
 				setHeapAllocKeepOnHeap(a, true)
 			}
 			if a, ok := inst.(*hir.InstrHeapAlloc); ok && !heapAllocKeepOnHeap(a) {
-				bb.Instructions[n] = &hir.InstrRegionAlloc{Dst: heapAllocDst(a), Region: region, Size: heapAllocSize(a), AllocType: heapAllocType(a)}
+				replacement := &hir.InstrRegionAlloc{Dst: heapAllocDst(a), Region: region, Size: heapAllocSize(a), AllocType: heapAllocType(a)}
+				bb.Instructions[n] = replacement
+				if loc, exists := l.hirProg.InstructionLocations[a]; exists {
+					l.hirProg.InstructionLocations[replacement] = loc
+				}
 			}
 		}
 		if bb.Terminator != nil {
 			if _, ok := bb.Terminator.(*hir.InstrReturn); ok {
-				bb.Instructions = append(bb.Instructions, &hir.InstrRegionEnd{Region: region})
+				regionEnd := &hir.InstrRegionEnd{Region: region}
+				bb.Instructions = append(bb.Instructions, regionEnd)
+				l.recordFunctionLocation(regionEnd, l.curFunc)
 			}
 		}
+	}
+}
+
+func (l *Lowerer) recordFunctionLocation(instr hir.Instruction, fn *hir.Function) {
+	if instr != nil && fn != nil && fn.Location.Line > 0 {
+		l.hirProg.InstructionLocations[instr] = fn.Location
 	}
 }
 
@@ -318,13 +333,35 @@ func (l *Lowerer) setBlock(bb *hir.BasicBlock) {
 func (l *Lowerer) emit(instr hir.Instruction) {
 	if l.curBlock != nil {
 		l.curBlock.Instructions = append(l.curBlock.Instructions, instr)
+		l.recordLocation(instr)
 	}
 }
 
 func (l *Lowerer) terminate(term hir.Terminator) {
 	if l.curBlock != nil && l.curBlock.Terminator == nil {
 		l.curBlock.Terminator = term
+		l.recordLocation(term)
 	}
+}
+
+func (l *Lowerer) recordLocation(instr hir.Instruction) {
+	if instr == nil || l.sourceLoc.Line <= 0 {
+		return
+	}
+	l.hirProg.InstructionLocations[instr] = l.sourceLoc
+}
+
+func (l *Lowerer) setSourceLocation(filename string, line, column int) func() {
+	previous := l.sourceLoc
+	if filename == "" {
+		filename = previous.Filename
+	}
+	l.sourceLoc = hir.SourceLocation{Filename: filename, Line: line, Column: column}
+	return func() { l.sourceLoc = previous }
+}
+
+func (l *Lowerer) setTokenLocation(filename string, tok token.Token) func() {
+	return l.setSourceLocation(filename, tok.Line, tok.Col)
 }
 
 func (l *Lowerer) getStringConst(raw string) *hir.ConstString {

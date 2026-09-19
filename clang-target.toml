@@ -1,0 +1,17 @@
+[profiles.windows-msvc]
+
+# HikeC expands only {input} and {output}, then executes the command.
+command = "clang-cl"
+args = [
+  "/Zi", "/Od",
+  "{input}",
+  "/Fe:{output}",
+  "/link", "msvcrt.lib", "legacy_stdio_definitions.lib"
+]
+
+[profiles.windows-gnu]
+command = "clang"
+args = [
+  "--target=x86_64-w64-windows-gnu", "-g",
+  "{input}", "-o", "{output}"
+]

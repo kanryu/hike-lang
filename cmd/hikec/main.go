@@ -14,6 +14,7 @@ import (
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
+	"hikec-go/pkg/toolchain"
 )
 
 func getDefaultTargetName() string {
@@ -144,6 +145,7 @@ func runEmitIR(args []string) {
 	wasmMode := "normal"
 	regionMode := false
 	goHikeMode := false
+	debugInfo := false
 	verbose := false
 	var sourceFiles []string
 
@@ -175,6 +177,8 @@ func runEmitIR(args []string) {
 			regionMode = true
 		} else if isGoHikeFlag(arg) {
 			goHikeMode = true
+		} else if arg == "-g" || arg == "--debug" {
+			debugInfo = true
 		} else if arg == "-cflags" && i+1 < len(args) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
@@ -209,6 +213,7 @@ func runEmitIR(args []string) {
 	comp.SetWasmMode(wasmMode)
 	comp.SetRegionMode(regionMode)
 	comp.SetGoHikeMode(goHikeMode)
+	comp.SetDebugInfo(debugInfo)
 
 	var llvmIR string
 	var semaCtx *sema.Context
@@ -506,19 +511,33 @@ func runBuild(args []string) {
 			clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 		}
 
-		if tgt.Cflags != "" {
-			clangArgs = append(clangArgs, strings.Fields(tgt.Cflags)...)
+		command := "clang"
+		args := clangArgs
+		if profileName := nativeToolchainProfile(tgt); profileName != "" {
+			if cfg, loadErr := toolchain.LoadFromWorkingDirectory(); loadErr == nil {
+				if configuredCommand, configuredArgs, ok := cfg.Command(profileName, tempLL, outputBin); ok {
+					command = configuredCommand
+					args = configuredArgs
+				}
+			} else if !os.IsNotExist(loadErr) {
+				fmt.Fprintf(os.Stderr, "Toolchain config error: %v\n", loadErr)
+				os.Exit(1)
+			}
+		}
+		if command == "clang" {
+			if tgt.Cflags != "" {
+				args = append(args, strings.Fields(tgt.Cflags)...)
+			}
+			if extraCflags != "" {
+				args = append(args, strings.Fields(extraCflags)...)
+			}
 		}
 
-		if extraCflags != "" {
-			clangArgs = append(clangArgs, strings.Fields(extraCflags)...)
-		}
-
-		cmd := exec.Command("clang", clangArgs...)
+		cmd := exec.Command(command, args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Clang build failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s build failed: %v\n", command, err)
 			os.Exit(1)
 		}
 	}
@@ -535,6 +554,20 @@ func runBuild(args []string) {
 
 	if !strings.Contains(outputBin, "hike_run_") {
 		fmt.Printf("Build completed -> %s\n", outputBin)
+	}
+}
+
+func nativeToolchainProfile(tgt *target.Target) string {
+	if tgt == nil || tgt.IsWasm {
+		return ""
+	}
+	switch tgt.Name {
+	case target.TargetX86_64WindowsMSVC.Name:
+		return "windows-msvc"
+	case target.TargetX86_64Windows.Name:
+		return "windows-gnu"
+	default:
+		return ""
 	}
 }
 
