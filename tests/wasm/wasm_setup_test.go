@@ -6,7 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
+
+var hikecBin string
 
 func wasmProjectRoot(t *testing.T) string {
 	t.Helper()
@@ -21,6 +25,31 @@ func wasmProjectRoot(t *testing.T) string {
 	return root
 }
 
+func TestMain(m *testing.M) {
+	root, err := os.Getwd()
+	if err != nil {
+		os.Exit(1)
+	}
+	root, err = filepath.Abs(filepath.Join(root, "..", ".."))
+	if err != nil {
+		os.Exit(1)
+	}
+	base, err := os.MkdirTemp(root, ".wasm-test-")
+	if err != nil {
+		os.Exit(1)
+	}
+	hikecBin = filepath.Join(base, "hikec.exe")
+	if output, err := testutil.BuildHikec(root, hikecBin); err != nil {
+		os.Stderr.WriteString("hikec build failed: " + err.Error() + "\n")
+		os.Stderr.Write(output)
+		_ = os.RemoveAll(base)
+		os.Exit(1)
+	}
+	status := m.Run()
+	_ = os.RemoveAll(base)
+	os.Exit(status)
+}
+
 func buildWasm(t *testing.T, source, mode string) string {
 	t.Helper()
 	if _, err := exec.LookPath("clang"); err != nil {
@@ -33,8 +62,8 @@ func buildWasm(t *testing.T, source, mode string) string {
 		t.Fatal(err)
 	}
 	wasm := filepath.Join(tmp, "main.wasm")
-	args := []string{"run", "./cmd/hikec", "build", "-target", "wasm32", "-wasm-mode", mode, "-o", wasm, src}
-	build := exec.Command("go", args...)
+	args := []string{"build", "-target", "wasm32", "-wasm-mode", mode, "-o", wasm, src}
+	build := exec.Command(hikecBin, args...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("WASM build failed: %v\n%s", err, output)

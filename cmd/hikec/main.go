@@ -474,7 +474,14 @@ func runBuild(args []string) {
 	}
 
 	if useWabtBackend {
-		cmd := exec.Command("wat2wasm", tempLL, "-o", outputBin)
+		wat2wasmArgs := []string{tempLL, "-o", outputBin}
+		if debugInfo {
+			// Preserve the WAT function and local names in the standard Wasm
+			// name custom section. This is the WABT counterpart of keeping
+			// LLVM debug symbols when -g is enabled.
+			wat2wasmArgs = append(wat2wasmArgs, "--debug-names")
+		}
+		cmd := exec.Command("wat2wasm", wat2wasmArgs...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {

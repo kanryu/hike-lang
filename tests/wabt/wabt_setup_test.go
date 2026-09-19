@@ -8,9 +8,12 @@ import (
 	"sort"
 	"sync"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var parallelTests sync.Map
+var hikecBin string
 
 func projectRoot(t *testing.T) string {
 	t.Helper()
@@ -23,6 +26,31 @@ func projectRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func TestMain(m *testing.M) {
+	root, err := os.Getwd()
+	if err != nil {
+		os.Exit(1)
+	}
+	root, err = filepath.Abs(filepath.Join(root, "..", ".."))
+	if err != nil {
+		os.Exit(1)
+	}
+	base, err := os.MkdirTemp(root, ".wabt-test-")
+	if err != nil {
+		os.Exit(1)
+	}
+	hikecBin = filepath.Join(base, "hikec.exe")
+	if output, err := testutil.BuildHikec(root, hikecBin); err != nil {
+		os.Stderr.WriteString("hikec build failed: " + err.Error() + "\n")
+		os.Stderr.Write(output)
+		_ = os.RemoveAll(base)
+		os.Exit(1)
+	}
+	status := m.Run()
+	_ = os.RemoveAll(base)
+	os.Exit(status)
 }
 
 func requireTools(t *testing.T) {
@@ -65,9 +93,9 @@ func buildWabtProject(t *testing.T, source string, files map[string]string) stri
 		sources = append(sources, filepath.Join(tmp, name))
 	}
 	sort.Strings(sources[1:])
-	args := []string{"run", "./cmd/hikec", "build", "-target", "wabt", "-o", wasm}
+	args := []string{"build", "-target", "wabt", "-o", wasm}
 	args = append(args, sources...)
-	cmd := exec.Command("go", args...)
+	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = projectRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Wabt build failed: %v\n%s", err, out)

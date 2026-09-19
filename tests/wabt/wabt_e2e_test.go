@@ -26,7 +26,7 @@ func TestWabtEmitIRProducesWatAndRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	wat := filepath.Join(tmp, "main.wat")
-	cmd := exec.Command("go", "run", "./cmd/hikec", "emit-ir", "-target", "wabt", "-o", wat, src)
+	cmd := exec.Command(hikecBin, "emit-ir", "-target", "wabt", "-o", wat, src)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Wabt emit-ir failed: %v\n%s", err, out)
