@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 
+	"hikec-go/pkg/debug"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
@@ -24,6 +25,7 @@ type Emitter struct {
 	asyncThunks     map[string]*asyncThunk
 	declaredSymbols map[string]bool
 	userSymbols     map[string]string
+	debugMgr        *debug.DebugManager
 }
 
 func (e *Emitter) SetVerboseLevel(level int) {
@@ -50,7 +52,7 @@ func defaultTargetTriple() string {
 	}
 }
 
-func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter {
+func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath string, debugEnabled bool) *Emitter {
 	if targetTriple == "" {
 		targetTriple = defaultTargetTriple()
 	}
@@ -61,6 +63,7 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple string) *Emitter
 		asyncThunks:     make(map[string]*asyncThunk),
 		declaredSymbols: make(map[string]bool),
 		userSymbols:     make(map[string]string),
+		debugMgr:        debug.NewDebugManager(sourcePath, debugEnabled),
 	}
 
 	for sym := range RuntimeLLVMSymbols {
@@ -101,6 +104,9 @@ func (e *Emitter) Emit() string {
 	e.emitItabs()
 	e.emitFunctions()
 	e.emitAsyncThunks()
+	if e.debugMgr.Enabled() {
+		e.b.WriteString(e.debugMgr.EmitMetadata())
+	}
 	return e.b.String()
 }
 
@@ -116,6 +122,9 @@ func (e *Emitter) emitPrologue() {
 	e.b.WriteString(fmt.Sprintf("; ModuleID = '%s'\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("source_filename = \"%s.hike\"\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", e.targetTriple))
+	if e.debugMgr.Enabled() {
+		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
+	}
 
 	// ターゲットトリプルに応じた適切なランタイムIRを出力
 	e.b.WriteString(GetRuntimeIR(e.targetTriple))
@@ -455,7 +464,12 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 	if features := e.intrinsicFeatures(fn); features != "" {
 		featureAttr = fmt.Sprintf(" \"target-features\"=\"%s\"", features)
 	}
-	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr))
+	debugTag := ""
+	if e.debugMgr.Enabled() {
+		spID := e.debugMgr.StartFunction(fn.Name, fn.Location.Line)
+		debugTag = fmt.Sprintf(" !dbg !%d", spID)
+	}
+	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr, debugTag))
 
 	for _, bb := range fn.Blocks {
 		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
@@ -601,6 +615,19 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		logger.LogVerbose2("[Verbose2] emitInstruction: <nil>\n")
 		return
 	}
+	start := e.b.Len()
+	e.emitInstructionBody(inst)
+	e.appendDebugLocation(start, inst)
+}
+
+// emitInstructionBody emits the LLVM generated for one HIR instruction. The
+// wrapper above attaches the source location to the final generated LLVM
+// instruction, including instructions which expand to several LLVM lines.
+func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
+	if inst == nil {
+		logger.LogVerbose2("[Verbose2] emitInstruction: <nil>\n")
+		return
+	}
 	logger.LogVerbose2("[Verbose2] emitInstruction: %T -> %+v\n", inst, inst)
 
 	intLLVM := sema.TypeInt.LLVMType()
@@ -635,6 +662,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 
 	case *hir.InstrAlloca:
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", i.Dst, i.AllocType.LLVMType()))
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
 
 	case *hir.InstrAllocaDynamic:
 		sizeLLVM := intLLVM
@@ -643,6 +671,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		}
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s, %s %s, align %d\n",
 			i.Dst, i.AllocType.LLVMType(), sizeLLVM, e.formatVal(i.Size), sema.PointerSize))
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
 
 	case *hir.InstrHeapAlloc:
 		sizeLLVM := intLLVM
@@ -652,6 +681,7 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		rawPtr := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %s)\n", rawPtr, sizeLLVM, e.formatVal(i.Size)))
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, rawPtr, i.AllocType.LLVMType()))
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
 
 	case *hir.InstrLoad:
 		if i.Ptr == nil {
@@ -937,6 +967,65 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %s, %d\n",
 			i.Dst, i.Agg.Type().LLVMType(), e.formatVal(i.Agg),
 			i.Val.Type().LLVMType(), e.formatVal(i.Val), i.Index))
+	}
+}
+
+// emitLocalVariableDebug mirrors the old LLVM code generator's
+// llvm.dbg.declare emission. HIR alloca registers retain the source variable
+// name, so they can be associated with a DILocalVariable without re-reading
+// the AST in the backend.
+func (e *Emitter) emitLocalVariableDebug(reg *hir.Reg, typ sema.Type, loc hir.SourceLocation) {
+	if !e.debugMgr.Enabled() || reg == nil || reg.Name == "" {
+		return
+	}
+	if loc.Line <= 0 {
+		return
+	}
+	varID, _ := e.debugMgr.RegisterLocalVariable(sourceVariableName(reg.Name), loc.Line, loc.Column, typ, false, 0)
+	if varID == 0 {
+		return
+	}
+	// The first operand is the pointer produced by alloca, not the allocated
+	// value type. Using the register type also keeps this valid with LLVM's
+	// opaque-pointer mode (where the operand is `ptr`).
+	e.b.WriteString(fmt.Sprintf("  call void @llvm.dbg.declare(metadata %s %s, metadata !%d, metadata !DIExpression())\n", reg.Type().LLVMType(), reg, varID))
+}
+
+func sourceVariableName(name string) string {
+	if dot := strings.LastIndexByte(name, '.'); dot > 0 && dot+1 < len(name) {
+		for _, r := range name[dot+1:] {
+			if r < '0' || r > '9' {
+				return name
+			}
+		}
+		return name[:dot]
+	}
+	return name
+}
+
+func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
+	if !e.debugMgr.Enabled() || e.prog == nil || e.prog.InstructionLocations == nil || e.b.Len() <= start {
+		return
+	}
+	loc, ok := e.prog.InstructionLocations[inst]
+	if !ok {
+		return
+	}
+	tag := e.debugMgr.GetLocationTag(loc.Line, loc.Column)
+	if tag == "" {
+		return
+	}
+	text := e.b.String()
+	end := len(text)
+	if end > 0 && text[end-1] == '\n' {
+		end--
+	}
+	e.b.Reset()
+	e.b.WriteString(text[:end])
+	e.b.WriteString(tag)
+	e.b.WriteByte('\n')
+	if end+1 < len(text) {
+		e.b.WriteString(text[end+1:])
 	}
 }
 
@@ -1381,6 +1470,15 @@ func (e *Emitter) emitCallIface(i *hir.InstrCallIface) {
 }
 
 func (e *Emitter) emitTerminator(term hir.Terminator, isMain bool) {
+	if term == nil {
+		return
+	}
+	start := e.b.Len()
+	e.emitTerminatorBody(term, isMain)
+	e.appendDebugLocation(start, term)
+}
+
+func (e *Emitter) emitTerminatorBody(term hir.Terminator, isMain bool) {
 	switch t := term.(type) {
 	case *hir.InstrJump:
 		e.b.WriteString(fmt.Sprintf("  br label %%%s\n", t.Target))

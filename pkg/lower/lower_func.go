@@ -14,6 +14,8 @@ import (
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
+	restoreLocation := c.root.setTokenLocation(fn.Filename, fn.Token)
+	defer restoreLocation()
 	c.resetFunctionState(fn)
 	fnName, recvType := c.resolveFunctionIdentity(fn)
 	irName := c.resolveFuncIRName(fnName)
@@ -126,6 +128,7 @@ func (c *CallLowerer) resolveReturnTypeExpressions(exprs []ast.TypeExpr) []sema.
 func (c *CallLowerer) createFunction(fn *ast.FuncDecl, irName string, returnTypes []sema.Type) *hir.Function {
 	hirFn := &hir.Function{
 		Name:        irName,
+		Location:    hir.SourceLocation{Filename: fn.Filename, Line: fn.Token.Line, Column: fn.Token.Col},
 		Params:      []*hir.Reg{},
 		ReturnTypes: returnTypes,
 		Blocks:      []*hir.BasicBlock{},

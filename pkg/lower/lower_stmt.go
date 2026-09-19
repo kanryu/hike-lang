@@ -42,6 +42,8 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 	if stmt == nil {
 		return
 	}
+	restoreLocation := s.root.setTokenLocation(s.root.sourceFile, statementToken(stmt))
+	defer restoreLocation()
 
 	switch node := stmt.(type) {
 	case *ast.VarDecl:
@@ -82,6 +84,41 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 			ctx := s.root.loopStack[len(s.root.loopStack)-1]
 			s.root.terminate(&hir.InstrJump{Target: ctx.continueBlock.Label})
 		}
+	}
+}
+
+func statementToken(stmt ast.Statement) token.Token {
+	switch node := stmt.(type) {
+	case *ast.VarDecl:
+		return node.Token
+	case *ast.AssignStmt:
+		return node.Token
+	case *ast.SendStmt:
+		return node.Token
+	case *ast.ExprStmt:
+		return node.Token
+	case *ast.BlockStmt:
+		return node.Token
+	case *ast.IfStmt:
+		return node.Token
+	case *ast.ForStmt:
+		return node.Token
+	case *ast.ForRangeStmt:
+		return node.Token
+	case *ast.SwitchStmt:
+		return node.Token
+	case *ast.TypeSwitchStmt:
+		return node.Token
+	case *ast.ReturnStmt:
+		return node.Token
+	case *ast.DeferStmt:
+		return node.Token
+	case *ast.BreakStmt:
+		return node.Token
+	case *ast.ContinueStmt:
+		return node.Token
+	default:
+		return token.Token{}
 	}
 }
 

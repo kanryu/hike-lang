@@ -27,6 +27,7 @@ type Compiler struct {
 	wasmMode   string
 	regionMode bool
 	goHikeMode bool
+	debugInfo  bool
 	reporter   *diag.Reporter
 }
 
@@ -59,6 +60,9 @@ func (c *Compiler) SetRegionMode(enabled bool) { c.regionMode = enabled }
 
 // SetGoHikeMode enables compilation of Go-compatible self-hosting sources.
 func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
+
+// SetDebugInfo enables LLVM source-level debug metadata emission.
+func (c *Compiler) SetDebugInfo(enabled bool) { c.debugInfo = enabled }
 
 func (c *Compiler) Reporter() *diag.Reporter {
 	return c.reporter
@@ -184,7 +188,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	primaryFile := entryPaths[0]
 	var llvmIR string
 	_ = c.safeExecute(primaryFile, func() error {
-		emitter := llvm.New(hirProg, semaCtx, targetTriple)
+		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
 		llvmIR = emitter.Emit()
 		return nil
 	})

@@ -9,6 +9,7 @@ import (
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
+	"hikec-go/pkg/token"
 )
 
 type ExprLowerer struct {
@@ -150,6 +151,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	if expr == nil {
 		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 	}
+	restoreLocation := e.root.setTokenLocation(e.root.sourceFile, expressionToken(expr))
+	defer restoreLocation()
 
 	switch node := expr.(type) {
 	case *ast.IntegerLiteral:
@@ -859,6 +862,59 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	}
 
 	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+}
+
+func expressionToken(expr ast.Expression) token.Token {
+	switch node := expr.(type) {
+	case *ast.Identifier:
+		return node.Token
+	case *ast.IntegerLiteral:
+		return node.Token
+	case *ast.FloatLiteral:
+		return node.Token
+	case *ast.CharLiteral:
+		return node.Token
+	case *ast.StringLiteral:
+		return node.Token
+	case *ast.NilLiteral:
+		return node.Token
+	case *ast.PrefixExpr:
+		return node.Token
+	case *ast.ReceiveExpr:
+		return node.Token
+	case *ast.AsyncExpr:
+		return node.Token
+	case *ast.BinaryExpr:
+		return node.Token
+	case *ast.IndexExpr:
+		return node.Token
+	case *ast.GenericInstExpr:
+		return node.Token
+	case *ast.MemberExpr:
+		return node.Token
+	case *ast.CallExpr:
+		return node.Token
+	case *ast.InlineAsmExpr:
+		return node.Token
+	case *ast.IotaExpr:
+		return node.Token
+	case *ast.SliceExpr:
+		return node.Token
+	case *ast.SliceLiteral:
+		return node.Token
+	case *ast.StructLiteral:
+		return node.Token
+	case *ast.MapLiteral:
+		return node.Token
+	case *ast.ArrayLiteral:
+		return node.Token
+	case *ast.TypeAssertExpr:
+		return node.Token
+	case *ast.FuncLit:
+		return node.Token
+	default:
+		return token.Token{}
+	}
 }
 
 // lowerMapLiteral implements Go-compatible map[K]V{key: value, ...}

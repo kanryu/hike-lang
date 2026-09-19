@@ -40,6 +40,7 @@ type DebugManager struct {
 	localVars    []*LocalVarMeta
 	locMap       map[string]int
 	typeMap      map[string]int
+	compositeMap map[string]int
 	typeMetaList []string
 	metadataList []string
 	nextID       int
@@ -64,6 +65,7 @@ func NewDebugManager(sourcePath string, enabled bool) *DebugManager {
 		localVars:    make([]*LocalVarMeta, 0),
 		locMap:       make(map[string]int),
 		typeMap:      make(map[string]int),
+		compositeMap: make(map[string]int),
 		typeMetaList: make([]string, 0),
 		metadataList: make([]string, 0),
 		nextID:       0,
@@ -75,6 +77,11 @@ func NewDebugManager(sourcePath string, enabled bool) *DebugManager {
 	dm.fileID = dm.allocID()     // !3: DIFile
 
 	return dm
+}
+
+// Enabled reports whether this manager is collecting LLVM debug metadata.
+func (dm *DebugManager) Enabled() bool {
+	return dm != nil && dm.enabled
 }
 
 func (dm *DebugManager) allocID() int {
@@ -119,6 +126,11 @@ func (dm *DebugManager) GetTypeID(t sema.Type) int {
 	if id, exists := dm.typeMap[typeName]; exists {
 		return id
 	}
+	if st, ok := t.(*sema.StructType); ok {
+		id := dm.getStructTypeID(st)
+		dm.typeMap[typeName] = id
+		return id
+	}
 
 	typeID := dm.allocID()
 	dm.typeMap[typeName] = typeID
@@ -152,6 +164,56 @@ func (dm *DebugManager) GetTypeID(t sema.Type) int {
 	}
 
 	return typeID
+}
+
+func (dm *DebugManager) getStructTypeID(st *sema.StructType) int {
+	if st == nil {
+		return dm.GetTypeID(sema.TypeInt)
+	}
+	if id, ok := dm.compositeMap[st.Name]; ok {
+		return id
+	}
+
+	// Reserve the type ID before walking fields so recursive structures are
+	// represented correctly in the metadata graph.
+	typeID := dm.allocID()
+	dm.compositeMap[st.Name] = typeID
+	elementsID := dm.allocID()
+	fieldIDs := make([]string, 0, len(st.Fields))
+	offset := 0
+	for _, field := range st.Fields {
+		fieldTypeID := dm.GetTypeID(field.Type)
+		fieldSize := debugTypeSize(field.Type)
+		align := fieldSize
+		if align <= 0 || align > sema.PointerSize {
+			align = sema.PointerSize
+		}
+		if align > 1 {
+			offset = (offset + align - 1) &^ (align - 1)
+		}
+		fieldID := dm.allocID()
+		fieldIDs = append(fieldIDs, fmt.Sprintf("!%d", fieldID))
+		dm.typeMetaList = append(dm.typeMetaList, fmt.Sprintf(
+			"!%d = !DIDerivedType(tag: DW_TAG_member, name: \"%s\", scope: !%d, file: !%d, line: 1, baseType: !%d, size: %d, offset: %d)",
+			fieldID, field.Name, typeID, dm.fileID, fieldTypeID, fieldSize*8, offset*8))
+		offset += fieldSize
+	}
+	dm.typeMetaList = append(dm.typeMetaList,
+		fmt.Sprintf("!%d = !DICompositeType(tag: DW_TAG_structure_type, name: \"%s\", file: !%d, line: 1, size: %d, elements: !%d)",
+			typeID, st.Name, dm.fileID, debugTypeSize(st)*8, elementsID),
+		fmt.Sprintf("!%d = !{%s}", elementsID, strings.Join(fieldIDs, ", ")))
+	return typeID
+}
+
+func debugTypeSize(t sema.Type) int {
+	if t == nil {
+		return sema.PointerSize
+	}
+	size := sema.SizeOf(t)
+	if size <= 0 {
+		size = sema.PointerSize
+	}
+	return size
 }
 
 func (dm *DebugManager) RegisterLocalVariable(name string, line, col int, t sema.Type, isParam bool, argIdx int) (int, int) {
