@@ -256,12 +256,14 @@ func (e *Emitter) emitItabData() {
 	for _, itab := range e.p.Itabs {
 		e.itabOffsets[itab.GlobalName] = e.nextDataOffset
 		var raw strings.Builder
+		typeID := uint32(itab.TypeID)
+		fmt.Fprintf(&raw, "\\%02x\\%02x\\%02x\\%02x", byte(typeID), byte(typeID>>8), byte(typeID>>16), byte(typeID>>24))
 		for _, method := range itab.Methods {
 			name := itabTargetName(method)
 			fmt.Fprintf(&raw, "\\%02x\\%02x\\%02x\\%02x", e.functionIndex[name]&255, (e.functionIndex[name]>>8)&255, (e.functionIndex[name]>>16)&255, (e.functionIndex[name]>>24)&255)
 		}
 		fmt.Fprintf(&e.b, "  (data (i32.const %d) \"%s\")\n", e.nextDataOffset, raw.String())
-		e.nextDataOffset += len(itab.Methods) * 4
+		e.nextDataOffset += 4 + len(itab.Methods)*4
 	}
 }
 
@@ -588,7 +590,31 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hi
 					}
 					typ := fn.ReturnTypes[i]
 					ptr := fmt.Sprintf("(i32.add (local.get $__ret_multi) (i32.const %d))", offset)
-					e.b.WriteString(fmt.Sprintf("          (%s %s %s)\n", memoryOp(typ, false), ptr, e.valAs(value, typ)))
+					if typ == sema.TypeString {
+						if s, ok := value.(*hir.ConstString); ok {
+							e.b.WriteString(fmt.Sprintf("          (i32.store %s (call $malloc (i32.const 12)))\n", ptr))
+							view := fmt.Sprintf("(i32.load %s)", ptr)
+							e.b.WriteString(fmt.Sprintf("          (i32.store %s %s)\n", view, e.val(s)))
+							e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", view))
+							e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", view, len(s.Raw)))
+						} else {
+							e.b.WriteString(fmt.Sprintf("          (i32.store %s %s)\n", ptr, e.valAs(value, typ)))
+						}
+					} else if aggregateType(typ) {
+						// Aggregate tuple fields are represented by a pointer in the
+						// packed multi-return area.  The caller's ExtractValue then
+						// copies the aggregate from that pointer.  The callee frame is
+						// released before returning, so the copy must live on the heap.
+						storage := "(call $malloc (i32.const " + strconv.Itoa(typeSize(typ)) + "))"
+						e.b.WriteString(fmt.Sprintf("          (i32.store %s %s)\n", ptr, storage))
+						if _, zero := value.(*hir.ConstZero); zero {
+							e.b.WriteString(fmt.Sprintf("          (memory.fill (i32.load %s) (i32.const 0) (i32.const %d))\n", ptr, typeSize(typ)))
+						} else {
+							e.b.WriteString(fmt.Sprintf("          (memory.copy (i32.load %s) %s (i32.const %d))\n", ptr, e.valAs(value, typ), typeSize(typ)))
+						}
+					} else {
+						e.b.WriteString(fmt.Sprintf("          (%s %s %s)\n", memoryOp(typ, false), ptr, e.valAs(value, typ)))
+					}
 					offset += typeSize(typ)
 				}
 				e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
@@ -607,6 +633,13 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hi
 						e.b.WriteString("          (i32.store (local.get $frame_sp) " + base + ")\n")
 						e.b.WriteString("          (i32.store (i32.add (local.get $frame_sp) (i32.const 4)) (i32.const 0))\n")
 						e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add (local.get $frame_sp) (i32.const 8)) (i32.const %d))\n", len(s.Raw)))
+						values[i] = "(local.get $frame_sp)"
+						continue
+					}
+				}
+				if aggregateType(fn.ReturnTypes[i]) {
+					if _, zero := v.(*hir.ConstZero); zero {
+						e.b.WriteString(fmt.Sprintf("          (memory.fill (local.get $frame_sp) (i32.const 0) (i32.const %d))\n", typeSize(fn.ReturnTypes[i])))
 						values[i] = "(local.get $frame_sp)"
 						continue
 					}
@@ -807,9 +840,16 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		for i, a := range x.Args {
 			params[i] = a.Type()
 		}
+		e.callArgTotal = 0
+		e.callArgUsed = 0
+		for _, a := range x.Args {
+			if _, ok := a.(*hir.ConstString); ok {
+				e.callArgTotal += typeSize(sema.TypeString)
+			}
+		}
 		plainArgs := make([]string, 0, len(x.Args)+1)
 		for _, a := range x.Args {
-			plainArgs = append(plainArgs, e.val(a))
+			plainArgs = append(plainArgs, e.callArg(a))
 		}
 		plainArgs = append(plainArgs, e.val(x.FnPtr))
 		plainCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, indirectCallResults(x)), strings.Join(plainArgs, " "))
@@ -827,19 +867,30 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		} else {
 			e.b.WriteString(fmt.Sprintf("    (if %s (then %s) (else %s))\n", condition, plainCall, closureCall))
 		}
+		e.callArgTotal = 0
+		e.callArgUsed = 0
 	case *hir.InstrCallIface:
 		params := make([]sema.Type, 1, len(x.Args)+1)
 		params[0] = &sema.PointerType{Base: sema.TypeByte}
 		for _, a := range x.Args {
 			params = append(params, a.Type())
 		}
-		itab := fmt.Sprintf("(i32.load (i32.add (i32.load (i32.add %s (i32.const 4))) (i32.const %d)))", e.val(x.IfaceVal), x.MethodIndex*4)
+		e.callArgTotal = 0
+		e.callArgUsed = 0
+		for _, a := range x.Args {
+			if _, ok := a.(*hir.ConstString); ok {
+				e.callArgTotal += typeSize(sema.TypeString)
+			}
+		}
+		itab := fmt.Sprintf("(i32.load (i32.add (i32.load (i32.add %s (i32.const 4))) (i32.const %d)))", e.val(x.IfaceVal), 4+x.MethodIndex*4)
 		args := []string{"(i32.load " + e.val(x.IfaceVal) + ")"}
 		for _, a := range x.Args {
-			args = append(args, e.val(a))
+			args = append(args, e.callArg(a))
 		}
 		args = append(args, itab)
 		e.set(x.Dst, fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, ifaceCallResults(x)), strings.Join(args, " ")))
+		e.callArgTotal = 0
+		e.callArgUsed = 0
 	case *hir.InstrAsync:
 		// WABT has no thread-pool runtime. Keep the task representation
 		// explicit and let InstrTaskWait execute it synchronously. This still
@@ -962,7 +1013,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			dataPtr = "(i32.add " + dataPtr + " (i32.const 4))"
 		}
 		data := "(i32.load " + dataPtr + ")"
-		if _, ok := x.TargetType.(*sema.PointerType); ok {
+		if _, ok := x.TargetType.(*sema.PointerType); ok || aggregateType(x.TargetType) {
 			e.set(x.Dst, data)
 		} else {
 			e.set(x.Dst, "("+memoryOp(x.TargetType, true)+" "+data+")")
@@ -995,6 +1046,11 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			e.advanceSP(dataSize)
 			data = fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", dataSize)
 			e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const %d))\n", data, e.val(x.Val), dataSize))
+		} else if aggregateType(x.Val.Type()) {
+			// Aggregate HIR values are represented by pointers in WABT. Keep
+			// the existing value address as any's data pointer; storing that
+			// address into a temporary slot would introduce an extra indirection.
+			data = e.val(x.Val)
 		} else if _, ok := x.Val.Type().(*sema.PointerType); !ok {
 			dataSize = typeSize(x.Val.Type())
 			e.advanceSP(dataSize)
@@ -1127,6 +1183,13 @@ func (e *Emitter) callArg(v hir.Value) string {
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", storeBase))
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", storeBase, len(s.Raw)))
 		return argBase
+	}
+	if _, ok := v.(*hir.ConstZero); ok && aggregateType(v.Type()) {
+		size := typeSize(v.Type())
+		e.advanceSP(size)
+		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", size)
+		e.b.WriteString(fmt.Sprintf("    (memory.fill %s (i32.const 0) (i32.const %d))\n", base, size))
+		return base
 	}
 	return e.val(v)
 }

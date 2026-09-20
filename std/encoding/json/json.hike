@@ -10,7 +10,7 @@ func fwrite(buffer *byte, size int, count int, fp *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
 func strlen(s string) int
-func sprintf(buf *byte, format string, ...) int
+extern func sprintf(buf *byte, format string, ...) int
 func atoi(s string) int
 func atof(s string) float64
 

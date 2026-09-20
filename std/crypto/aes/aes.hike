@@ -29,7 +29,7 @@ func gfPow(a byte, n int) byte {
 }
 
 func rotateByteLeft(x byte, n int) byte {
-	return (x << byte(n)) | (x >> byte(8-n))
+    return ((x << byte(n)) | (x >> byte(8-n))) & byte(0xff)
 }
 
 func sbox(x byte) byte {

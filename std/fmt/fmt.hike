@@ -5,7 +5,7 @@ import "std/errors"
 import "std/strings"
 
 // 画面出力用のC標準関数宣言 (ネイティブ環境用)
-func printf(format string, ...) int
+extern func printf(format string, ...) int
 
 // Sprintf は std/fmt/sprintf に定義された純粋実装を委譲呼び出しします
 func Sprintf(format string, args ...any) string {

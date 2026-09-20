@@ -1277,10 +1277,25 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 
 	// 3. 組み込み map[K]V の走査
 	if mp, isMap := xType.(*sema.MapType); isMap {
-		mapStructType := &sema.StructType{Name: "__hike_map"}
-		mapPtrType := &sema.PointerType{Base: mapStructType}
 		entryStructType := &sema.StructType{Name: "__hike_map_entry"}
 		entryPtrType := &sema.PointerType{Base: entryStructType}
+		// Keep this phantom type in sync with the runtime map ABI.  The map
+		// lowering uses field pointers only to calculate byte offsets; leaving
+		// Fields empty makes every field address use offset zero in backends
+		// that do not otherwise materialize the runtime struct.
+		entryStructType.Fields = []sema.Field{
+			{Name: "hash", Type: sema.TypeInt},
+			{Name: "key", Type: mp.Key},
+			{Name: "val", Type: mp.Value},
+			{Name: "next", Type: entryPtrType},
+		}
+		mapStructType := &sema.StructType{Name: "__hike_map", Fields: []sema.Field{
+			{Name: "buckets", Type: &sema.PointerType{Base: entryPtrType}},
+			{Name: "numBuckets", Type: sema.TypeInt},
+			{Name: "length", Type: sema.TypeInt},
+			{Name: "isString", Type: sema.TypeInt},
+		}}
+		mapPtrType := &sema.PointerType{Base: mapStructType}
 
 		typedMap := s.root.nextReg(mapPtrType)
 		s.root.emit(&hir.InstrCast{Dst: typedMap, Val: xVal, ToType: mapPtrType})
