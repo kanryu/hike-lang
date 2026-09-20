@@ -813,6 +813,8 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		for _, a := range x.Args {
 			if _, ok := a.(*hir.ConstString); ok {
 				e.callArgTotal += typeSize(sema.TypeString)
+			} else if _, ok := a.(*hir.ConstZero); ok && aggregateType(a.Type()) {
+				e.callArgTotal += typeSize(a.Type())
 			}
 		}
 		args := make([]string, len(x.Args))
@@ -845,6 +847,8 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		for _, a := range x.Args {
 			if _, ok := a.(*hir.ConstString); ok {
 				e.callArgTotal += typeSize(sema.TypeString)
+			} else if _, ok := a.(*hir.ConstZero); ok && aggregateType(a.Type()) {
+				e.callArgTotal += typeSize(a.Type())
 			}
 		}
 		plainArgs := make([]string, 0, len(x.Args)+1)
@@ -1154,7 +1158,11 @@ func (e *Emitter) emitChanSend(x *hir.InstrChanSend) {
 	capVal := fmt.Sprintf("(i32.load (i32.add %s (i32.const 8)))", base)
 	elemSize := chanElemSize(x.Val.Type())
 	addr := fmt.Sprintf("(i32.add (i32.add %s (i32.const 12)) (i32.mul %s (i32.const %d)))", base, tail, elemSize)
-	e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(x.Val.Type(), false), addr, e.val(x.Val)))
+	if aggregateType(x.Val.Type()) {
+		e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const %d))\n", addr, e.val(x.Val), elemSize))
+	} else {
+		e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(x.Val.Type(), false), addr, e.val(x.Val)))
+	}
 	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.rem_u (i32.add %s (i32.const 1)) %s))\n", base, tail, capVal))
 }
 
@@ -1164,7 +1172,14 @@ func (e *Emitter) emitChanRecv(x *hir.InstrChanRecv) {
 	capVal := fmt.Sprintf("(i32.load (i32.add %s (i32.const 8)))", base)
 	elemSize := chanElemSize(x.Dst.Type())
 	addr := fmt.Sprintf("(i32.add (i32.add %s (i32.const 12)) (i32.mul %s (i32.const %d)))", base, head, elemSize)
-	e.set(x.Dst, fmt.Sprintf("(%s %s)", memoryOp(x.Dst.Type(), true), addr))
+	if aggregateType(x.Dst.Type()) {
+		e.advanceSP(elemSize)
+		value := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", elemSize)
+		e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const %d))\n", value, addr, elemSize))
+		e.set(x.Dst, value)
+	} else {
+		e.set(x.Dst, fmt.Sprintf("(%s %s)", memoryOp(x.Dst.Type(), true), addr))
+	}
 	e.b.WriteString(fmt.Sprintf("    (i32.store %s (i32.rem_u (i32.add %s (i32.const 1)) %s))\n", base, head, capVal))
 	if x.OkDst != nil {
 		e.set(x.OkDst, "(i32.const 1)")
@@ -1186,8 +1201,10 @@ func (e *Emitter) callArg(v hir.Value) string {
 	}
 	if _, ok := v.(*hir.ConstZero); ok && aggregateType(v.Type()) {
 		size := typeSize(v.Type())
+		e.callArgUsed += size
 		e.advanceSP(size)
-		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", size)
+		remaining := e.callArgTotal - e.callArgUsed + size
+		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", remaining)
 		e.b.WriteString(fmt.Sprintf("    (memory.fill %s (i32.const 0) (i32.const %d))\n", base, size))
 		return base
 	}

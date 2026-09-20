@@ -1810,6 +1810,10 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 		return
 	}
 
+	for i := len(s.root.deferStack) - 1; i >= 0; i-- {
+		s.root.Call.LowerCall(s.root.deferStack[i])
+	}
+
 	vals := make([]hir.Value, len(rs.Values))
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)
@@ -1819,16 +1823,15 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 		vals[i] = val
 	}
 
-	for i := len(s.root.deferStack) - 1; i >= 0; i-- {
-		s.root.Call.LowerCall(s.root.deferStack[i])
-	}
-
 	s.root.terminate(&hir.InstrReturn{Vals: vals})
 }
 
 func (s *StmtLowerer) lowerTupleReturn(rs *ast.ReturnStmt) bool {
 	if len(rs.Values) != 1 || s.root.curFunc == nil || len(s.root.curFunc.ReturnTypes) <= 1 {
 		return false
+	}
+	for i := len(s.root.deferStack) - 1; i >= 0; i-- {
+		s.root.Call.LowerCall(s.root.deferStack[i])
 	}
 	rhsVal := s.root.Expr.LowerExpr(rs.Values[0])
 	tup, ok := rhsVal.Type().(*sema.TupleType)
@@ -1845,9 +1848,6 @@ func (s *StmtLowerer) lowerTupleReturn(rs *ast.ReturnStmt) bool {
 		elemReg := s.root.nextReg(tup.Types[i])
 		s.root.emit(&hir.InstrExtractValue{Dst: elemReg, Agg: rhsVal, Index: i})
 		vals[i] = s.root.emitValueCoerce(elemReg, s.root.curFunc.ReturnTypes[i])
-	}
-	for i := len(s.root.deferStack) - 1; i >= 0; i-- {
-		s.root.Call.LowerCall(s.root.deferStack[i])
 	}
 	s.root.terminate(&hir.InstrReturn{Vals: vals})
 	return true

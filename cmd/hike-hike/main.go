@@ -13,12 +13,12 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hike-hike [-o output.wat] <source.hike>")
+	fmt.Fprintln(os.Stderr, "Usage: hike-hike [-o output.wat] <source.hike> [source.hike ...]")
 }
 
 func main() {
 	output := ""
-	source := ""
+	var sources []string
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -38,23 +38,18 @@ func main() {
 				usage()
 				os.Exit(2)
 			}
-			if source != "" {
-				fmt.Fprintln(os.Stderr, "hike-hike: exactly one source path is required")
-				usage()
-				os.Exit(2)
-			}
-			source = os.Args[i]
+			sources = append(sources, os.Args[i])
 		}
 	}
 
-	if source == "" {
+	if len(sources) == 0 {
 		usage()
 		os.Exit(2)
 	}
 
 	tgt := target.TargetWabt
 	comp := compiler.New(&tgt)
-	wat, _, _, err := comp.CompileToWAT(source)
+	wat, _, _, err := comp.CompileToWAT(sources...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hike-hike: compilation failed: %v\n", err)
 		os.Exit(1)

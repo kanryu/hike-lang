@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 )
 
@@ -137,7 +138,14 @@ func buildAndRunHikeWabtProject(t *testing.T, source string, files map[string]st
 		}
 	}
 
-	compile := exec.Command(hikeHikeBin, "-o", wat, src)
+	sources := []string{src}
+	for name := range files {
+		sources = append(sources, filepath.Join(tmp, name))
+	}
+	sort.Strings(sources[1:])
+	args := []string{"-o", wat}
+	args = append(args, sources...)
+	compile := exec.Command(hikeHikeBin, args...)
 	compile.Dir = projectRoot
 	if output, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("hike-hike WAT generation failed: %v\n%s", err, output)

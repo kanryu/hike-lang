@@ -14,8 +14,7 @@ var testOutputBuffer string = ""
 
 
 
-func testOutputBuffer += sprintf.Sprintf(format string, ...) int
-func Sleep(ms int)
+func Sleep(ms int) {}
 
 type StateMachine struct {
     State int
