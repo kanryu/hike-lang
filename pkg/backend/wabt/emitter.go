@@ -19,10 +19,23 @@ type Emitter struct {
 	indirectTypes  map[string]string
 	nextType       int
 	nextDataOffset int
+	// callArgTotal/callArgUsed track string literal temporaries while emitting
+	// one call.  The WAT expressions for call arguments are evaluated after all
+	// argument setup instructions have run, so `(sp - size)` alone would make
+	// every temporary refer to the last allocation.
+	callArgTotal int
+	callArgUsed  int
+	taskEnvs     map[*hir.Reg]bool
+	taskCalls    map[*hir.Reg]taskCallSignature
+}
+
+type taskCallSignature struct {
+	params  []sema.Type
+	results []sema.Type
 }
 
 func New(p *hir.Program, _ *sema.Context) *Emitter {
-	return &Emitter{p: p, stringOffsets: make(map[string]int), itabOffsets: make(map[string]int), functionIndex: make(map[string]int), indirectTypes: make(map[string]string)}
+	return &Emitter{p: p, stringOffsets: make(map[string]int), itabOffsets: make(map[string]int), functionIndex: make(map[string]int), indirectTypes: make(map[string]string), taskEnvs: make(map[*hir.Reg]bool), taskCalls: make(map[*hir.Reg]taskCallSignature)}
 }
 
 func watType(t sema.Type) string {
@@ -289,6 +302,17 @@ func (e *Emitter) prepareTypes() {
 		for _, bb := range fn.Blocks {
 			for _, in := range bb.Instructions {
 				switch x := in.(type) {
+				case *hir.InstrAsync:
+					e.taskEnvs[x.Dst] = hasEnvironment(x.EnvPtr)
+					params := []sema.Type{}
+					if e.taskEnvs[x.Dst] {
+						params = append(params, &sema.PointerType{Base: sema.TypeByte})
+					}
+					results := x.RetTypes
+					if len(results) > 1 {
+						results = []sema.Type{sema.TypeUint32}
+					}
+					e.taskCalls[x.Dst] = taskCallSignature{params: params, results: results}
 				case *hir.InstrCallIndirect:
 					params := make([]sema.Type, len(x.Args))
 					for i, a := range x.Args {
@@ -306,6 +330,24 @@ func (e *Emitter) prepareTypes() {
 						params = append(params, a.Type())
 					}
 					e.registerType(params, ifaceCallResults(x))
+				case *hir.InstrTaskWait:
+					var results []sema.Type
+					if taskReg, ok := x.Task.(*hir.Reg); ok {
+						if sig, exists := e.taskCalls[taskReg]; exists {
+							results = sig.results
+						}
+					}
+					if results == nil {
+						future, _ := x.Task.Type().(*sema.FutureType)
+						if future != nil {
+							results = future.ReturnTypes
+						}
+						if len(results) > 1 {
+							results = []sema.Type{sema.TypeUint32}
+						}
+					}
+					e.registerType(nil, results)
+					e.registerType([]sema.Type{&sema.PointerType{Base: sema.TypeByte}}, results)
 				}
 			}
 		}
@@ -665,6 +707,12 @@ func aggregateField(t sema.Type, index int) (sema.Type, int, bool) {
 		if index < 0 || index >= 2 {
 			return nil, 0, false
 		}
+		if a.IsAny() {
+			if index == 0 {
+				return sema.TypeInt32, 0, true
+			}
+			return &sema.PointerType{Base: sema.TypeByte}, 4, true
+		}
 		if index == 0 {
 			return &sema.PointerType{Base: sema.TypeByte}, 0, true
 		}
@@ -719,6 +767,21 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			e.set(x.Dst, "(i32.eqz "+e.val(x.Val)+")")
 		}
 	case *hir.InstrCallStatic:
+		aggregateResult := x.Dst != nil && aggregateType(x.Dst.Typ)
+		if aggregateResult {
+			// Reserve the destination before entering the callee. A returned
+			// aggregate points into the callee's frame, so reserving this slot
+			// first prevents the caller's copy from overlapping that frame.
+			e.set(x.Dst, "(global.get $__sp)")
+			e.advanceSP(typeSize(x.Dst.Typ))
+		}
+		e.callArgTotal = 0
+		e.callArgUsed = 0
+		for _, a := range x.Args {
+			if _, ok := a.(*hir.ConstString); ok {
+				e.callArgTotal += typeSize(sema.TypeString)
+			}
+		}
 		args := make([]string, len(x.Args))
 		for i, a := range x.Args {
 			args[i] = e.callArg(a)
@@ -728,13 +791,17 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			call += " " + strings.Join(args, " ")
 		}
 		call += ")"
-		if x.Dst != nil {
+		if aggregateResult {
+			e.b.WriteString(fmt.Sprintf("    (memory.copy (local.get $%s) %s (i32.const %d))\n", reg(x.Dst), call, typeSize(x.Dst.Typ)))
+		} else if x.Dst != nil {
 			e.set(x.Dst, call)
 		} else if e.callReturnsValue(x.CalleeName) {
 			e.b.WriteString("    (drop " + call + ")\n")
 		} else {
 			e.b.WriteString("    " + call + "\n")
 		}
+		e.callArgTotal = 0
+		e.callArgUsed = 0
 	case *hir.InstrCallIndirect:
 		params := make([]sema.Type, len(x.Args))
 		for i, a := range x.Args {
@@ -773,6 +840,69 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		}
 		args = append(args, itab)
 		e.set(x.Dst, fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(params, ifaceCallResults(x)), strings.Join(args, " ")))
+	case *hir.InstrAsync:
+		// WABT has no thread-pool runtime. Keep the task representation
+		// explicit and let InstrTaskWait execute it synchronously. This still
+		// preserves closure environments and the future/result ABI.
+		task := "(call $malloc (i32.const 8))"
+		e.set(x.Dst, task)
+		e.taskEnvs[x.Dst] = hasEnvironment(x.EnvPtr)
+		params := []sema.Type{}
+		if e.taskEnvs[x.Dst] {
+			params = append(params, &sema.PointerType{Base: sema.TypeByte})
+		}
+		results := x.RetTypes
+		if len(results) > 1 {
+			results = []sema.Type{sema.TypeUint32}
+		}
+		e.taskCalls[x.Dst] = taskCallSignature{params: params, results: results}
+		taskBase := e.val(x.Dst)
+		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", taskBase, e.valAs(x.FnPtr, sema.TypeUint32)))
+		env := "(i32.const 0)"
+		if x.EnvPtr != nil {
+			env = e.valAs(x.EnvPtr, sema.TypeUint32)
+		}
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", taskBase, env))
+	case *hir.InstrTaskWait:
+		future, _ := x.Task.Type().(*sema.FutureType)
+		var retTypes []sema.Type
+		if future != nil {
+			retTypes = future.ReturnTypes
+		}
+		fnPtr := "(i32.load " + e.val(x.Task) + ")"
+		envPtr := "(i32.load (i32.add " + e.val(x.Task) + " (i32.const 4)))"
+		callResultTypes := retTypes
+		if taskReg, ok := x.Task.(*hir.Reg); ok {
+			if sig, exists := e.taskCalls[taskReg]; exists {
+				callResultTypes = sig.results
+			}
+		}
+		plainCall := fmt.Sprintf("(call_indirect (type %s) %s)",
+			e.registerType(nil, callResultTypes), fnPtr)
+		closureParams := []sema.Type{&sema.PointerType{Base: sema.TypeByte}}
+		closureCall := fmt.Sprintf("(call_indirect (type %s) %s %s)",
+			e.registerType(closureParams, callResultTypes), envPtr, fnPtr)
+		call := ""
+		if len(callResultTypes) == 0 {
+			plainCall = fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(nil, nil), fnPtr)
+			closureCall = fmt.Sprintf("(call_indirect (type %s) %s %s)", e.registerType(closureParams, nil), envPtr, fnPtr)
+			call = fmt.Sprintf("(if (i32.eqz %s) (then %s) (else %s))", envPtr, plainCall, closureCall)
+		} else {
+			call = fmt.Sprintf("(if (result %s) (i32.eqz %s) (then %s) (else %s))",
+				watType(callResultTypes[0]), envPtr, plainCall, closureCall)
+		}
+		if len(retTypes) > 1 {
+			e.set(x.Dst, call)
+		} else {
+			size := 1
+			if len(retTypes) == 1 {
+				size = typeSize(retTypes[0])
+			}
+			e.set(x.Dst, fmt.Sprintf("(call $malloc (i32.const %d))", size))
+			if len(retTypes) == 1 {
+				e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(retTypes[0], false), e.val(x.Dst), call))
+			}
+		}
 	case *hir.InstrLoad:
 		if global, ok := x.Ptr.(*hir.GlobalVar); ok {
 			e.set(x.Dst, e.val(global))
@@ -827,7 +957,11 @@ func (e *Emitter) instruction(in hir.Instruction) {
 	case *hir.InstrCast:
 		e.set(x.Dst, castExpr(x.Val.Type(), x.ToType, e.val(x.Val)))
 	case *hir.InstrUnboxInterface:
-		data := "(i32.load " + e.val(x.IfaceVal) + ")"
+		dataPtr := e.val(x.IfaceVal)
+		if iface, ok := x.IfaceVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+			dataPtr = "(i32.add " + dataPtr + " (i32.const 4))"
+		}
+		data := "(i32.load " + dataPtr + ")"
 		if _, ok := x.TargetType.(*sema.PointerType); ok {
 			e.set(x.Dst, data)
 		} else {
@@ -868,12 +1002,15 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			e.b.WriteString("    (" + memoryOp(x.Val.Type(), false) + " " + data + " " + e.val(x.Val) + ")\n")
 		}
 		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", 8+dataSize)
-		e.b.WriteString("    (i32.store " + base + " " + data + ")\n")
 		typeValue := e.itabOffsets[boxItabName(x)]
 		if x.Iface != nil && x.Iface.IsAny() {
 			typeValue = int(x.TypeID)
+			e.b.WriteString(fmt.Sprintf("    (i32.store %s (i32.const %d))\n", base, typeValue))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", base, data))
+		} else {
+			e.b.WriteString("    (i32.store " + base + " " + data + ")\n")
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const %d))\n", base, typeValue))
 		}
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const %d))\n", base, typeValue))
 	case *hir.InstrAlloca:
 		e.set(x.Dst, "(global.get $__sp)")
 		e.advanceSP(typeSize(x.AllocType))
@@ -981,12 +1118,15 @@ func (e *Emitter) emitChanRecv(x *hir.InstrChanRecv) {
 func (e *Emitter) callArg(v hir.Value) string {
 	if s, ok := v.(*hir.ConstString); ok {
 		size := typeSize(sema.TypeString)
+		e.callArgUsed += size
 		e.advanceSP(size)
-		base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", size)
-		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", base, e.val(s)))
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", base))
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", base, len(s.Raw)))
-		return base
+		storeBase := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", size)
+		remaining := e.callArgTotal - e.callArgUsed + size
+		argBase := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", remaining)
+		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", storeBase, e.val(s)))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", storeBase))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", storeBase, len(s.Raw)))
+		return argBase
 	}
 	return e.val(v)
 }

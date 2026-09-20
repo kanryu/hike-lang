@@ -172,7 +172,7 @@ func (e *Emitter) emitGlobals() {
 
 func (e *Emitter) emitItabs() {
 	emittedTypes := make(map[string]bool)
-	intLLVM := sema.TypeInt.LLVMType()
+	intLLVM := sema.TypeInt32.LLVMType()
 
 	for _, itab := range e.prog.Itabs {
 		if !emittedTypes[itab.ItabStructName] {
@@ -198,7 +198,7 @@ func (e *Emitter) emitItabs() {
 			emittedTypes[itab.ItabStructName] = true
 		}
 
-		fieldValues := []string{fmt.Sprintf("%s %d", intLLVM, itab.TypeID)}
+		fieldValues := []string{fmt.Sprintf("%s %d", sema.TypeInt32.LLVMType(), itab.TypeID)}
 		sName := strings.TrimPrefix(itab.ConcreteType.TypeName(), "*")
 
 		for _, m := range itab.Methods {
@@ -1173,11 +1173,11 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 
 	if i.Iface.IsAny() {
 		typeID := e.semaCtx.GetTypeID(i.Val.Type())
-		intLLVM := sema.TypeInt.LLVMType()
-		anyLLVM := fmt.Sprintf("{ i8*, %s }", intLLVM)
+		intLLVM := sema.TypeInt32.LLVMType()
+		anyLLVM := fmt.Sprintf("{ %s, i8* }", intLLVM)
 		t1 := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, anyLLVM, dataPtr))
-		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, %s %d, 1\n", i.Dst, anyLLVM, t1, intLLVM, typeID))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %d, 0\n", t1, anyLLVM, intLLVM, typeID))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i8* %s, 1\n", i.Dst, anyLLVM, t1, dataPtr))
 		return
 	}
 

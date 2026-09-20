@@ -37,6 +37,9 @@ func (e *ExprLowerer) resolveTypeFromExpr(expr ast.Expression) sema.Type {
 	if expr == nil {
 		return nil
 	}
+	if cast, ok := expr.(*ast.ImplicitCastExpr); ok {
+		return e.resolveTypeFromExpr(cast.Expr)
+	}
 	if te, ok := expr.(ast.TypeExpr); ok {
 		return e.root.semaCtx.ResolveType(te)
 	}
@@ -223,22 +226,23 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 			if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
 				if iface.IsAny() {
+					typeIDReg := e.root.nextReg(sema.TypeInt32)
 					dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
-					typeIDReg := e.root.nextReg(sema.TypeInt)
 					if !srcIface.IsAny() {
 						itabPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+						e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
 						e.root.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
-						typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-						e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt}})
+						typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+						e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt32}})
 						e.root.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
 					} else {
-						e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
+						e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 0})
+						e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 1})
 					}
 					t1 := e.root.nextReg(iface)
-					e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(iface), Val: dataPtr, Index: 0})
+					e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(iface), Val: typeIDReg, Index: 0})
 					dst := e.root.nextReg(iface)
-					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
+					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: dataPtr, Index: 1})
 					return dst
 				}
 				if semaTypeName(srcIface) == semaTypeName(iface) {
@@ -469,8 +473,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		baseVal := e.LowerExpr(node.Left)
 		baseType := baseVal.Type()
 
-		if baseType == sema.TypeString || baseType == sema.TypeCString {
-			if baseType == sema.TypeString {
+		if baseType == sema.TypeString || semaTypeName(baseType) == "string" || baseType == sema.TypeCString || semaTypeName(baseType) == "cstring" {
+			if baseType == sema.TypeString || semaTypeName(baseType) == "string" {
 				basePtr, baseOffset, baseLen32 := e.root.stringViewParts(baseVal)
 				baseLen := hir.Value(baseLen32)
 				if sema.LLVMTypeOf(sema.TypeInt) != sema.LLVMTypeOf(sema.TypeInt32) {
@@ -505,10 +509,13 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			} else {
 				e.root.emit(&hir.InstrCallStatic{Dst: highVal.(*hir.Reg), CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 			}
-			raw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: e.root.BuiltinName("hike_substr"), Args: []hir.Value{baseVal, lowVal, highVal}})
 			length := e.root.nextReg(sema.TypeInt)
 			e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: highVal, R: lowVal})
+			if baseType == sema.TypeCString || semaTypeName(baseType) == "cstring" {
+				return e.root.makeStringView(baseVal, lowVal, length)
+			}
+			raw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: e.root.BuiltinName("hike_substr"), Args: []hir.Value{baseVal, lowVal, highVal}})
 			return e.root.makeString(raw, length)
 		}
 
@@ -688,6 +695,14 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		newCap := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrBinary{Dst: newCap, Op: hir.OpSub, L: capVal, R: lowVal})
 
+		if baseType == sema.TypeCString || semaTypeName(baseType) == "cstring" {
+			// A string view stores the original payload pointer and a byte
+			// offset.  Do not pass elemPtr here: that already points at the
+			// sliced element and would make the offset relative to the wrong
+			// base (and, for cstrings, lose the NUL-terminated buffer).
+			return e.root.makeStringView(baseVal, lowVal, newLen)
+		}
+
 		elemBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrCast{Dst: elemBytePtr, Val: elemPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
@@ -706,6 +721,9 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 			logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: ast=%T (%+v)\n", node, node)
 			if len(node.Args) == 1 {
 				arg := node.Args[0]
+				if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
+					arg = cast.Expr
+				}
 				logger.LogVerbose2("[Verbose2] Lower CallExpr sizeof: arg=%T (%+v)\n", arg, arg)
 				t := e.resolveTypeFromExpr(arg)
 				if t == nil || t == sema.TypeVoid {
@@ -1574,7 +1592,11 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	if node.Operator == "==" || node.Operator == "!=" {
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: 0})
+			dataIndex := 0
+			if iface, ok := leftVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+				dataIndex = 1
+			}
+			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: dataIndex})
 			op := hir.OpEq
 			if node.Operator == "!=" {
 				op = hir.OpNeq
@@ -1585,7 +1607,11 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 		if _, isIface := rightVal.Type().(*sema.InterfaceType); isIface && isNilValue(leftVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: rightVal, Index: 0})
+			dataIndex := 0
+			if iface, ok := rightVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+				dataIndex = 1
+			}
+			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: rightVal, Index: dataIndex})
 			op := hir.OpEq
 			if node.Operator == "!=" {
 				op = hir.OpNeq
@@ -1599,18 +1625,26 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 			if rightIface, isRightIface := rightVal.Type().(*sema.InterfaceType); isRightIface {
 				data1 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 				data2 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				e.root.emit(&hir.InstrExtractValue{Dst: data1, Agg: leftVal, Index: 0})
-				e.root.emit(&hir.InstrExtractValue{Dst: data2, Agg: rightVal, Index: 0})
+				leftDataIndex := 0
+				rightDataIndex := 0
+				if leftIface.IsAny() {
+					leftDataIndex = 1
+				}
+				if rightIface.IsAny() {
+					rightDataIndex = 1
+				}
+				e.root.emit(&hir.InstrExtractValue{Dst: data1, Agg: leftVal, Index: leftDataIndex})
+				e.root.emit(&hir.InstrExtractValue{Dst: data2, Agg: rightVal, Index: rightDataIndex})
 
 				dataEq := e.root.nextReg(sema.TypeBool)
 				e.root.emit(&hir.InstrBinary{Dst: dataEq, Op: hir.OpEq, L: data1, R: data2})
 
 				var metaEq *hir.Reg
 				if leftIface.IsAny() && rightIface.IsAny() {
-					meta1 := e.root.nextReg(sema.TypeInt)
-					meta2 := e.root.nextReg(sema.TypeInt)
-					e.root.emit(&hir.InstrExtractValue{Dst: meta1, Agg: leftVal, Index: 1})
-					e.root.emit(&hir.InstrExtractValue{Dst: meta2, Agg: rightVal, Index: 1})
+					meta1 := e.root.nextReg(sema.TypeInt32)
+					meta2 := e.root.nextReg(sema.TypeInt32)
+					e.root.emit(&hir.InstrExtractValue{Dst: meta1, Agg: leftVal, Index: 0})
+					e.root.emit(&hir.InstrExtractValue{Dst: meta2, Agg: rightVal, Index: 0})
 					metaEq = e.root.nextReg(sema.TypeBool)
 					e.root.emit(&hir.InstrBinary{Dst: metaEq, Op: hir.OpEq, L: meta1, R: meta2})
 				} else {
@@ -1884,22 +1918,22 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	targetTypeID := e.root.semaCtx.GetTypeID(targetType)
 
 	dataPtrReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	typeIDReg := e.root.nextReg(sema.TypeInt)
+	typeIDReg := e.root.nextReg(sema.TypeInt32)
 
 	if it, ok := ifaceType.(*sema.InterfaceType); ok && !it.IsAny() {
 		itabRawReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 0})
 		e.root.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: ifaceVal, Index: 1})
-		typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-		e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt}})
+		typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+		e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt32}})
 		e.root.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
 	} else {
-		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 0})
-		e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: ifaceVal, Index: 1})
+		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 1})
+		e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: ifaceVal, Index: 0})
 	}
 
 	matchReg := e.root.nextReg(sema.TypeBool)
-	e.root.emit(&hir.InstrBinary{Dst: matchReg, Op: hir.OpEq, L: typeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt}})
+	e.root.emit(&hir.InstrBinary{Dst: matchReg, Op: hir.OpEq, L: typeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt32}})
 	if trapOnFailure {
 		okBB := e.root.newBlock("typeassert.ok")
 		failBB := e.root.newBlock("typeassert.fail")

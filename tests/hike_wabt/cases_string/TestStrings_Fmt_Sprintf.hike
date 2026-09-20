@@ -19,7 +19,7 @@ func testOutput() string {
     testOutputBuffer = ""
     id := 42
     name := "Hike"
-    formatted := fmt.StestOutputBuffer += sprintf.Sprintf("ID:%d,NAME:%s", id, name)
+    formatted := sprintf.Sprintf("ID:%d,NAME:%s", id, name)
     testOutputBuffer += sprintf.Sprintf("RES=%s\n", formatted)
     return testOutputBuffer
 }

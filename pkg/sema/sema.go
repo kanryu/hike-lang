@@ -118,7 +118,10 @@ func typeLLVMOf(typ Type) string {
 		return t.LLVMType()
 	case *InterfaceType:
 		if t.IsAny() {
-			return fmt.Sprintf("{ i8*, %s }", typeLLVMOf(TypeInt))
+			// any values use a target-independent 32-bit runtime type ID.
+			// The layout is {typeID, dataPtr}; this is also the layout used
+			// when variadic any arguments are packed for Sprintf.
+			return "{ i32, i8* }"
 		}
 		return "{ i8*, i8* }"
 	case *FuncType:
@@ -1415,7 +1418,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
 			fnType.IsVariadic = d.IsVariadic
-					setFuncVariadicElem(fnType, variadicElem)
+			setFuncVariadicElem(fnType, variadicElem)
 
 			if isMethod && origRecvName != "" {
 				if st, _ := ctx.LookupStruct(origRecvName); st != nil {
@@ -1468,7 +1471,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 			fnType.ParamTypes = paramTypes
 			fnType.ReturnTypes = returnTypes
 			fnType.IsVariadic = d.IsVariadic
-					setFuncVariadicElem(fnType, variadicElem)
+			setFuncVariadicElem(fnType, variadicElem)
 
 		case *ast.JFuncDecl:
 			fnType := ctx.Functions[d.Name.Value]

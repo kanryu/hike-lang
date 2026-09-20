@@ -126,6 +126,34 @@ func main() int {
 `, ExpectedError: "cannot use bool as string"})
 }
 
+func TestGrammar_MultiReturnAssignmentCountMismatch(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+
+func pair() (int, int) { return 1, 2 }
+
+func main() int {
+    only := pair()
+    return only
+}
+`, ExpectedError: "assignment mismatch: 1 variables but 2 values"})
+}
+
+func TestGrammar_MultiReturnAssignmentTypeMismatch(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+
+func pair() (int, string) { return 1, "text" }
+
+func main() int {
+    var n string
+    var s int
+    n, s = pair()
+    return s
+}
+`, ExpectedError: "cannot use string as int"})
+}
+
 func TestGrammar_MapVariableWithoutImport(t *testing.T) {
 	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
 package main

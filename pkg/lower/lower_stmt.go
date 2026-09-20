@@ -1659,19 +1659,19 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 	}()
 
 	dataPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	actualTypeIDReg := s.root.nextReg(sema.TypeInt)
+	actualTypeIDReg := s.root.nextReg(sema.TypeInt32)
 
 	if it, ok := exprType.(*sema.InterfaceType); ok && !it.IsAny() {
 		itabRawReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e := s.root
 		e.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
 		e.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: exprVal, Index: 1})
-		typeIDPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-		e.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt}})
+		typeIDPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+		e.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt32}})
 		e.emit(&hir.InstrLoad{Dst: actualTypeIDReg, Ptr: typeIDPtr})
 	} else {
-		s.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
-		s.root.emit(&hir.InstrExtractValue{Dst: actualTypeIDReg, Agg: exprVal, Index: 1})
+		s.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 1})
+		s.root.emit(&hir.InstrExtractValue{Dst: actualTypeIDReg, Agg: exprVal, Index: 0})
 	}
 
 	var oldSym hir.Value
@@ -1696,7 +1696,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		var matchedCond hir.Value = nil
 		if c.IsNil {
 			cmpReg := s.root.nextReg(sema.TypeBool)
-			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}})
+			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}})
 			matchedCond = cmpReg
 		}
 		for _, tExpr := range c.Types {
@@ -1704,7 +1704,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 			targetTypeID := s.root.semaCtx.GetTypeID(targetType)
 
 			cmpReg := s.root.nextReg(sema.TypeBool)
-			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt}})
+			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt32}})
 
 			if matchedCond == nil {
 				matchedCond = cmpReg

@@ -202,10 +202,12 @@ func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
 	c.root.emit(&hir.InstrGetElemPtr{Dst: endPtr, BasePtr: bufReg, Index: lenReg})
 	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeByte}, Ptr: endPtr})
 
-	// cstring and *byte have the same wasm ABI representation.  The buffer
-	// already has the required pointer type; emitting an aggregate string cast
-	// here creates an invalid cast from {i8*, i32, i32} in variadic calls.
-	return bufReg
+	// Keep the semantic cstring type even though its wasm ABI is the same as
+	// *byte.  Losing that type makes a later slice take the byte-slice path
+	// instead of the cstring/string-view path.
+	result := c.root.nextReg(sema.TypeCString)
+	c.root.emit(&hir.InstrCast{Dst: result, Val: bufReg, ToType: sema.TypeCString})
+	return result
 }
 
 func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
@@ -408,7 +410,6 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		c.root.moduleName() + "_" + rawTypeName + "_" + methodName,
 		c.root.moduleName() + "_" + shortTypeName + "_" + methodName,
 	}
-
 	for aliasName, aliasType := range c.root.semaCtx.Aliases {
 		if semaTypeName(aliasType) == rawTypeName || semaTypeName(aliasType) == shortTypeName {
 			candidates = append(candidates,
@@ -625,15 +626,32 @@ func (c *CallLowerer) lowerCVariadicArgs(callArgs []ast.Expression, paramTypes [
 }
 
 func (c *CallLowerer) promoteCVarArg(val hir.Value) hir.Value {
+	// C varargs are passed in machine-word slots. This is deliberately
+	// separate from ordinary Hike variadic calls: the latter pass a typed
+	// slice, while a C function receives only ABI-promoted scalar values.
+	wordType := sema.TypeInt
+	if sema.LLVMTypeOf(sema.TypeInt) == sema.LLVMTypeOf(sema.TypeInt32) {
+		wordType = sema.TypeInt32
+	}
 	var target sema.Type
 	switch {
 	case val.Type() == sema.TypeBool || sema.LLVMTypeOf(val.Type()) == "i1":
-		target = sema.TypeInt
-	case val.Type() == sema.TypeByte || sema.LLVMTypeOf(val.Type()) == "i8":
-		target = sema.TypeInt
+		target = wordType
+	case val.Type() == sema.TypeByte || val.Type() == sema.TypeInt8 || val.Type() == sema.TypeInt16 || sema.LLVMTypeOf(val.Type()) == "i8" || sema.LLVMTypeOf(val.Type()) == "i16":
+		target = wordType
+	case val.Type() == sema.TypeUint8 || val.Type() == sema.TypeUint16 || val.Type() == sema.TypeUint32:
+		// C's integer promotions use the signed int width when the value
+		// fits in int.  Hike's fixed-width integer values are represented
+		// in the same machine-word slot for this C ABI path.
+		target = wordType
+	case val.Type() == sema.TypeInt32 && wordType == sema.TypeInt:
+		target = wordType
 	case val.Type() == sema.TypeFloat32 || sema.LLVMTypeOf(val.Type()) == "float":
 		target = sema.TypeFloat64
 	default:
+		return val
+	}
+	if sema.LLVMTypeOf(val.Type()) == sema.LLVMTypeOf(target) {
 		return val
 	}
 	extReg := c.root.nextReg(target)

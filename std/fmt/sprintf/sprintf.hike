@@ -319,8 +319,22 @@ func Sprintf(format string, args ...any) string {
 				v = n
 			case int32:
 				v = int64(n)
+			case uint:
+				v = int64(n)
+			case uint64:
+				v = int64(n)
+			case uint32:
+				v = int64(n)
+			case uint16:
+				v = int64(n)
+			case uint8:
+				v = int64(n)
 			case byte:
 				v = int64(n)
+			case bool:
+				if n {
+					v = 1
+				}
 			}
 			formatted = formatIntBase(v, 10, false, flags)
 
@@ -332,6 +346,16 @@ func Sprintf(format string, args ...any) string {
 			case int64:
 				v = n
 			case int32:
+				v = int64(n)
+			case uint:
+				v = int64(n)
+			case uint64:
+				v = int64(n)
+			case uint32:
+				v = int64(n)
+			case uint16:
+				v = int64(n)
+			case uint8:
 				v = int64(n)
 			case byte:
 				v = int64(n)

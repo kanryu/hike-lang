@@ -116,6 +116,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 			for i, right := range s.Right {
 				rightTypes[i] = c.InferExprTypeWithDiag(right, locals, reporter, filename)
 			}
+			c.checkTupleAssignment(s, rightTypes, locals, reporter, filename)
 			for _, left := range s.Left {
 				if ident, ok := left.(*ast.Identifier); ok {
 					var valueType Type = TypeInt
@@ -134,6 +135,12 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 			}
 			return
 		}
+
+		rightTypes := make([]Type, len(s.Right))
+		for i, right := range s.Right {
+			rightTypes[i] = c.InferExprTypeWithDiag(right, locals, reporter, filename)
+		}
+		c.checkTupleAssignment(s, rightTypes, locals, reporter, filename)
 
 	case *ast.ExprStmt:
 		return
@@ -187,6 +194,47 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 	case *ast.DeferStmt:
 		return
 	}
+}
+
+// checkTupleAssignment verifies the exact value sequence produced by a
+// multi-return call before lowering turns it into tuple field accesses.  This
+// is intentionally shared by named functions, function values, and closures:
+// once expression inference has resolved the function type, their assignment
+// ABI must be identical.
+func (c *Context) checkTupleAssignment(stmt *ast.AssignStmt, rightTypes []Type, locals map[string]Type, reporter *diag.Reporter, filename string) {
+	if len(stmt.Right) != 1 || len(rightTypes) != 1 {
+		return
+	}
+	tuple, ok := rightTypes[0].(*TupleType)
+	if !ok {
+		return
+	}
+	if len(stmt.Left) != len(tuple.Types) {
+		reporter.Errorf(filename, stmt.Token.Line, stmt.Token.Col,
+			"assignment mismatch: %d variables but %d values", len(stmt.Left), len(tuple.Types))
+		return
+	}
+	for i, left := range stmt.Left {
+		if ident, ok := left.(*ast.Identifier); ok && ident.Value == "_" {
+			continue
+		}
+		expected := diagnosticAssignmentTargetType(left, stmt, locals, c)
+		if expected == nil || IsBad(expected) || IsBad(tuple.Types[i]) || c.typesCompatible(expected, tuple.Types[i]) {
+			continue
+		}
+		reporter.Errorf(filename, stmt.Token.Line, stmt.Token.Col,
+			"cannot use %s as %s", typeNameOf(tuple.Types[i]), typeNameOf(expected))
+	}
+}
+
+func diagnosticAssignmentTargetType(left ast.Expression, stmt *ast.AssignStmt, locals map[string]Type, c *Context) Type {
+	if stmt.Type != nil {
+		return c.resolveDiagnosticType(stmt.Type)
+	}
+	if ident, ok := left.(*ast.Identifier); ok {
+		return locals[ident.Value]
+	}
+	return c.InferExprType(left, locals)
 }
 
 func cloneTypes(src map[string]Type) map[string]Type {

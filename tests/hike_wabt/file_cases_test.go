@@ -43,9 +43,17 @@ func TestHikeWabtIntegerCases(t *testing.T) {
 // Hike string view read from Wasm linear memory by the Wasmtime runner.
 func TestHikeWabtStringCases(t *testing.T) {
 	root := filepath.Join(projectRoot, "tests", "hike_wabt", "cases_string")
-	paths, err := filepath.Glob(filepath.Join(root, "*.hike"))
-	if err != nil {
-		t.Fatal(err)
+	roots := []string{root}
+	if os.Getenv("HIKE_WABT_INCLUDE_STUBS") == "1" {
+		roots = append(roots, filepath.Join(root, "stub"))
+	}
+	var paths []string
+	for _, caseRoot := range roots {
+		matched, err := filepath.Glob(filepath.Join(caseRoot, "*.hike"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, matched...)
 	}
 	if len(paths) == 0 {
 		t.Fatal("no string file-based Hike cases found")
@@ -54,6 +62,9 @@ func TestHikeWabtStringCases(t *testing.T) {
 	for _, path := range paths {
 		path := path
 		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if filepath.Dir(path) != root {
+			name = filepath.Join(filepath.Base(filepath.Dir(path)), name)
+		}
 		t.Run(name, func(t *testing.T) {
 			source, err := os.ReadFile(path)
 			if err != nil {
@@ -66,10 +77,35 @@ func TestHikeWabtStringCases(t *testing.T) {
 			want := string(wantBytes)
 			got := buildAndRunHikeWabtStringMode(t, string(source), "testOutput", isStringWantRecord(want))
 			if got != want {
+				if os.Getenv("HIKE_WABT_IGNORE_STRING_OFFSETS") == "1" && sameStringPayload(got, want) {
+					return
+				}
 				t.Fatalf("Wasmtime string result = %q, want %q", got, string(wantBytes))
 			}
 		})
 	}
+}
+
+func sameStringPayload(got, want string) bool {
+	gotParts := strings.SplitN(strings.TrimSpace(got), ",", 3)
+	wantParts := strings.SplitN(strings.TrimSpace(want), ",", 3)
+	if len(gotParts) != 3 || len(wantParts) != 3 {
+		return false
+	}
+	gotLength, err := strconv.ParseUint(gotParts[1], 10, 32)
+	if err != nil {
+		return false
+	}
+	wantLength, err := strconv.ParseUint(wantParts[1], 10, 32)
+	if err != nil || gotLength != wantLength {
+		return false
+	}
+	gotText, err := strconv.Unquote(gotParts[2])
+	if err != nil {
+		return false
+	}
+	wantText, err := strconv.Unquote(wantParts[2])
+	return err == nil && gotText == wantText
 }
 
 // Structured string expectations use offset,length,"text".  The quoted

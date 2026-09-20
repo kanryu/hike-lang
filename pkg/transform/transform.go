@@ -615,6 +615,10 @@ func (t *Transformer) transformExpr(e ast.Expression) ast.Expression {
 		return nil
 	}
 	switch expr := e.(type) {
+	case *ast.ImplicitCastExpr:
+		expr.Expr = t.transformExpr(expr.Expr)
+		return expr
+
 	case *ast.BinaryExpr:
 		expr.Left = t.transformExpr(expr.Left)
 		expr.Right = t.transformExpr(expr.Right)
@@ -843,7 +847,6 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 				}
 			}
 		}
-
 		if funcName == "" {
 			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 				if _, isLocalVar := t.localTypes[identifierValue(pkgId)]; !isLocalVar {

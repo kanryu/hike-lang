@@ -548,23 +548,26 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		// 1. 既にインターフェース型である値の変換
 		if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
 			if iface.IsAny() {
+				typeIDReg := l.nextReg(sema.TypeInt32)
 				dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
-				typeIDReg := l.nextReg(sema.TypeInt)
 				if !srcIface.IsAny() {
+					// A non-any interface still carries an itab pointer. Convert
+					// it to any's 32-bit type ID while rebuilding the new layout.
 					itabPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
 					l.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
-					typeIDPtr := l.nextReg(&sema.PointerType{Base: sema.TypeInt})
-					l.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt}})
+					typeIDPtr := l.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+					l.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt32}})
 					l.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
 				} else {
-					l.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 1})
+					l.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 0})
+					l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 1})
 				}
 
 				t1 := l.nextReg(iface)
-				l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(iface), Val: dataPtr, Index: 0})
+				l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(iface), Val: typeIDReg, Index: 0})
 				dst := l.nextReg(iface)
-				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: typeIDReg, Index: 1})
+				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: dataPtr, Index: 1})
 				return dst
 			}
 			if semaTypeName(srcIface) == semaTypeName(iface) {
