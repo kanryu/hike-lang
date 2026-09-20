@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    f := 12.85
+    i := int(f)
+    f2 := float64(i) + 0.5
+    testOutputBuffer += sprintf.Sprintf("INT=%d,FLOAT=%.1f\n", i, f2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

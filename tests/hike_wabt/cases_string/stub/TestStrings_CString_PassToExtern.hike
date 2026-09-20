@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func puts(s cstring) int
+func testOutput() string {
+    testOutputBuffer = ""
+    msg := "Printed via puts"
+    cs := cstring(msg)
+    puts(cs)
+
+    // cstring を printf に渡す検証
+    fmtStr := "CS_PRINT=%s\n"
+    testOutputBuffer += sprintf.Sprintf(fmtStr, cs)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

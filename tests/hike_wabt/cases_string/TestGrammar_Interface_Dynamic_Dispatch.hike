@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Greeter interface {
+    Greet() string
+}
+
+type Robot struct {
+    Model string
+}
+
+func (r *Robot) Greet() string {
+    return r.Model
+}
+
+func testOutput() string {
+    var g Greeter = &Robot{Model: "RX-78"}
+    testOutputBuffer += sprintf.Sprintf("GREET=%s\n", g.Greet())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

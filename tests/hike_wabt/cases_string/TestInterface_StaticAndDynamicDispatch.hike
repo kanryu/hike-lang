@@ -1,0 +1,59 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Calculator interface {
+    Compute(a int, b int) int
+}
+
+type Adder struct {
+    bias int
+}
+
+func (add *Adder) Compute(a int, b int) int {
+    return add.bias + a + b
+}
+
+type Multiplier struct {
+    factor int
+}
+
+func (mul *Multiplier) Compute(a int, b int) int {
+    return (a * b) * mul.factor
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    add := Adder{bias: 5}
+    mul := Multiplier{factor: 2}
+
+    // 静的直接ディスパッチ (コンパイル時直接ジャンプ)
+    staticAdd := add.Compute(10, 20)
+    staticMul := mul.Compute(3, 4)
+
+    // 動的インターフェースディスパッチ (Fat Pointer + itab 経由)
+    var calc Calculator = &add
+    dynAdd := calc.Compute(10, 20)
+
+    calc = &mul
+    dynMul := calc.Compute(3, 4)
+
+    testOutputBuffer += sprintf.Sprintf("STATIC=%d,%d;DYNAMIC=%d,%d\n", staticAdd, staticMul, dynAdd, dynMul)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

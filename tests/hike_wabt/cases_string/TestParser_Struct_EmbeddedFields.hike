@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Header struct {
+    tag int
+}
+
+type Footer struct {
+    checksum int
+}
+
+type Packet struct {
+    Header        // 値型埋め込み
+    *Footer       // ポインタ型埋め込み
+    payload int
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    ft := &Footer{checksum: 999}
+    pkt := &Packet{payload: 42}
+    pkt.tag = 101
+    pkt.Footer = ft
+
+    testOutputBuffer += sprintf.Sprintf("TAG=%d,PAYLOAD=%d,CHECK=%d\n", pkt.tag, pkt.payload, pkt.checksum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

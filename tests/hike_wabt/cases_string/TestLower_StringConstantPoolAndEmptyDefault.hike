@@ -1,0 +1,40 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func getDefaultStr() string {
+    var s string
+    return s
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s1 := "shared_constant_pool"
+    s2 := "shared_constant_pool"
+    isSame := 0
+    if s1 == s2 {
+        isSame = 1
+    }
+
+    empty := getDefaultStr()
+    emptyLen := len(empty)
+
+    testOutputBuffer += sprintf.Sprintf("SAME=%d,EMPTY_LEN=%d\n", isSame, emptyLen)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

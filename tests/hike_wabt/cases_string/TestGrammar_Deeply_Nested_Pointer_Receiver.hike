@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Leaf struct {
+    Val int
+}
+
+func (l *Leaf) Add(d int) {
+    l.Val = l.Val + d
+}
+
+type Node struct {
+    Weight int
+    Item   Leaf
+}
+
+func (n *Node) Process() int {
+    n.Item.Add(10)
+    return n.Item.Val * n.Weight
+}
+
+func testOutput() string {
+    leaf := Leaf{Val: 5}
+    node := Node{Weight: 4, Item: leaf}
+    res := node.Process()
+    testOutputBuffer += sprintf.Sprintf("RES=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

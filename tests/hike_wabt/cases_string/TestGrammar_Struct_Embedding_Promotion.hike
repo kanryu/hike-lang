@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Base struct {
+    Id int
+}
+
+type Item struct {
+    *Base
+    Price int
+}
+
+func testOutput() string {
+    b := &Base{Id: 777}
+    item := Item{Base: b, Price: 500}
+    testOutputBuffer += sprintf.Sprintf("ID=%d,PRICE=%d\n", item.Id, item.Price)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

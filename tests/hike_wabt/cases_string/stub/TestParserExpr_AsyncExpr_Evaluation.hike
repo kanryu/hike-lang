@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func taskWork(base int, mult int) int {
+    return base * mult
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // async 式による非同期クロージャ実行
+    fut := async(func() int {
+        return taskWork(7, 6)
+    })
+
+    // フューチャからの同期待ち合わせと結果受領 (<-fut)
+    res := <-fut
+
+    testOutputBuffer += sprintf.Sprintf("ASYNC_EVAL=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

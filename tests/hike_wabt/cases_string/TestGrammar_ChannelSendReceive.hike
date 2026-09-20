@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    ch := make(chan int, 2)
+    ch <- 100
+    ch <- 200
+
+    r1 := <-ch
+    r2 := <-ch
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

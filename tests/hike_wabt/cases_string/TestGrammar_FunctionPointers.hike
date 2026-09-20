@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Add(a int, b int) int {
+    return a + b
+}
+
+func Sub(a int, b int) int {
+    return a - b
+}
+
+func ExecOp(op func(int, int) int, x int, y int) int {
+    return op(x, y)
+}
+
+func testOutput() string {
+    var fn func(int, int) int = Add
+    r1 := fn(30, 20)
+    r2 := ExecOp(Sub, 30, 20)
+    testOutputBuffer += sprintf.Sprintf("ADD=%d,SUB=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

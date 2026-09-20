@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    a := 5  // 0101
+    b := 3  // 0011
+    andVal := a & b
+    orVal := a | b
+    xorVal := a ^ b
+    shlVal := a << 2
+    shrVal := a >> 1
+    testOutputBuffer += sprintf.Sprintf("AND=%d,OR=%d,XOR=%d,SHL=%d,SHR=%d\n", andVal, orVal, xorVal, shlVal, shrVal)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

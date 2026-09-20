@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 初期値なし配列（LLVM zeroinitializer の検証）
+    var arr [4]int
+    z0 := arr[0]
+    z3 := arr[3]
+
+    // インデックスへの代入と加算
+    arr[1] = 42
+    arr[2] = 58
+    sum := arr[0] + arr[1] + arr[2] + arr[3]
+
+    testOutputBuffer += sprintf.Sprintf("Z0=%d,Z3=%d,SUM=%d\n", z0, z3, sum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,40 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func BuildChain(a int) func(int) func(int) int {
+    return func(b int) func(int) int {
+        return func(c int) int {
+            a = a + 1
+            return a + b + c
+        }
+    }
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    level1 := BuildChain(10)
+    level2 := level1(20)
+
+    r1 := level2(30) // a=11 -> 11 + 20 + 30 = 61
+    r2 := level2(5)  // a=12 -> 12 + 20 + 5  = 37
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,51 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+var trail string = ""
+
+func appendTrail(s string) {
+    trail = trail + s
+}
+
+func testLifo(earlyRet bool) int {
+    defer appendTrail("D1-")
+    defer appendTrail("D2-")
+    defer appendTrail("D3-")
+
+    appendTrail("BODY-")
+    if earlyRet {
+        return 42
+    }
+    appendTrail("END-")
+    return 0
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    r1 := testLifo(false)
+    t1 := trail
+    trail = ""
+
+    r2 := testLifo(true)
+    t2 := trail
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,T1=%s\nR2=%d,T2=%s\n", r1, t1, r2, t2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

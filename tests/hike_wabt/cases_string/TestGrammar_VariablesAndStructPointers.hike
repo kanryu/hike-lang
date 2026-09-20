@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Point struct {
+    x int
+    y int
+}
+
+func testOutput() string {
+    var a int = 100
+    p := &a
+    *p = 250
+
+    var pt Point
+    pt.x = 10
+    pt.y = 20
+
+    ppt := &pt
+    ppt.x = 30
+
+    testOutputBuffer += sprintf.Sprintf("A=%d,PT=(%d,%d)\n", a, pt.x, pt.y)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

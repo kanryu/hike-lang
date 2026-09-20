@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    str := "HikeLang"
+
+    // 1. 開始インデックス省略 [:high]
+    p1 := str[:4] // "Hike"
+
+    // 2. 終了インデックス省略 [low:]
+    p2 := str[4:] // "Lang"
+
+    // 3. 両方省略 [:]
+    p3 := str[:]  // "HikeLang"
+
+    testOutputBuffer += sprintf.Sprintf("P1=%s,P2=%s,P3=%s\n", p1, p2, p3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

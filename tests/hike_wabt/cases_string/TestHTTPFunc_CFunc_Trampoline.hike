@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+// 手書きブロックを持つ具象 cfunc (__hike_impl_CCompute と CCompute トランポリンを生成)
+cfunc CCompute(x int, y int) int {
+    diff := x - y
+    if diff < 0 {
+        return -diff
+    }
+    return diff
+}
+
+func testOutput() string {
+    r1 := CCompute(10, 25)
+    r2 := CCompute(50, 20)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Base struct {
+    score int
+}
+
+func (b *Base) AddScore(s int) int {
+    b.score = b.score + s
+    return b.score
+}
+
+type Player struct {
+    Base
+    name string
+}
+
+func testOutput() string {
+    p := &Player{name: "Hero"}
+    p.score = 50
+    r := p.AddScore(25)
+
+    testOutputBuffer += sprintf.Sprintf("NAME=%s,SCORE=%d,RES=%d\n", p.name, p.score, r)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,50 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Greeter interface {
+    Greet() string
+}
+
+type Person struct {
+    name string
+}
+
+func (p *Person) Greet() string {
+    return "Hi," + p.name
+}
+
+func checkAny(a any) int {
+    switch v := a.(type) {
+    case *Person:
+        return len(v.name)
+    default:
+        return -1
+    }
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    p := &Person{name: "Alice"}
+    var g Greeter = p
+    var a any = g // 非空インターフェース -> any への再ボクシングパス
+    r := checkAny(a)
+    testOutputBuffer += sprintf.Sprintf("LEN=%d\n", r)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

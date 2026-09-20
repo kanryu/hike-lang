@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func compute(n int) int {
+    return n * 3
+}
+
+func testOutput() string {
+    r1 := 0
+    if v := compute(10); v > 20 {
+        r1 = v
+    } else {
+        r1 = -1
+    }
+
+    r2 := 0
+    if v := compute(3); v > 20 {
+        r2 = v
+    } else {
+        r2 = v + 100
+    }
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

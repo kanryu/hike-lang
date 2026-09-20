@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutputBuffer += sprintf.Sprintf(format string, ...) int
+func Sleep(ms int)
+
+func testOutput() string {
+    t1 := Async(func() int {
+        Sleep(20)
+        return 100
+    })
+    t2 := Async(func() int {
+        Sleep(30)
+        return 200
+    })
+
+    // イベントループ: 10msごとにポーリングして結果を回収
+    Sleep(10)
+    r1 := <-t1
+    Sleep(10)
+    r2 := <-t2
+
+    total := r1 + r2
+    testOutputBuffer += sprintf.Sprintf("EVENT_LOOP_DONE=%d\n", total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

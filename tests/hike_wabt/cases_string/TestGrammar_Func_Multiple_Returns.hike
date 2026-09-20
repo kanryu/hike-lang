@@ -1,0 +1,28 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func swap(a int, b int) (int, int) {
+    return b, a
+}
+
+func testOutput() string {
+    x, y := swap(100, 200)
+    testOutputBuffer += sprintf.Sprintf("X=%d,Y=%d\n", x, y)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

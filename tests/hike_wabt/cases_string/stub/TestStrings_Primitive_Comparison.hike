@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    a := "apple"
+    b := "apple"
+    c := "banana"
+
+    eq1 := (a == b)
+    eq2 := (a == c)
+    neq := (a != c)
+
+    testOutputBuffer += sprintf.Sprintf("EQ1=%d,EQ2=%d,NEQ=%d\n", eq1, eq2, neq)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func identify(v any) int {
+    res := 0
+    // 変数束縛を行わない型スイッチ
+    switch v.(type) {
+    case int:
+        res = 10
+    case string:
+        res = 20
+    default:
+        res = -1
+    }
+    return res
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    r1 := identify(100)
+    r2 := identify("Hike")
+    r3 := identify(true)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d\n", r1, r2, r3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

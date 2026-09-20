@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+var os_Args []string
+
+func testOutput() string {
+    testOutputBuffer = ""
+    argc := len(os_Args)
+    hasArgs := 0
+    if argc >= 1 {
+        hasArgs = 1
+    }
+    // 実行ファイル名 (argv[0]) が空でないことを確認
+    progLen := 0
+    if hasArgs == 1 {
+        progLen = len(os_Args[0])
+    }
+    hasProg := 0
+    if progLen > 0 {
+        hasProg = 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("ARGC_GE_1=%d,HAS_PROG=%d\n", hasArgs, hasProg)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/slices"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    nums := []int{1, 2, 4, 5, 8, 9}
+    foundIdx := slices.IndexFunc[int](nums, func(x int) bool {
+        return x > 5
+    })
+
+    testOutputBuffer += sprintf.Sprintf("IDX=%d\n", foundIdx)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

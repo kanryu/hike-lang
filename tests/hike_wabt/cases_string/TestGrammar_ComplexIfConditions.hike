@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Check(a int, b int, flag bool) int {
+    if (a > 10 && b < 5) || (!flag && a == 0) {
+        return 1
+    } else if a == 10 && (b >= 5 || flag) {
+        return 2
+    } else {
+        return 3
+    }
+}
+
+func testOutput() string {
+    c1 := Check(15, 3, false)  // branch 1
+    c2 := Check(0, 10, false)  // branch 1
+    c3 := Check(10, 5, false)  // branch 2
+    c4 := Check(2, 2, true)    // branch 3
+    testOutputBuffer += sprintf.Sprintf("C1=%d,C2=%d,C3=%d,C4=%d\n", c1, c2, c3, c4)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

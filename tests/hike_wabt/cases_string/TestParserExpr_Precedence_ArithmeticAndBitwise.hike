@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // & (PRODUCT) は | (SUM) より優先順位が高い
+    r1 := 1 | 2 & 2     // 1 | (2 & 2) = 1 | 2 = 3
+    r2 := (1 | 2) & 2   // (1 | 2) & 2 = 3 & 2 = 2
+
+    // >> (PRODUCT) は + (SUM) より優先順位が高い
+    r3 := 20 >> 1 + 1   // (20 >> 1) + 1 = 10 + 1 = 11
+    r4 := 20 >> (1 + 1) // 20 >> 2 = 5
+
+    // * (PRODUCT) は + (SUM) より優先順位が高い
+    r5 := 2 + 3 * 4     // 2 + 12 = 14
+    r6 := (2 + 3) * 4   // 5 * 4 = 20
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d,R4=%d,R5=%d,R6=%d\n", r1, r2, r3, r4, r5, r6)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

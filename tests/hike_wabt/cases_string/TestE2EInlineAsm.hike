@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    __asm__{
+        params:
+        "nop", "", "", ""
+    }
+    buf := []byte{0}
+    ptr := &buf[0]
+    __asm__{
+        params: ptr
+        "", "", "r", "~{memory}"
+    }
+    testOutputBuffer += sprintf.Sprintf("ASM=1\n")
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

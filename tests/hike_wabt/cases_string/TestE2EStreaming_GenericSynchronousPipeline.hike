@@ -1,0 +1,45 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Sequence[T] struct {
+}
+
+func (s *Sequence[T]) InitIterator(buf *byte) int {
+    return 0
+}
+
+func (s *Sequence[T]) Next(buf *byte) (T, bool) {
+    var value T
+    return value, true
+}
+
+func testOutput() string {
+    sequence := &Sequence[int]{}
+    total := 0
+    count := 0
+    for value := range sequence {
+        total = total + 5
+        count = count + 1
+        if count == 3 {
+            break
+        }
+    }
+    testOutputBuffer += sprintf.Sprintf("GENERIC_SYNC_COUNT=%d,GENERIC_SYNC_TOTAL=%d\n", count, total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

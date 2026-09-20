@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    filename := "main.hike"
+    p := strings.HasPrefix(filename, "main.")
+    s := strings.HasSuffix(filename, ".hike")
+    wrong := strings.HasSuffix(filename, ".go")
+    testOutputBuffer += sprintf.Sprintf("P=%d,S=%d,W=%d\n", p, s, wrong)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

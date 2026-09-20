@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 2進数、8進数、16進数（#プレフィックス付き）
+    r1 := sprintf.Sprintf("BIN=%#b,OCT=%#o,HEX=%#x,HEX_U=%#X", 5, 64, 255, 255)
+
+    // 符号フラグ(+)、ゼロ埋め(0)、幅指定
+    r2 := sprintf.Sprintf("POS=%+d,ZERO=%05d", 42, 7)
+
+    testOutputBuffer += sprintf.Sprintf("%s | %s\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

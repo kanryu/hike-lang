@@ -1,0 +1,23 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer += sprintf.Sprintf("SELECTED=%d,CONSTRAINED=%d\n", selectedPlatform(), constrainedPlatform())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

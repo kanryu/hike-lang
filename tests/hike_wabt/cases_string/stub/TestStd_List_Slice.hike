@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/collections/list"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    l := list.New[int]()
+    l.PushBack(10)
+    l.PushBack(20)
+    l.PushBack(30)
+    l.PushBack(40)
+    l.PushBack(50)
+
+    // Sliceable によるスライシング脱糖 (sub := l.Slice(1, 4))
+    sub := l[1:4]
+
+    testOutputBuffer += sprintf.Sprintf("SUB_LEN=%d: ", sub.Len())
+    for i := 0; i < sub.Len(); i = i + 1 {
+        testOutputBuffer += sprintf.Sprintf("%d ", sub[i])
+    }
+
+    // サブリストへの代入が元リストに影響しないことの検証
+    sub[0] = 999
+    testOutputBuffer += sprintf.Sprintf("ORIG[1]=%d SUB[0]=%d\n", l[1], sub[0])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

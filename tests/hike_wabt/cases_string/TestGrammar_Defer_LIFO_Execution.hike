@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func printNum(n int) {
+    testOutputBuffer += sprintf.Sprintf("%d ", n)
+}
+
+func testDefer() {
+    defer printNum(1)
+    defer printNum(2)
+    defer printNum(3)
+    testOutputBuffer += sprintf.Sprintf("START ")
+}
+
+func testOutput() string {
+    testDefer()
+    testOutputBuffer += sprintf.Sprintf("END\n")
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

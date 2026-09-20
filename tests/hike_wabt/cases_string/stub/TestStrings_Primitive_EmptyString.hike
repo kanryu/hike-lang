@@ -1,0 +1,40 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    empty := ""
+    l := len(empty)
+
+    // 空文字列との連結
+    concat1 := empty + "hike"
+    concat2 := "hike" + empty
+
+    // 空文字列への cstring 変換と復元
+    cs := cstring(empty)
+    back := string(cs)
+
+    // 同一比較
+    eq := (empty == "")
+    eqBack := (back == "")
+
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,C1=%s,C2=%s,EQ=%d,EQB=%d\n", l, concat1, concat2, eq, eqBack)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

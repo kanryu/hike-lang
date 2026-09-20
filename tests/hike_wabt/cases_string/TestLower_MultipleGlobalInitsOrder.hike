@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+var gA int = 10
+var gB int = gA * 2
+var gC int = gB + 5
+
+func testOutput() string {
+    testOutputBuffer = ""
+    testOutputBuffer += sprintf.Sprintf("GA=%d,GB=%d,GC=%d\n", gA, gB, gC)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

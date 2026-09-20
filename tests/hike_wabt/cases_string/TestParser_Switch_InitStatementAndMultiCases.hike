@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func evalScore(score int) int {
+    res := 0
+    // 初期化文付き switch & 複数値マッチ case
+    switch adjusted := score + 5; adjusted {
+    case 15, 25:
+        res = 1
+    case 35, 45, 55:
+        res = 2
+    default:
+        res = -1
+    }
+    return res
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    r1 := evalScore(10) // adjusted = 15 -> 1
+    r2 := evalScore(40) // adjusted = 45 -> 2
+    r3 := evalScore(90) // adjusted = 95 -> -1
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d\n", r1, r2, r3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

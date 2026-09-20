@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Engine struct {
+    Power int
+}
+
+func (e Engine) Output() int {
+    return e.Power * 10
+}
+
+type Car struct {
+    Eng Engine
+}
+
+func (c Car) TotalPower() int {
+    return c.Eng.Output() + 50
+}
+
+func testOutput() string {
+    eng := Engine{Power: 15}
+    car := Car{Eng: eng}
+    testOutputBuffer += sprintf.Sprintf("POWER=%d\n", car.TotalPower())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

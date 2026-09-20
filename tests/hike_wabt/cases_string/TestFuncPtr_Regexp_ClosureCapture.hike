@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    re := regexp.MustCompile("[a-z]")
+    src := "a-b-c"
+    count := 0
+    res := re.ReplaceAllStringFunc(src, func(s string) string {
+        count = count + 1
+        if count == 1 {
+            return "FIRST"
+        }
+        if count == 2 {
+            return "SECOND"
+        }
+        return "THIRD"
+    })
+    testOutputBuffer += sprintf.Sprintf("RES=%s,COUNT=%d\n", res, count)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

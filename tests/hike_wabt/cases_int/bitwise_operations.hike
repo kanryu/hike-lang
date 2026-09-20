@@ -1,0 +1,7 @@
+package main
+
+func main() int {
+    a := 5
+    b := 3
+    return (a & b) + (a | b) + (a ^ b) + (a << 2) + (a >> 1)
+}

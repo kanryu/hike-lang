@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    val := 2
+    switch val {
+    case 1:
+        testOutputBuffer += sprintf.Sprintf("ONE\n")
+    case 2, 3:
+        testOutputBuffer += sprintf.Sprintf("TWO_OR_THREE\n")
+    default:
+        testOutputBuffer += sprintf.Sprintf("OTHER\n")
+    }
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

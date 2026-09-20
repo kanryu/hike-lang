@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s := "fast and safe systems language"
+    hasSafe := strings.Contains(s, "safe")
+    hasSlow := strings.Contains(s, "slow")
+    testOutputBuffer += sprintf.Sprintf("SAFE=%d,SLOW=%d\n", hasSafe, hasSlow)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

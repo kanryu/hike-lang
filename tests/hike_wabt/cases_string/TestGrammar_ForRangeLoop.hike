@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    var nums [5]int
+    nums[0] = 10
+    nums[1] = 20
+    nums[2] = 30
+    nums[3] = 40
+    nums[4] = 50
+
+    sumIdx := 0
+    sumVal := 0
+    for idx, val := range nums {
+        sumIdx = sumIdx + idx
+        sumVal = sumVal + val
+    }
+    testOutputBuffer += sprintf.Sprintf("INDEX_SUM=%d,VAL_SUM=%d\n", sumIdx, sumVal)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

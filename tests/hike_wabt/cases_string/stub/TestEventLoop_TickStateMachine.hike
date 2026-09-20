@@ -1,0 +1,50 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutputBuffer += sprintf.Sprintf(format string, ...) int
+func Sleep(ms int)
+
+type StateMachine struct {
+    State int
+    Ticks int
+}
+
+func (sm *StateMachine) Step() {
+    sm.Ticks = sm.Ticks + 1
+    if sm.State == 0 {
+        sm.State = 1
+    } else if sm.State == 1 {
+        sm.State = 2
+    } else if sm.State == 2 {
+        sm.State = 3
+    }
+}
+
+func testOutput() string {
+    sm := StateMachine{State: 0, Ticks: 0}
+
+    // イベントループ: 1回のTickあたり15msスリープ、State=3で正常終了
+    for sm.State < 3 {
+        Sleep(15)
+        sm.Step()
+    }
+
+    testOutputBuffer += sprintf.Sprintf("STATE_FINAL=%d,TICKS=%d\n", sm.State, sm.Ticks)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

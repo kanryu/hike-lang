@@ -1,0 +1,58 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Download[T] struct {
+    Blocks chan T
+}
+
+func (d *Download[T]) InitIterator(buf *byte) int {
+    return 0
+}
+
+func (d *Download[T]) NextChannel(buf *byte) (chan T, bool) {
+    return d.Blocks, true
+}
+
+func download() *Download[int] {
+    result := &Download[int]{Blocks: make(chan int, 3)}
+    Async(func() int {
+        result.Blocks <- 11
+        result.Blocks <- 22
+        result.Blocks <- 33
+        return 0
+    })
+    return result
+}
+
+func testOutput() string {
+    total := 0
+    blocks := 0
+    stream := download()
+
+    for block := range <-stream {
+        total = total + block
+        blocks = blocks + 1
+        if blocks == 3 {
+            break
+        }
+    }
+
+    testOutputBuffer += sprintf.Sprintf("GENERIC_BLOCKS=%d,GENERIC_TOTAL=%d\n", blocks, total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

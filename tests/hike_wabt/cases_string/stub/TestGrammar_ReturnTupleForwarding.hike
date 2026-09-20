@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Origin() (int, string) {
+    return 42, "ReturnedTuple"
+}
+
+func Forward() (int, string) {
+    return Origin()
+}
+
+func testOutput() string {
+    num, text := Forward()
+    testOutputBuffer += sprintf.Sprintf("NUM=%d,TEXT=%s\n", num, text)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

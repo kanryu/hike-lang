@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+import "std/collections/matrix"
+
+func malloc(size int) *byte
+func free(ptr *byte)
+func testOutput() string {
+    var data *int = malloc(8 * 8 * 8)
+    p := data + 0
+    *p = 1
+    p = data + 28
+    *p = 29
+    p = data + 63
+    *p = 64
+
+    m := matrix.New[int, 8, 8](data)
+    first := m[0][0]
+    middle := m[3][4]
+    last := m[7][7]
+    m[3][4] = 99
+    testOutputBuffer += sprintf.Sprintf("STD_MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, m[3][4])
+
+    free((*byte)(data))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

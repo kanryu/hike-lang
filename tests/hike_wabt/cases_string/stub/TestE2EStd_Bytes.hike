@@ -1,0 +1,71 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/bytes"
+
+func testOutput() string {
+    source := []byte{32, 32, 97, 108, 112, 104, 97, 44, 98, 101, 116, 97, 44, 98, 101, 116, 97, 32, 32}
+    beta := []byte{98, 101, 116, 97}
+    comma := []byte{44}
+
+    testOutputBuffer += sprintf.Sprintf("EQUAL=%d,%d COMPARE=%d,%d,%d ",
+        bytes.Equal(beta, []byte{98, 101, 116, 97}),
+        bytes.Equal(beta, []byte{66, 69, 84, 65}),
+        bytes.Compare([]byte{97}, []byte{98}),
+        bytes.Compare([]byte{98}, []byte{98}),
+        bytes.Compare([]byte{99}, []byte{98}))
+    testOutputBuffer += sprintf.Sprintf("INDEX=%d,LAST=%d,COUNT=%d,ANY=%d,LASTANY=%d ",
+        bytes.Index(source, beta),
+        bytes.LastIndex(source, beta),
+        bytes.Count(source, beta),
+        bytes.IndexAny(source, "be"),
+        bytes.LastIndexAny(source, "ae"))
+
+    before, after, found := bytes.Cut(source, comma)
+    testOutputBuffer += sprintf.Sprintf("CUT=%s|%s|%d ", string(before), string(after), found)
+
+    replaced := bytes.ReplaceAll(source, beta, []byte{105, 116, 101, 109})
+    limited := bytes.Replace(source, beta, []byte{88}, 1)
+    repeated := bytes.Repeat([]byte{97, 98}, 3)
+    upper := bytes.ToUpper([]byte{65, 98, 99, 45, 120, 121})
+    lower := bytes.ToLower([]byte{65, 98, 99, 45, 88, 89})
+    clone := bytes.Clone(beta)
+    clone[0] = byte(66)
+    testOutputBuffer += sprintf.Sprintf("REPLACE=%s/%s REPEAT=%s CASE=%s/%s CLONE=%s ",
+        string(replaced), string(limited), string(repeated),
+        string(upper), string(lower), string(clone))
+
+    csv := []byte{97, 44, 98, 44, 99}
+    parts := bytes.Split(csv, comma)
+    afterParts := bytes.SplitAfter(csv, comma)
+    limitedParts := bytes.SplitN(csv, comma, 2)
+    joined := bytes.Join(parts, []byte{43})
+    testOutputBuffer += sprintf.Sprintf("SPLIT=%d:%s:%s:%s AFTER=%d:%s:%s:%s SPLITN=%d:%s:%s JOIN=%s ",
+        len(parts), string(parts[0]), string(parts[1]), string(parts[2]),
+        len(afterParts), string(afterParts[0]), string(afterParts[1]), string(afterParts[2]),
+        len(limitedParts), string(limitedParts[0]), string(limitedParts[1]), string(joined))
+
+    trimmed := bytes.TrimSpace(source)
+    custom := bytes.Trim([]byte{45, 45, 45, 104, 101, 108, 108, 111, 45, 45, 45}, "-")
+    fields := bytes.Fields([]byte{32, 111, 110, 101, 9, 32, 116, 119, 111, 10, 116, 104, 114, 101, 101, 32})
+    testOutputBuffer += sprintf.Sprintf("TRIM=%s/%s FIELDS=%d:%s:%s:%s\n",
+        string(trimmed), string(custom), len(fields),
+        string(fields[0]), string(fields[1]), string(fields[2]))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

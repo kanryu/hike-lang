@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/maps"
+
+func testOutput() string {
+    m := make(map[string]int)
+    m["alpha"] = 1
+    m["beta"] = 2
+    m["gamma"] = 3
+    lenBefore := len(m)
+
+    delete(m, "beta")
+    lenAfter := len(m)
+
+    vAlpha := m["alpha"]
+    vBeta := m["beta"]
+    vGamma := m["gamma"]
+
+    testOutputBuffer += sprintf.Sprintf("BEFORE=%d,AFTER=%d,A=%d,B=%d,G=%d\n", lenBefore, lenAfter, vAlpha, vBeta, vGamma)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

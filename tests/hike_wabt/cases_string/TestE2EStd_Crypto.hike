@@ -1,0 +1,63 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/crypto"
+import "std/crypto/subtle"
+import "std/crypto/sha256"
+import "std/crypto/md5"
+
+func testOutput() string {
+    left := []byte{65, 66, 67, 68}
+    same := []byte{65, 66, 67, 68}
+    other := []byte{65, 66, 67, 69}
+    selected := subtle.ConstantTimeSelect(1, 42, 7)
+    fallback := subtle.ConstantTimeSelect(0, 42, 7)
+    copied := []byte{1, 2, 3, 4}
+    subtle.ConstantTimeCopy(1, copied, []byte{9, 8, 7, 6})
+    unchanged := []byte{1, 2, 3, 4}
+    subtle.ConstantTimeCopy(0, unchanged, []byte{9, 8, 7, 6})
+    digest := sha256.Sum256([]byte{97, 98, 99})
+    md5Digest := md5.Sum([]byte{97, 98, 99})
+
+    testOutputBuffer += sprintf.Sprintf("HASH=%d,%d,%d,%d,%d,%d,%d,%d ",
+        crypto.Size(crypto.MD5), crypto.Size(crypto.SHA1), crypto.Size(crypto.SHA224),
+        crypto.Size(crypto.SHA256), crypto.Size(crypto.SHA384), crypto.Size(crypto.SHA512),
+        crypto.Size(crypto.MD5SHA1), crypto.Size(crypto.BLAKE2b_512))
+    testOutputBuffer += sprintf.Sprintf("COMPARE=%d,%d,%d BYTE=%d,%d EQ=%d,%d LE=%d,%d ",
+        subtle.ConstantTimeCompare(left, same),
+        subtle.ConstantTimeCompare(left, other),
+        subtle.ConstantTimeCompare(left, []byte{65}),
+        subtle.ConstantTimeByteEq(byte(7), byte(7)),
+        subtle.ConstantTimeByteEq(byte(7), byte(8)),
+        subtle.ConstantTimeEq(int32(123), int32(123)),
+        subtle.ConstantTimeEq(int32(123), int32(124)),
+        subtle.ConstantTimeLessOrEq(3, 3),
+        subtle.ConstantTimeLessOrEq(4, 3))
+    testOutputBuffer += sprintf.Sprintf("SELECT=%d,%d COPY=%d,%d,%d,%d UNCHANGED=%d,%d,%d,%d\n",
+        selected, fallback,
+        copied[0], copied[1], copied[2], copied[3],
+        unchanged[0], unchanged[1], unchanged[2], unchanged[3])
+    testOutputBuffer += sprintf.Sprintf("SHA256=%d,%d,%d,%d,%d,%d,%d,%d\n",
+        digest[0], digest[1], digest[2], digest[3],
+        digest[4], digest[5], digest[6], digest[7])
+    testOutputBuffer += sprintf.Sprintf("MD5=%d,%d,%d,%d,%d,%d,%d,%d\n",
+        md5Digest[0], md5Digest[1], md5Digest[2], md5Digest[3],
+        md5Digest[4], md5Digest[5], md5Digest[6], md5Digest[7])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

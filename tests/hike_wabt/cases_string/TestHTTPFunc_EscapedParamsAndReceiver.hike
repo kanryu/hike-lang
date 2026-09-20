@@ -1,0 +1,54 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+// 引数がクロージャにキャプチャされてヒープ昇格するケース
+func makeAdder(base int) func(int) int {
+    return func(n int) int {
+        base = base + n
+        return base
+    }
+}
+
+type Counter struct {
+    total int
+}
+
+// レシーバ自身がクロージャにキャプチャされてヒープ昇格するケース
+func (c *Counter) MakeStepClosure(step int) func() int {
+    return func() int {
+        c.total = c.total + step
+        return c.total
+    }
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    add := makeAdder(10)
+    a1 := add(5)
+    a2 := add(5)
+
+    cnt := &Counter{total: 100}
+    stepFn := cnt.MakeStepClosure(20)
+    s1 := stepFn()
+    s2 := stepFn()
+
+    testOutputBuffer += sprintf.Sprintf("A1=%d,A2=%d,S1=%d,S2=%d,TOTAL=%d\n", a1, a2, s1, s2, cnt.total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

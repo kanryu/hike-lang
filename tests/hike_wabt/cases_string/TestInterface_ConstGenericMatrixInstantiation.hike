@@ -1,0 +1,80 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func malloc(size int) *byte
+func free(ptr *byte)
+type Row struct {
+    data *int
+}
+
+func (r *Row) Get(column int) int {
+    return r.data[column]
+}
+
+func (r *Row) Set(column int, value int) {
+    p := r.data + column
+    *p = value
+}
+
+type Matrix[T, Rows uint, Cols uint] struct {
+    rows *Row
+}
+
+func (m *Matrix[T, Rows, Cols]) Get(row int) *Row {
+    return m.rows + row
+}
+
+func (m *Matrix[T, Rows, Cols]) Set(row int, value *Row) {
+    p := m.rows + row
+    *p = *value
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var data *int = malloc(8 * 8 * 8)
+    p := data + 0
+    *p = 1
+    p = data + 28
+    *p = 29
+    p = data + 63
+    *p = 64
+
+    var rows *Row = malloc(8 * 8)
+    row := rows + 0
+    row.data = data
+    row = rows + 3
+    row.data = data + 24
+    row = rows + 7
+    row.data = data + 56
+
+    matrix := Matrix[int, 8, 8]{rows: rows}
+    first := matrix[0][0]
+    middle := matrix[3][4]
+    last := matrix[7][7]
+    replacement := rows + 3
+    matrix[3] = replacement
+    matrix[3][4] = 99
+    middleAfterSet := matrix[3][4]
+    testOutputBuffer += sprintf.Sprintf("CONST_MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, middleAfterSet)
+
+    free((*byte)(data))
+    free((*byte)(rows))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

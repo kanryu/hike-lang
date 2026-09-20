@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    items := []int{10, 20, 30, 40}
+    count := 0
+
+    // キー・値を省略した走査: for range items
+    for range items {
+        count = count + 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("COUNT=%d\n", count)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

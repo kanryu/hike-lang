@@ -1,0 +1,40 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func inspect(v any) int {
+    switch v.(type) {
+    case nil:
+        return 1
+    case int, string:
+        return 2
+    default:
+        return 3
+    }
+    return 0
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var value any = 42
+    exact := value.(int)
+    var empty any = nil
+    testOutputBuffer += sprintf.Sprintf("EXACT=%d,NIL=%d,INT=%d\n", exact, inspect(empty), inspect(value))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

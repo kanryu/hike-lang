@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    tVal := !(true && false) || (10 > 20)
+    fVal := (5 >= 10) && (100 == 100)
+    neq := 10 != 20
+    testOutputBuffer += sprintf.Sprintf("T=%d,F=%d,NEQ=%d\n", tVal, fVal, neq)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

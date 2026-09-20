@@ -1,0 +1,45 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/eventloop"
+
+var mainDeviceID int = 42
+
+func testOutput() string {
+    eventloop.Init(16)
+
+    worker := Async(func() int {
+        // <-InvokeCh による待機初期化構文（メインスレッドで実行させて値を受信）
+        val := <-eventloop.InvokeCh[int](func() int {
+            return mainDeviceID * 10
+        })
+
+        // ループ停止タスクを投入
+        eventloop.Stop()
+
+        return val
+    })
+
+    // メインスレッドでイベントループを実行（ブロッキング）
+    eventloop.Run()
+
+    res := <-worker
+    testOutputBuffer += sprintf.Sprintf("EV_RESULT=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

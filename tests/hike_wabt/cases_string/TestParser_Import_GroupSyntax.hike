@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import (
+    "std/maps"
+)
+
+func testOutput() string {
+    testOutputBuffer = ""
+    m := make(map[string]int)
+    m["key"] = 42
+    testOutputBuffer += sprintf.Sprintf("MAP_VAL=%d\n", m["key"])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    score := 85
+    switch {
+    case score >= 90:
+        testOutputBuffer += sprintf.Sprintf("GRADE=A\n")
+    case score >= 80:
+        testOutputBuffer += sprintf.Sprintf("GRADE=B\n")
+    default:
+        testOutputBuffer += sprintf.Sprintf("GRADE=C\n")
+    }
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

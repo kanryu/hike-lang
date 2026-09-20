@@ -1,0 +1,49 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Item struct {
+    id int
+}
+
+func inspectAny(a any) int {
+    switch v := a.(type) {
+    case int:
+        return v
+    case Item:
+        return v.id
+    default:
+        return 0
+    }
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // 1. int 値実体のボクシング
+    valInt := 42
+    r1 := inspectAny(valInt)
+
+    // 2. 構造体値実体のボクシング
+    var it Item
+    it.id = 99
+    r2 := inspectAny(it)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

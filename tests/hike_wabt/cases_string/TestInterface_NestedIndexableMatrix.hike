@@ -1,0 +1,94 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func malloc(size int) *byte
+func free(ptr *byte)
+type Row struct {
+    data *int
+}
+
+
+func (r *Row) Get(column int) int {
+    return r.data[column]
+}
+
+func (r *Row) Set(column int, value int) {
+    p := r.data + column
+    *p = value
+}
+
+type Matrix struct {
+    rows *Row
+}
+
+func (m *Matrix) Get(row int) *Row {
+    return m.rows + row
+}
+
+func (m *Matrix) Set(row int, value *Row) {
+    p := m.rows + row
+    *p = *value
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var data *int = malloc(8 * 8)
+    p := data + 0
+    *p = 11
+    p = data + 1
+    *p = 12
+    p = data + 2
+    *p = 13
+    p = data + 3
+    *p = 21
+    p = data + 4
+    *p = 22
+    p = data + 5
+    *p = 23
+    p = data + 6
+    *p = 31
+    p = data + 7
+    *p = 32
+
+    var rows *Row = malloc(3 * 8)
+    row := rows + 0
+    row.data = data
+    row = rows + 1
+    row.data = data + 3
+    row = rows + 2
+    row.data = data + 6
+
+    var matrix *Matrix = malloc(8)
+    matrix.rows = rows
+
+    first := matrix[0][0]
+    middle := matrix[1][2]
+    last := matrix[2][1]
+    replacement := rows + 1
+    matrix[1] = replacement
+    matrix[1][2] = 99
+    middleAfterSet := matrix[1][2]
+    testOutputBuffer += sprintf.Sprintf("MATRIX=%d,%d,%d;SET=%d\n", first, middle, last, middleAfterSet)
+
+    free((*byte)(data))
+    free((*byte)(rows))
+    free((*byte)(matrix))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

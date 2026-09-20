@@ -1,0 +1,14 @@
+package main
+
+func makeCounter(start int) func() int {
+    value := start
+    return func() int {
+        value = value + 1
+        return value
+    }
+}
+
+func main() int {
+    counter := makeCounter(0)
+    return counter() + counter() * 10 + counter() * 100
+}

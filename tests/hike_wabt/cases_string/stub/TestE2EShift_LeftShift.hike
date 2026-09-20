@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    signed := 3 << 3
+    unsigned := uint(3) << 3
+
+    testOutputBuffer += sprintf.Sprintf("SIGNED=%d,UNSIGNED=%d\n", signed, unsigned)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

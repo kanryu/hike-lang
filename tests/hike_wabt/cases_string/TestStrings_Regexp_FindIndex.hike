@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    re := regexp.MustCompile("[0-9]+")
+    loc := re.FindStringIndex("abc12345def")
+    testOutputBuffer += sprintf.Sprintf("START=%d,END=%d\n", loc[0], loc[1])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

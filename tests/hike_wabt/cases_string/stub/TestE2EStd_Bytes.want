@@ -1,0 +1,1 @@
+67112872,287,"EQUAL=1,0 COMPARE=-1,0,1 INDEX=8,LAST=13,COUNT=2,ANY=8,LASTANY=16 CUT=  alpha|beta,beta  |1 REPLACE=  alpha,item,item  /  alpha,X,beta   REPEAT=ababab CASE=ABC-XY/abc-xy CLONE=Beta SPLIT=3:a:b:c AFTER=3:a,:b,:c SPLITN=2:a:b,c JOIN=a+b+c TRIM=alpha,beta,beta/hello FIELDS=3:one:two:three\n"

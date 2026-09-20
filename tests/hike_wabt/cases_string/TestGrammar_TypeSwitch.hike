@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func checkType(val any) int {
+    switch v := val.(type) {
+    case int:
+        return v + 10
+    case string:
+        return len(v)
+    default:
+        return -1
+    }
+}
+
+func testOutput() string {
+    var a any = 50
+    var b any = "HikeLang"
+    var c any = true
+
+    r1 := checkType(a)
+    r2 := checkType(b)
+    r3 := checkType(c)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d\n", r1, r2, r3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

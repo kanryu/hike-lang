@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    task1 := Async(func() int {
+        return 10 * 2
+    })
+    task2 := Async(func() int {
+        return 30 + 4
+    })
+
+    r1 := <-task1
+    r2 := <-task2
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,TOTAL=%d\n", r1, r2, r1 + r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

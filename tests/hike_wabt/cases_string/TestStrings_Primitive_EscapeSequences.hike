@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s := "Line1\n\t\"Quoted\" \\ Backslash"
+    testOutputBuffer += sprintf.Sprintf("%s\n", s)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

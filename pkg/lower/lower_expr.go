@@ -1672,8 +1672,11 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		}
 	}
 
-	// 両辺がstring型の場合のみhike_streq / hike_strcatを呼ぶ
-	if leftVal.Type() == sema.TypeString && rightVal.Type() == sema.TypeString {
+	// 両辺がstring型の場合のみhike_streq / hike_strcatを呼ぶ。
+	// NamedTypeなど、sema.TypeStringと同一ポインタではないstring相当型も
+	// ここで文字列として扱う必要がある。そうでないと通常のi32.addへ
+	// フォールバックし、文字列ビューのアドレス同士を加算してしまう。
+	if e.root.isStringType(leftVal.Type()) && e.root.isStringType(rightVal.Type()) {
 		leftPtr, leftLen := e.root.stringParts(leftVal)
 		rightPtr, rightLen := e.root.stringParts(rightVal)
 		if node.Operator == "+" {

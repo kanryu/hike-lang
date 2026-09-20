@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/math"
+
+func testOutput() string {
+    s, c := math.SinCos(math.Pi / 2.0)
+    testOutputBuffer += sprintf.Sprintf("CONST=%.6f,%.6f,%.6f BASIC=%.1f,%.1f,%.1f,%.1f ",
+        math.Pi, math.E, math.Sqrt2, math.Abs(-3.5), math.Sqrt(9.0),
+        math.Pow(2.0, 3.0), math.Hypot(3.0, 4.0))
+    testOutputBuffer += sprintf.Sprintf("TRIG=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f ",
+        math.Sin(math.Pi / 2.0), math.Cos(0.0), math.Tan(0.0),
+        math.Asin(1.0), math.Acos(1.0), math.Atan(0.0))
+    testOutputBuffer += sprintf.Sprintf("EXPLOG=%.1f,%.1f,%.6f,%.6f,%.1f,%.1f ",
+        math.Exp2(3.0), math.Pow10(2), math.Expm1(1.0),
+        math.Log1p(1.0), math.Log2(8.0), math.Logb(8.0))
+    testOutputBuffer += sprintf.Sprintf("HYPER=%.1f,%.1f,%.1f,SPECIAL=%.1f,%.1f ",
+        math.Sinh(0.0), math.Cosh(0.0), math.Tanh(0.0),
+        math.Acosh(1.0), math.Asinh(0.0))
+    testOutputBuffer += sprintf.Sprintf("ROUND=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f ",
+        math.Floor(2.9), math.Ceil(2.1), math.Round(2.5),
+        math.Trunc(-2.9), math.Mod(7.0, 3.0), math.Dim(5.0, 3.0))
+    testOutputBuffer += sprintf.Sprintf("MISC=%.1f,%.1f,%d,%d\n",
+        math.Min(2.0, 3.0), math.Max(2.0, 3.0),
+        s > 0.99 && s < 1.01 && c > -0.01 && c < 0.01,
+        math.Signbit(-1.0))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

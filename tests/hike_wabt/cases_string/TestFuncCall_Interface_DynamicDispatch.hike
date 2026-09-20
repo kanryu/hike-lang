@@ -1,0 +1,51 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Calculator interface {
+    Add(n int) int
+    Multiply(n int) int
+}
+
+type Number struct {
+    val int
+}
+
+func (n *Number) Add(x int) int {
+    n.val = n.val + x
+    return n.val
+}
+
+func (n *Number) Multiply(x int) int {
+    n.val = n.val * x
+    return n.val
+}
+
+func Operate(c Calculator) (int, int) {
+    r1 := c.Add(10)
+    r2 := c.Multiply(2)
+    return r1, r2
+}
+
+func testOutput() string {
+    num := &Number{val: 5}
+    r1, r2 := Operate(num)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,FINAL=%d\n", r1, r2, num.val)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

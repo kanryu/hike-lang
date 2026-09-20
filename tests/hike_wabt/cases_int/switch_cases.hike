@@ -1,0 +1,13 @@
+package main
+
+func main() int {
+    value := 2
+    switch value {
+    case 1:
+        return 10
+    case 2, 3:
+        return 42
+    default:
+        return 0
+    }
+}

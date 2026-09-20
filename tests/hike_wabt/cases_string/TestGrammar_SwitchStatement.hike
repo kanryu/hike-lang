@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Eval(x int) int {
+    switch x {
+    case 1:
+        return 100
+    case 2:
+        return 200
+    case 3:
+        return 300
+    default:
+        return -1
+    }
+}
+
+func testOutput() string {
+    v1 := Eval(1)
+    v2 := Eval(3)
+    vDef := Eval(99)
+    testOutputBuffer += sprintf.Sprintf("V1=%d,V2=%d,DEF=%d\n", v1, v2, vDef)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

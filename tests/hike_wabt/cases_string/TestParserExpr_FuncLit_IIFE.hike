@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // 無名関数を式として直接定義し即座に呼び出す (IIFE)
+    res := func(a int, b int) int {
+        return a*a + b*b
+    }(3, 4)
+
+    testOutputBuffer += sprintf.Sprintf("IIFE_RES=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

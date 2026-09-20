@@ -1,0 +1,25 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    var a any = 1234
+    val, ok := a.(int)
+    testOutputBuffer += sprintf.Sprintf("VAL=%d,OK=%d\n", val, ok)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

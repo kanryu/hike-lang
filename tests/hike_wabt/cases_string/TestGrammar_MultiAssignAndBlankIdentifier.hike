@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Coords struct {
+    x int
+    y int
+}
+
+func getPair() (int, int) {
+    return 10, 20
+}
+
+func testOutput() string {
+    // 1. 定義代入 (:=) でのアンパックとブランク識別子
+    a, b := getPair()
+    x, _ := getPair()
+    _, y := getPair()
+
+    // 2. 構造体フィールドおよびスライス要素への通常代入 (=)
+    var c Coords
+    c.x, c.y = getPair()
+
+    arr := []int{0, 0}
+    arr[0], arr[1] = getPair()
+
+    testOutputBuffer += sprintf.Sprintf("A=%d,B=%d,X=%d,Y=%d,C=(%d,%d),ARR=(%d,%d)\n", a, b, x, y, c.x, c.y, arr[0], arr[1])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

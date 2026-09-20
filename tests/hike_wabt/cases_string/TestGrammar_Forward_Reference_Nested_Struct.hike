@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+// 下で定義されている Parent, SubUnit, Score() を先行参照
+func (p Parent) Eval() int {
+    return p.Child.Score() * 2
+}
+
+type Parent struct {
+    Child SubUnit
+}
+
+func testOutput() string {
+    sub := SubUnit{Base: 42}
+    p := Parent{Child: sub}
+    testOutputBuffer += sprintf.Sprintf("SCORE=%d\n", p.Eval())
+    return testOutputBuffer
+}
+
+type SubUnit struct {
+    Base int
+}
+
+func (s SubUnit) Score() int {
+    return s.Base + 8
+}
+
+
+func main() int { return 0 }

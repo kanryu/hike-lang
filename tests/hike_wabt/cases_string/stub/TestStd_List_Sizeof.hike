@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/collections/list"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // コンパイル時即値として展開される sizeof の検証
+    listSize := sizeof(list.List[int])
+    testOutputBuffer += sprintf.Sprintf("LIST_SIZE_GE_16=%d\n", listSize >= 16)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

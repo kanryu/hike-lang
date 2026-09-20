@@ -37,6 +37,10 @@ type Lowerer struct {
 	sourceFile    string
 	sourceLoc     hir.SourceLocation
 	module        string
+	// globalInitRemaining is consumed while synthetic global initializer
+	// statements are lowered at the beginning of main.
+	globalInitRemaining int
+	loweringGlobalInit  bool
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -191,6 +195,7 @@ func (l *Lowerer) Lower() *hir.Program {
 			}
 			// main関数の先頭にグローバル変数の初期化文を差し込む
 			if d.Name != nil && d.Name.Value == "main" && len(globalInits) > 0 && d.Body != nil {
+				l.globalInitRemaining = len(globalInits)
 				newStmts := make([]ast.Statement, 0, len(globalInits)+len(d.Body.Statements))
 				newStmts = append(newStmts, globalInits...)
 				newStmts = append(newStmts, d.Body.Statements...)

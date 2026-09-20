@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func collect(prefix string, values []string) string {
+    queue := []string{prefix}
+    queue = append(queue, values...)
+    return queue[1]
+}
+
+func testOutput() string {
+    values := []string{"item"}
+    testOutputBuffer += sprintf.Sprintf("VALUE=%s\n", collect("prefix", values))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

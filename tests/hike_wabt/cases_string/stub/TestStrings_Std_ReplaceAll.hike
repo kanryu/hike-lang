@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    src := "foo_bar_foo_baz"
+    res := strings.ReplaceAll(src, "foo", "qux")
+    testOutputBuffer += sprintf.Sprintf("RES=%s\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func computeInitialVal() int {
+    return 100
+}
+
+var gCount int = computeInitialVal() + 23
+var gMessage string = "HelloGlobal"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    testOutputBuffer += sprintf.Sprintf("COUNT=%d,MSG=%s\n", gCount, gMessage)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

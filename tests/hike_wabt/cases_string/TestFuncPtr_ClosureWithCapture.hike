@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func MakeCounter(start int) func() int {
+    count := start
+    return func() int {
+        count = count + 1
+        return count
+    }
+}
+
+func testOutput() string {
+    base := 50
+    multiplier := 3
+    calc := func(x int) int {
+        return base + x * multiplier
+    }
+    r1 := calc(10) // 50 + 10 * 3 = 80
+
+    c1 := MakeCounter(0)
+    v1 := c1()
+    v2 := c1()
+    v3 := c1()
+
+    testOutputBuffer += sprintf.Sprintf("CALC=%d,CTR=(%d,%d,%d)\n", r1, v1, v2, v3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

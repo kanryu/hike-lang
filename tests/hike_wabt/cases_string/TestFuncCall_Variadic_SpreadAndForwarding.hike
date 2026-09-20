@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func ConcatAll(items ...string) string {
+    res := ""
+    for i := 0; i < len(items); i = i + 1 {
+        res = res + items[i]
+    }
+    return res
+}
+
+func Forward(first string, rest ...string) string {
+    return first + "-" + ConcatAll(rest...)
+}
+
+func testOutput() string {
+    // 1. スライス展開渡しの直接呼び出し
+    words := []string{"foo", "bar", "baz"}
+    r1 := ConcatAll(words...)
+
+    // 2. 親関数の可変長引数を子関数へ転送 (rest...)
+    r2 := Forward("START", words...)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%s,R2=%s\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

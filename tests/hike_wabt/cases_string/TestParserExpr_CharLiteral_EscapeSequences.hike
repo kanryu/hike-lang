@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    cTab := '\t'   // 9
+    cNL := '\n'    // 10
+    cCR := '\r'    // 13
+    cZero := '\0'  // 0
+    cQuote := '\'' // 39
+    cSlash := '\\' // 92
+    cA := 'A'      // 65
+
+    testOutputBuffer += sprintf.Sprintf("TAB=%d,NL=%d,CR=%d,ZERO=%d,Q=%d,S=%d,A=%d\n", int(cTab), int(cNL), int(cCR), int(cZero), int(cQuote), int(cSlash), int(cA))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

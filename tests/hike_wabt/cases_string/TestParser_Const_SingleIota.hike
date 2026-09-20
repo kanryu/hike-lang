@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+const First = iota
+
+func testOutput() string {
+    testOutputBuffer = ""
+    testOutputBuffer += sprintf.Sprintf("FIRST=%d\n", First)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

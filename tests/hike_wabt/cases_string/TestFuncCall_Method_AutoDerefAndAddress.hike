@@ -1,0 +1,50 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Point struct {
+    x int
+    y int
+}
+
+// 値レシーバ
+func (p Point) Sum() int {
+    return p.x + p.y
+}
+
+// ポインタレシーバ
+func (p *Point) Move(dx int, dy int) {
+    p.x = p.x + dx
+    p.y = p.y + dy
+}
+
+func testOutput() string {
+    // 1. ポインタ変数から値レシーバメソッドの呼び出し (Auto-Deref)
+    ptr := &Point{x: 10, y: 20}
+    s1 := ptr.Sum()
+
+    // 2. 値変数からポインタレシーバメソッドの呼び出し (Auto-Address)
+    var val Point
+    val.x = 100
+    val.y = 200
+    val.Move(5, 10)
+    s2 := val.Sum()
+
+    testOutputBuffer += sprintf.Sprintf("S1=%d,S2=%d,VAL=(%d,%d)\n", s1, s2, val.x, val.y)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

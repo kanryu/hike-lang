@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Button struct {
+    name    string
+    onClick func(string) int
+}
+
+func handleClick(btnName string) int {
+    testOutputBuffer += sprintf.Sprintf("CLICKED: %s\n", btnName)
+    return 1
+}
+
+func testOutput() string {
+    var btn Button
+    btn.name = "Submit"
+    btn.onClick = handleClick
+
+    res := btn.onClick(btn.name)
+    testOutputBuffer += sprintf.Sprintf("RES=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

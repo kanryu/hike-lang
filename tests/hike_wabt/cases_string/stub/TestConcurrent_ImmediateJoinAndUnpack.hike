@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func compute(a int, b int) (int, int) {
+    return a + b, a * b
+}
+
+func testOutput() string {
+    sum, mul := <-Async(func() (int, int) {
+        return compute(15, 3)
+    })
+    testOutputBuffer += sprintf.Sprintf("SUM=%d,MUL=%d\n", sum, mul)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

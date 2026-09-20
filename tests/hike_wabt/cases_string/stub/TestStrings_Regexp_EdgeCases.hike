@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    reEmpty := regexp.MustCompile("^$")
+    m1 := reEmpty.MatchString("")
+    m2 := reEmpty.MatchString("non-empty")
+
+    reNum := regexp.MustCompile("[0-9]+")
+    noLoc := reNum.FindStringIndex("abcdef")
+    noMatchLen := len(noLoc)
+
+    testOutputBuffer += sprintf.Sprintf("EMPTY_MATCH=%d,NON_EMPTY=%d,NOLOC_LEN=%d\n", m1, m2, noMatchLen)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

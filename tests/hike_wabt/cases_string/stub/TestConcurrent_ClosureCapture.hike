@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    base := 100
+    multiplier := 3
+
+    val := <-Async(func() int {
+        return base * multiplier + 24
+    })
+
+    testOutputBuffer += sprintf.Sprintf("CAPTURED=%d\n", val)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

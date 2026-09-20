@@ -232,7 +232,7 @@ func (m *Matrix) Set(row int, value *Row) {
 }
 
 func main() int {
-    var data *int = malloc(4 * 8)
+    var data *int = malloc(8 * 8)
     p := data + 0
     *p = 11
     p = data + 1

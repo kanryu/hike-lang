@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func SumAll(prefix int, nums ...int) int {
+    total := prefix
+    for i := 0; i < len(nums); i = i + 1 {
+        total = total + nums[i]
+    }
+    return total
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // 1. 0個の可変長引数
+    r0 := SumAll(100)
+
+    // 2. 任意個数の実引数
+    r1 := SumAll(10, 1, 2, 3, 4)
+
+    // 3. スライスを展開して渡す (args...)
+    list := []int{10, 20, 30}
+    r2 := SumAll(5, list...)
+
+    testOutputBuffer += sprintf.Sprintf("R0=%d,R1=%d,R2=%d\n", r0, r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

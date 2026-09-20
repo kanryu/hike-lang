@@ -45,8 +45,13 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	}
 
 	for _, stmt := range fn.Body.Statements {
+		c.root.loweringGlobalInit = isMain && c.root.globalInitRemaining > 0
+		if c.root.loweringGlobalInit {
+			c.root.globalInitRemaining--
+		}
 		c.root.Stmt.LowerStmt(stmt)
 	}
+	c.root.loweringGlobalInit = false
 
 	// フォールスルー時（明示的returnがない場合）のみdeferを呼んでデフォルトリターンを生成
 	if c.root.curBlock.Terminator == nil {

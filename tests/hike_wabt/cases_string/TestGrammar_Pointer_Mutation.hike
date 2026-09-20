@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func mutate(p *int) {
+    *p = *p + 50
+}
+
+func testOutput() string {
+    x := 10
+    mutate(&x)
+    testOutputBuffer += sprintf.Sprintf("X=%d\n", x)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

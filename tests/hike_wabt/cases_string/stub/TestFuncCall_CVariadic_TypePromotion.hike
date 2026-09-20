@@ -1,0 +1,28 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    var b bool = true
+    var ch byte = 65 // 'A'
+    var f32 float32 = 3.5
+
+    // printf の可変長引数に渡された際、lowerArgs での型昇格キャストが動作する
+    testOutputBuffer += sprintf.Sprintf("BOOL=%d,BYTE=%d,CHAR=%c,F32=%.1f\n", b, ch, ch, f32)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

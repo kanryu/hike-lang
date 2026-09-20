@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Stats struct {
+    count int
+}
+
+func testOutput() string {
+    // 構造体フィールドへの複合代入
+    var st Stats
+    st.count = 10
+    st.count += 5
+    st.count++
+
+    // スライス要素への複合代入
+    arr := []int{20, 30}
+    arr[1] -= 5
+    arr[1]--
+    arr[0] *= 2
+
+    // ポインタデリファレンスへの複合代入
+    val := 4
+    p := &val
+    *p *= 3
+
+    testOutputBuffer += sprintf.Sprintf("ST=%d,ARR=(%d,%d),VAL=%d\n", st.count, arr[0], arr[1], val)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

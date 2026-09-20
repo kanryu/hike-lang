@@ -1,0 +1,24 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    str := "HikeLang"
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,C0=%c,C4=%c\n", len(str), str[0], str[4])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

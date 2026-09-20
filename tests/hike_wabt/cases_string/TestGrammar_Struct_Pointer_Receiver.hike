@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Counter struct {
+    Val int
+}
+
+func (c *Counter) Inc(delta int) {
+    c.Val = c.Val + delta
+}
+
+func (c *Counter) Get() int {
+    return c.Val
+}
+
+func testOutput() string {
+    c := Counter{Val: 100}
+    c.Inc(25)
+    testOutputBuffer += sprintf.Sprintf("VAL=%d\n", c.Get())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

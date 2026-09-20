@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    t1 := sprintf.Sprintf("T_INT=%T,T_STR=%T,T_BOOL=%T", 100, "text", true)
+    v1 := sprintf.Sprintf("V_INT=%v,V_STR=%v,V_BOOL=%v", 999, "hike", false)
+
+    testOutputBuffer += sprintf.Sprintf("%s | %s\n", t1, v1)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

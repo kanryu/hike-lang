@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    var a, b int = 10, 20
+    a, b = b, a
+    x, y := 30, 40
+    testOutputBuffer += sprintf.Sprintf("A=%d,B=%d,X=%d,Y=%d\n", a, b, x, y)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

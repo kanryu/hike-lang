@@ -1,0 +1,51 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/eventloop"
+
+var counter int = 100
+
+func testOutput() string {
+    eventloop.Init(16)
+
+    worker := Async(func() int {
+        // メインスレッドへ2つの処理を先行投入 (Pipeline)
+        chA := eventloop.InvokeCh[int](func() int {
+            counter = counter + 5
+            return counter
+        })
+        chB := eventloop.InvokeCh[int](func() int {
+            counter = counter * 2
+            return counter
+        })
+
+        // 順次待機して回収
+        a := <-chA
+        b := <-chB
+
+        eventloop.Stop()
+        return a + b
+    })
+
+    eventloop.Run()
+
+    total := <-worker
+    testOutputBuffer += sprintf.Sprintf("PIPELINE_TOTAL=%d\n", total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

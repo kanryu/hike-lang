@@ -1,0 +1,45 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+var log string = ""
+
+func addLog(s string) {
+    log = log + s
+}
+
+func printLog() {
+    testOutputBuffer += sprintf.Sprintf("%s\n", log)
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    defer printLog()
+    defer addLog("OUTER_DEF-")
+    addLog("START-")
+
+    fn := func() {
+        defer addLog("INNER_DEF-")
+        addLog("ANON_BODY-")
+    }
+
+    fn()
+    addLog("AFTER_ANON-")
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

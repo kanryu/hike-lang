@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // 1. var a, b int（未初期化の複数変数同時宣言）
+    var a, b int
+    a = 10
+    b = 20
+
+    // 2. var x, y = 30, 40（型推論を伴う多値変数定義宣言）
+    var x, y = 30, 40
+
+    testOutputBuffer += sprintf.Sprintf("A=%d,B=%d,X=%d,Y=%d\n", a, b, x, y)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

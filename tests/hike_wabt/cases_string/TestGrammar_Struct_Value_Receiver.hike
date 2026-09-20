@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Point struct {
+    X int
+    Y int
+}
+
+func (p Point) Sum() int {
+    return p.X + p.Y
+}
+
+func testOutput() string {
+    pt := Point{X: 12, Y: 34}
+    testOutputBuffer += sprintf.Sprintf("SUM=%d\n", pt.Sum())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

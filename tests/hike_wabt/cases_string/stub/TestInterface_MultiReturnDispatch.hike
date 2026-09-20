@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Codec interface {
+    Process(tag string, count int) (string, int, int)
+}
+
+type MockCodec struct {
+    version int
+}
+
+func (m *MockCodec) Process(tag string, count int) (string, int, int) {
+    return tag, m.version, count * 10
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    mock := MockCodec{version: 2}
+    var c Codec = &mock
+
+    // インターフェース経由での多値アンパック代入
+    tag, ver, total := c.Process("Hike", 5)
+
+    testOutputBuffer += sprintf.Sprintf("TAG=%s,VER=%d,TOTAL=%d\n", tag, ver, total)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

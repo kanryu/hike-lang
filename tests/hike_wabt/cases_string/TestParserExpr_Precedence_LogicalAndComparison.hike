@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // && (LAND) は || (LOR) より優先順位が高い
+    b1 := 0
+    if true || false && false {
+        b1 = 1 // true || (false && false) = true
+    }
+
+    b2 := 0
+    if (true || false) && false {
+        b2 = 1 // (true) && false = false
+    }
+
+    // 比較演算子は && より優先順位が高い
+    b3 := 0
+    if 5 > 3 && 10 <= 20 {
+        b3 = 1 // (5 > 3) && (10 <= 20) = true
+    }
+
+    testOutputBuffer += sprintf.Sprintf("B1=%d,B2=%d,B3=%d\n", b1, b2, b3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

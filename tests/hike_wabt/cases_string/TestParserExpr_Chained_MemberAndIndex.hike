@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Layer2 struct {
+    scores []int
+}
+
+type Layer1 struct {
+    child *Layer2
+}
+
+func getLayer() *Layer1 {
+    l2 := &Layer2{scores: []int{100, 200, 300}}
+    return &Layer1{child: l2}
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    // getLayer().child.scores[1] の連続チェーン評価
+    val := getLayer().child.scores[1]
+
+    testOutputBuffer += sprintf.Sprintf("CHAIN_VAL=%d\n", val)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

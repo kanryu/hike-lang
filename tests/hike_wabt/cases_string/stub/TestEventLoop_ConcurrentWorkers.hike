@@ -1,0 +1,48 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutputBuffer += sprintf.Sprintf(format string, ...) int
+func Sleep(ms int)
+
+func worker(id int, sleepMs int) int {
+    Sleep(sleepMs)
+    return id * 10
+}
+
+func testOutput() string {
+    // 3つのワーカーを同時にスレッドプールへ投入
+    w1 := Async(func() int {
+        return worker(1, 20)
+    })
+    w2 := Async(func() int {
+        return worker(2, 30)
+    })
+    w3 := Async(func() int {
+        return worker(3, 10)
+    })
+
+    // イベントループ側で各ワーカーの完了を順次待機・合流
+    r1 := <-w1
+    r2 := <-w2
+    r3 := <-w3
+
+    sum := r1 + r2 + r3
+    testOutputBuffer += sprintf.Sprintf("WORKER1=%d,WORKER2=%d,WORKER3=%d,SUM=%d\n", r1, r2, r3, sum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

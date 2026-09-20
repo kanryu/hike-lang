@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/collections/list"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    l := list.New[int]()
+    l.PushBack(1)
+    l.PushBack(2)
+    l.PushBack(4)
+    l.PushBack(8)
+
+    sum := 0
+    // Iterable (InitIterator + Next) による脱糖ループ
+    for v := range l {
+        testOutputBuffer += sprintf.Sprintf("%d ", v)
+        sum = sum + v
+    }
+    testOutputBuffer += sprintf.Sprintf("SUM=%d\n", sum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

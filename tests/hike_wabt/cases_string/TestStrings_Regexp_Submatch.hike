@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    re := regexp.MustCompile("([a-z]+)=([0-9]+)")
+    matches := re.FindStringSubmatch("user=100")
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,M0=%s,M1=%s,M2=%s\n", len(matches), matches[0], matches[1], matches[2])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

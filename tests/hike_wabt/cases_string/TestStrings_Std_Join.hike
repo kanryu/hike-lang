@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    parts := []string{"usr", "local", "bin", "hikec"}
+    path := strings.Join(parts, "/")
+    testOutputBuffer += sprintf.Sprintf("PATH=%s\n", path)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

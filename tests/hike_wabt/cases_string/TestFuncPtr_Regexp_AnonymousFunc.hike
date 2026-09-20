@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    re := regexp.MustCompile("[0-9]+")
+    src := "item10_count25"
+    res := re.ReplaceAllStringFunc(src, func(s string) string {
+        return "[" + s + "]"
+    })
+    testOutputBuffer += sprintf.Sprintf("RES=%s\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

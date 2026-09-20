@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/crypto/rand"
+
+func testOutput() string {
+    value, success := rand.Uint32()
+    testOutputBuffer += sprintf.Sprintf("READY=%d,NONZERO=%d\n", success != 0, value != 0)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,5 @@
+package main
+
+func main() int {
+    return 10 + 20 * 3 - 5 / 2 % 3
+}

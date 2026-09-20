@@ -1,0 +1,51 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+import "std/maps"
+
+func testOutput() string {
+    // 1. スライスの値のみ走査
+    items := []int{10, 20, 30}
+    valSum := 0
+    for _, v := range items {
+        valSum = valSum + v
+    }
+
+    // 2. マップのキー・値走査
+    m := make(map[string]int)
+    m["a"] = 100
+    m["b"] = 200
+    mapKeyCount := 0
+    mapValSum := 0
+    for k, v := range m {
+        if len(k) > 0 {
+            mapKeyCount = mapKeyCount + 1
+        }
+        mapValSum = mapValSum + v
+    }
+
+    // 3. 文字列のインデックス・byte 走査
+    str := "Hike"
+    byteSum := 0
+    for i, b := range str {
+        byteSum = byteSum + int(b) + i
+    }
+
+    testOutputBuffer += sprintf.Sprintf("SLICE_VAL=%d,MAP_CNT=%d,MAP_VAL=%d,BYTE_SUM=%d\n", valSum, mapKeyCount, mapValSum, byteSum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

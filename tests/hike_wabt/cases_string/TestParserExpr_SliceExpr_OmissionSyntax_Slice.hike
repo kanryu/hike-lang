@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    arr := []int{10, 20, 30, 40, 50}
+
+    // 1. [:3]
+    s1 := arr[:3]
+
+    // 2. [2:]
+    s2 := arr[2:]
+
+    // 3. [:]
+    s3 := arr[:]
+
+    testOutputBuffer += sprintf.Sprintf("S1_LEN=%d,S1_END=%d;S2_LEN=%d,S2_START=%d;S3_LEN=%d\n", len(s1), s1[2], len(s2), s2[0], len(s3))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

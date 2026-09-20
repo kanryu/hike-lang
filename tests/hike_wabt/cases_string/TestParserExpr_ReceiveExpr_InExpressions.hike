@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    ch := make(chan int, 2)
+    ch <- 15
+    ch <- 25
+
+    // 式中に埋め込まれた <-ch の二項加算評価
+    sum := (<-ch) + (<-ch)
+
+    testOutputBuffer += sprintf.Sprintf("CHAN_EXPR_SUM=%d\n", sum)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

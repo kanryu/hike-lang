@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/slices"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    nums := []int{2, 8, 4}
+    mapped := slices.Map[int, int](nums, func(x int) int {
+        return x * 10
+    })
+
+    for i := 0; i < len(mapped); i = i + 1 {
+        testOutputBuffer += sprintf.Sprintf("%d ", mapped[i])
+    }
+    testOutputBuffer += sprintf.Sprintf("\n")
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

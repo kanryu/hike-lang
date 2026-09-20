@@ -1,0 +1,24 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    a := 10 + 20 * 3 - 5 / 2 % 3
+    testOutputBuffer += sprintf.Sprintf("RES=%d\n", a)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

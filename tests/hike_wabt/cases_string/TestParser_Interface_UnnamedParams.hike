@@ -1,0 +1,45 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Transformer interface {
+    // 引数名を持たない型名のみのメソッド定義
+    Transform(int, int) int
+}
+
+type Multiplier struct {
+    factor int
+}
+
+func (m *Multiplier) Transform(a int, b int) int {
+    return (a + b) * m.factor
+}
+
+func runTransform(t Transformer, x int, y int) int {
+    return t.Transform(x, y)
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    m := &Multiplier{factor: 3}
+    res := runTransform(m, 4, 6) // (4 + 6) * 3 = 30
+
+    testOutputBuffer += sprintf.Sprintf("TRANS_RES=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

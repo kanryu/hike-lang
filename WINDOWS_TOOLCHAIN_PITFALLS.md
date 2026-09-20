@@ -38,7 +38,7 @@ Install MSYS2 from <https://www.msys2.org/>. Open the **UCRT64** or
 ```bash
 pacman -Syu
 pacman -Su
-pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-runtime mingw-w64-ucrt-x86_64-winpthreads
+pacman -S --needed mingw64/mingw-w64-x86_64-clang  mingw-w64-cross mingw64/mingw-w64-x86_64-lldb
 ```
 
 For a typical PowerShell setup:

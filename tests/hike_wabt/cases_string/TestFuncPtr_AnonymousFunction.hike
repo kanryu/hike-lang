@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Exec(f func(int) int, v int) int {
+    return f(v)
+}
+
+func testOutput() string {
+    square := func(x int) int {
+        return x * x
+    }
+    r1 := square(7)
+    r2 := Exec(func(n int) int { return n + 100 }, 25)
+
+    testOutputBuffer += sprintf.Sprintf("SQUARE=%d,EXEC=%d\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

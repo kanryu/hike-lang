@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Calculator struct {
+    Factor int
+}
+
+func (c Calculator) Compute(base int) int {
+    fn := func(delta int) int {
+        return (base + delta) * c.Factor
+    }
+    return fn(5)
+}
+
+func testOutput() string {
+    calc := Calculator{Factor: 3}
+    ans := calc.Compute(15)
+    testOutputBuffer += sprintf.Sprintf("ANS=%d\n", ans)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

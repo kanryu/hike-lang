@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/collections/list"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    l := list.New[int]()
+    l.PushBack(10)
+    l.PushBack(20)
+    l.PushFront(5)
+
+    testOutputBuffer += sprintf.Sprintf("LEN=%d: ", l.Len())
+    v1, _ := l.PopFront()
+    v2, _ := l.PopBack()
+    v3, _ := l.PopBack()
+
+    testOutputBuffer += sprintf.Sprintf("%d %d %d REMAIN=%d\n", v1, v2, v3, l.Len())
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

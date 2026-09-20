@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    b := []byte{72, 73, 75, 69} // 'H', 'I', 'K', 'E'
+    s := string(b)
+    testOutputBuffer += sprintf.Sprintf("STR=%s,LEN=%d\n", s, len(s))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

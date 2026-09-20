@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    src := "abcdefg_hijk"
+    idx1 := strings.Index(src, "def")
+    idx2 := strings.Index(src, "xyz")
+    testOutputBuffer += sprintf.Sprintf("IDX1=%d,IDX2=%d\n", idx1, idx2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

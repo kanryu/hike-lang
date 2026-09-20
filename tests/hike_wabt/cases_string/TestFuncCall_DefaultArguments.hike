@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Compute(base int, mult int = 2, add int = 5) int {
+    return base * mult + add
+}
+
+func testOutput() string {
+    // 1. 全てのデフォルト引数を省略
+    r1 := Compute(10) // 10 * 2 + 5 = 25
+
+    // 2. 末尾のデフォルト引数のみ省略
+    r2 := Compute(10, 3) // 10 * 3 + 5 = 35
+
+    // 3. 全引数を明示指定
+    r3 := Compute(10, 3, 1) // 10 * 3 + 1 = 31
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d\n", r1, r2, r3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

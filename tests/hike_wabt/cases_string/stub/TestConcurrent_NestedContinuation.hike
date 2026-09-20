@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func runOrchestrator() int {
+    // ワーカースレッド側でサブタスクを同期受信
+    sub1 := <-Async(func() int {
+        return 50
+    })
+    sub2 := <-Async(func() int {
+        return 70
+    })
+
+    // 同じ関数スコープ内で結果を評価・集計して返却
+    return sub1 + sub2
+}
+
+func testOutput() string {
+    // オーケストレータ自体をバックグラウンドに逃がす
+    orchTask := Async(func() int {
+        return runOrchestrator()
+    })
+
+    res := <-orchTask
+    testOutputBuffer += sprintf.Sprintf("ORCH_RESULT=%d\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Node struct {
+    value int
+}
+
+func testOutput() string {
+    node := &Node{value: 42}
+    vals := []int{1, 2, 3}
+
+    mutator := func(extra int) {
+        node.value = node.value + extra
+        vals[0] = vals[0] + extra
+    }
+
+    mutator(10)
+    testOutputBuffer += sprintf.Sprintf("NODE=%d,VAL0=%d\n", node.value, vals[0])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

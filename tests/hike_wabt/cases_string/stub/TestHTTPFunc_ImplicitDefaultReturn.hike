@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type State struct {
+    code int
+    ok   bool
+}
+
+// return文なしでブロック末尾へ到達する関数
+func GetZeroInt() int {
+}
+
+func GetZeroState() State {
+}
+
+func GetZeroSlice() []int {
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    zInt := GetZeroInt()
+    zState := GetZeroState()
+    zSlice := GetZeroSlice()
+
+    testOutputBuffer += sprintf.Sprintf("INT=%d,ST=(%d,%d),SL_LEN=%d\n", zInt, zState.code, zState.ok, len(zSlice))
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

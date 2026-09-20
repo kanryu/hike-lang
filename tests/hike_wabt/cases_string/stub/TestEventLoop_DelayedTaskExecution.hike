@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutputBuffer += sprintf.Sprintf(format string, ...) int
+func Sleep(ms int)
+
+func testOutput() string {
+    tickCount := 0
+    triggeredAt := -1
+
+    // 1回20msのスリープを挟みながらTickを監視
+    for tickCount < 4 {
+        Sleep(20)
+        tickCount = tickCount + 1
+        if tickCount == 2 {
+            triggeredAt = tickCount
+        }
+    }
+
+    testOutputBuffer += sprintf.Sprintf("TRIGGERED_AT=%d,FINAL_TICKS=%d\n", triggeredAt, tickCount)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

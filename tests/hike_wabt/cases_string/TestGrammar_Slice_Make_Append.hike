@@ -1,0 +1,25 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    s := make([]int, 0, 4)
+    s = append(s, 10, 20, 30)
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,CAP=%d,AT1=%d\n", len(s), cap(s), s[1])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

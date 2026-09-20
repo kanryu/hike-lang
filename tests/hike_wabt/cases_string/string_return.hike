@@ -1,0 +1,19 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    return "Hike WABT string"
+}
+
+func main() int { return 0 }

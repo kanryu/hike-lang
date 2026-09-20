@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func Max[T](a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func testOutput() string {
+    i := Max[int](10, 20)
+    f := Max[float64](3.14, 1.41)
+
+    testOutputBuffer += sprintf.Sprintf("INT_MAX=%d,FLOAT_MAX=%.2f\n", i, f)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

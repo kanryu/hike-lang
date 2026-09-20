@@ -1,0 +1,45 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 1. 条件のみループ (while 相当)
+    n := 0
+    whileSum := 0
+    for n < 5 {
+        whileSum = whileSum + n
+        n = n + 1
+    }
+
+    // 2. 二重ネストループにおける内側 break / continue の動作検証
+    hits := 0
+    for i := 0; i < 3; i = i + 1 {
+        for j := 0; j < 5; j = j + 1 {
+            if j == 1 {
+                continue
+            }
+            if j == 3 {
+                break
+            }
+            hits = hits + 1
+        }
+    }
+
+    testOutputBuffer += sprintf.Sprintf("WHILE=%d,HITS=%d\n", whileSum, hits)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

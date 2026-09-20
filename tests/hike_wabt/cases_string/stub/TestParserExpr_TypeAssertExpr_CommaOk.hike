@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var a any = 777
+
+    // 成功する型アサーション
+    v1, ok1 := a.(int)
+
+    // 失敗する型アサーション
+    v2, ok2 := a.(string)
+
+    lenV2 := 0
+    if ok2 {
+        lenV2 = len(v2)
+    }
+
+    testOutputBuffer += sprintf.Sprintf("V1=%d,OK1=%d,V2_LEN=%d,OK2=%d\n", v1, ok1, lenV2, ok2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

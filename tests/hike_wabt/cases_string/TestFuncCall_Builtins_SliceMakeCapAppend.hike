@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 1. make with len and cap
+    s := make([]int, 2, 4)
+    s[0] = 10
+    s[1] = 20
+    len1 := len(s)
+    cap1 := cap(s)
+
+    // 2. append within cap (nogrow: ポインタ再利用)
+    s = append(s, 30, 40)
+    len2 := len(s)
+    cap2 := cap(s)
+
+    // 3. append exceeding cap (grow: バッファ再確保)
+    s = append(s, 50)
+    len3 := len(s)
+    cap3 := cap(s)
+    hasGrown := 0
+    if cap3 > cap2 {
+        hasGrown = 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("L1=%d,C1=%d,L2=%d,C2=%d,L3=%d,GROWN=%d,LAST=%d\n", len1, cap1, len2, cap2, len3, hasGrown, s[4])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

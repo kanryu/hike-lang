@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    re := regexp.MustCompile("世界")
+    matched := re.MatchString("こんにちは世界！")
+
+    reSub := regexp.MustCompile("こんにちは(.*)")
+    parts := reSub.FindStringSubmatch("こんにちは世界")
+
+    testOutputBuffer += sprintf.Sprintf("MATCH=%d,SUB=%s\n", matched, parts[1])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

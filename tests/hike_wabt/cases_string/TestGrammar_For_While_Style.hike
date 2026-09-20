@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    n := 1
+    for n < 16 {
+        n = n * 2
+    }
+    testOutputBuffer += sprintf.Sprintf("N=%d\n", n)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

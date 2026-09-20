@@ -1,0 +1,52 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Reader interface {
+    Read() int
+}
+
+type StringReader struct {
+    id int
+}
+
+func (r *StringReader) Read() int {
+    return r.id
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var r1 Reader = nil
+    isNil := (r1 == nil)
+    isNotNil := (r1 != nil)
+
+    srA := StringReader{id: 1}
+    srB := StringReader{id: 2}
+
+    var r2 Reader = &srA
+    var r3 Reader = &srA
+    var r4 Reader = &srB
+
+    assignedNotNil := (r2 != nil)
+    sameEqual := (r2 == r3)
+    diffNotEqual := (r2 != r4)
+
+    testOutputBuffer += sprintf.Sprintf("NIL=%d,%d;EQ=%d,%d,%d\n", isNil, isNotNil, assignedNotNil, sameEqual, diffNotEqual)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    joiner := func(base int, mults ...int) int {
+        acc := base
+        for i := 0; i < len(mults); i = i + 1 {
+            acc = acc * mults[i]
+        }
+        return acc
+    }
+
+    r1 := joiner(5)
+    r2 := joiner(2, 3, 4)
+
+    parts := []int{2, 5}
+    r3 := joiner(10, parts...)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d\n", r1, r2, r3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

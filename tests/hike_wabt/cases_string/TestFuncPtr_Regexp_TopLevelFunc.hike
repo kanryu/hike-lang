@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/regexp"
+import "std/strings"
+
+func Wrap(s string) string {
+    return "<" + s + ">"
+}
+
+func testOutput() string {
+    re := regexp.MustCompile("[a-z]+")
+    src := "hello world"
+
+    r1 := re.ReplaceAllStringFunc(src, Wrap)
+    r2 := re.ReplaceAllStringFunc(src, strings.ToUpper)
+
+    testOutputBuffer += sprintf.Sprintf("R1=%s,R2=%s\n", r1, r2)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

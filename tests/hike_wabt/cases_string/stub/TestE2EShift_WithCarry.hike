@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    left, leftCarry := uint32(0x80000000) << 1
+    right, rightCarry := uint32(0x80000001) >> 1
+    signedRight, signedCarry := -5 >> 1
+
+    testOutputBuffer += sprintf.Sprintf("LEFT=%d,CARRY=%d,RIGHT=%d,CARRY=%d,SIGNED=%d,CARRY=%d\n", left, leftCarry, right, rightCarry, signedRight, signedCarry)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

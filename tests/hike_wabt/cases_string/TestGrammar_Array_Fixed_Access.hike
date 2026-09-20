@@ -1,0 +1,25 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    arr := [3]int{100, 200, 300}
+    arr[1] = 999
+    testOutputBuffer += sprintf.Sprintf("A0=%d,A1=%d,A2=%d\n", arr[0], arr[1], arr[2])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

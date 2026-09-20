@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+const (
+    Zero = iota
+    One
+    Two
+    Step = 100
+    Next
+)
+
+func testOutput() string {
+    testOutputBuffer = ""
+    testOutputBuffer += sprintf.Sprintf("Z=%d,O=%d,T=%d,S=%d,N=%d\n", Zero, One, Two, Step, Next)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

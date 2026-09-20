@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s1 := "Hello, "
+    s2 := "Hike "
+    s3 := "World!"
+    res := s1 + s2 + s3
+    testOutputBuffer += sprintf.Sprintf("RES=%s\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    buf := []byte{10, 20, 30, 40}
+    first := &buf[0]
+    second := &buf[1]
+    *first = 101
+    *second = 202
+    testOutputBuffer += sprintf.Sprintf("%d,%d,%d,%d\n", buf[0], buf[1], buf[2], buf[3])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

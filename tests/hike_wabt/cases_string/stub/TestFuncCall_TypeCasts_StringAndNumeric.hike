@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 1. string -> cstring -> string 相互変換
+    orig := "HelloHike"
+    cs := cstring(orig)
+    back := string(cs)
+
+    // 2. []byte -> string 変換 (__hike_slice_to_str)
+    bytes := []byte{65, 66, 67}
+    sFromBytes := string(bytes)
+
+    // 3. 文字リテラルの数値型キャスト
+    valA := int('A')
+    valZ := int64('Z')
+
+    testOutputBuffer += sprintf.Sprintf("BACK=%s,BYTES=%s,A=%d,Z=%d\n", back, sFromBytes, valA, valZ)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,63 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func evalMulti(x int) int {
+    switch x {
+    case 1, 3, 5:
+        return 10
+    case 2, 4, 6:
+        return 20
+    default:
+        return 99
+    }
+}
+
+func evalStr(s string) int {
+    switch s {
+    case "red", "crimson":
+        return 1
+    case "blue", "navy":
+        return 2
+    default:
+        return 0
+    }
+}
+
+func testOutput() string {
+    m1 := evalMulti(3)
+    m2 := evalMulti(4)
+    m3 := evalMulti(9)
+
+    s1 := evalStr("crimson")
+    s2 := evalStr("blue")
+    s3 := evalStr("green")
+
+    // ループ内の switch からの break（外側ループは継続する）
+    loopCount := 0
+    for i := 0; i < 3; i = i + 1 {
+        switch i {
+        case 1:
+            break
+        }
+        loopCount = loopCount + 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("M=(%d,%d,%d),S=(%d,%d,%d),LOOP=%d\n", m1, m2, m3, s1, s2, s3, loopCount)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

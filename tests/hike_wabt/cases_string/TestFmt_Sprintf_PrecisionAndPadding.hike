@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // 左右寄せ幅指定
+    align := sprintf.Sprintf("L=[%-6s],R=[%6s]", "go", "hike")
+
+    // エスケープ付きクォートと浮動小数精度
+    quoted := sprintf.Sprintf("Q=%q,PI=%.2f", "A\nB", 3.141592)
+
+    testOutputBuffer += sprintf.Sprintf("%s | %s\n", align, quoted)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

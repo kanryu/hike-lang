@@ -1,0 +1,24 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    s := sprintf.Sprintf("INT=%d,NEG=%d,STR=%s,CHAR=%c,BOOL_T=%t,BOOL_F=%t,PERCENT=%%", 42, -17, "hello", 65, true, false)
+    testOutputBuffer += sprintf.Sprintf("%s\n", s)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

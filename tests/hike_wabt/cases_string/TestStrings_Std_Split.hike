@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/strings"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    line := "apple,orange,banana"
+    fruits := strings.Split(line, ",")
+    testOutputBuffer += sprintf.Sprintf("LEN=%d: %s %s %s\n", len(fruits), fruits[0], fruits[1], fruits[2])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

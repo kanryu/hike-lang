@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    // std/fmt を介さず、純粋な sprintf.Sprintf を直接呼び出し
+    res := sprintf.Sprintf("VAL=%v,HEX=%#x,PAD=%04d", 123, 16, 8)
+    testOutputBuffer += sprintf.Sprintf("DIRECT=%s\n", res)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

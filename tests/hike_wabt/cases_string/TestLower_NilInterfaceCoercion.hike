@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Runner interface {
+    Run() int
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var r Runner = nil
+    var a any = nil
+
+    isNilR := 0
+    if r == nil {
+        isNilR = 1
+    }
+
+    isNilA := 0
+    if a == nil {
+        isNilA = 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("NIL_R=%d,NIL_A=%d\n", isNilR, isNilA)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

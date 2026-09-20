@@ -264,6 +264,28 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				val = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 			}
 
+			// Top-level initializers are prepended to main, but they still need
+			// to write the actual HIR global.  Lowering them as ordinary defines
+			// creates a local with the same name and leaves the global at zero.
+			if s.root.loweringGlobalInit {
+				if globalType, ok := s.root.semaCtx.Globals[astIDValue(ident)]; ok {
+					if targetType == nil {
+						targetType = globalType
+					}
+					if val != nil {
+						val = s.root.emitValueCoerce(val, globalType)
+					}
+					s.root.emit(&hir.InstrStore{
+						Val: val,
+						Ptr: &hir.GlobalVar{
+							Name: astIDValue(ident),
+							Typ:  &sema.PointerType{Base: globalType},
+						},
+					})
+					continue
+				}
+			}
+
 			ptrReg := s.root.nextReg(&sema.PointerType{Base: targetType}, astIDValue(ident))
 			if s.root.escapedVars[astIDValue(ident)] {
 				sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(targetType)), Typ: sema.TypeInt}
@@ -464,6 +486,27 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			case "+=", "++":
 				curVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
+				if op == "+=" && s.root.isStringType(elemType) {
+					// Compound assignment bypasses LowerBinaryExpr, so string
+					// concatenation must be lowered here explicitly. Emitting a
+					// generic OpAdd would add the two string-view pointers as i32.
+					leftPtr, leftLen := s.root.stringParts(curVal)
+					rightPtr, rightLen := s.root.stringParts(val)
+					raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					s.root.emit(&hir.InstrCallStatic{
+						Dst:        raw,
+						CalleeName: s.root.BuiltinName("hike_strcat_len"),
+						Args:       []hir.Value{leftPtr, leftLen, rightPtr, rightLen},
+					})
+					length := s.root.nextReg(sema.TypeInt)
+					s.root.emit(&hir.InstrCallStatic{
+						Dst:        length,
+						CalleeName: s.root.BuiltinName("strlen"),
+						Args:       []hir.Value{raw},
+					})
+					val = s.root.makeString(raw, length)
+					break
+				}
 				newVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpAdd, L: curVal, R: val})
 				val = newVal

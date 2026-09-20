@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+import "std/collections/list"
+
+func testOutput() string {
+    testOutputBuffer = ""
+    l := list.New[int]()
+    l.PushBack(100)
+    l.PushBack(200)
+    l.PushBack(300)
+
+    // Indexable による参照脱糖 (l.Get(1))
+    testOutputBuffer += sprintf.Sprintf("ORIG[1]=%d ", l[1])
+
+    // IndexAssignable による代入脱糖 (l.Set(1, 999))
+    l[1] = 999
+    testOutputBuffer += sprintf.Sprintf("MOD[1]=%d\n", l[1])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

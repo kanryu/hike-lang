@@ -1,0 +1,11 @@
+package main
+
+type Engine struct { power int }
+func (e Engine) output() int { return e.power * 10 }
+type Car struct { engine Engine }
+func (c Car) total() int { return c.engine.output() + 50 }
+
+func main() int {
+    car := Car{engine: Engine{power: 15}}
+    return car.total()
+}

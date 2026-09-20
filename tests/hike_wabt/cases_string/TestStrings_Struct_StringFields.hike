@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Config struct {
+    name    string
+    rawPtr  cstring
+    version int
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var cfg Config
+    cfg.name = "CompilerConfig"
+    cfg.rawPtr = cstring("RawBuffer")
+    cfg.version = 1
+
+    strFromRaw := string(cfg.rawPtr)
+    testOutputBuffer += sprintf.Sprintf("NAME=%s,VER=%d,RAW=%s\n", cfg.name, cfg.version, strFromRaw)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

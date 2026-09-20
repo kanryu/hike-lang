@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s := "Golang"
+    l := len(s)
+    c0 := s[0]
+    c3 := s[3]
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,C0=%c,C3=%c\n", l, c0, c3)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

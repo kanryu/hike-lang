@@ -1,0 +1,54 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Greeter interface {
+    Greet() string
+}
+
+type JapaneseGreeter struct {
+    id int
+}
+
+func (j *JapaneseGreeter) Greet() string {
+    return "こんにちは"
+}
+
+type EnglishGreeter struct {
+    id int
+}
+
+func (e *EnglishGreeter) Greet() string {
+    return "Hello"
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    jg := JapaneseGreeter{id: 777}
+    var g Greeter = &jg
+
+    // 正しい型へのアサーション
+    unpacked, ok := g.(*JapaneseGreeter)
+
+    // 不一致な型へのアサーション
+    _, badOk := g.(*EnglishGreeter)
+
+    testOutputBuffer += sprintf.Sprintf("OK=%d,ID=%d;BAD_OK=%d\n", ok, unpacked.id, badOk)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

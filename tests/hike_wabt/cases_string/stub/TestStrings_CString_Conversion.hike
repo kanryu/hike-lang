@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    orig := "Hello FFI"
+    // string -> cstring
+    cs := cstring(orig)
+    // cstring -> string
+    back := string(cs)
+
+    lOrig := len(orig)
+    lBack := len(back)
+    eq := (orig == back)
+
+    testOutputBuffer += sprintf.Sprintf("LEN1=%d,LEN2=%d,EQ=%d,STR=%s\n", lOrig, lBack, eq, back)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,53 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+type Accumulator struct {
+    total int
+}
+
+func (a *Accumulator) Add(n int) int {
+    a.total = a.total + n
+    return a.total
+}
+
+func (a *Accumulator) Get() int {
+    return a.total
+}
+
+func RunOperation(op func(int) int, arg int) int {
+    return op(arg)
+}
+
+func testOutput() string {
+    acc := &Accumulator{total: 100}
+
+    // メソッド値（バウンドメソッド）の変数代入
+    addMethod := acc.Add
+    r1 := addMethod(50)
+    r2 := addMethod(25)
+
+    // 引数として渡すバウンドメソッド呼び出し
+    r3 := RunOperation(acc.Add, 10)
+
+    getMethod := acc.Get
+    current := getMethod()
+
+    testOutputBuffer += sprintf.Sprintf("R1=%d,R2=%d,R3=%d,TOTAL=%d\n", r1, r2, r3, current)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

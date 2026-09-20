@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+func testOutput() string {
+    testOutputBuffer = ""
+    s := "HikeCompiler"
+    sub1 := s[0:4]
+    sub2 := s[4:12]
+    sub3 := s[:4]
+    sub4 := s[4:]
+    testOutputBuffer += sprintf.Sprintf("SUB1=%s,SUB2=%s,SUB3=%s,SUB4=%s\n", sub1, sub2, sub3, sub4)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

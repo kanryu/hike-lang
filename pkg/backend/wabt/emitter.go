@@ -326,6 +326,7 @@ func (e *Emitter) set(r *hir.Reg, expr string) {
 // functionSymbol reserves the same system/runtime names as the LLVM backend.
 // A user-defined function with one of those names gets a private WAT spelling.
 func (e *Emitter) functionSymbol(name string) string {
+	name = normalizeWabtRuntimeName(name)
 	if _, exists := e.functionIndex[name]; !exists {
 		if sep := strings.LastIndex(name, "_"); sep > 0 && sep+1 < len(name) {
 			pointerMethod := name[:sep] + "_ptr_sema_" + name[sep+1:]
@@ -341,14 +342,15 @@ func (e *Emitter) functionSymbol(name string) string {
 }
 
 func (e *Emitter) callReturnsValue(name string) bool {
+	name = normalizeWabtRuntimeName(name)
 	for _, fn := range e.p.Functions {
 		if fn.Name == name {
 			return len(fn.ReturnTypes) > 0
 		}
 	}
 	switch name {
-	case "malloc", "calloc", "memcpy32", "memcmp32", "strlen32", "strcmp32",
-		"hike_streq32", "hike_streq_len32", "hike_strcat_len32", "__hike_map_create",
+	case "malloc", "calloc", "memcpy", "memcmp", "strlen", "strcmp",
+		"hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create",
 		"__hike_map_len", "__hike_map_get", "__hike_string_less":
 		return true
 	}
@@ -392,6 +394,10 @@ func (e *Emitter) Emit() string {
 	// static data and the future runtime heap (malloc/memory.grow).
 	e.b.WriteString("  (memory (export \"memory\") 16)\n")
 	e.b.WriteString("  (global $__sp (mut i32) (i32.const 65536))\n")
+	// The checker runs main for initialization and then invokes a user
+	// function. Export the stack pointer so that runner-side initialization
+	// can preserve stack-backed global views before the second call.
+	e.b.WriteString("  (export \"__hike_sp\" (global $__sp))\n")
 	// Go-Hike compiler bootstrap modules perform substantial global
 	// initialization before main. Keep the heap away from that temporary stack
 	// area; malloc grows memory on demand when this address exceeds the initial
@@ -463,7 +469,11 @@ func (e *Emitter) function(fn *hir.Function) {
 	e.b.WriteString("    (local.set $frame_sp (global.get $__sp))\n")
 	e.emitCFG(fn)
 	e.b.WriteString("  )\n")
-	if fn.Name == "main" || fn.IsCFunc {
+	// Export user functions as well as main/C ABI functions.  This gives the
+	// Wasmtime test harness a stable entry point for string-returning test
+	// functions (for example testOutput() string), without changing the Hike
+	// source-level ABI.  External declarations are skipped by function().
+	if !fn.IsExtern {
 		exportName := fn.Name
 		fmt.Fprintf(&e.b, "  (export %q (func %s))\n", exportName, e.functionSymbol(fn.Name))
 	}
@@ -546,6 +556,19 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hi
 			e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
 			values := make([]string, len(x.Vals))
 			for i, v := range x.Vals {
+				if len(x.Vals) == 1 && fn.ReturnTypes[0] == sema.TypeString {
+					if s, ok := v.(*hir.ConstString); ok {
+						// A string literal is a data pointer while a Hike string
+						// value is a pointer to its three-word view. Materialize
+						// the view in the frame before returning it to the host.
+						base := e.val(s)
+						e.b.WriteString("          (i32.store (local.get $frame_sp) " + base + ")\n")
+						e.b.WriteString("          (i32.store (i32.add (local.get $frame_sp) (i32.const 4)) (i32.const 0))\n")
+						e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add (local.get $frame_sp) (i32.const 8)) (i32.const %d))\n", len(s.Raw)))
+						values[i] = "(local.get $frame_sp)"
+						continue
+					}
+				}
 				values[i] = e.val(v)
 			}
 			fmt.Fprintf(&e.b, "          (return %s)\n", strings.Join(values, " "))
@@ -765,6 +788,22 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.set(x.Dst, "("+memoryOp(x.Dst.Typ, true)+" "+e.val(x.Ptr)+")")
 	case *hir.InstrStore:
 		if global, ok := x.Ptr.(*hir.GlobalVar); ok {
+			if x.Val.Type() == sema.TypeString || x.Val.Type().TypeName() == "string" {
+				// Global string values must outlive main's temporary stack frame.
+				// Allocate a stable 12-byte string view on the heap instead of
+				// storing the address of a stack materialization in the global.
+				stable := "(global.get $" + globalVarName(global) + ")"
+				e.b.WriteString(fmt.Sprintf("    (global.set $%s (call $malloc (i32.const 12)))\n", globalVarName(global)))
+				if s, isConst := x.Val.(*hir.ConstString); isConst {
+					e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", stable, e.val(s)))
+					e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", stable))
+					e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", stable, len(s.Raw)))
+				} else {
+					e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const 12))\n", stable, e.val(x.Val)))
+				}
+				e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), stable))
+				break
+			}
 			e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), e.val(x.Val)))
 			break
 		}
@@ -813,6 +852,15 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", data, e.val(s)))
 			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", data))
 			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", data, len(s.Raw)))
+		} else if x.Val.Type() == sema.TypeString || x.Val.Type().TypeName() == "string" {
+			// LLVM boxes an aggregate string by storing the complete string
+			// view in an alloca and using its address as the any data pointer.
+			// Copy all three wasm32 words here; copying only the first word
+			// loses offset/length and corrupts variadic %s formatting.
+			dataSize = typeSize(sema.TypeString)
+			e.advanceSP(dataSize)
+			data = fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", dataSize)
+			e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const %d))\n", data, e.val(x.Val), dataSize))
 		} else if _, ok := x.Val.Type().(*sema.PointerType); !ok {
 			dataSize = typeSize(x.Val.Type())
 			e.advanceSP(dataSize)
@@ -835,11 +883,11 @@ func (e *Emitter) instruction(in hir.Instruction) {
 	case *hir.InstrHeapAlloc:
 		e.set(x.Dst, "(call $malloc "+e.val(x.Size)+")")
 	case *hir.InstrRegionBegin:
-		e.set(x.Dst, "(call $__hike_region_begin32)")
+		e.set(x.Dst, "(call $__hike_region_begin)")
 	case *hir.InstrRegionAlloc:
-		e.set(x.Dst, "(call $__hike_region_alloc32 "+e.val(x.Region)+" "+e.val(x.Size)+")")
+		e.set(x.Dst, "(call $__hike_region_alloc "+e.val(x.Region)+" "+e.val(x.Size)+")")
 	case *hir.InstrRegionEnd:
-		e.b.WriteString("    (call $__hike_region_end32 " + e.val(x.Region) + ")\n")
+		e.b.WriteString("    (call $__hike_region_end " + e.val(x.Region) + ")\n")
 	case *hir.InstrGetFieldPtr:
 		offset := 0
 		if p, ok := x.BasePtr.Type().(*sema.PointerType); ok {

@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+
+type Config struct {
+    timeout int
+    enabled bool
+}
+
+func testOutput() string {
+    testOutputBuffer = ""
+    var arr [3]int
+    var cfg Config
+    var fn func(int) int
+
+    isFnNil := 0
+    if fn == nil {
+        isFnNil = 1
+    }
+
+    testOutputBuffer += sprintf.Sprintf("ARR=(%d,%d,%d),CFG=(%d,%d),FN_NIL=%d\n", arr[0], arr[1], arr[2], cfg.timeout, cfg.enabled, isFnNil)
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }

@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt/sprintf"
+
+var testOutputBuffer string = ""
+
+
+
+
+
+
+
+
+
+
+
+import "std/maps"
+
+func testOutput() string {
+    var values = map[string]int{
+        "alpha": 10,
+        "beta": 20,
+    }
+    values["gamma"] = 30
+    testOutputBuffer += sprintf.Sprintf("LEN=%d,A=%d,B=%d,G=%d\n", len(values), values["alpha"], values["beta"], values["gamma"])
+    return testOutputBuffer
+}
+
+
+func main() int { return 0 }
