@@ -226,23 +226,23 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 			if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
 				if iface.IsAny() {
-					typeIDReg := e.root.nextReg(sema.TypeInt32)
-					dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					if !srcIface.IsAny() {
-						itabPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-						e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
-						e.root.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
-						typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
-						e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt32}})
-						e.root.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
-					} else {
-						e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 0})
-						e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 1})
+					if srcIface.IsAny() {
+						return val
 					}
+					// Recover the dynamic concrete type from the source interface's
+					// itab before constructing the any pair.
+					data := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					itab := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					e.root.emit(&hir.InstrExtractValue{Dst: data, Agg: val, Index: 0})
+					e.root.emit(&hir.InstrExtractValue{Dst: itab, Agg: val, Index: 1})
+					typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+					e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itab, ToType: typeIDPtr.Typ})
+					typeID := e.root.nextReg(sema.TypeInt32)
+					e.root.emit(&hir.InstrLoad{Dst: typeID, Ptr: typeIDPtr})
 					t1 := e.root.nextReg(iface)
-					e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(iface), Val: typeIDReg, Index: 0})
+					e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(iface), Val: typeID, Index: 0})
 					dst := e.root.nextReg(iface)
-					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: dataPtr, Index: 1})
+					e.root.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: data, Index: 1})
 					return dst
 				}
 				if semaTypeName(srcIface) == semaTypeName(iface) {
@@ -256,7 +256,7 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 				itabDef := e.root.Call.GetOrCreateItab(val.Type(), iface)
 				itabName = itabDef.GlobalName
 			} else {
-				typeID = e.root.semaCtx.GetTypeID(val.Type())
+				typeID = val.Type().TypeID(e.root.semaCtx)
 			}
 			dst := e.root.nextReg(iface)
 			e.root.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName, TypeID: typeID})
@@ -1915,7 +1915,7 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	ifaceVal := e.LowerExpr(tae.Expr)
 	ifaceType := ifaceVal.Type()
 	targetType := e.root.semaCtx.ResolveType(tae.Target)
-	targetTypeID := e.root.semaCtx.GetTypeID(targetType)
+	targetTypeID := targetType.TypeID(e.root.semaCtx)
 
 	dataPtrReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	typeIDReg := e.root.nextReg(sema.TypeInt32)

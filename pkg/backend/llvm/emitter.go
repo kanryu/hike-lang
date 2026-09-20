@@ -662,7 +662,7 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 
 	case *hir.InstrAlloca:
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", i.Dst, i.AllocType.LLVMType()))
-		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[hir.InstructionKey(inst)])
 
 	case *hir.InstrAllocaDynamic:
 		sizeLLVM := intLLVM
@@ -671,7 +671,7 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 		}
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s, %s %s, align %d\n",
 			i.Dst, i.AllocType.LLVMType(), sizeLLVM, e.formatVal(i.Size), sema.PointerSize))
-		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[hir.InstructionKey(inst)])
 
 	case *hir.InstrHeapAlloc:
 		sizeLLVM := intLLVM
@@ -681,7 +681,7 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 		rawPtr := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %s)\n", rawPtr, sizeLLVM, e.formatVal(i.Size)))
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, rawPtr, i.AllocType.LLVMType()))
-		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[inst])
+		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[hir.InstructionKey(inst)])
 
 	case *hir.InstrLoad:
 		if i.Ptr == nil {
@@ -1007,7 +1007,7 @@ func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
 	if !e.debugMgr.Enabled() || e.prog == nil || e.prog.InstructionLocations == nil || e.b.Len() <= start {
 		return
 	}
-	loc, ok := e.prog.InstructionLocations[inst]
+	loc, ok := e.prog.InstructionLocations[hir.InstructionKey(inst)]
 	if !ok {
 		return
 	}
@@ -1172,7 +1172,7 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 	}
 
 	if i.Iface.IsAny() {
-		typeID := e.semaCtx.GetTypeID(i.Val.Type())
+		typeID := i.Val.Type().TypeID(e.semaCtx)
 		intLLVM := sema.TypeInt32.LLVMType()
 		anyLLVM := fmt.Sprintf("{ %s, i8* }", intLLVM)
 		t1 := e.nextTmp()

@@ -17,26 +17,27 @@ type loopContext struct {
 
 // LowererはIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
 type Lowerer struct {
-	prog          *ast.Program
-	semaCtx       *sema.Context
-	hirProg       *hir.Program
-	curFunc       *hir.Function
-	curBlock      *hir.BasicBlock
-	regCount      int
-	blockCount    int
-	anonFuncCount int
-	stringPool    map[string]*hir.ConstString
-	symbols       map[string]hir.Value
-	symbolTypes   map[string]sema.Type
-	loopStack     []loopContext
-	deferStack    []*ast.CallExpr
-	itabs         map[string]*hir.ItabDef
-	escapedVars   map[string]bool
-	is32Bit       bool // Compilerから伝播される32bitターゲットフラグ
-	regionMode    bool
-	sourceFile    string
-	sourceLoc     hir.SourceLocation
-	module        string
+	prog            *ast.Program
+	semaCtx         *sema.Context
+	hirProg         *hir.Program
+	curFunc         *hir.Function
+	curBlock        *hir.BasicBlock
+	regCount        int
+	blockCount      int
+	anonFuncCount   int
+	stringPool      map[string]*hir.ConstString
+	symbols         map[string]hir.Value
+	symbolTypes     map[string]sema.Type
+	loopStack       []loopContext
+	deferStack      []*ast.CallExpr
+	itabs           map[string]*hir.ItabDef
+	escapedVars     map[string]bool
+	is32Bit         bool // Compilerから伝播される32bitターゲットフラグ
+	recordLocations bool
+	regionMode      bool
+	sourceFile      string
+	sourceLoc       hir.SourceLocation
+	module          string
 	// globalInitRemaining is consumed while synthetic global initializer
 	// statements are lowered at the beginning of main.
 	globalInitRemaining int
@@ -71,20 +72,27 @@ func heapAllocType(a *hir.InstrHeapAlloc) sema.Type {
 // SetRegionMode enables arena allocation for compiler-generated heap values.
 func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 
+// SetRecordLocations controls optional source-location bookkeeping.
+func (l *Lowerer) SetRecordLocations(enabled bool) { l.recordLocations = enabled }
+
 func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 	l := &Lowerer{
-		prog:        prog,
-		semaCtx:     semaCtx,
-		hirProg:     &hir.Program{ModuleName: astProgramPackage(prog), InstructionLocations: make(map[hir.Instruction]hir.SourceLocation)},
-		module:      astProgramPackage(prog),
-		stringPool:  make(map[string]*hir.ConstString),
-		symbols:     make(map[string]hir.Value),
-		symbolTypes: make(map[string]sema.Type),
-		loopStack:   []loopContext{},
-		deferStack:  []*ast.CallExpr{},
-		itabs:       make(map[string]*hir.ItabDef),
-		escapedVars: make(map[string]bool),
-		is32Bit:     false,
+		prog:    prog,
+		semaCtx: semaCtx,
+		// Go-Hike's wasm32 runtime currently cannot safely hash interface keys.
+		// Keep source locations disabled for the self-hosted path and avoid
+		// allocating the interface-keyed map there.
+		hirProg:         &hir.Program{ModuleName: astProgramPackage(prog)},
+		module:          astProgramPackage(prog),
+		stringPool:      make(map[string]*hir.ConstString),
+		symbols:         make(map[string]hir.Value),
+		symbolTypes:     make(map[string]sema.Type),
+		loopStack:       []loopContext{},
+		deferStack:      []*ast.CallExpr{},
+		itabs:           make(map[string]*hir.ItabDef),
+		escapedVars:     make(map[string]bool),
+		is32Bit:         false,
+		recordLocations: true,
 	}
 
 	// 各サブローワーの初期化
@@ -284,8 +292,8 @@ func (l *Lowerer) finishRegionFunction() {
 			if a, ok := inst.(*hir.InstrHeapAlloc); ok && !heapAllocKeepOnHeap(a) {
 				replacement := &hir.InstrRegionAlloc{Dst: heapAllocDst(a), Region: region, Size: heapAllocSize(a), AllocType: heapAllocType(a)}
 				bb.Instructions[n] = replacement
-				if loc, exists := l.hirProg.InstructionLocations[a]; exists {
-					l.hirProg.InstructionLocations[replacement] = loc
+				if loc, exists := l.hirProg.InstructionLocations[hir.InstructionKey(a)]; exists {
+					l.hirProg.InstructionLocations[hir.InstructionKey(replacement)] = loc
 				}
 			}
 		}
@@ -300,8 +308,11 @@ func (l *Lowerer) finishRegionFunction() {
 }
 
 func (l *Lowerer) recordFunctionLocation(instr hir.Instruction, fn *hir.Function) {
-	if instr != nil && fn != nil && fn.Location.Line > 0 {
-		l.hirProg.InstructionLocations[instr] = fn.Location
+	if l.recordLocations && instr != nil && fn != nil && fn.Location.Line > 0 {
+		if l.hirProg.InstructionLocations == nil {
+			l.hirProg.InstructionLocations = make(map[string]hir.SourceLocation)
+		}
+		l.hirProg.InstructionLocations[hir.InstructionKey(instr)] = fn.Location
 	}
 }
 
@@ -350,10 +361,13 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 }
 
 func (l *Lowerer) recordLocation(instr hir.Instruction) {
-	if instr == nil || l.sourceLoc.Line <= 0 {
+	if !l.recordLocations || instr == nil || l.sourceLoc.Line <= 0 {
 		return
 	}
-	l.hirProg.InstructionLocations[instr] = l.sourceLoc
+	if l.hirProg.InstructionLocations == nil {
+		l.hirProg.InstructionLocations = make(map[string]hir.SourceLocation)
+	}
+	l.hirProg.InstructionLocations[hir.InstructionKey(instr)] = l.sourceLoc
 }
 
 func (l *Lowerer) setSourceLocation(filename string, line, column int) func() {
@@ -548,26 +562,24 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		// 1. 既にインターフェース型である値の変換
 		if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
 			if iface.IsAny() {
-				typeIDReg := l.nextReg(sema.TypeInt32)
-				dataPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				if !srcIface.IsAny() {
-					// A non-any interface still carries an itab pointer. Convert
-					// it to any's 32-bit type ID while rebuilding the new layout.
-					itabPtr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 0})
-					l.emit(&hir.InstrExtractValue{Dst: itabPtr, Agg: val, Index: 1})
-					typeIDPtr := l.nextReg(&sema.PointerType{Base: sema.TypeInt32})
-					l.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabPtr, ToType: &sema.PointerType{Base: sema.TypeInt32}})
-					l.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
-				} else {
-					l.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: val, Index: 0})
-					l.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: val, Index: 1})
+				if srcIface.IsAny() {
+					return val
 				}
-
+				// An interface value carries the dynamic data pointer and an itab.
+				// Re-boxing it into any must recover the concrete TypeID from the
+				// itab; the static interface TypeID is not the dynamic type.
+				data := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				itab := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				l.emit(&hir.InstrExtractValue{Dst: data, Agg: val, Index: 0})
+				l.emit(&hir.InstrExtractValue{Dst: itab, Agg: val, Index: 1})
+				typeIDPtr := l.nextReg(&sema.PointerType{Base: sema.TypeInt32})
+				l.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itab, ToType: typeIDPtr.Typ})
+				typeID := l.nextReg(sema.TypeInt32)
+				l.emit(&hir.InstrLoad{Dst: typeID, Ptr: typeIDPtr})
 				t1 := l.nextReg(iface)
-				l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(iface), Val: typeIDReg, Index: 0})
+				l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(iface), Val: typeID, Index: 0})
 				dst := l.nextReg(iface)
-				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: dataPtr, Index: 1})
+				l.emit(&hir.InstrInsertValue{Dst: dst, Agg: t1, Val: data, Index: 1})
 				return dst
 			}
 			if semaTypeName(srcIface) == semaTypeName(iface) {
@@ -581,7 +593,7 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 			itabDef := l.Call.GetOrCreateItab(val.Type(), iface)
 			itabName = itabDef.GlobalName
 		} else {
-			typeID = l.semaCtx.GetTypeID(val.Type())
+			typeID = val.Type().TypeID(l.semaCtx)
 		}
 		dst := l.nextReg(iface)
 		l.emit(&hir.InstrBoxInterface{Dst: dst, Val: val, Iface: iface, ItabName: itabName, TypeID: typeID})
@@ -590,7 +602,6 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	if _, isFunc := targetType.(*sema.FuncType); isFunc && isNilValue(val) {
 		return l.defaultConstValue(targetType)
 	}
-
 	dst := l.nextReg(targetType)
 	l.emit(&hir.InstrCast{Dst: dst, Val: val, ToType: targetType})
 	return dst

@@ -37,15 +37,15 @@ func TestHIRInstructionsKeepHikeSourceLocations(t *testing.T) {
 	}
 
 	foundSourceLine := false
-	for instruction, location := range program.InstructionLocations {
-		if instruction == nil {
-			t.Fatal("nil HIR instruction has a source location")
+	for instructionKey, location := range program.InstructionLocations {
+		if instructionKey == "" {
+			t.Fatal("empty HIR instruction key has a source location")
 		}
 		if location.Filename != sourcePath {
-			t.Fatalf("instruction %T location filename = %q, want %q", instruction, location.Filename, sourcePath)
+			t.Fatalf("instruction %q location filename = %q, want %q", instructionKey, location.Filename, sourcePath)
 		}
 		if location.Line <= 0 || location.Column <= 0 {
-			t.Fatalf("instruction %T has invalid source location %+v", instruction, location)
+			t.Fatalf("instruction %q has invalid source location %+v", instructionKey, location)
 		}
 		if location.Line == 4 {
 			foundSourceLine = true

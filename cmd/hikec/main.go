@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"hikec-go/pkg/ast"
+	"hikec-go/pkg/backend/wabt"
 	"hikec-go/pkg/codegen"
 	gocode "hikec-go/pkg/codegen/go"
 	"hikec-go/pkg/compiler"
@@ -432,18 +433,20 @@ func runBuild(args []string) {
 	// emit-ir path remains authoritative for LLVM output; this frontend pass
 	// only supplies source-owned JavaScript bindings to runtime.js.
 	var runtimeProgram *ast.Program
+	var wabtCompiler *compiler.Compiler
 	if tgt.IsWasm {
-		frontend := compiler.New(tgt)
-		frontend.SetVerbose(verbose)
-		frontend.SetWasmMode(wasmMode)
-		frontend.SetRegionMode(regionMode)
-		frontend.SetGoHikeMode(goHikeMode)
+		wabtCompiler = compiler.New(tgt)
+		wabtCompiler.SetVerbose(verbose)
+		wabtCompiler.SetWasmMode(wasmMode)
+		wabtCompiler.SetRegionMode(regionMode)
+		wabtCompiler.SetGoHikeMode(goHikeMode)
+		wabtCompiler.SetDebugInfo(debugInfo)
 		var program *ast.Program
 		var compileErr error
 		if useWabtBackend {
-			_, _, program, compileErr = frontend.CompileToWAT(sourceFiles...)
+			_, _, program, compileErr = wabtCompiler.CompileToWAT(sourceFiles...)
 		} else {
-			_, _, program, compileErr = frontend.CompileToLLVM(sourceFiles...)
+			_, _, program, compileErr = wabtCompiler.CompileToLLVM(sourceFiles...)
 		}
 		if compileErr != nil {
 			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
@@ -492,6 +495,22 @@ func runBuild(args []string) {
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "wat2wasm build failed: %v\n", err)
 			os.Exit(1)
+		}
+		if debugInfo {
+			wasm, readErr := os.ReadFile(outputBin)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "WABT debug read failed: %v\n", readErr)
+				os.Exit(1)
+			}
+			wasm, dwarfErr := wabt.AppendDWARF(wasm, wabtCompiler.WABTDebugInfo())
+			if dwarfErr != nil {
+				fmt.Fprintf(os.Stderr, "WABT DWARF emission failed: %v\n", dwarfErr)
+				os.Exit(1)
+			}
+			if writeErr := os.WriteFile(outputBin, wasm, 0644); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "WABT debug write failed: %v\n", writeErr)
+				os.Exit(1)
+			}
 		}
 	} else {
 		var clangArgs []string

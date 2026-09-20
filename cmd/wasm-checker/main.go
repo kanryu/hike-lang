@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	wasm-checker <module.wasm> <function>
+//	wasm-checker <module.wasm> <function> [options]
 package main
 
 /*
@@ -62,6 +62,7 @@ import "C"
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -79,11 +80,11 @@ const (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--mode=normal|concurrent] [--string|--string-info] [--dump-memory=path]")
+	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--mode=normal|concurrent] [--source=path] [--wat-output=path] [--string|--string-info] [--dump-memory=path]")
 }
 
 func main() {
-	if len(os.Args) < 3 || len(os.Args) > 6 {
+	if len(os.Args) < 3 {
 		usage()
 		os.Exit(2)
 	}
@@ -91,6 +92,8 @@ func main() {
 	stringResult := false
 	stringInfo := false
 	dumpPath := ""
+	sourcePath := ""
+	watOutputPath := ""
 	for _, arg := range os.Args[3:] {
 		switch {
 		case arg == "--string":
@@ -102,6 +105,10 @@ func main() {
 			mode = strings.TrimPrefix(arg, "--mode=")
 		case strings.HasPrefix(arg, "--dump-memory="):
 			dumpPath = strings.TrimPrefix(arg, "--dump-memory=")
+		case strings.HasPrefix(arg, "--source="):
+			sourcePath = strings.TrimPrefix(arg, "--source=")
+		case strings.HasPrefix(arg, "--wat-output="):
+			watOutputPath = strings.TrimPrefix(arg, "--wat-output=")
 		default:
 			usage()
 			os.Exit(2)
@@ -110,6 +117,24 @@ func main() {
 	if mode != "normal" && mode != "concurrent" {
 		fmt.Fprintf(os.Stderr, "wasm-checker: invalid mode %q\n", mode)
 		os.Exit(2)
+	}
+	var sourceText string
+	if sourcePath != "" {
+		if sourcePath == "-" {
+			data, readErr := io.ReadAll(os.Stdin)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: read source from stdin: %v\n", readErr)
+				os.Exit(1)
+			}
+			sourceText = string(data)
+		} else {
+			data, readErr := os.ReadFile(sourcePath)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: read source %s: %v\n", sourcePath, readErr)
+				os.Exit(1)
+			}
+			sourceText = string(data)
+		}
 	}
 
 	wasm, err := os.ReadFile(os.Args[1])
@@ -155,6 +180,69 @@ func main() {
 	var workerStore *wasmtime.Store
 	var workerInstance *wasmtime.Instance
 	var instance *wasmtime.Instance
+	var generatedWAT string
+	const sourceObjectBase = 8 * 1024 * 1024
+	writeSource := func(caller *wasmtime.Caller) int32 {
+		memoryExtern := caller.GetExport("memory")
+		if memoryExtern == nil || memoryExtern.Memory() == nil {
+			return 0
+		}
+		memory := memoryExtern.Memory()
+		required := sourceObjectBase + 12 + len(sourceText) + 1
+		data := memory.UnsafeData(caller)
+		if len(data) < required {
+			pages := uint64((required - len(data) + 65535) / 65536)
+			if _, err := memory.Grow(caller, pages); err != nil {
+				return 0
+			}
+			data = memory.UnsafeData(caller)
+		}
+		payload := sourceObjectBase + 12
+		binary.LittleEndian.PutUint32(data[sourceObjectBase:], uint32(payload))
+		binary.LittleEndian.PutUint32(data[sourceObjectBase+4:], 0)
+		binary.LittleEndian.PutUint32(data[sourceObjectBase+8:], uint32(len(sourceText)))
+		copy(data[payload:], []byte(sourceText))
+		data[payload+len(sourceText)] = 0
+		return int32(sourceObjectBase)
+	}
+	readCallerString := func(caller *wasmtime.Caller, ptr int32) string {
+		memoryExtern := caller.GetExport("memory")
+		if memoryExtern == nil || memoryExtern.Memory() == nil {
+			return ""
+		}
+		info, readErr := readHikeStringInfo(memoryExtern.Memory(), caller, ptr)
+		if readErr != nil {
+			return ""
+		}
+		return info.text
+	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_source", writeSource); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define Hike source bridge: %v\n", err)
+		os.Exit(1)
+	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_runtime_init", func(_ *wasmtime.Caller) int32 { return 1 }); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define Hike runtime init bridge: %v\n", err)
+		os.Exit(1)
+	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_echo_source_enabled", func(_ *wasmtime.Caller) int32 { return 0 }); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define Hike echo bridge: %v\n", err)
+		os.Exit(1)
+	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_debug_phase", func(_ *wasmtime.Caller, phase int32) int32 { return phase }); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define Hike debug bridge: %v\n", err)
+		os.Exit(1)
+	}
+	if err := linker.DefineFunc(store, "env", "printf", func(_ *wasmtime.Caller, _ int32) int32 { return 0 }); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define printf bridge: %v\n", err)
+		os.Exit(1)
+	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_publish_wat", func(caller *wasmtime.Caller, watPtr int32) int32 {
+		generatedWAT = readCallerString(caller, watPtr)
+		return int32(len(generatedWAT))
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define Hike WAT bridge: %v\n", err)
+		os.Exit(1)
+	}
 	// LLVM's wasm32 runtime notifies the host through hike_thread_spawn when
 	// Async creates a task. WABT uses the same ABI; the dispatcher remains in
 	// Wasm so the host only forwards the table index and task metadata.
@@ -324,6 +412,22 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "wasm-checker: call %q: %v\n", os.Args[2], err)
 		os.Exit(1)
+	}
+	if sourcePath != "" {
+		if generatedWAT == "" {
+			fmt.Fprintln(os.Stderr, "wasm-checker: Hike compiler did not publish WAT")
+			os.Exit(1)
+		}
+		if watOutputPath != "" {
+			if writeErr := os.WriteFile(watOutputPath, []byte(generatedWAT), 0644); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: write WAT %s: %v\n", watOutputPath, writeErr)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "wasm-checker: wrote WAT %s (%d bytes)\n", watOutputPath, len(generatedWAT))
+		} else {
+			fmt.Print(generatedWAT)
+		}
+		return
 	}
 	if stringResult {
 		memoryExtern := instance.GetExport(store, "memory")

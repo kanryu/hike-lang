@@ -28,6 +28,7 @@ type Compiler struct {
 	regionMode bool
 	goHikeMode bool
 	debugInfo  bool
+	wabtDebug  *wabt.DebugInfo
 	reporter   *diag.Reporter
 }
 
@@ -61,8 +62,14 @@ func (c *Compiler) SetRegionMode(enabled bool) { c.regionMode = enabled }
 // SetGoHikeMode enables compilation of Go-compatible self-hosting sources.
 func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
 
-// SetDebugInfo enables LLVM source-level debug metadata emission.
+// SetDebugInfo enables source-level debug metadata emission for LLVM and WABT.
 func (c *Compiler) SetDebugInfo(enabled bool) { c.debugInfo = enabled }
+
+// WABTDebugInfo returns the source table collected by the WABT emitter during
+// the most recent WAT compilation.  The command driver uses it after WABT has
+// assembled the module so DWARF custom sections can be appended to the final
+// Wasm binary.
+func (c *Compiler) WABTDebugInfo() *wabt.DebugInfo { return c.wabtDebug }
 
 func (c *Compiler) Reporter() *diag.Reporter {
 	return c.reporter
@@ -201,12 +208,17 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 // CompileToWAT lowers the source through HIR and emits WebAssembly text
 // directly. It intentionally does not pass through LLVM or Clang.
 func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *ast.Program, error) {
+	c.wabtDebug = nil
 	hirProg, semaCtx, concreteProg, err := c.CompileToHIR(entryPaths...)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	emitter := wabt.New(hirProg, semaCtx)
 	emitter.SetConcurrent(c.wasmMode == "concurrent")
+	emitter.SetDebugInfo(c.debugInfo)
+	if c.debugInfo {
+		c.wabtDebug = emitter.DebugInfo(entryPaths[0])
+	}
 	return emitter.Emit(), semaCtx, concreteProg, nil
 }
 
@@ -238,6 +250,10 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	program := lw.Lower()
 	emitter := wabt.New(program, ctx)
 	emitter.SetConcurrent(c.wasmMode == "concurrent")
+	emitter.SetDebugInfo(c.debugInfo)
+	if c.debugInfo {
+		c.wabtDebug = emitter.DebugInfo(filename)
+	}
 	return emitter.Emit(), concrete, nil
 }
 

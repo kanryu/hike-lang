@@ -30,6 +30,7 @@ type Emitter struct {
 	asyncTypes   map[string]int
 	asyncSigs    []taskCallSignature
 	concurrent   bool
+	debugInfo    bool
 }
 
 type taskCallSignature struct {
@@ -44,6 +45,11 @@ func New(p *hir.Program, _ *sema.Context) *Emitter {
 // SetConcurrent enables the shared-memory/host-worker ABI used by the
 // concurrent Wasm build mode. Normal Wasm keeps the synchronous future ABI.
 func (e *Emitter) SetConcurrent(enabled bool) { e.concurrent = enabled }
+
+// SetDebugInfo enables WAT markers used to recover HIR instruction offsets
+// after wat2wasm has assembled the module. The markers are harmless blocks and
+// are omitted entirely from normal builds.
+func (e *Emitter) SetDebugInfo(enabled bool) { e.debugInfo = enabled }
 
 func watType(t sema.Type) string {
 	if t == nil {
@@ -261,6 +267,13 @@ func (e *Emitter) emitTypeDefs() {
 
 func (e *Emitter) emitItabData() {
 	for _, itab := range e.p.Itabs {
+		// A type-info table is a read-only record shared by all interface
+		// values of this concrete/interface pair:
+		//   +0: concrete TypeID
+		//   +4: function-table index for method 0
+		//   +8: function-table index for method 1, ...
+		// Keep every record 4-byte aligned because all fields are i32.
+		e.nextDataOffset = (e.nextDataOffset + 3) &^ 3
 		e.itabOffsets[itab.GlobalName] = e.nextDataOffset
 		var raw strings.Builder
 		typeID := uint32(itab.TypeID)
@@ -269,6 +282,11 @@ func (e *Emitter) emitItabData() {
 			name := itabTargetName(method)
 			fmt.Fprintf(&raw, "\\%02x\\%02x\\%02x\\%02x", e.functionIndex[name]&255, (e.functionIndex[name]>>8)&255, (e.functionIndex[name]>>16)&255, (e.functionIndex[name]>>24)&255)
 		}
+		ifaceName := ""
+		if itab.InterfaceType != nil {
+			ifaceName = itab.InterfaceType.Name
+		}
+		fmt.Fprintf(&e.b, "  ;; typeinfo %s for %s, typeid=%d, methods=%d\n", itab.GlobalName, ifaceName, typeID, len(itab.Methods))
 		fmt.Fprintf(&e.b, "  (data (i32.const %d) \"%s\")\n", e.nextDataOffset, raw.String())
 		e.nextDataOffset += 4 + len(itab.Methods)*4
 	}
@@ -698,9 +716,11 @@ func (e *Emitter) emitCFG(fn *hir.Function) {
 		e.b.WriteString("        )\n")
 		fmt.Fprintf(&e.b, "        ;; %s\n", bb.Label)
 		for _, in := range bb.Instructions {
+			e.debugMarker()
 			e.instruction(in)
 		}
 		if bb.Terminator != nil {
+			e.debugMarker()
 			e.cfgTerminator(bb.Terminator, fn, fn.Blocks)
 		} else {
 			e.defaultReturn(fn)
@@ -711,6 +731,12 @@ func (e *Emitter) emitCFG(fn *hir.Function) {
 	// returns or branches back to the loop. Tell the validator that the
 	// structural loop cannot leave a value on the function stack.
 	e.b.WriteString("    (unreachable)\n")
+}
+
+func (e *Emitter) debugMarker() {
+	if e.debugInfo {
+		e.b.WriteString("        (block (nop))\n")
+	}
 }
 
 func (e *Emitter) defaultReturn(fn *hir.Function) {

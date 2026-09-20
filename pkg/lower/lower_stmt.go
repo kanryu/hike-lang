@@ -1284,16 +1284,16 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		// Fields empty makes every field address use offset zero in backends
 		// that do not otherwise materialize the runtime struct.
 		entryStructType.Fields = []sema.Field{
-			{Name: "hash", Type: sema.TypeInt},
-			{Name: "key", Type: mp.Key},
-			{Name: "val", Type: mp.Value},
-			{Name: "next", Type: entryPtrType},
+			sema.Field{Name: "hash", Type: sema.TypeInt},
+			sema.Field{Name: "key", Type: mp.Key},
+			sema.Field{Name: "val", Type: mp.Value},
+			sema.Field{Name: "next", Type: entryPtrType},
 		}
 		mapStructType := &sema.StructType{Name: "__hike_map", Fields: []sema.Field{
-			{Name: "buckets", Type: &sema.PointerType{Base: entryPtrType}},
-			{Name: "numBuckets", Type: sema.TypeInt},
-			{Name: "length", Type: sema.TypeInt},
-			{Name: "isString", Type: sema.TypeInt},
+			sema.Field{Name: "buckets", Type: &sema.PointerType{Base: entryPtrType}},
+			sema.Field{Name: "numBuckets", Type: sema.TypeInt},
+			sema.Field{Name: "length", Type: sema.TypeInt},
+			sema.Field{Name: "isString", Type: sema.TypeInt},
 		}}
 		mapPtrType := &sema.PointerType{Base: mapStructType}
 
@@ -1716,7 +1716,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		}
 		for _, tExpr := range c.Types {
 			targetType := s.root.semaCtx.ResolveType(tExpr)
-			targetTypeID := s.root.semaCtx.GetTypeID(targetType)
+			targetTypeID := targetType.TypeID(s.root.semaCtx)
 
 			cmpReg := s.root.nextReg(sema.TypeBool)
 			s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: actualTypeIDReg, R: &hir.ConstInt{Val: targetTypeID, Typ: sema.TypeInt32}})

@@ -1701,7 +1701,7 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 		return existing
 	}
 
-	typeID := c.root.semaCtx.GetTypeID(concreteType)
+	typeID := concreteType.TypeID(c.root.semaCtx)
 	globalName := fmt.Sprintf("__itab_%s_%s", sName, ifName)
 	itabStructName := fmt.Sprintf("__itab_%s", ifName)
 

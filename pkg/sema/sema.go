@@ -16,6 +16,14 @@ type Type interface {
 	TypeName() string
 	LLVMType() string
 	Size() int
+	TypeID(*Context) int64
+}
+
+func typeIDOf(ctx *Context, t Type) int64 {
+	if ctx == nil || t == nil {
+		return 0
+	}
+	return ctx.typeIDFor(t)
 }
 
 // typeNameOf resolves the display name without invoking a method through the
@@ -148,9 +156,10 @@ type BasicType struct {
 	LLVM     string
 }
 
-func (t *BasicType) TypeName() string { return t.Name }
-func (t *BasicType) LLVMType() string { return t.LLVM }
-func (t *BasicType) Size() int        { return t.ByteSize }
+func (t *BasicType) TypeName() string          { return t.Name }
+func (t *BasicType) LLVMType() string          { return t.LLVM }
+func (t *BasicType) Size() int                 { return t.ByteSize }
+func (t *BasicType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 var (
 	// Default layout targets 64-bit systems; SetTargetArchitecture only
@@ -224,46 +233,112 @@ func setBasicTypeLayout(typ *BasicType, size int, llvm string) {
 }
 
 func IsBuiltinType(name string) bool {
-	for builtinName := range BuiltinTypes {
-		if builtinName == name {
-			return true
-		}
-	}
-	return name == "any" || name == "error"
+	_, ok := LookupBuiltinType(name)
+	return ok || name == "any" || name == "error"
 }
 
 func LookupBuiltinType(name string) (Type, bool) {
-	for builtinName, typ := range BuiltinTypes {
-		if builtinName == name {
-			return typ, true
-		}
+	// Keep this lookup deterministic and independent of the wasm32 map runtime.
+	// The self-hosted compiler resolves builtin types while its map/string
+	// runtime is still being initialized.
+	if builtinNameEqual(name, "int") {
+		return TypeInt, true
+	}
+	if builtinNameEqual(name, "int64") {
+		return TypeInt64, true
+	}
+	if builtinNameEqual(name, "int32") {
+		return TypeInt32, true
+	}
+	if builtinNameEqual(name, "int16") {
+		return TypeInt16, true
+	}
+	if builtinNameEqual(name, "int8") {
+		return TypeInt8, true
+	}
+	if builtinNameEqual(name, "uint") {
+		return TypeUint, true
+	}
+	if builtinNameEqual(name, "uint64") {
+		return TypeUint64, true
+	}
+	if builtinNameEqual(name, "uint32") {
+		return TypeUint32, true
+	}
+	if builtinNameEqual(name, "uint16") {
+		return TypeUint16, true
+	}
+	if builtinNameEqual(name, "uint8") {
+		return TypeUint8, true
+	}
+	if builtinNameEqual(name, "uintptr") {
+		return TypeUintptr, true
+	}
+	if builtinNameEqual(name, "byte") {
+		return TypeByte, true
+	}
+	if builtinNameEqual(name, "rune") {
+		return TypeInt32, true
+	}
+	if builtinNameEqual(name, "float") || builtinNameEqual(name, "float64") {
+		return TypeFloat64, true
+	}
+	if builtinNameEqual(name, "float32") {
+		return TypeFloat32, true
+	}
+	if builtinNameEqual(name, "bool") {
+		return TypeBool, true
+	}
+	if builtinNameEqual(name, "string") {
+		return TypeString, true
+	}
+	if builtinNameEqual(name, "cstring") {
+		return TypeCString, true
+	}
+	if builtinNameEqual(name, "void") {
+		return TypeVoid, true
 	}
 	return nil, false
+}
+
+func builtinNameEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type TypeParamType struct {
 	Name string
 }
 
-func (t *TypeParamType) TypeName() string { return t.Name }
-func (t *TypeParamType) LLVMType() string { return "i8*" }
-func (t *TypeParamType) Size() int        { return PointerSize }
+func (t *TypeParamType) TypeName() string          { return t.Name }
+func (t *TypeParamType) LLVMType() string          { return "i8*" }
+func (t *TypeParamType) Size() int                 { return PointerSize }
+func (t *TypeParamType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type ConstValueType struct {
 	Value int64
 }
 
-func (t *ConstValueType) TypeName() string { return fmt.Sprintf("const<%d>", t.Value) }
-func (t *ConstValueType) LLVMType() string { return "void" }
-func (t *ConstValueType) Size() int        { return 0 }
+func (t *ConstValueType) TypeName() string          { return fmt.Sprintf("const<%d>", t.Value) }
+func (t *ConstValueType) LLVMType() string          { return "void" }
+func (t *ConstValueType) Size() int                 { return 0 }
+func (t *ConstValueType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type PointerType struct {
 	Base Type
 }
 
-func (t *PointerType) TypeName() string { return typeNameOf(t) }
-func (t *PointerType) LLVMType() string { return typeLLVMOf(t) }
-func (t *PointerType) Size() int        { return PointerSize }
+func (t *PointerType) TypeName() string          { return typeNameOf(t) }
+func (t *PointerType) LLVMType() string          { return typeLLVMOf(t) }
+func (t *PointerType) Size() int                 { return PointerSize }
+func (t *PointerType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type SliceType struct {
 	Elem Type
@@ -273,16 +348,18 @@ func (t *SliceType) TypeName() string { return typeNameOf(t) }
 func (t *SliceType) LLVMType() string {
 	return typeLLVMOf(t)
 }
-func (t *SliceType) Size() int { return PointerSize + SizeOf(TypeInt)*2 }
+func (t *SliceType) Size() int                 { return PointerSize + SizeOf(TypeInt)*2 }
+func (t *SliceType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type ArrayType struct {
 	Len  int
 	Elem Type
 }
 
-func (t *ArrayType) TypeName() string { return typeNameOf(t) }
-func (t *ArrayType) LLVMType() string { return typeLLVMOf(t) }
-func (t *ArrayType) Size() int        { return t.Len * SizeOf(t.Elem) }
+func (t *ArrayType) TypeName() string          { return typeNameOf(t) }
+func (t *ArrayType) LLVMType() string          { return typeLLVMOf(t) }
+func (t *ArrayType) Size() int                 { return t.Len * SizeOf(t.Elem) }
+func (t *ArrayType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type Field struct {
 	Name       string
@@ -349,6 +426,8 @@ func (t *StructType) Size() int {
 	return (offset + maxAlign - 1) &^ (maxAlign - 1)
 }
 
+func (t *StructType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
+
 type Method struct {
 	Name         string
 	InternalKey  string
@@ -399,9 +478,10 @@ func (t *InterfaceType) LLVMType() string {
 	return "{ i8*, i8* }"
 }
 
-func (t *InterfaceType) Size() int       { return PointerSize * 2 }
-func (t *InterfaceType) IsAny() bool     { return len(t.Methods) == 0 }
-func (t *InterfaceType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *InterfaceType) Size() int                 { return PointerSize * 2 }
+func (t *InterfaceType) IsAny() bool               { return len(t.Methods) == 0 }
+func (t *InterfaceType) IsGeneric() bool           { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *InterfaceType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 // GetMethod はメソッド名から定義情報と itab スロット番号（0始まり）を返す
 func (t *InterfaceType) GetMethod(name string) (*Method, int) {
@@ -442,10 +522,11 @@ type FuncType struct {
 	CFuncAst    *ast.CFuncDecl
 }
 
-func (t *FuncType) TypeName() string { return "func" }
-func (t *FuncType) LLVMType() string { return "{ i8*, i8* }" }
-func (t *FuncType) Size() int        { return PointerSize * 2 }
-func (t *FuncType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *FuncType) TypeName() string          { return "func" }
+func (t *FuncType) LLVMType() string          { return "{ i8*, i8* }" }
+func (t *FuncType) Size() int                 { return PointerSize * 2 }
+func (t *FuncType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
+func (t *FuncType) IsGeneric() bool           { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 func setFuncVariadicElem(fn *FuncType, elem Type) {
 	if fn != nil {
@@ -472,6 +553,7 @@ func (t *TupleType) Size() int {
 	}
 	return sz
 }
+func (t *TupleType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type MapType struct {
 	Key   Type
@@ -487,14 +569,16 @@ func (t *MapType) LLVMType() string {
 func (t *MapType) Size() int {
 	return PointerSize
 }
+func (t *MapType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type ChanType struct {
 	Elem Type
 }
 
-func (t *ChanType) TypeName() string { return typeNameOf(t) }
-func (t *ChanType) LLVMType() string { return "i8*" }
-func (t *ChanType) Size() int        { return PointerSize }
+func (t *ChanType) TypeName() string          { return typeNameOf(t) }
+func (t *ChanType) LLVMType() string          { return "i8*" }
+func (t *ChanType) Size() int                 { return PointerSize }
+func (t *ChanType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type FutureType struct {
 	ReturnTypes []Type
@@ -503,8 +587,9 @@ type FutureType struct {
 func (t *FutureType) TypeName() string {
 	return typeNameOf(t)
 }
-func (t *FutureType) LLVMType() string { return "i8*" }
-func (t *FutureType) Size() int        { return PointerSize }
+func (t *FutureType) LLVMType() string          { return "i8*" }
+func (t *FutureType) Size() int                 { return PointerSize }
+func (t *FutureType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 // TypeBad は型チェック中にエラーが発生した場合に使用される特殊な型です。
 // 後続の型チェックでは、オペランドに TypeBad が含まれていた場合は新たなエラーを出力せずに静かに TypeBad をパススルーさせます。

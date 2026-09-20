@@ -159,6 +159,17 @@ type Instruction interface {
 	Result() *Reg
 }
 
+// InstructionKey returns a scalar key for debug metadata.  Keeping interface
+// values out of map keys is important for the self-hosted wasm32 compiler:
+// interface hashing is not part of the HIR data model and is needlessly
+// fragile across the native and Go-Hike runtimes.
+func InstructionKey(instr Instruction) string {
+	if instr == nil {
+		return ""
+	}
+	return instr.String()
+}
+
 // SourceLocation identifies the Hike source location associated with a HIR
 // instruction.
 type SourceLocation struct {
@@ -653,7 +664,7 @@ type Program struct {
 	Globals              []*GlobalVar
 	Itabs                []*ItabDef
 	Functions            []*Function
-	InstructionLocations map[Instruction]SourceLocation
+	InstructionLocations map[string]SourceLocation
 }
 
 func (p *Program) Dump() string {

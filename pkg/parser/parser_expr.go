@@ -1090,13 +1090,28 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 	}
 
 	// 単一型引数のジェネリクス適用 (例: Add[float64], MyFunc[int](a, b), Container[*Node])
-	if isTypeLikeExpr(indexOrLow) {
+	if isTypeLikeExpr(indexOrLow) && isGenericBaseExpr(left) {
 		if typeArg := exprToTypeExpr(indexOrLow); typeArg != nil {
 			return &ast.GenericInstExpr{Token: tok, Left: left, TypeArgs: []ast.TypeExpr{typeArg}}
 		}
 	}
 
 	return &ast.IndexExpr{Token: tok, Left: left, Index: indexOrLow}
+}
+
+// isGenericBaseExpr prevents an ordinary value member such as m.Field[T]
+// from being mistaken for a generic instantiation merely because Field starts
+// with an uppercase letter. Generic type and function names remain supported;
+// value members are parsed as indexing expressions.
+func isGenericBaseExpr(expr ast.Expression) bool {
+	switch x := expr.(type) {
+	case *ast.Identifier:
+		return isTypeLikeExpr(x)
+	case *ast.MemberExpr:
+		return isTypeLikeExpr(x)
+	default:
+		return isTypeLikeExpr(expr)
+	}
 }
 
 func (p *Parser) parseGenericTypeArg() ast.TypeExpr {

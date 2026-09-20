@@ -36,6 +36,11 @@ func main() int {
 	if !hasWasmCustomSection(data, "name") {
 		t.Fatal("-g WABT build did not contain the Wasm name custom section")
 	}
+	for _, section := range []string{".debug_abbrev", ".debug_str", ".debug_line", ".debug_info"} {
+		if !hasWasmCustomSection(data, section) {
+			t.Fatalf("-g WABT build did not contain the DWARF custom section %q", section)
+		}
+	}
 }
 
 func hasWasmCustomSection(data []byte, wanted string) bool {

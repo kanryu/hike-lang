@@ -156,5 +156,32 @@ func LookupIdent(ident string) TokenType {
 	if tok, ok := keywords[ident]; ok {
 		return tok
 	}
+	// Map lookup currently cannot reliably match a dynamically-created string
+	// view in the wasm32 self-hosted runtime. Use byte-wise matching as a
+	// fallback for bootstrap keywords.
+	if keywordBytesEqual(ident, "package") {
+		return PACKAGE
+	}
+	if keywordBytesEqual(ident, "import") {
+		return IMPORT
+	}
+	if keywordBytesEqual(ident, "func") {
+		return FUNC
+	}
+	if keywordBytesEqual(ident, "return") {
+		return RETURN
+	}
 	return IDENT
+}
+
+func keywordBytesEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

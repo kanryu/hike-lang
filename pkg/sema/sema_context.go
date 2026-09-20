@@ -28,6 +28,9 @@ type Context struct {
 	GenericFuncs       map[string]*ast.FuncDecl
 	TypeParams         map[string]*TypeParamType
 	typeIDs            map[string]int64
+	moduleTypeBases    map[string]int64
+	moduleTypeSlots    map[string]int64
+	nextModuleTypeBase int64
 	nextTypeID         int64
 	HasMapImport       bool
 	GoHikeMode         bool
@@ -47,21 +50,24 @@ func astIdentifierValue(id *ast.Identifier) string {
 
 func NewContext() *Context {
 	ctx := &Context{
-		Structs:         make(map[string]*StructType),
-		Interfaces:      make(map[string]*InterfaceType),
-		Functions:       make(map[string]*FuncType),
-		Methods:         make(map[string]*FuncType),
-		Globals:         make(map[string]Type),
-		Constants:       make(map[string]int64),
-		StringConstants: make(map[string]string),
-		FloatConstants:  make(map[string]float64),
-		Aliases:         make(map[string]Type),
-		GenericTypes:    make(map[string]*ast.TypeDecl),
-		GenericFuncs:    make(map[string]*ast.FuncDecl),
-		TypeParams:      make(map[string]*TypeParamType),
-		typeIDs:         make(map[string]int64),
-		nextTypeID:      1,
-		ResolvedCalls:   make(map[*ast.CallExpr]*FuncType),
+		Structs:            make(map[string]*StructType),
+		Interfaces:         make(map[string]*InterfaceType),
+		Functions:          make(map[string]*FuncType),
+		Methods:            make(map[string]*FuncType),
+		Globals:            make(map[string]Type),
+		Constants:          make(map[string]int64),
+		StringConstants:    make(map[string]string),
+		FloatConstants:     make(map[string]float64),
+		Aliases:            make(map[string]Type),
+		GenericTypes:       make(map[string]*ast.TypeDecl),
+		GenericFuncs:       make(map[string]*ast.FuncDecl),
+		TypeParams:         make(map[string]*TypeParamType),
+		typeIDs:            make(map[string]int64),
+		moduleTypeBases:    make(map[string]int64),
+		moduleTypeSlots:    make(map[string]int64),
+		nextModuleTypeBase: 100,
+		nextTypeID:         1,
+		ResolvedCalls:      make(map[*ast.CallExpr]*FuncType),
 	}
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2
@@ -89,14 +95,48 @@ func (c *Context) GetTypeID(t Type) int64 {
 	if t == nil {
 		return 0
 	}
+	return t.TypeID(c)
+}
+
+// typeIDFor is the sole allocator for semantic type IDs. Concrete Type
+// implementations delegate here through TypeID so callers never need to
+// manipulate the raw ID registry directly.
+func (c *Context) typeIDFor(t Type) int64 {
+	if t == nil {
+		return 0
+	}
 	name := typeNameOf(t)
 	if id, exists := c.typeIDs[name]; exists {
 		return id
 	}
-	id := c.nextTypeID
-	c.nextTypeID++
+	// Runtime type IDs are allocated in 100-entry module ranges.  Builtins
+	// occupy the legacy 1..99 range; user and imported module types receive a
+	// stable block base and a construction-order slot within that block.
+	module := typeIDModule(name)
+	base, exists := c.moduleTypeBases[module]
+	if !exists {
+		base = c.nextModuleTypeBase
+		c.nextModuleTypeBase += 100
+		c.moduleTypeBases[module] = base
+	}
+	slot := c.moduleTypeSlots[module]
+	if slot >= 100 {
+		panic(fmt.Sprintf("type ID range exhausted for module %q", module))
+	}
+	id := base + slot
+	c.moduleTypeSlots[module] = slot + 1
 	c.typeIDs[name] = id
 	return id
+}
+
+func typeIDModule(name string) string {
+	for len(name) > 0 && (name[0] == '*' || name[0] == '[') {
+		name = name[1:]
+	}
+	if idx := strings.Index(name, "_"); idx > 0 {
+		return name[:idx]
+	}
+	return "main"
 }
 
 // -----------------------------------------------------------------------------
@@ -451,6 +491,11 @@ func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
 		// Go-Hike cannot currently carry the unexported Instruction marker
 		// methods through imported HIR package types.  Lowering still constructs
 		// concrete terminators, so retain this relationship in compatibility mode.
+		return true
+	}
+	if interfaceName == "hir_Instruction" {
+		// Imported HIR instruction implementations carry an unexported marker
+		// method, so Go-Hike cannot prove this interface relationship structurally.
 		return true
 	}
 	if interfaceName == "hir_Value" {
