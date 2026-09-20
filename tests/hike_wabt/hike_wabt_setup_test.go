@@ -151,7 +151,7 @@ func buildAndRunHikeWabtProject(t *testing.T, source string, files map[string]st
 		t.Fatalf("hike-hike WAT generation failed: %v\n%s", err, output)
 	}
 
-	assemble := exec.Command("wat2wasm", wat, "-o", wasm)
+	assemble := exec.Command("wat2wasm", "--enable-threads", wat, "-o", wasm)
 	if output, err := assemble.CombinedOutput(); err != nil {
 		t.Fatalf("wat2wasm failed: %v\n%s", err, output)
 	}
@@ -171,6 +171,10 @@ func buildAndRunHikeWabtString(t *testing.T, source, function string) string {
 }
 
 func buildAndRunHikeWabtStringMode(t *testing.T, source, function string, structured bool) string {
+	return buildAndRunHikeWabtStringWithCheckerMode(t, source, function, structured, "normal")
+}
+
+func buildAndRunHikeWabtStringWithCheckerMode(t *testing.T, source, function string, structured bool, checkerMode string) string {
 	t.Helper()
 	requireHikeWabtTools(t)
 	tmp := t.TempDir()
@@ -180,12 +184,17 @@ func buildAndRunHikeWabtStringMode(t *testing.T, source, function string, struct
 	if err := os.WriteFile(src, []byte(source), 0644); err != nil {
 		t.Fatal(err)
 	}
-	compile := exec.Command(hikeHikeBin, "-o", wat, src)
+	compileArgs := []string{"-o", wat}
+	if checkerMode != "normal" {
+		compileArgs = append(compileArgs, "--wasm-mode="+checkerMode)
+	}
+	compileArgs = append(compileArgs, src)
+	compile := exec.Command(hikeHikeBin, compileArgs...)
 	compile.Dir = projectRoot
 	if output, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("hike-hike string WAT generation failed: %v\n%s", err, output)
 	}
-	assemble := exec.Command("wat2wasm", wat, "-o", wasm)
+	assemble := exec.Command("wat2wasm", "--enable-threads", wat, "-o", wasm)
 	if output, err := assemble.CombinedOutput(); err != nil {
 		t.Fatalf("wat2wasm string case failed: %v\n%s", err, output)
 	}
@@ -194,7 +203,16 @@ func buildAndRunHikeWabtStringMode(t *testing.T, source, function string, struct
 	if structured {
 		mode = "--string-info"
 	}
-	run := exec.Command(wasmtimeBin, wasm, function, mode)
+	args := []string{wasm, function}
+	// Normal mode is the historical default.  Omitting the explicit flag
+	// keeps the test loop compatible with an already-built checker binary;
+	// concurrent mode must be selected explicitly because it has a different
+	// bootstrap sequence.
+	if checkerMode != "normal" {
+		args = append(args, "--mode="+checkerMode)
+	}
+	args = append(args, mode)
+	run := exec.Command(wasmtimeBin, args...)
 	run.Stdout, run.Stderr = &stdout, &stderr
 	if err := run.Run(); err != nil {
 		t.Fatalf("Wasmtime string execution failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())

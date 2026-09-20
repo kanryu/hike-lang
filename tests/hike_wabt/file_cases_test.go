@@ -2,6 +2,7 @@ package hike_wabt_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,7 +54,12 @@ func TestHikeWabtStringCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		paths = append(paths, matched...)
+		for _, path := range matched {
+			if isConcurrentStringCase(path) {
+				continue
+			}
+			paths = append(paths, path)
+		}
 	}
 	if len(paths) == 0 {
 		t.Fatal("no string file-based Hike cases found")
@@ -84,6 +90,54 @@ func TestHikeWabtStringCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHikeWabtConcurrentStringCases runs the cases whose execution model
+// requires the concurrent Wasm runtime and checker bootstrap.
+func TestHikeWabtConcurrentStringCases(t *testing.T) {
+	if os.Getenv("HIKE_WABT_INCLUDE_STUBS") != "1" {
+		t.Skip("concurrent hike_wabt cases are opt-in; set HIKE_WABT_INCLUDE_STUBS=1")
+	}
+	root := filepath.Join(projectRoot, "tests", "hike_wabt", "cases_string", "stub")
+	paths, err := filepath.Glob(filepath.Join(root, "TestConcurrent_EventLoop_*.hike"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Skip("no concurrent string cases found")
+	}
+	if !checkerSupportsConcurrentMode() {
+		t.Skip("wasm-checker does not support --mode=concurrent; rebuild bin/wasm-checker")
+	}
+	for _, path := range paths {
+		path := path
+		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		t.Run(name, func(t *testing.T) {
+			source, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantBytes, err := os.ReadFile(strings.TrimSuffix(path, ".hike") + ".want")
+			if err != nil {
+				t.Fatalf("read expected string: %v", err)
+			}
+			want := string(wantBytes)
+			got := buildAndRunHikeWabtStringWithCheckerMode(t, string(source), "testOutput", isStringWantRecord(want), "concurrent")
+			if got != want && !sameStringPayload(got, want) {
+				t.Fatalf("Wasmtime concurrent string result = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func checkerSupportsConcurrentMode() bool {
+	cmd := exec.Command(wasmtimeBin)
+	out, _ := cmd.CombinedOutput()
+	return strings.Contains(string(out), "--mode=normal|concurrent")
+}
+
+func isConcurrentStringCase(path string) bool {
+	return strings.Contains(filepath.Base(path), "TestConcurrent_EventLoop_")
 }
 
 func sameStringPayload(got, want string) bool {

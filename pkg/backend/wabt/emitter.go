@@ -27,6 +27,9 @@ type Emitter struct {
 	callArgUsed  int
 	taskEnvs     map[*hir.Reg]bool
 	taskCalls    map[*hir.Reg]taskCallSignature
+	asyncTypes   map[string]int
+	asyncSigs    []taskCallSignature
+	concurrent   bool
 }
 
 type taskCallSignature struct {
@@ -35,8 +38,12 @@ type taskCallSignature struct {
 }
 
 func New(p *hir.Program, _ *sema.Context) *Emitter {
-	return &Emitter{p: p, stringOffsets: make(map[string]int), itabOffsets: make(map[string]int), functionIndex: make(map[string]int), indirectTypes: make(map[string]string), taskEnvs: make(map[*hir.Reg]bool), taskCalls: make(map[*hir.Reg]taskCallSignature)}
+	return &Emitter{p: p, stringOffsets: make(map[string]int), itabOffsets: make(map[string]int), functionIndex: make(map[string]int), indirectTypes: make(map[string]string), taskEnvs: make(map[*hir.Reg]bool), taskCalls: make(map[*hir.Reg]taskCallSignature), asyncTypes: make(map[string]int)}
 }
+
+// SetConcurrent enables the shared-memory/host-worker ABI used by the
+// concurrent Wasm build mode. Normal Wasm keeps the synchronous future ABI.
+func (e *Emitter) SetConcurrent(enabled bool) { e.concurrent = enabled }
 
 func watType(t sema.Type) string {
 	if t == nil {
@@ -295,8 +302,48 @@ func ifaceCallResults(x *hir.InstrCallIface) []sema.Type       { return resultTy
 func hirFunctionExtern(fn *hir.Function) bool                  { return fn.IsExtern }
 
 func hasEnvironment(v hir.Value) bool {
-	_, nilEnv := v.(*hir.ConstNil)
-	return v != nil && !nilEnv
+	if v == nil {
+		return false
+	}
+	switch x := v.(type) {
+	case *hir.ConstNil, *hir.ConstZero:
+		return false
+	case *hir.ConstInt:
+		return x.Val != 0
+	default:
+		return true
+	}
+}
+
+func taskSignatureKey(sig taskCallSignature) string {
+	parts := make([]string, 0, len(sig.params)+len(sig.results)+1)
+	for _, p := range sig.params {
+		parts = append(parts, "p:"+watType(p))
+	}
+	parts = append(parts, "r")
+	for _, r := range sig.results {
+		parts = append(parts, "r:"+watType(r))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (e *Emitter) asyncSignature(fn *hir.InstrAsync) int {
+	results := fn.RetTypes
+	if len(results) > 1 {
+		results = []sema.Type{sema.TypeUint32}
+	}
+	sig := taskCallSignature{results: results}
+	if hasEnvironment(fn.EnvPtr) {
+		sig.params = []sema.Type{&sema.PointerType{Base: sema.TypeByte}}
+	}
+	key := taskSignatureKey(sig)
+	if id, ok := e.asyncTypes[key]; ok {
+		return id
+	}
+	id := len(e.asyncSigs)
+	e.asyncTypes[key] = id
+	e.asyncSigs = append(e.asyncSigs, sig)
+	return id
 }
 
 func (e *Emitter) prepareTypes() {
@@ -315,6 +362,7 @@ func (e *Emitter) prepareTypes() {
 						results = []sema.Type{sema.TypeUint32}
 					}
 					e.taskCalls[x.Dst] = taskCallSignature{params: params, results: results}
+					e.asyncSignature(x)
 				case *hir.InstrCallIndirect:
 					params := make([]sema.Type, len(x.Args))
 					for i, a := range x.Args {
@@ -414,6 +462,10 @@ func (e *Emitter) Emit() string {
 	}
 	e.prepareTypes()
 	e.b.WriteString("(module\n")
+	if e.concurrent && len(e.asyncSigs) > 0 {
+		e.b.WriteString("  (import \"env\" \"hike_thread_spawn\" (func $__hike_thread_spawn (param i32) (param i32) (param i32) (param i32)))\n")
+		e.b.WriteString("  (import \"env\" \"hike_thread_pump\" (func $__hike_thread_pump))\n")
+	}
 	for _, fn := range e.p.Functions {
 		if !hirFunctionExtern(fn) {
 			continue
@@ -435,27 +487,31 @@ func (e *Emitter) Emit() string {
 		e.b.WriteString("))\n")
 	}
 	// Keep the requested initial stack address valid while leaving room for
-	// static data and the future runtime heap (malloc/memory.grow).
-	e.b.WriteString("  (memory (export \"memory\") 16)\n")
+	// static data and the runtime heap. Concurrent mode uses a one-megabyte
+	// shared-memory budget; the checker assigns the worker arena within it.
+	if e.concurrent {
+		e.b.WriteString("  (import \"env\" \"memory\" (memory 16 16 shared))\n")
+		e.b.WriteString("  (export \"memory\" (memory 0))\n")
+	} else {
+		e.b.WriteString("  (memory (export \"memory\") 16)\n")
+	}
 	e.b.WriteString("  (global $__sp (mut i32) (i32.const 65536))\n")
 	// The checker runs main for initialization and then invokes a user
 	// function. Export the stack pointer so that runner-side initialization
 	// can preserve stack-backed global views before the second call.
 	e.b.WriteString("  (export \"__hike_sp\" (global $__sp))\n")
-	// Go-Hike compiler bootstrap modules perform substantial global
-	// initialization before main. Keep the heap away from that temporary stack
-	// area; malloc grows memory on demand when this address exceeds the initial
-	// module size.
-	// The self-hosted compiler uses a large temporary stack during package
-	// analysis. Keep the heap well beyond that stack to avoid corrupting its
-	// maps and AST objects.
-	e.b.WriteString("  (global $__heap (mut i32) (i32.const 67108864))\n")
+	// Leave room for the main stack and the concurrent worker arena.
+	e.b.WriteString("  (global $__heap (mut i32) (i32.const 196608))\n")
+	e.b.WriteString("  (export \"__hike_heap\" (global $__heap))\n")
 	e.b.WriteString("  (global $__region_active (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_begin_count (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_end_count (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_released_bytes (mut i32) (i32.const 0))\n")
 	for _, g := range e.p.Globals {
 		fmt.Fprintf(&e.b, "  (global $%s (mut %s) (%s.const 0))\n", g.Name, watType(g.Typ), watType(g.Typ))
+		if e.concurrent && (strings.HasPrefix(g.Name, "eventloop_") || g.Name == "testOutputBuffer" || g.Name == "mainDeviceID") {
+			fmt.Fprintf(&e.b, "  (export \"__hike_global_%s\" (global $%s))\n", g.Name, g.Name)
+		}
 	}
 	if len(e.functionIndex) > 0 {
 		names := make([]string, 0, len(e.functionIndex))
@@ -470,11 +526,102 @@ func (e *Emitter) Emit() string {
 	e.emitItabData()
 	e.emitTypeDefs()
 	e.emitRuntime()
+	if e.concurrent {
+		e.emitAsyncDispatcher()
+	}
 	for _, fn := range e.p.Functions {
 		e.function(fn)
 	}
+	if e.concurrent {
+		e.emitConcurrentBootstrap()
+	}
 	e.b.WriteString(")\n")
 	return e.b.String()
+}
+
+func (e *Emitter) emitConcurrentBootstrap() {
+	for _, fn := range e.p.Functions {
+		if fn.IsExtern || fn.Name != "main" {
+			continue
+		}
+		e.b.WriteString("  (func $__hike_bootstrap\n")
+		call := ""
+		switch len(fn.Params) {
+		case 0:
+			call = fmt.Sprintf("(call %s)", e.functionSymbol(fn.Name))
+		case 2:
+			call = fmt.Sprintf("(call %s (i32.const 0) (i32.const 0))", e.functionSymbol(fn.Name))
+		default:
+			return
+		}
+		if len(fn.ReturnTypes) > 0 {
+			fmt.Fprintf(&e.b, "    (drop %s)\n", call)
+		} else {
+			fmt.Fprintf(&e.b, "    %s\n", call)
+		}
+		e.b.WriteString("  )\n  (export \"__hike_bootstrap\" (func $__hike_bootstrap))\n")
+		return
+	}
+}
+
+func (e *Emitter) emitConcurrentAsync(x *hir.InstrAsync) {
+	task := "(call $malloc (i32.const 16))"
+	e.set(x.Dst, task)
+	e.taskEnvs[x.Dst] = hasEnvironment(x.EnvPtr)
+	params := []sema.Type{}
+	if e.taskEnvs[x.Dst] {
+		params = append(params, &sema.PointerType{Base: sema.TypeByte})
+	}
+	results := x.RetTypes
+	if len(results) > 1 {
+		results = []sema.Type{sema.TypeUint32}
+	}
+	e.taskCalls[x.Dst] = taskCallSignature{params: params, results: results}
+	taskBase := e.val(x.Dst)
+	e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", taskBase, e.valAs(x.FnPtr, sema.TypeUint32)))
+	env := "(i32.const 0)"
+	if x.EnvPtr != nil {
+		env = e.valAs(x.EnvPtr, sema.TypeUint32)
+	}
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", taskBase, env))
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const 0))\n", taskBase))
+	e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 12)) (i32.const 0))\n", taskBase))
+	fmt.Fprintf(&e.b, "    (call $__hike_thread_spawn %s %s %s (i32.const %d))\n", e.val(x.FnPtr), env, taskBase, e.asyncSignature(x))
+}
+
+// emitAsyncDispatcher is the Wasm-side half of the host worker ABI. The host
+// receives the table index and task pointer through hike_thread_spawn, then
+// calls this dispatcher. Keeping the signature selection in Wasm preserves
+// call_indirect's type safety while allowing the host to remain type-agnostic.
+func (e *Emitter) emitAsyncDispatcher() {
+	if len(e.asyncSigs) == 0 {
+		return
+	}
+	e.b.WriteString("  (func $__hike_worker_dispatch (param $fn i32) (param $env i32) (param $task i32) (param $sig i32)\n")
+	for id, sig := range e.asyncSigs {
+		fmt.Fprintf(&e.b, "    (if (i32.eq (local.get $sig) (i32.const %d)) (then\n", id)
+		emitCall := func(indent, callType, args string) {
+			call := fmt.Sprintf("(call_indirect (type %s) %s)", callType, args)
+			if len(sig.results) > 0 {
+				fmt.Fprintf(&e.b, "%s(%s (i32.add (local.get $task) (i32.const 8)) %s)\n", indent, memoryOp(sig.results[0], false), call)
+			}
+		}
+		if len(sig.params) > 0 {
+			withEnv := e.registerType(sig.params, sig.results)
+			withoutEnv := e.registerType(nil, sig.results)
+			e.b.WriteString("      (if (i32.eqz (local.get $env)) (then\n")
+			emitCall("        ", withoutEnv, "(local.get $fn)")
+			e.b.WriteString("      ) (else\n")
+			emitCall("        ", withEnv, "(local.get $env) (local.get $fn)")
+			e.b.WriteString("      ))\n")
+		} else {
+			callType := e.registerType(nil, sig.results)
+			emitCall("      ", callType, "(local.get $fn)")
+		}
+		e.b.WriteString("      (i32.store (i32.add (local.get $task) (i32.const 12)) (i32.const 1))\n")
+		e.b.WriteString("    ))\n")
+	}
+	e.b.WriteString("  )\n  (export \"__hike_worker_dispatch\" (func $__hike_worker_dispatch))\n")
 }
 func (e *Emitter) function(fn *hir.Function) {
 	if hirFunctionExtern(fn) {
@@ -510,6 +657,12 @@ func (e *Emitter) function(fn *hir.Function) {
 		fmt.Fprintf(&e.b, " (local $__ret_multi i32)")
 	}
 	e.b.WriteString("\n")
+	if e.concurrent && strings.HasSuffix(fn.Name, "eventloop_Run") {
+		// The host must not start workers before the event loop is ready. Mark
+		// the loop active and pump deferred workers at its entry point.
+		e.b.WriteString("    (global.set $eventloop_running (i32.const 1))\n")
+		e.b.WriteString("    (call $__hike_thread_pump)\n")
+	}
 	e.b.WriteString("    (local.set $frame_sp (global.get $__sp))\n")
 	e.emitCFG(fn)
 	e.b.WriteString("  )\n")
@@ -896,9 +1049,11 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.callArgTotal = 0
 		e.callArgUsed = 0
 	case *hir.InstrAsync:
-		// WABT has no thread-pool runtime. Keep the task representation
-		// explicit and let InstrTaskWait execute it synchronously. This still
-		// preserves closure environments and the future/result ABI.
+		if e.concurrent {
+			e.emitConcurrentAsync(x)
+			break
+		}
+		// Normal Wasm keeps futures local and executes them at TaskWait.
 		task := "(call $malloc (i32.const 8))"
 		e.set(x.Dst, task)
 		e.taskEnvs[x.Dst] = hasEnvironment(x.EnvPtr)
@@ -918,36 +1073,83 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			env = e.valAs(x.EnvPtr, sema.TypeUint32)
 		}
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", taskBase, env))
+		break
+		/*
+			// Match the LLVM/Wasm task ABI: the host is notified at Async creation
+			// time and is responsible for starting the worker dispatcher.
+			task := "(call $malloc (i32.const 16))"
+			e.set(x.Dst, task)
+			e.taskEnvs[x.Dst] = hasEnvironment(x.EnvPtr)
+			params := []sema.Type{}
+			if e.taskEnvs[x.Dst] {
+				params = append(params, &sema.PointerType{Base: sema.TypeByte})
+			}
+			results := x.RetTypes
+			if len(results) > 1 {
+				results = []sema.Type{sema.TypeUint32}
+			}
+			e.taskCalls[x.Dst] = taskCallSignature{params: params, results: results}
+			taskBase := e.val(x.Dst)
+			e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", taskBase, e.valAs(x.FnPtr, sema.TypeUint32)))
+			env := "(i32.const 0)"
+			if x.EnvPtr != nil {
+				env = e.valAs(x.EnvPtr, sema.TypeUint32)
+			}
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", taskBase, env))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const 0))\n", taskBase))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 12)) (i32.const 0))\n", taskBase))
+			fmt.Fprintf(&e.b, "    (call $__hike_thread_spawn %s %s %s (i32.const %d))\n", e.val(x.FnPtr), env, taskBase, e.asyncSignature(x))
+		*/
 	case *hir.InstrTaskWait:
+		if !e.concurrent {
+			future, _ := x.Task.Type().(*sema.FutureType)
+			var retTypes []sema.Type
+			if future != nil {
+				retTypes = future.ReturnTypes
+			}
+			fnPtr := "(i32.load " + e.val(x.Task) + ")"
+			envPtr := "(i32.load (i32.add " + e.val(x.Task) + " (i32.const 4)))"
+			callResultTypes := retTypes
+			if taskReg, ok := x.Task.(*hir.Reg); ok {
+				if sig, exists := e.taskCalls[taskReg]; exists {
+					callResultTypes = sig.results
+				}
+			}
+			plainCall := fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(nil, callResultTypes), fnPtr)
+			closureParams := []sema.Type{&sema.PointerType{Base: sema.TypeByte}}
+			closureCall := fmt.Sprintf("(call_indirect (type %s) %s %s)", e.registerType(closureParams, callResultTypes), envPtr, fnPtr)
+			call := ""
+			if len(callResultTypes) == 0 {
+				call = fmt.Sprintf("(if (i32.eqz %s) (then %s) (else %s))", envPtr, plainCall, closureCall)
+			} else {
+				call = fmt.Sprintf("(if (result %s) (i32.eqz %s) (then %s) (else %s))", watType(callResultTypes[0]), envPtr, plainCall, closureCall)
+			}
+			if len(retTypes) > 1 {
+				e.set(x.Dst, call)
+			} else {
+				size := 1
+				if len(retTypes) == 1 {
+					size = typeSize(retTypes[0])
+				}
+				e.set(x.Dst, fmt.Sprintf("(call $malloc (i32.const %d))", size))
+				if len(retTypes) == 1 {
+					e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(retTypes[0], false), e.val(x.Dst), call))
+				}
+			}
+			break
+		}
 		future, _ := x.Task.Type().(*sema.FutureType)
 		var retTypes []sema.Type
 		if future != nil {
 			retTypes = future.ReturnTypes
 		}
-		fnPtr := "(i32.load " + e.val(x.Task) + ")"
-		envPtr := "(i32.load (i32.add " + e.val(x.Task) + " (i32.const 4)))"
-		callResultTypes := retTypes
-		if taskReg, ok := x.Task.(*hir.Reg); ok {
-			if sig, exists := e.taskCalls[taskReg]; exists {
-				callResultTypes = sig.results
-			}
+		resultLoad := "i32.load"
+		if len(retTypes) == 1 {
+			resultLoad = memoryOp(retTypes[0], true)
 		}
-		plainCall := fmt.Sprintf("(call_indirect (type %s) %s)",
-			e.registerType(nil, callResultTypes), fnPtr)
-		closureParams := []sema.Type{&sema.PointerType{Base: sema.TypeByte}}
-		closureCall := fmt.Sprintf("(call_indirect (type %s) %s %s)",
-			e.registerType(closureParams, callResultTypes), envPtr, fnPtr)
-		call := ""
-		if len(callResultTypes) == 0 {
-			plainCall = fmt.Sprintf("(call_indirect (type %s) %s)", e.registerType(nil, nil), fnPtr)
-			closureCall = fmt.Sprintf("(call_indirect (type %s) %s %s)", e.registerType(closureParams, nil), envPtr, fnPtr)
-			call = fmt.Sprintf("(if (i32.eqz %s) (then %s) (else %s))", envPtr, plainCall, closureCall)
-		} else {
-			call = fmt.Sprintf("(if (result %s) (i32.eqz %s) (then %s) (else %s))",
-				watType(callResultTypes[0]), envPtr, plainCall, closureCall)
-		}
+		result := fmt.Sprintf("(%s (i32.add %s (i32.const 8)))", resultLoad, e.val(x.Task))
 		if len(retTypes) > 1 {
-			e.set(x.Dst, call)
+			e.set(x.Dst, result)
 		} else {
 			size := 1
 			if len(retTypes) == 1 {
@@ -955,7 +1157,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			}
 			e.set(x.Dst, fmt.Sprintf("(call $malloc (i32.const %d))", size))
 			if len(retTypes) == 1 {
-				e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(retTypes[0], false), e.val(x.Dst), call))
+				e.b.WriteString(fmt.Sprintf("    (%s %s %s)\n", memoryOp(retTypes[0], false), e.val(x.Dst), result))
 			}
 		}
 	case *hir.InstrLoad:

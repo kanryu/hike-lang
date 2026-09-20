@@ -7,17 +7,19 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/target"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hike-hike [-o output.wat] <source.hike> [source.hike ...]")
+	fmt.Fprintln(os.Stderr, "Usage: hike-hike [-o output.wat] [--wasm-mode=normal|concurrent] <source.hike> [source.hike ...]")
 }
 
 func main() {
 	output := ""
+	wasmMode := "normal"
 	var sources []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -33,6 +35,10 @@ func main() {
 			usage()
 			return
 		default:
+			if strings.HasPrefix(os.Args[i], "--wasm-mode=") {
+				wasmMode = strings.TrimPrefix(os.Args[i], "--wasm-mode=")
+				break
+			}
 			if len(os.Args[i]) > 0 && os.Args[i][0] == '-' {
 				fmt.Fprintf(os.Stderr, "hike-hike: unknown option %q\n", os.Args[i])
 				usage()
@@ -49,6 +55,7 @@ func main() {
 
 	tgt := target.TargetWabt
 	comp := compiler.New(&tgt)
+	comp.SetWasmMode(wasmMode)
 	wat, _, _, err := comp.CompileToWAT(sources...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hike-hike: compilation failed: %v\n", err)

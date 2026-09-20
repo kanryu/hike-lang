@@ -42,7 +42,7 @@ func TestWabtEmitIRProducesWatAndRuntime(t *testing.T) {
 		t.Fatalf("runtime.js was not generated: %v", err)
 	}
 	wasm := filepath.Join(tmp, "checked.wasm")
-	assemble := exec.Command("wat2wasm", wat, "-o", wasm)
+	assemble := exec.Command("wat2wasm", "--enable-threads", wat, "-o", wasm)
 	if out, err := assemble.CombinedOutput(); err != nil {
 		t.Fatalf("generated WAT is not assemblable: %v\n%s", err, out)
 	}

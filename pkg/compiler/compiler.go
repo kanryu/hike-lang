@@ -205,7 +205,9 @@ func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *a
 	if err != nil {
 		return "", nil, nil, err
 	}
-	return wabt.New(hirProg, semaCtx).Emit(), semaCtx, concreteProg, nil
+	emitter := wabt.New(hirProg, semaCtx)
+	emitter.SetConcurrent(c.wasmMode == "concurrent")
+	return emitter.Emit(), semaCtx, concreteProg, nil
 }
 
 // CompileSourceToWAT compiles one source string without consulting the
@@ -234,7 +236,9 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	lw.Set32Bit(c.target.IsWasm)
 	lw.SetRegionMode(c.regionMode)
 	program := lw.Lower()
-	return wabt.New(program, ctx).Emit(), concrete, nil
+	emitter := wabt.New(program, ctx)
+	emitter.SetConcurrent(c.wasmMode == "concurrent")
+	return emitter.Emit(), concrete, nil
 }
 
 // Compile はコンパイルを実行し、エラーが発生した場合は Go コンパイラ形式で stderr に出力して終了します

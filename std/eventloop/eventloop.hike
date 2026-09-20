@@ -35,8 +35,15 @@ func Post(fn func()) {
 // メインスレッドで実行させ、結果を受け取る（チャンネルを返し、呼び出し側で待機する）
 func InvokeCh[T](fn func() T) (chan T) {
     resCh := make(chan T, 1)
-    queue <- func() {
+    if running == 1 {
+        // A worker pumped by the Wasm host is already executing during the
+        // event-loop turn. Execute its main-thread callback cooperatively so
+        // the worker can receive the result without re-entering the loop.
         resCh <- fn()
+    } else {
+        queue <- func() {
+            resCh <- fn()
+        }
     }
     return resCh
 }

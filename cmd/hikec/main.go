@@ -479,7 +479,7 @@ func runBuild(args []string) {
 	}
 
 	if useWabtBackend {
-		wat2wasmArgs := []string{tempLL, "-o", outputBin}
+		wat2wasmArgs := []string{"--enable-threads", tempLL, "-o", outputBin}
 		if debugInfo {
 			// Preserve the WAT function and local names in the standard Wasm
 			// name custom section. This is the WABT counterpart of keeping
