@@ -463,7 +463,12 @@ func (c *CallLowerer) lowerCFuncParameters(cfn *ast.CFuncDecl, implFn *hir.Funct
 func (c *CallLowerer) newCFuncTrampoline(cfn *ast.CFuncDecl, name string, returnTypes []sema.Type) *hir.Function {
 	c.root.regCount = 0
 	trampolineFn := &hir.Function{
-		Name:          name,
+		Name: name,
+		Location: hir.SourceLocation{
+			Filename: c.root.sourceFile,
+			Line:     cfn.Token.Line,
+			Column:   cfn.Token.Col,
+		},
 		Params:        []*hir.Reg{},
 		ReturnTypes:   returnTypes,
 		Blocks:        []*hir.BasicBlock{},
@@ -480,7 +485,12 @@ func (c *CallLowerer) newCFuncTrampoline(cfn *ast.CFuncDecl, name string, return
 
 func (c *CallLowerer) newCFuncImplementation(cfn *ast.CFuncDecl, name string, returnTypes []sema.Type) *hir.Function {
 	implFn := &hir.Function{
-		Name:          name,
+		Name: name,
+		Location: hir.SourceLocation{
+			Filename: c.root.sourceFile,
+			Line:     cfn.Token.Line,
+			Column:   cfn.Token.Col,
+		},
 		Params:        []*hir.Reg{},
 		ReturnTypes:   returnTypes,
 		Blocks:        []*hir.BasicBlock{},

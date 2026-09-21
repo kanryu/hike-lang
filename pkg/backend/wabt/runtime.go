@@ -354,6 +354,7 @@ func lookupWasmRuntime(name string) (runtimeFunc, bool) {
 }
 
 func (e *Emitter) emitRuntime() {
+	e.runtimeFunctions = 0
 	needed := map[string]bool{}
 	var visit func(string)
 	visit = func(name string) {
@@ -405,6 +406,7 @@ func (e *Emitter) emitRuntime() {
 			fn, ok := lookupWasmRuntime(name)
 			if ok {
 				e.b.WriteString("  " + fn.body + "\n")
+				e.runtimeFunctions++
 			}
 		}
 	}

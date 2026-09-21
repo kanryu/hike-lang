@@ -23,14 +23,15 @@ type Emitter struct {
 	// one call.  The WAT expressions for call arguments are evaluated after all
 	// argument setup instructions have run, so `(sp - size)` alone would make
 	// every temporary refer to the last allocation.
-	callArgTotal int
-	callArgUsed  int
-	taskEnvs     map[*hir.Reg]bool
-	taskCalls    map[*hir.Reg]taskCallSignature
-	asyncTypes   map[string]int
-	asyncSigs    []taskCallSignature
-	concurrent   bool
-	debugInfo    bool
+	callArgTotal     int
+	callArgUsed      int
+	taskEnvs         map[*hir.Reg]bool
+	taskCalls        map[*hir.Reg]taskCallSignature
+	asyncTypes       map[string]int
+	asyncSigs        []taskCallSignature
+	concurrent       bool
+	debugInfo        bool
+	runtimeFunctions int
 }
 
 type taskCallSignature struct {
@@ -720,7 +721,16 @@ func (e *Emitter) emitCFG(fn *hir.Function) {
 			e.instruction(in)
 		}
 		if bb.Terminator != nil {
-			e.debugMarker()
+			// CFG terminators are backend control-flow plumbing, not source
+			// statements.  Marking them makes stepping jump back to an if/for
+			// header after a real statement (for example AppendText), even
+			// though no user-level instruction is executing there.
+			// A return is different: its marker is placed after the final
+			// expression instructions, so return-value locals are observable
+			// before control leaves the function.
+			if _, ok := bb.Terminator.(*hir.InstrReturn); ok {
+				e.debugMarker()
+			}
 			e.cfgTerminator(bb.Terminator, fn, fn.Blocks)
 		} else {
 			e.defaultReturn(fn)

@@ -167,7 +167,11 @@ func InstructionKey(instr Instruction) string {
 	if instr == nil {
 		return ""
 	}
-	return instr.String()
+	// The textual form is not unique: every function can contain v3, v4,
+	// identical loads, and identical stores. Use the instruction identity as
+	// part of the string key while keeping the metadata map wasm-friendly
+	// (string keys rather than interface keys).
+	return fmt.Sprintf("%T@%p", instr, instr)
 }
 
 // SourceLocation identifies the Hike source location associated with a HIR

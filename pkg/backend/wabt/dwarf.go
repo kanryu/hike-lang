@@ -7,10 +7,22 @@ package wabt
 // the module.
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"hikec-go/pkg/hir"
 )
+
+type sourceMapFile struct {
+	Version        int      `json:"version"`
+	Sources        []string `json:"sources"`
+	Names          []string `json:"names"`
+	Mappings       string   `json:"mappings"`
+	SourcesContent []string `json:"sourcesContent,omitempty"`
+}
 
 type DebugFunction struct {
 	Name   string
@@ -23,11 +35,24 @@ type DebugLocal struct {
 	Name  string
 	Line  uint32
 	Index uint32
+	Size  uint8
+	Deref bool
 }
 
 type DebugInfo struct {
 	SourcePath string
-	Functions  []DebugFunction
+	// SourceURL is used in DWARF file entries when the source is served by a
+	// browser. It prevents DevTools from synthesizing a wasm:// URL.
+	SourceURL        string
+	RuntimeFunctions int
+	Functions        []DebugFunction
+}
+
+func debugSourceName(info *DebugInfo) string {
+	if info != nil && info.SourceURL != "" {
+		return info.SourceURL
+	}
+	return filepath.Base(info.SourcePath)
 }
 
 type codeRange struct {
@@ -39,7 +64,7 @@ type codeRange struct {
 func (d *DebugInfo) Empty() bool { return d == nil || len(d.Functions) == 0 }
 
 func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
-	info := &DebugInfo{SourcePath: sourcePath}
+	info := &DebugInfo{SourcePath: sourcePath, RuntimeFunctions: e.runtimeFunctions}
 	if e == nil || e.p == nil {
 		return info
 	}
@@ -52,45 +77,129 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 			line = 1
 		}
 		debugFn := DebugFunction{Name: fn.Name, Line: line}
+		seenNames := make(map[string]bool)
+		resultLocals := make(map[*hir.Reg]uint32)
+		resultLines := make(map[*hir.Reg]uint32)
+		returnRegs := make(map[*hir.Reg]bool)
+		returnLine := uint32(0)
+		for _, bb := range fn.Blocks {
+			if ret, ok := bb.Terminator.(*hir.InstrReturn); ok && len(ret.Vals) == 1 {
+				if returned, ok := ret.Vals[0].(*hir.Reg); ok {
+					returnRegs[returned] = true
+				}
+			}
+		}
+		nextLocal := uint32(len(fn.Params))
+		// Function parameters remain live Wasm locals. Describe them as
+		// values, rather than as addresses that need to be dereferenced.
 		for index, param := range fn.Params {
 			if param == nil {
 				continue
 			}
-			debugFn.Locals = append(debugFn.Locals, DebugLocal{
-				Name: reg(param), Line: line, Index: uint32(index),
-			})
-		}
-		nextLocal := uint32(len(fn.Params))
-		seen := make(map[string]bool)
-		for _, param := range fn.Params {
-			if param != nil {
-				seen[reg(param)] = true
+			name := debugLocalName(reg(param))
+			if name == "" || seenNames[name] {
+				continue
 			}
+			debugFn.Locals = append(debugFn.Locals, DebugLocal{
+				Name: name, Line: line, Index: uint32(index), Size: uint8(typeSize(param.Typ)),
+			})
+			seenNames[name] = true
 		}
 		for _, bb := range fn.Blocks {
 			for _, instr := range bb.Instructions {
-				debugFn.Lines = append(debugFn.Lines, instructionLine(e.p, instr, line))
 				result := instr.Result()
-				if result == nil || seen[reg(result)] {
+				instrLine := instructionLine(e.p, instr, line)
+				if result != nil {
+					if loc, ok := e.p.InstructionLocations[hir.InstructionKey(instr)]; ok && loc.Line > 0 {
+						resultLines[result] = uint32(loc.Line)
+					}
+				}
+				if returnLine == 0 && instrLine != line && result != nil && returnRegs[result] {
+					returnLine = instrLine
+				}
+				if returnLine != 0 && instrLine == returnLine && !returnRegs[result] {
+					instrLine = line
+				}
+				debugFn.Lines = append(debugFn.Lines, instrLine)
+				if result == nil {
+					continue
+				}
+				resultLocals[result] = nextLocal
+				name := debugLocalName(reg(result))
+				if name == "" || seenNames[name] {
+					nextLocal++
 					continue
 				}
 				localLine := line
-				if loc, ok := e.p.InstructionLocations[hir.InstructionKey(instr)]; ok && loc.Line > 0 {
-					localLine = uint32(loc.Line)
+				if resultLines[result] > 0 {
+					localLine = resultLines[result]
 				}
 				debugFn.Locals = append(debugFn.Locals, DebugLocal{
-					Name: reg(result), Line: localLine, Index: nextLocal,
+					Name: name, Line: localLine, Index: nextLocal, Size: uint8(typeSize(result.Typ)), Deref: true,
 				})
-				seen[reg(result)] = true
+				seenNames[name] = true
 				nextLocal++
 			}
-			if bb.Terminator != nil {
-				debugFn.Lines = append(debugFn.Lines, instructionLine(e.p, bb.Terminator, line))
+			// Terminators do not receive debug markers in the WABT emitter.
+			// Keep them out of Lines as well: this slice is positional and must
+			// have exactly one entry for every emitted marker, otherwise all
+			// following source lines are assigned to the wrong Wasm addresses.
+			if ret, ok := bb.Terminator.(*hir.InstrReturn); ok {
+				returnLine := line + 1
+				if len(ret.Vals) == 1 {
+					if returned, ok := ret.Vals[0].(*hir.Reg); ok && resultLines[returned] > 0 {
+						returnLine = resultLines[returned] + 1
+					}
+				}
+				debugFn.Lines = append(debugFn.Lines, returnLine)
 			}
+		}
+		// A scalar expression returned directly from a function has no source
+		// identifier, but it is still useful at a return breakpoint. Expose it
+		// as a synthetic `return` variable using the actual Wasm local that holds
+		// the expression result.
+		for _, bb := range fn.Blocks {
+			ret, ok := bb.Terminator.(*hir.InstrReturn)
+			if !ok || len(ret.Vals) != 1 || seenNames["return_of_function"] {
+				continue
+			}
+			regValue, ok := ret.Vals[0].(*hir.Reg)
+			if !ok {
+				continue
+			}
+			index, ok := resultLocals[regValue]
+			if !ok {
+				continue
+			}
+			returnLine := line + 1
+			if resultLines[regValue] > 0 {
+				returnLine = resultLines[regValue] + 1
+			}
+			debugFn.Locals = append(debugFn.Locals, DebugLocal{Name: "return_of_function", Line: returnLine, Index: index, Size: uint8(typeSize(regValue.Typ))})
+			seenNames["return_of_function"] = true
 		}
 		info.Functions = append(info.Functions, debugFn)
 	}
 	return info
+}
+
+func debugLocalName(name string) string {
+	if len(name) == 0 || (name[0] == 'v' && isDecimal(name[1:])) {
+		return ""
+	}
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 && isDecimal(name[dot+1:]) {
+		name = name[:dot]
+	}
+	name = strings.TrimSuffix(name, "_arg")
+	return name
+}
+
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := strconv.Atoi(s)
+	return err == nil
 }
 
 func instructionLine(program *hir.Program, instr hir.Instruction, fallback uint32) uint32 {
@@ -110,7 +219,7 @@ func AppendDWARF(wasm []byte, info *DebugInfo) ([]byte, error) {
 		return wasm, nil
 	}
 	str, offsets := dwarfStrings(info)
-	ranges := wasmCodeRanges(wasm)
+	ranges := debugCodeRanges(wasm, info, true)
 	abbrev := dwarfAbbrev()
 	die := dwarfInfo(info, offsets, ranges)
 	line := dwarfLine(info, ranges, offsets)
@@ -120,6 +229,133 @@ func AppendDWARF(wasm []byte, info *DebugInfo) ([]byte, error) {
 	result = appendCustomSection(result, ".debug_line", line)
 	result = appendCustomSection(result, ".debug_info", die)
 	return result, nil
+}
+
+// SourceMapJSON creates a WebAssembly source map for the instruction markers
+// emitted by the WABT backend. WebAssembly source-map generated columns are
+// byte offsets in the final binary, so the marker offsets collected by
+// wasmCodeRanges can be used directly.
+func SourceMapJSON(wasm []byte, info *DebugInfo) ([]byte, error) {
+	if info == nil || info.Empty() {
+		return nil, nil
+	}
+	ranges := debugCodeRanges(wasm, info, false)
+	var mappings []byte
+	var previousOffset, previousSource, previousLine, previousColumn int32
+	first := true
+	for functionIndex, r := range ranges {
+		if functionIndex >= len(info.Functions) {
+			break
+		}
+		fn := info.Functions[functionIndex]
+		// Make the function declaration itself a resolvable source location.
+		// The first HIR instruction may be backend prologue code, so relying
+		// only on instruction markers can leave a breakpoint on the function
+		// signature without a generated address.
+		line := int32(fn.Line)
+		if line > 0 {
+			line--
+		}
+		if !first {
+			mappings = append(mappings, ',')
+		}
+		first = false
+		values := []int32{
+			int32(r.low) - previousOffset,
+			0 - previousSource,
+			line - previousLine,
+			0 - previousColumn,
+		}
+		for _, value := range values {
+			mappings = append(mappings, encodeSourceMapVLQ(value)...)
+		}
+		previousOffset = int32(r.low)
+		previousSource = 0
+		previousLine = line
+		previousColumn = 0
+		for markerIndex, marker := range r.markers {
+			line := int32(fn.Line)
+			if markerIndex < len(fn.Lines) && fn.Lines[markerIndex] != 0 {
+				line = int32(fn.Lines[markerIndex])
+			}
+			if line > 0 {
+				line-- // Source Map original lines are zero-based.
+			}
+			if !first {
+				mappings = append(mappings, ',')
+			}
+			first = false
+			values := []int32{
+				int32(marker) - previousOffset,
+				0 - previousSource,
+				line - previousLine,
+				0 - previousColumn,
+			}
+			for _, value := range values {
+				mappings = append(mappings, encodeSourceMapVLQ(value)...)
+			}
+			previousOffset = int32(marker)
+			previousSource = 0
+			previousLine = line
+			previousColumn = 0
+		}
+	}
+	result := sourceMapFile{
+		Version:  3,
+		Sources:  []string{filepath.Base(info.SourcePath)},
+		Names:    []string{},
+		Mappings: string(mappings),
+	}
+	if source, err := os.ReadFile(info.SourcePath); err == nil {
+		result.SourcesContent = []string{string(source)}
+	}
+	return json.MarshalIndent(result, "", "  ")
+}
+
+func debugCodeRanges(wasm []byte, info *DebugInfo, codeRelative bool) []codeRange {
+	ranges := wasmCodeRanges(wasm, codeRelative)
+	if info == nil || info.RuntimeFunctions <= 0 {
+		return ranges
+	}
+	start := info.RuntimeFunctions
+	if start >= len(ranges) {
+		return nil
+	}
+	end := start + len(info.Functions)
+	if end > len(ranges) {
+		end = len(ranges)
+	}
+	return ranges[start:end]
+}
+
+// AppendSourceMapURL adds the WebAssembly sourceMappingURL custom section.
+// The URL is normally a relative URL such as "./main.wasm.map".
+func AppendSourceMapURL(wasm []byte, url string) []byte {
+	payload := make([]byte, 0, len(url)+8)
+	putULEB(&payload, uint32(len(url)))
+	payload = append(payload, []byte(url)...)
+	return appendCustomSection(wasm, "sourceMappingURL", payload)
+}
+
+const sourceMapBase64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+func encodeSourceMapVLQ(value int32) []byte {
+	encoded := uint32(value << 1)
+	if value < 0 {
+		encoded = uint32((-value << 1) | 1)
+	}
+	result := make([]byte, 0, 5)
+	for {
+		digit := encoded & 31
+		encoded >>= 5
+		if encoded != 0 {
+			digit |= 32
+		}
+		result = append(result, sourceMapBase64[digit])
+		if encoded == 0 {
+			return result
+		}
+	}
 }
 
 func dwarfStrings(info *DebugInfo) ([]byte, map[string]uint32) {
@@ -133,7 +369,8 @@ func dwarfStrings(info *DebugInfo) ([]byte, map[string]uint32) {
 		data = append(data, []byte(s)...)
 		data = append(data, 0)
 	}
-	add(filepath.Base(info.SourcePath))
+	add(debugSourceName(info))
+	add("i32")
 	for _, fn := range info.Functions {
 		add(fn.Name)
 		for _, local := range fn.Locals {
@@ -144,11 +381,13 @@ func dwarfStrings(info *DebugInfo) ([]byte, map[string]uint32) {
 }
 
 func dwarfAbbrev() []byte {
-	// Abbrev 1: compile unit.  Abbrev 2: subprogram.
+	// Abbrev 1: compile unit. Abbrev 2: subprogram. Abbrev 3: variable.
+	// Abbrev 4: the i32 base type used by the current Wasm ABI.
 	return []byte{
 		1, 0x11, 1, 0x03, 0x0e, 0x10, 0x06, 0x13, 0x05, 0, 0,
 		2, 0x2e, 1, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x11, 0x01, 0x12, 0x01, 0, 0,
-		3, 0x34, 0, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x02, 0x0a, 0, 0,
+		3, 0x34, 0, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x49, 0x13, 0x02, 0x0a, 0, 0,
+		4, 0x24, 0, 0x03, 0x0e, 0x0b, 0x0b, 0x3e, 0x0b, 0, 0,
 		0,
 	}
 }
@@ -156,9 +395,14 @@ func dwarfAbbrev() []byte {
 func dwarfInfo(info *DebugInfo, offsets map[string]uint32, ranges []codeRange) []byte {
 	body := make([]byte, 0, 64+len(info.Functions)*16)
 	body = append(body, 1) // compile-unit abbreviation
-	putU32(&body, offsets[filepath.Base(info.SourcePath)])
+	putU32(&body, offsets[debugSourceName(info)])
 	putU32(&body, 0)      // DW_AT_stmt_list: the line table starts at zero.
 	putU16(&body, 0x0002) // DW_LANG_C is the closest standard language tag.
+	// The type DIE is first, so its CU-relative offset is the fixed unit
+	// header size: 4-byte length, version, abbrev offset, and address size.
+	body = append(body, 4)
+	putU32(&body, offsets["i32"])
+	body = append(body, 4, 0x05) // 4-byte signed integer.
 	for i, fn := range info.Functions {
 		body = append(body, 2)
 		putU32(&body, offsets[fn.Name])
@@ -175,8 +419,16 @@ func dwarfInfo(info *DebugInfo, offsets map[string]uint32, ranges []codeRange) [
 			body = append(body, 3)
 			putU32(&body, offsets[local.Name])
 			body = append(body, 1, byte(clampLine(local.Line)))
+			putU32(&body, 22) // CU-relative offset of the i32 type DIE.
 			expr := []byte{0xed, 0}
 			putULEB(&expr, local.Index)
+			if local.Deref && local.Size == 4 {
+				expr = append(expr, 0x06) // DW_OP_deref
+			} else if local.Deref && local.Size > 0 {
+				expr = append(expr, 0x94, local.Size) // DW_OP_deref_size
+			} else {
+				expr = append(expr, 0x9f) // DW_OP_stack_value
+			}
 			body = append(body, byte(len(expr)))
 			body = append(body, expr...)
 		}
@@ -199,7 +451,7 @@ func dwarfLine(info *DebugInfo, ranges []codeRange, offsets map[string]uint32) [
 	header = append(header, 1, 1, 1, 251, 14, 13)
 	header = append(header, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0)
 	header = append(header, 0) // include-directory table
-	header = append(header, []byte(filepath.Base(info.SourcePath))...)
+	header = append(header, []byte(debugSourceName(info))...)
 	header = append(header, 0)
 	putULEB(&header, 0)
 	putULEB(&header, 0)
@@ -208,6 +460,25 @@ func dwarfLine(info *DebugInfo, ranges []codeRange, offsets map[string]uint32) [
 
 	program := make([]byte, 0, len(ranges)*12+3)
 	lastLine := uint32(1)
+	var lastAddress uint32
+	addressSet := false
+	advancePC := func(address uint32) {
+		if address <= lastAddress {
+			return
+		}
+		program = append(program, 2) // DW_LNS_advance_pc
+		putULEB(&program, address-lastAddress)
+		lastAddress = address
+	}
+	emitLine := func(line uint32) {
+		if line == 0 || line == lastLine {
+			return
+		}
+		program = append(program, 3) // DW_LNS_advance_line
+		putSLEB(&program, int32(line)-int32(lastLine))
+		program = append(program, 1) // DW_LNS_copy
+		lastLine = line
+	}
 	lineIndex := 0
 	for _, r := range ranges {
 		if lineIndex >= len(info.Functions) {
@@ -218,21 +489,44 @@ func dwarfLine(info *DebugInfo, ranges []codeRange, offsets map[string]uint32) [
 		if len(markers) == 0 {
 			markers = []uint32{r.low}
 		}
+		// Emit a row at low_pc for the source-level function declaration.
+		// This keeps a breakpoint on a signature line resolvable even when
+		// the first emitted instruction is compiler-generated prologue code.
+		if !addressSet {
+			program = append(program, 0, 5, 2)
+			putU32(&program, r.low)
+			lastAddress = r.low
+			addressSet = true
+		} else {
+			advancePC(r.low)
+		}
+		emitLine(fn.Line)
 		for markerIndex, marker := range markers {
+			if marker == r.low {
+				continue
+			}
 			line := fn.Line
 			if markerIndex < len(fn.Lines) {
 				line = fn.Lines[markerIndex]
 			}
-			program = append(program, 0, 5, 2)
-			putU32(&program, marker)
-			program = append(program, 3)
-			putSLEB(&program, int32(line)-int32(lastLine))
-			program = append(program, 1) // DW_LNS_copy
-			lastLine = line
+			if marker < lastAddress {
+				continue
+			}
+			advancePC(marker)
+			emitLine(line)
 		}
 		lineIndex++
 	}
-	program = append(program, 0, 1, 1) // DW_LNE_end_sequence
+	if lineIndex > 0 && lineIndex <= len(ranges) {
+		// Keep one monotonically increasing line sequence for the whole code
+		// section. Wasm LLDB versions in the wild do not reliably handle a
+		// separate sequence for every function, but still require a final
+		// end_sequence row to make source breakpoints resolvable.
+		if ranges[lineIndex-1].high > lastAddress {
+			advancePC(ranges[lineIndex-1].high)
+		}
+		program = append(program, 0, 1, 1)
+	}
 
 	unit := make([]byte, 0, len(header)+len(program)+16)
 	putU32(&unit, uint32(2+4+len(header)+len(program)))
@@ -243,7 +537,7 @@ func dwarfLine(info *DebugInfo, ranges []codeRange, offsets map[string]uint32) [
 	return unit
 }
 
-func wasmCodeRanges(wasm []byte) []codeRange {
+func wasmCodeRanges(wasm []byte, codeRelative bool) []codeRange {
 	if len(wasm) < 8 || string(wasm[:4]) != "\x00asm" {
 		return nil
 	}
@@ -262,17 +556,26 @@ func wasmCodeRanges(wasm []byte) []codeRange {
 				return nil
 			}
 			at := payload + m
+			codeBase := 0
+			if codeRelative {
+				// DWARF WebAssembly addresses are relative to the beginning
+				// of the Code section contents. Source maps use file offsets
+				// instead and call this function with codeRelative=false.
+				codeBase = payload
+			}
 			ranges := make([]codeRange, 0, count)
 			for i := uint32(0); i < count && at < end; i++ {
 				bodySize, k := readULEB(wasm[at:])
 				if k == 0 || at+k+int(bodySize) > end {
 					return nil
 				}
-				low := uint32(at + k)
+				absoluteLow := uint32(at + k)
+				absoluteHigh := absoluteLow + bodySize
+				low := absoluteLow - uint32(codeBase)
 				r := codeRange{low: low, high: low + bodySize}
-				for marker := low; marker+4 <= r.high; marker++ {
+				for marker := absoluteLow; marker+4 <= absoluteHigh; marker++ {
 					if wasm[marker] == 0x02 && wasm[marker+1] == 0x40 && wasm[marker+2] == 0x01 && wasm[marker+3] == 0x0b {
-						r.markers = append(r.markers, marker)
+						r.markers = append(r.markers, marker-uint32(codeBase))
 					}
 				}
 				ranges = append(ranges, r)

@@ -12,11 +12,12 @@ all: build
 build: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(HIKEC) build -target wasm32 -wasm-mode=normal $(SRC) -o $(TARGET)
+	$(HIKEC) build -g -target wabt -wasm-mode=normal \
+		--source-map-base=http://localhost:8000/ --no-source-map $(SRC) -o $(TARGET)
 
 serve: build
 	@echo "Starting local server at http://localhost:$(PORT) ..."
 	$(PYTHON) -m http.server $(PORT)
 
 clean:
-	rm -f $(TARGET) *.ll runtime.js
+	rm -f $(TARGET) $(TARGET).map *.ll runtime.js

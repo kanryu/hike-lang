@@ -357,6 +357,8 @@ func runBuild(args []string) {
 	targetName := getDefaultTargetName()
 	extraCflags := ""
 	debugInfo := false
+	sourceMapBaseURL := ""
+	embedSourceMap := true
 	verbose := false
 	wasmMode := "normal"
 	regionMode := false
@@ -398,6 +400,16 @@ func runBuild(args []string) {
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
+		} else if arg == "--source-map-base" && i+1 < len(args) {
+			sourceMapBaseURL = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--source-map-base=") {
+			sourceMapBaseURL = strings.TrimPrefix(arg, "--source-map-base=")
+		} else if arg == "--no-source-map" {
+			// DWARF and source maps can describe the same Wasm addresses in
+			// different ways.  Browser debugging uses DWARF as the authoritative
+			// mapping when this switch is selected.
+			embedSourceMap = false
 		} else if arg == "-vv" || arg == "--vv" {
 			verbose = true
 			passThroughArgs = append(passThroughArgs, "-vv")
@@ -502,10 +514,35 @@ func runBuild(args []string) {
 				fmt.Fprintf(os.Stderr, "WABT debug read failed: %v\n", readErr)
 				os.Exit(1)
 			}
-			wasm, dwarfErr := wabt.AppendDWARF(wasm, wabtCompiler.WABTDebugInfo())
+			mapPath := outputBin + ".map"
+			sourceMapURL := "./" + filepath.Base(mapPath)
+			if sourceMapBaseURL != "" {
+				sourceMapURL = strings.TrimRight(sourceMapBaseURL, "/") + "/" + filepath.Base(mapPath)
+			}
+			sourceURL := ""
+			if sourceMapBaseURL != "" {
+				sourceURL = strings.TrimRight(sourceMapBaseURL, "/") + "/" + filepath.Base(sourceFiles[0])
+			}
+			debug := wabtCompiler.WABTDebugInfo()
+			if debug != nil {
+				debug.SourceURL = sourceURL
+			}
+			wasm, dwarfErr := wabt.AppendDWARF(wasm, debug)
 			if dwarfErr != nil {
 				fmt.Fprintf(os.Stderr, "WABT DWARF emission failed: %v\n", dwarfErr)
 				os.Exit(1)
+			}
+			sourceMap, mapErr := wabt.SourceMapJSON(wasm, debug)
+			if mapErr != nil {
+				fmt.Fprintf(os.Stderr, "WABT source map emission failed: %v\n", mapErr)
+				os.Exit(1)
+			}
+			if writeMapErr := os.WriteFile(mapPath, sourceMap, 0644); writeMapErr != nil {
+				fmt.Fprintf(os.Stderr, "WABT source map write failed: %v\n", writeMapErr)
+				os.Exit(1)
+			}
+			if embedSourceMap {
+				wasm = wabt.AppendSourceMapURL(wasm, sourceMapURL)
 			}
 			if writeErr := os.WriteFile(outputBin, wasm, 0644); writeErr != nil {
 				fmt.Fprintf(os.Stderr, "WABT debug write failed: %v\n", writeErr)

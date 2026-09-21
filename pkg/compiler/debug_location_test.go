@@ -66,6 +66,50 @@ func TestHIRInstructionsKeepHikeSourceLocations(t *testing.T) {
 	t.Fatal("main function was not found")
 }
 
+func TestCFuncReturnExpressionKeepsReturnLine(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "main.hike")
+	source := "package main\n\ncfunc AddNumbers(a int, b int) int {\n\treturn a + b\n}\n"
+	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("wabt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, _, _, err := New(tgt).CompileToHIR(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, location := range program.InstructionLocations {
+		if strings.Contains(key, "*hir.InstrBinary@") && location.Line == 4 {
+			debugCompiler := New(tgt)
+			debugCompiler.SetDebugInfo(true)
+			if _, _, _, err := debugCompiler.CompileToWAT(sourcePath); err != nil {
+				t.Fatal(err)
+			}
+			for _, fn := range debugCompiler.WABTDebugInfo().Functions {
+				if fn.Name == "__hike_impl_AddNumbers" {
+					foundClosingLine := false
+					for _, debugLine := range fn.Lines {
+						if debugLine == 5 {
+							foundClosingLine = true
+						}
+					}
+					for _, local := range fn.Locals {
+						if local.Name == "return_of_function" && local.Line == 5 && foundClosingLine {
+							return
+						}
+					}
+					t.Fatal("WABT debug info omitted the pre-return closing-brace location")
+				}
+			}
+			t.Fatal("WABT debug info did not contain the cfunc implementation")
+		}
+	}
+	t.Fatal("cfunc return expression was not mapped to line 4")
+}
+
 func TestLLVMEmitterIncludesDebugMetadata(t *testing.T) {
 	tmp := t.TempDir()
 	sourcePath := filepath.Join(tmp, "main.hike")

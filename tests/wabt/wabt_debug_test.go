@@ -2,9 +2,11 @@ package wabt_test
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +42,31 @@ func main() int {
 		if !hasWasmCustomSection(data, section) {
 			t.Fatalf("-g WABT build did not contain the DWARF custom section %q", section)
 		}
+	}
+	if !hasWasmCustomSection(data, "sourceMappingURL") {
+		t.Fatal("-g WABT build did not contain the sourceMappingURL custom section")
+	}
+	mapData, err := os.ReadFile(wasm + ".map")
+	if err != nil {
+		t.Fatalf("WABT source map was not written: %v", err)
+	}
+	var sourceMap struct {
+		Version        int      `json:"version"`
+		Sources        []string `json:"sources"`
+		SourcesContent []string `json:"sourcesContent"`
+		Mappings       string   `json:"mappings"`
+	}
+	if err := json.Unmarshal(mapData, &sourceMap); err != nil {
+		t.Fatalf("invalid WABT source map: %v", err)
+	}
+	if sourceMap.Version != 3 || len(sourceMap.Sources) != 1 || sourceMap.Sources[0] != "main.hike" {
+		t.Fatalf("unexpected WABT source map metadata: %+v", sourceMap)
+	}
+	if strings.TrimSpace(sourceMap.Mappings) == "" {
+		t.Fatal("WABT source map did not contain any mappings")
+	}
+	if len(sourceMap.SourcesContent) != 1 || !strings.Contains(sourceMap.SourcesContent[0], "return value + 1") {
+		t.Fatal("WABT source map did not embed the source content")
 	}
 }
 
