@@ -1,13 +1,85 @@
 
 # Hike (`hike-lang`)
 
-A systems programming language with Go-like syntax that compiles to LLVM IR, generating C-ABI compliant shared libraries, standalone executables, and C/C++ headers.
+> **Minimal syntax. Zero-runtime overhead. Native and WebAssembly builds with zero-config source debugging.**
+
+A systems programming language with Go-like syntax that compiles to LLVM IR or
+WebAssembly, generating C-ABI compliant shared libraries, standalone
+executables, and browser-ready Wasm modules.
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![LLVM/Clang](https://img.shields.io/badge/Backend-LLVM%2FClang-blue?style=flat&logo=llvm)](https://llvm.org)
+[![WebAssembly](https://img.shields.io/badge/Backend-WebAssembly%2FWABT-654ff0?style=flat&logo=webassembly)](https://webassembly.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+![Chrome DevTools debugging Hike source with Wasm locals and return values](docs/images/wasm-debug.webp)
+
+*Chrome DevTools showing source-level breakpoints, local variables, and a
+function return value while running Hike WebAssembly.*
+
 ---
+
+## Full Source Debugging with One Flag
+
+Build Hike with `-g` and debug the original `.hike` source instead of stepping
+through generated LLVM IR, WAT, or JavaScript glue code. The same source-level
+workflow is available for both native and WebAssembly targets:
+
+```bash
+# Native: debug with the usual GDB/LLDB or VS Code integration.
+hikec build -target linux -g main.hike -o main
+
+# WebAssembly: debug the original source in Chrome DevTools and place the
+# source-map URL relative to the hosted Wasm files.
+hikec build -target wabt -g --source-map-base ./ main.hike -o main.wasm
+```
+
+The WABT debug build writes `main.wasm.map` beside `main.wasm` and embeds a
+`sourceMappingURL` custom section pointing to it. Set
+`--source-map-base=/assets/wasm` when the Wasm and map files are served below a
+different URL prefix. If DWARF should be the only browser debug mapping, use
+`--no-source-map`; the map file is still generated, but its URL is not embedded
+in the Wasm module.
+
+### Native & WebAssembly: Same Source, Same Debug Experience
+
+The compiler emits DWARF information for native binaries and Wasm DWARF custom
+sections for the WABT target. This makes source-line breakpoints, stepping, and
+local-variable inspection available in the debugger that matches the target:
+
+| Capability | Native build | WebAssembly build |
+| --- | --- | --- |
+| Debug switch | `-g` | `-g` |
+| Debug format | DWARF | DWARF in Wasm custom sections |
+| Debugger | GDB, LLDB, or VS Code | Chrome DevTools |
+| Source view | Original `.hike` files | Original `.hike` files in Sources |
+| Inspection | Locals and return values | Locals and return values |
+
+### Zero-Runtime yet Full-Observability
+
+Hike keeps the execution model small: there is no garbage collector and no
+always-on language scheduler. Runtime support is emitted only when the program
+uses a runtime-backed feature. Debug information is likewise opt-in, so release
+builds remain lean while `-g` builds provide the information needed for precise
+source-level debugging.
+
+### No Emscripten or wasm-bindgen Required
+
+For the browser-oriented WABT flow, Hike generates the Wasm module and the
+required `runtime.js` integration as part of the build. No handwritten
+JavaScript glue, Emscripten setup, `wasm-bindgen` packaging, or source-map
+configuration is required to start debugging:
+
+```bash
+cd examples/browser
+make build
+make serve
+```
+
+Open the page in Chrome, press F12, and select the `.hike` source in the
+**Sources** panel. Set a breakpoint on a Hike statement and inspect locals while
+the Wasm code is running. The browser example demonstrates the complete flow,
+including source-level stepping and return-value inspection.
 
 ## Status & Environment
 
@@ -15,12 +87,12 @@ A systems programming language with Go-like syntax that compiles to LLVM IR, gen
 
 ### Current project progress
 
-The compiler currently supports LLVM IR generation, native and wasm32 builds,
-generic type/function specialization, closures with escape analysis,
-interfaces, collections, inline assembly, region allocation, and an automated
-native/WASM test suite. Recent implementation work has also established a
-length-aware string representation with shared substring views, reference
-counting, and copy-on-write mutation.
+The compiler currently supports LLVM IR and WAT generation, native and
+wasm32/WABT builds, generic type/function specialization, closures with escape
+analysis, interfaces, collections, inline assembly, region allocation, and an
+automated native/WASM test suite. Recent implementation work has also
+established a length-aware string representation with shared substring views,
+reference counting, and copy-on-write mutation.
 
 The project remains experimental. Region allocation is an opt-in,
 function-scoped arena strategy, and complete compiler-wide lifetime inference
@@ -44,9 +116,17 @@ design documents below for the exact implementation boundaries.
 
 ## Overview
 
-Hike is an experimental systems language combining Go-style syntax and ergonomics with C-equivalent execution, direct C-ABI compatibility, and no garbage collection.
+Hike is an experimental systems language combining Go-style syntax and
+ergonomics with C-equivalent execution, direct C-ABI compatibility, and no
+garbage collection.
 
-Rather than generating machine code or object files directly, the Hike compiler (`hikec`) acts strictly as a frontend that compiles source code into LLVM IR (`.ll`). Platform-specific binary formatting (PE/COFF, ELF), optimization passes (`-O3`), and linking are delegated entirely to Clang and LLVM.
+The Hike compiler (`hikec`) has two WebAssembly-capable backends. The LLVM
+backend lowers Hike to LLVM IR (`.ll`), allowing Clang/LLVM to apply its
+optimization pipeline before producing native binaries or optimized
+`wasm32-unknown-unknown` modules. The WABT backend lowers directly to WAT, the
+standard WebAssembly text representation, and uses `wat2wasm` to produce a
+module without an LLVM round trip. This direct path is the foundation for
+Hike's WebAssembly DWARF and browser-debugging support.
 
 The compiler builds standalone executables, C-compatible shared libraries (`.dll` / `.so`), and WebAssembly modules (`.wasm`). When exporting library functions, `hikec` automatically generates corresponding C/C++ header files (`.h`).
 
@@ -55,16 +135,16 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 ## Key Features
 
 * **Go-Inspired Ergonomics**: Multi-return values, slices, structs, type inference (`:=`), and generic type parameters.
-* **Zero Runtime Overhead**: No GC pauses, no always-on language scheduler, and standard C memory layout. Runtime support is emitted as internal LLVM functions, so unused facilities can be eliminated from the final binary; programs that do not use runtime-backed features need no runtime code.
+* **Zero Runtime Overhead**: No GC pauses, no always-on language scheduler, and standard C memory layout. Runtime support is emitted as internal backend functions, so unused facilities can be eliminated from the final binary; programs that do not use runtime-backed features need no runtime code.
 * **Compile-Time Monomorphization**: Generic functions and types are fully specialized during compilation without dynamic dispatch penalties.
 * **First-Class C-ABI Support**: Emits pure C-ABI binaries and automatically emits matching `.h` headers for C/C++ host integration.
 * **2-Pass Stack Iterators**: Custom containers can provide zero-allocation `for-range` traversal using compile-time stack allocation (`alloca`).
 * **Closures with Escape Analysis**: Lexical closures capture by reference. Variables escaping their stack lifetime are promoted to the heap, unified under a 2-word fat pointer ABI.
 * **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`).
-* **Standalone WebAssembly Target**: Emits `wasm32-unknown-unknown` via Clang without requiring external WASI-SDK installations.
+* **Dual WebAssembly Backends**: Use LLVM/Clang for an optimized `wasm32` module, or WABT for direct WAT-to-Wasm generation and browser-oriented debugging.
 * **Optional Region Allocation**: `--alloc=region` groups eligible function-local allocations into bump arenas and releases them in O(1) at the region boundary.
 * **Length-Aware Strings**: Native strings use a fat representation with a backing pointer, byte offset, and byte length; substring views share storage and writes use copy-on-write when necessary.
-* **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB step debugging.
+* **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB, plus Wasm DWARF custom sections for Chrome DevTools when using `-target wabt -g`.
 
 ---
 
@@ -110,18 +190,13 @@ The complete build-constraint and assembly rules are documented in
            ▼  (hikec: Go Frontend, Typecheck, Monomorphization)
   [ AST & Desugaring ]
      ├───► Auto-Generated C/C++ Header (.h) [Optional via -header]
+     ├───► LLVM Backend ──► LLVM IR (.ll) ──► Clang/LLVM optimizer
+     │                                      ├──► Native executable/library
+     │                                      └──► Optimized wasm32 module
      │
-     ▼  (LLVM IR Codegen)
-  [ Pure LLVM IR (.ll) ]
-     │
-     ▼  (Clang / LLVM Optimizer -O3)
-  ┌─────────────────────────────────────────────────────────────┐
-  │                                                             │
-  ▼                                                             ▼
-[ Standalone Executable ]                     [ Shared Library & Import Lib ]
-(.exe / ELF binary)                           (.dll / .so / .dll.a)
-                                                ├──► Native C/C++ Applications
-                                                └──► Python (ctypes) / Node.js
+     └───► WABT Backend ──► WAT ──► wat2wasm
+                                      └──► Wasm + DWARF/source mapping
+                                           └──► Chrome DevTools
 
 ```
 
@@ -133,17 +208,15 @@ The complete build-constraint and assembly rules are documented in
 
 * **Go**: 1.21+
 
-
 * **LLVM / Clang**: 15.0+ (`clang` and `lld` in your `PATH`)
-
 
 * **Windows Toolchain**: MinGW-w64 GCC runtime (`x86_64-w64-windows-gnu`)
 
-
 * **Make** (MinGW / MSYS2 / Linux / macOS)
 
-
 * **Python**: 3.8+ (for integration test suites)
+
+* **WABT**: `wat2wasm` in your `PATH` when using `-target wabt`
 
 
 
@@ -950,10 +1023,27 @@ func main() int {
 
 ## WebAssembly Support
 
-Hike compiles directly to `wasm32-unknown-unknown` through Clang without a
-WASI SDK or an external libc. The compiler emits internal LLVM runtime
-functions for memory, strings, maps, and other built-ins, then generates a
-JavaScript runtime for the selected host mode.
+Hike provides two WebAssembly build paths. Choose the backend with
+`-target`:
+
+| Target | Backend | Best for |
+| --- | --- | --- |
+| `wasm32` | LLVM/Clang | Optimized, compact, high-performance Wasm modules |
+| `wabt` | Direct WAT + `wat2wasm` | Source-level debugging in browser DevTools |
+
+The `wasm32` target lowers through LLVM IR, allowing the LLVM/Clang optimizer
+to produce a compact and fast WebAssembly module. The `wabt` target emits the
+standard WebAssembly text representation directly and converts it with WABT.
+Because this path keeps the source-to-Wasm mapping under Hike's control, it is
+the recommended backend for debugging Hike source in Chrome DevTools. Hike will
+continue to strengthen the WABT backend as its primary direct-WebAssembly
+pipeline.
+
+Both backends emit the internal runtime support needed by the program and can
+generate the JavaScript runtime for the selected host mode. The generated
+Wasm modules are intended to run across WebAssembly hosts including browsers,
+Node.js, and other runtimes that provide the standard WebAssembly JavaScript
+API.
 
 The generated WASM modules are intended to run across WebAssembly host
 environments, including web browsers, Node.js, and other WASM runtimes that
@@ -965,16 +1055,21 @@ the Hike exports to the page's JavaScript.
 ### Build and run
 
 ```bash
-# Build main.wasm and generate runtime.js beside it.
+# Optimized Wasm through LLVM/Clang.
 hikec build -target wasm32 -o main.wasm main.hike
 
-# The same command can be executed through Node.js by the CLI runner.
+# Direct WAT/WABT build for Chrome DevTools source debugging.
+hikec build -target wabt -g --source-map-base ./ -o main.wasm main.hike
+
+# The same host model can be exercised through Node.js.
 hikec run -target wasm32 main.hike
 ```
 
 `build` produces the `.wasm` module and automatically writes `runtime.js` in
-the output directory. `run` builds a temporary module and starts Node.js with
-the generated runtime. This is the same host model used by the automated WASM
+the output directory. A WABT debug build also writes `main.wasm.map` and
+embeds its `sourceMappingURL` custom section unless `--no-source-map` is
+specified. `run` builds a temporary module and starts Node.js with the
+generated runtime. This is the same host model used by the automated WASM
 tests.
 
 ### Normal and concurrent runtimes
@@ -1118,7 +1213,7 @@ Common options:
                   runtime.js; for build it is the executable or .wasm.
   -target <name> / --target=<name>
                   Target triple or shorthand: windows, windows-msvc, linux,
-                  darwin, wasm32, or wasm64.
+                  darwin, wasm32, wasm64, or wabt.
   -v / --verbose  Enable verbose logging.
   -vv / --vv      Enable detailed instruction-level logging.
 
@@ -1140,6 +1235,9 @@ Options for emit-js:
                   Compile the source with region mode enabled.
 
 Options for build:
+  -target wabt
+                  Build through WAT/WABT and emit a browser-oriented Wasm
+                  module with automatically generated runtime.js.
   -wasm-mode <mode> / --wasm-mode=<mode>
                   WebAssembly runtime mode: normal or concurrent.
   --alloc=region / -alloc=region
@@ -1147,7 +1245,13 @@ Options for build:
   -cflags <flags> / -cflags=<flags>
                   Extra flags passed directly to Clang.
   -g              Generate DWARF debug metadata and use a debug-friendly
-                  native compilation configuration.
+                  native compilation configuration. For `-target wabt`, also
+                  emit Wasm DWARF custom sections and a `.wasm.map` file.
+  --source-map-base <url> / --source-map-base=<url>
+                  URL prefix for the embedded source-map URL and source URLs.
+                  The map is written beside the output Wasm file.
+  --no-source-map  Do not embed the `sourceMappingURL` custom section. The
+                  `.wasm.map` file is still written for external use.
 
 Options for run:
   -wasm-mode <mode> / --wasm-mode=<mode>
