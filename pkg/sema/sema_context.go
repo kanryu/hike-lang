@@ -513,6 +513,112 @@ func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
 // 型解決 (Type Resolution)
 // -------------------------------------------------------------
 
+func (c *Context) resolveGenericStructType(t *ast.NamedType, name, canonicalName string, st *StructType) Type {
+	if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
+		return st
+	}
+	if len(t.TypeArgs) == 0 {
+		panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' requires type arguments (e.g. %s[...])", t.Token.Line, t.Token.Col, name, name))
+	}
+	if len(t.TypeArgs) != len(st.TypeParams) {
+		panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' expects %d type arguments, got %d", t.Token.Line, t.Token.Col, name, len(st.TypeParams), len(t.TypeArgs)))
+	}
+
+	resolvedArgs := make([]Type, len(t.TypeArgs))
+	argNames := []string{}
+	typeMap := make(map[string]Type)
+	seenConst := false
+	for i, arg := range t.TypeArgs {
+		if seenConst {
+			if named, ok := arg.(*ast.NamedType); ok && named.Package == nil {
+				if _, exists := c.Constants[named.Name.Value]; !exists {
+					panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing and use a const variable", t.Token.Line, t.Token.Col))
+				}
+			}
+		}
+		resolvedArg, isConst := c.resolveGenericArg(arg)
+		paramName := st.TypeParams[i]
+		if st.ConstTypeParams[paramName] && !isConst {
+			panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires an integer constant argument", t.Token.Line, t.Token.Col, paramName))
+		}
+		if !st.ConstTypeParams[paramName] && isConst {
+			panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a type argument", t.Token.Line, t.Token.Col, paramName))
+		}
+		if st.ConstTypeParams[paramName] {
+			if cv, ok := resolvedArg.(*ConstValueType); ok && cv.Value < 0 {
+				panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a non-negative uint constant", t.Token.Line, t.Token.Col, paramName))
+			}
+		}
+		if isConst {
+			if i == 0 {
+				panic(fmt.Sprintf("[Sema Error] line %d:%d: a generic instantiation requires at least one type argument before const arguments", t.Token.Line, t.Token.Col))
+			}
+			seenConst = true
+		} else if seenConst {
+			panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing", t.Token.Line, t.Token.Col))
+		}
+		if resolvedArg == TypeVoid && isConst {
+			panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be integer literals or const variables", t.Token.Line, t.Token.Col))
+		}
+		resolvedArgs[i] = resolvedArg
+		argNames = append(argNames, specializationArgName(resolvedArg))
+		if !isConst {
+			typeMap[st.TypeParams[i]] = resolvedArg
+		}
+	}
+
+	specKey := strings.Join(argNames, "_")
+	if existingSt, ok := st.Specializations[specKey]; ok {
+		if existingSt.InternalKey == "" {
+			existingSt.InternalKey = specializedInternalKeyFor(st, canonicalName, resolvedArgs)
+		}
+		c.Structs[existingSt.Name] = existingSt
+		logGenericTypeResolution(name, existingSt)
+		return existingSt
+	}
+
+	specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
+	specializedInternalKey := specializedInternalKeyFor(st, canonicalName, resolvedArgs)
+	if existingSt, ok := c.Structs[specializedName]; ok {
+		st.Specializations[specKey] = existingSt
+		if existingSt.InternalKey == "" {
+			existingSt.InternalKey = specializedInternalKey
+		}
+		logGenericTypeResolution(name, existingSt)
+		return existingSt
+	}
+
+	newSt := &StructType{
+		Name:                specializedName,
+		InternalKey:         specializedInternalKey,
+		TypeParams:          st.TypeParams,
+		ConstTypeParams:     st.ConstTypeParams,
+		TypeArgs:            resolvedArgs,
+		Fields:              []Field{},
+		Template:            st.Template,
+		IsSpecialized:       true,
+		Specializations:     make(map[string]*StructType),
+		BuiltinCapabilities: make(map[string]*FuncType),
+	}
+	c.Structs[specializedName] = newSt
+	st.Specializations[specKey] = newSt
+	logGenericTypeResolution(name, newSt)
+
+	if st.Template != nil {
+		if stAst, ok := st.Template.Type.(*ast.StructType); ok {
+			for _, f := range stAst.Fields {
+				fType := c.ResolveTypeWithSubst(f.Type, typeMap)
+				newSt.Fields = append(newSt.Fields, Field{
+					Name:       f.Name.Value,
+					Type:       fType,
+					IsEmbedded: f.IsEmbedded,
+				})
+			}
+		}
+	}
+	return newSt
+}
+
 func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	if expr == nil {
 		return TypeVoid
@@ -564,112 +670,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		}
 		if st, canonicalName := c.LookupStruct(name); st != nil {
 			if st.IsGeneric() {
-				if len(t.TypeArgs) == 0 && len(c.TypeParams) > 0 {
-					return st
-				}
-
-				if len(t.TypeArgs) == 0 {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' requires type arguments (e.g. %s[...])",
-						t.Token.Line, t.Token.Col, name, name))
-				}
-				if len(t.TypeArgs) != len(st.TypeParams) {
-					panic(fmt.Sprintf("[Sema Error] line %d:%d: generic struct '%s' expects %d type arguments, got %d",
-						t.Token.Line, t.Token.Col, name, len(st.TypeParams), len(t.TypeArgs)))
-				}
-
-				resolvedArgs := make([]Type, len(t.TypeArgs))
-				argNames := []string{}
-				typeMap := make(map[string]Type)
-				seenConst := false
-				for i, arg := range t.TypeArgs {
-					if seenConst {
-						if named, ok := arg.(*ast.NamedType); ok && named.Package == nil {
-							if _, exists := c.Constants[named.Name.Value]; !exists {
-								panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing and use a const variable", t.Token.Line, t.Token.Col))
-							}
-						}
-					}
-					resolvedArg, isConst := c.resolveGenericArg(arg)
-					paramName := st.TypeParams[i]
-					if st.ConstTypeParams[paramName] && !isConst {
-						panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires an integer constant argument", t.Token.Line, t.Token.Col, paramName))
-					}
-					if !st.ConstTypeParams[paramName] && isConst {
-						panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a type argument", t.Token.Line, t.Token.Col, paramName))
-					}
-					if st.ConstTypeParams[paramName] {
-						if cv, ok := resolvedArg.(*ConstValueType); ok && cv.Value < 0 {
-							panic(fmt.Sprintf("[Sema Error] line %d:%d: generic parameter '%s' requires a non-negative uint constant", t.Token.Line, t.Token.Col, paramName))
-						}
-					}
-					if isConst {
-						if i == 0 {
-							panic(fmt.Sprintf("[Sema Error] line %d:%d: a generic instantiation requires at least one type argument before const arguments", t.Token.Line, t.Token.Col))
-						}
-						seenConst = true
-					} else if seenConst {
-						panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be trailing", t.Token.Line, t.Token.Col))
-					}
-					if resolvedArg == TypeVoid && isConst {
-						panic(fmt.Sprintf("[Sema Error] line %d:%d: const generic arguments must be integer literals or const variables", t.Token.Line, t.Token.Col))
-					}
-					resolvedArgs[i] = resolvedArg
-					argNames = append(argNames, specializationArgName(resolvedArg))
-					if !isConst {
-						typeMap[st.TypeParams[i]] = resolvedArg
-					}
-				}
-
-				specKey := strings.Join(argNames, "_")
-				if existingSt, ok := st.Specializations[specKey]; ok {
-					if existingSt.InternalKey == "" {
-						existingSt.InternalKey = specializedInternalKeyFor(st, canonicalName, resolvedArgs)
-					}
-					c.Structs[existingSt.Name] = existingSt
-					logGenericTypeResolution(name, existingSt)
-					return existingSt
-				}
-
-				specializedName := fmt.Sprintf("%s__%s", canonicalName, specKey)
-				specializedInternalKey := specializedInternalKeyFor(st, canonicalName, resolvedArgs)
-				if existingSt, ok := c.Structs[specializedName]; ok {
-					st.Specializations[specKey] = existingSt
-					if existingSt.InternalKey == "" {
-						existingSt.InternalKey = specializedInternalKey
-					}
-					logGenericTypeResolution(name, existingSt)
-					return existingSt
-				}
-
-				newSt := &StructType{
-					Name:                specializedName,
-					InternalKey:         specializedInternalKey,
-					TypeParams:          st.TypeParams,
-					ConstTypeParams:     st.ConstTypeParams,
-					TypeArgs:            resolvedArgs,
-					Fields:              []Field{},
-					Template:            st.Template,
-					IsSpecialized:       true,
-					Specializations:     make(map[string]*StructType),
-					BuiltinCapabilities: make(map[string]*FuncType),
-				}
-				c.Structs[specializedName] = newSt
-				st.Specializations[specKey] = newSt
-				logGenericTypeResolution(name, newSt)
-
-				if st.Template != nil {
-					if stAst, ok := st.Template.Type.(*ast.StructType); ok {
-						for _, f := range stAst.Fields {
-							fType := c.ResolveTypeWithSubst(f.Type, typeMap)
-							newSt.Fields = append(newSt.Fields, Field{
-								Name:       f.Name.Value,
-								Type:       fType,
-								IsEmbedded: f.IsEmbedded,
-							})
-						}
-					}
-				}
-				return newSt
+				return c.resolveGenericStructType(t, name, canonicalName, st)
 			}
 
 			if len(t.TypeArgs) > 0 {
@@ -1237,6 +1238,221 @@ func isIntType(t Type) bool {
 // 型推論 (Type Inference) & 暗黙キャスト
 // -------------------------------------------------------------
 
+func (c *Context) inferGenericInstType(e *ast.GenericInstExpr) Type {
+	var baseName string
+	if id, ok := e.Left.(*ast.Identifier); ok {
+		baseName = astIdentifierValue(id)
+	} else if mem, ok := e.Left.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			baseName = pkgId.Value + "_" + mem.Field.Value
+		} else {
+			baseName = mem.Field.Value
+		}
+	}
+	if baseName == "" {
+		return TypeInt
+	}
+
+	tmpl := c.GenericFuncs[baseName]
+	if tmpl == nil {
+		if fn, _ := c.LookupFunction(baseName); fn != nil && fn.Template != nil {
+			tmpl = fn.Template
+		}
+	}
+	if tmpl != nil {
+		typeArgs := make([]Type, len(e.TypeArgs))
+		for i, ta := range e.TypeArgs {
+			typeArgs[i] = c.ResolveType(ta)
+		}
+		subst := make(map[string]Type)
+		for i, tp := range tmpl.TypeParams {
+			if i < len(typeArgs) {
+				subst[tp.Name.Value] = typeArgs[i]
+			}
+		}
+		rts := make([]Type, len(tmpl.ReturnTypes))
+		for i, rt := range tmpl.ReturnTypes {
+			rts[i] = c.ResolveTypeWithSubst(rt, subst)
+		}
+		pts := make([]Type, len(tmpl.Params))
+		for i, p := range tmpl.Params {
+			pts[i] = c.ResolveTypeWithSubst(p.Type, subst)
+		}
+		return &FuncType{
+			Name:          baseName,
+			ParamTypes:    pts,
+			ReturnTypes:   rts,
+			IsSpecialized: true,
+		}
+	}
+	if st, _ := c.LookupStruct(baseName); st != nil && st.IsGeneric() {
+		return c.ResolveType(&ast.NamedType{
+			Token:    e.Token,
+			Name:     &ast.Identifier{Token: e.Token, Value: baseName},
+			TypeArgs: e.TypeArgs,
+		})
+	}
+	return TypeInt
+}
+
+func (c *Context) inferMemberExprType(e *ast.MemberExpr, locals map[string]Type) Type {
+	if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
+		qualified := pkgId.Value + "_" + e.Field.Value
+		if t, ok := c.Globals[qualified]; ok {
+			return t
+		}
+		if _, ok := c.LookupConstant(qualified); ok {
+			return TypeInt
+		}
+		if _, ok := c.LookupStringConstant(qualified); ok {
+			return TypeString
+		}
+		if _, ok := c.LookupFloatConstant(qualified); ok {
+			return TypeFloat64
+		}
+		if fn, _ := c.LookupFunction(qualified); fn != nil {
+			return fn
+		}
+	}
+
+	objType := c.InferExprType(e.Object, locals)
+	rawObjType := objType
+	if pt, ok := objType.(*PointerType); ok {
+		rawObjType = pt.Base
+	}
+
+	// インターフェース型レシーバのメソッド解決
+	if iface, ok := rawObjType.(*InterfaceType); ok {
+		if m, _ := iface.GetMethod(e.Field.Value); m != nil {
+			return &FuncType{
+				Name:         m.Name,
+				InternalKey:  m.InternalKey,
+				ParamTypes:   m.ParamTypes,
+				ReturnTypes:  m.ReturnTypes,
+				IsVariadic:   m.IsVariadic,
+				VariadicElem: m.VariadicElem,
+				IsMethod:     true,
+			}
+		}
+	}
+
+	if fn, _ := c.LookupMethod(typeNameOf(objType), e.Field.Value); fn != nil {
+		return fn
+	}
+
+	if st, ok := rawObjType.(*StructType); ok {
+		for _, f := range st.Fields {
+			if f.Name == e.Field.Value {
+				return f.Type
+			}
+		}
+	}
+	return TypeInt
+}
+
+func (c *Context) inferBinaryExprType(e *ast.BinaryExpr, locals map[string]Type) Type {
+	if e.WithCarry && (e.Operator == "<<" || e.Operator == ">>") {
+		valueType := c.InferExprType(e.Left, locals)
+		return &TupleType{Types: []Type{valueType, valueType}}
+	}
+	switch e.Operator {
+	case "==", "!=", "<", "<=", ">", ">=":
+		return TypeBool
+	case "&&", "||":
+		return TypeBool
+	case "+":
+		lt := c.InferExprType(e.Left, locals)
+		rt := c.InferExprType(e.Right, locals)
+		if lt == TypeString || rt == TypeString {
+			return TypeString
+		}
+		if lt == TypeFloat64 || rt == TypeFloat64 {
+			return TypeFloat64
+		}
+		return lt
+	default:
+		lt := c.InferExprType(e.Left, locals)
+		rt := c.InferExprType(e.Right, locals)
+		if lt == TypeFloat64 || rt == TypeFloat64 {
+			return TypeFloat64
+		}
+		return lt
+	}
+}
+
+func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Type {
+	if len(e.Args) == 1 {
+		if castT := c.resolveTypeFromExpr(e.Function); castT != nil && castT != TypeVoid {
+			if _, isFn := castT.(*FuncType); !isFn {
+				return castT
+			}
+		}
+	}
+	if id, ok := e.Function.(*ast.Identifier); ok {
+		switch astIdentifierValue(id) {
+		case "len", "cap", "sizeof", "recover": // sizeof/recover 組み込みサポート
+			return TypeInt
+		case "panic":
+			return TypeVoid
+		case "string":
+			return TypeString
+		case "cstring":
+			return TypeCString
+		case "make":
+			if len(e.Args) > 0 {
+				return c.ResolveType(e.Args[0].(ast.TypeExpr))
+			}
+		case "append":
+			if len(e.Args) > 0 {
+				return c.InferExprType(e.Args[0], locals)
+			}
+		}
+	}
+
+	if mem, ok := e.Function.(*ast.MemberExpr); ok {
+		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
+			targetName := pkgId.Value + "_" + mem.Field.Value
+			if fn, _ := c.LookupFunction(targetName); fn != nil {
+				c.ResolvedCalls[e] = fn
+			}
+		} else {
+			objType := c.InferExprType(mem.Object, locals)
+			rawObj := objType
+			if pt, okPt := objType.(*PointerType); okPt {
+				rawObj = pt.Base
+			}
+
+			if iface, okIface := rawObj.(*InterfaceType); okIface {
+				if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
+					c.ResolvedCalls[e] = &FuncType{
+						Name:         m.Name,
+						InternalKey:  m.InternalKey,
+						ParamTypes:   m.ParamTypes,
+						ReturnTypes:  m.ReturnTypes,
+						IsVariadic:   m.IsVariadic,
+						VariadicElem: m.VariadicElem,
+						IsMethod:     true,
+					}
+				}
+			} else if fn, _ := c.LookupMethod(typeNameOf(objType), mem.Field.Value); fn != nil {
+				c.ResolvedCalls[e] = fn
+			}
+		}
+	}
+
+	fnType := c.InferExprType(e.Function, locals)
+	if ft, ok := fnType.(*FuncType); ok {
+		c.ResolvedCalls[e] = ft
+		if len(ft.ReturnTypes) == 1 {
+			return ft.ReturnTypes[0]
+		} else if len(ft.ReturnTypes) > 1 {
+			return &TupleType{Types: ft.ReturnTypes}
+		}
+		return TypeVoid
+	}
+	return TypeVoid
+}
+
 func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Type {
 	if expr == nil {
 		return TypeVoid
@@ -1282,58 +1498,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return TypeInt
 
 	case *ast.GenericInstExpr:
-		var baseName string
-		if id, ok := e.Left.(*ast.Identifier); ok {
-			baseName = astIdentifierValue(id)
-		} else if mem, ok := e.Left.(*ast.MemberExpr); ok {
-			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-				baseName = pkgId.Value + "_" + mem.Field.Value
-			} else {
-				baseName = mem.Field.Value
-			}
-		}
-		if baseName != "" {
-			var tmpl *ast.FuncDecl = c.GenericFuncs[baseName]
-			if tmpl == nil {
-				if fn, _ := c.LookupFunction(baseName); fn != nil && fn.Template != nil {
-					tmpl = fn.Template
-				}
-			}
-			if tmpl != nil {
-				typeArgs := make([]Type, len(e.TypeArgs))
-				for i, ta := range e.TypeArgs {
-					typeArgs[i] = c.ResolveType(ta)
-				}
-				subst := make(map[string]Type)
-				for i, tp := range tmpl.TypeParams {
-					if i < len(typeArgs) {
-						subst[tp.Name.Value] = typeArgs[i]
-					}
-				}
-				rts := make([]Type, len(tmpl.ReturnTypes))
-				for i, rt := range tmpl.ReturnTypes {
-					rts[i] = c.ResolveTypeWithSubst(rt, subst)
-				}
-				pts := make([]Type, len(tmpl.Params))
-				for i, p := range tmpl.Params {
-					pts[i] = c.ResolveTypeWithSubst(p.Type, subst)
-				}
-				return &FuncType{
-					Name:          baseName,
-					ParamTypes:    pts,
-					ReturnTypes:   rts,
-					IsSpecialized: true,
-				}
-			}
-			if st, _ := c.LookupStruct(baseName); st != nil && st.IsGeneric() {
-				return c.ResolveType(&ast.NamedType{
-					Token:    e.Token,
-					Name:     &ast.Identifier{Token: e.Token, Value: baseName},
-					TypeArgs: e.TypeArgs,
-				})
-			}
-		}
-		return TypeInt
+		return c.inferGenericInstType(e)
 
 	case *ast.ImplicitCastExpr:
 		return c.ResolveType(e.TargetType)
@@ -1377,86 +1542,10 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		}
 
 	case *ast.BinaryExpr:
-		if e.WithCarry && (e.Operator == "<<" || e.Operator == ">>") {
-			valueType := c.InferExprType(e.Left, locals)
-			return &TupleType{Types: []Type{valueType, valueType}}
-		}
-		switch e.Operator {
-		case "==", "!=", "<", "<=", ">", ">=":
-			return TypeBool
-		case "&&", "||":
-			return TypeBool
-		case "+":
-			lt := c.InferExprType(e.Left, locals)
-			rt := c.InferExprType(e.Right, locals)
-			if lt == TypeString || rt == TypeString {
-				return TypeString
-			}
-			if lt == TypeFloat64 || rt == TypeFloat64 {
-				return TypeFloat64
-			}
-			return lt
-		default:
-			lt := c.InferExprType(e.Left, locals)
-			rt := c.InferExprType(e.Right, locals)
-			if lt == TypeFloat64 || rt == TypeFloat64 {
-				return TypeFloat64
-			}
-			return lt
-		}
+		return c.inferBinaryExprType(e, locals)
 
 	case *ast.MemberExpr:
-		if pkgId, okPkg := e.Object.(*ast.Identifier); okPkg {
-			qualified := pkgId.Value + "_" + e.Field.Value
-			if t, ok := c.Globals[qualified]; ok {
-				return t
-			}
-			if _, ok := c.LookupConstant(qualified); ok {
-				return TypeInt
-			}
-			if _, ok := c.LookupStringConstant(qualified); ok {
-				return TypeString
-			}
-			if _, ok := c.LookupFloatConstant(qualified); ok {
-				return TypeFloat64
-			}
-			if fn, _ := c.LookupFunction(qualified); fn != nil {
-				return fn
-			}
-		}
-
-		objType := c.InferExprType(e.Object, locals)
-		rawObjType := objType
-		if pt, ok := objType.(*PointerType); ok {
-			rawObjType = pt.Base
-		}
-
-		// インターフェース型レシーバのメソッド解決
-		if iface, ok := rawObjType.(*InterfaceType); ok {
-			if m, _ := iface.GetMethod(e.Field.Value); m != nil {
-				return &FuncType{
-					Name:         m.Name,
-					InternalKey:  m.InternalKey,
-					ParamTypes:   m.ParamTypes,
-					ReturnTypes:  m.ReturnTypes,
-					IsVariadic:   m.IsVariadic,
-					VariadicElem: m.VariadicElem,
-					IsMethod:     true,
-				}
-			}
-		}
-
-		if fn, _ := c.LookupMethod(typeNameOf(objType), e.Field.Value); fn != nil {
-			return fn
-		}
-
-		if st, ok := rawObjType.(*StructType); ok {
-			for _, f := range st.Fields {
-				if f.Name == e.Field.Value {
-					return f.Type
-				}
-			}
-		}
+		return c.inferMemberExprType(e, locals)
 
 	case *ast.IndexExpr:
 		lt := c.InferExprType(e.Left, locals)
@@ -1478,76 +1567,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
 
 	case *ast.CallExpr:
-		if len(e.Args) == 1 {
-			if castT := c.resolveTypeFromExpr(e.Function); castT != nil && castT != TypeVoid {
-				if _, isFn := castT.(*FuncType); !isFn {
-					return castT
-				}
-			}
-		}
-		if id, ok := e.Function.(*ast.Identifier); ok {
-			switch astIdentifierValue(id) {
-			case "len", "cap", "sizeof", "recover": // sizeof/recover 組み込みサポート
-				return TypeInt
-			case "panic":
-				return TypeVoid
-			case "string":
-				return TypeString
-			case "cstring":
-				return TypeCString
-			case "make":
-				if len(e.Args) > 0 {
-					return c.ResolveType(e.Args[0].(ast.TypeExpr))
-				}
-			case "append":
-				if len(e.Args) > 0 {
-					return c.InferExprType(e.Args[0], locals)
-				}
-			}
-		}
-
-		if mem, ok := e.Function.(*ast.MemberExpr); ok {
-			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-				targetName := pkgId.Value + "_" + mem.Field.Value
-				if fn, _ := c.LookupFunction(targetName); fn != nil {
-					c.ResolvedCalls[e] = fn
-				}
-			} else {
-				objType := c.InferExprType(mem.Object, locals)
-				rawObj := objType
-				if pt, okPt := objType.(*PointerType); okPt {
-					rawObj = pt.Base
-				}
-
-				if iface, okIface := rawObj.(*InterfaceType); okIface {
-					if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
-						c.ResolvedCalls[e] = &FuncType{
-							Name:         m.Name,
-							InternalKey:  m.InternalKey,
-							ParamTypes:   m.ParamTypes,
-							ReturnTypes:  m.ReturnTypes,
-							IsVariadic:   m.IsVariadic,
-							VariadicElem: m.VariadicElem,
-							IsMethod:     true,
-						}
-					}
-				} else if fn, _ := c.LookupMethod(typeNameOf(objType), mem.Field.Value); fn != nil {
-					c.ResolvedCalls[e] = fn
-				}
-			}
-		}
-
-		fnType := c.InferExprType(e.Function, locals)
-		if ft, ok := fnType.(*FuncType); ok {
-			c.ResolvedCalls[e] = ft
-			if len(ft.ReturnTypes) == 1 {
-				return ft.ReturnTypes[0]
-			} else if len(ft.ReturnTypes) > 1 {
-				return &TupleType{Types: ft.ReturnTypes}
-			}
-			return TypeVoid
-		}
-		return TypeVoid
+		return c.inferCallExprType(e, locals)
 	case *ast.InlineAsmExpr:
 		return TypeVoid
 

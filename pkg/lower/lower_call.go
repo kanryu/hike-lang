@@ -863,6 +863,296 @@ func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
 // 関数・メソッド呼び出し (Call)
 // -------------------------------------------------------------
 
+func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.MemberExpr, pkgIdent *ast.Identifier) hir.Value {
+	methodName := mem.Field.Value
+	if c.root.semaCtx.GoHikeMode && pkgIdent.Value == "sort" && methodName == "Strings" {
+		if len(call.Args) != 1 {
+			panic(fmt.Sprintf("[Lower Error] sort.Strings expects one argument, got %d", len(call.Args)))
+		}
+		arg := c.root.Expr.LowerExpr(call.Args[0])
+		c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_sort_strings", Args: []hir.Value{arg}})
+		return nil
+	}
+	targetFnName := pkgIdent.Value + "_" + methodName
+	targetFn, canonicalName := c.root.semaCtx.LookupFunction(targetFnName)
+	if targetFn == nil {
+		targetFn, canonicalName = c.root.semaCtx.LookupFunction(methodName)
+	}
+	if targetFn == nil {
+		panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))
+	}
+
+	params := c.getFuncParams(targetFn, canonicalName)
+	callArgs := c.fillDefaultArgs(call.Args, params)
+	if semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil {
+		if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
+			return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
+				Token:       call.Token,
+				Function:    call.Function,
+				Args:        callArgs,
+				HasEllipsis: call.HasEllipsis,
+			})
+		}
+	}
+
+	isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
+	args := c.lowerArgs(callArgs, targetFn.ParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
+	var retType sema.Type = sema.TypeVoid
+	if len(targetFn.ReturnTypes) == 1 {
+		retType = targetFn.ReturnTypes[0]
+	} else if len(targetFn.ReturnTypes) > 1 {
+		retType = &sema.TupleType{Types: targetFn.ReturnTypes}
+	}
+	var dst *hir.Reg
+	if retType != sema.TypeVoid {
+		dst = c.root.nextReg(retType)
+	}
+
+	callee := canonicalName
+	if semaFuncCFunc(targetFn) {
+		if semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
+			callee = "__hike_impl_" + semaFuncName(targetFn)
+		} else if semaFuncCFuncTarget(targetFn) != "" {
+			callee = semaFuncCFuncTarget(targetFn)
+		} else {
+			callee = "c_" + canonicalName
+		}
+	} else if semaFuncExtern(targetFn) && semaFuncIRName(targetFn) != "" {
+		callee = semaFuncIRName(targetFn)
+	}
+	c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
+	return dst
+}
+
+func (c *CallLowerer) lowerCStringBuiltin(call *ast.CallExpr) (hir.Value, bool) {
+	if len(call.Args) == 0 {
+		return nil, false
+	}
+	// cstring(ptr, len) uses the same NUL-terminated runtime
+	// representation, but preserves the cstring static type.
+	if len(call.Args) == 2 {
+		ptrVal := c.root.Expr.LowerExpr(call.Args[0])
+		lenVal := c.root.Expr.LowerExpr(call.Args[1])
+		dst := c.root.nextReg(sema.TypeCString)
+		c.root.emit(&hir.InstrCallStatic{
+			Dst:        dst,
+			CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+			Args:       []hir.Value{ptrVal, lenVal},
+		})
+		return dst, true
+	}
+	argVal := c.root.Expr.LowerExpr(call.Args[0])
+	if argVal.Type() == sema.TypeCString {
+		return argVal, true
+	}
+	if argVal.Type() == sema.TypeString || semaTypeName(argVal.Type()) == "string" {
+		return c.lowerStringToCString(argVal), true
+	}
+	if strings.HasPrefix(sema.LLVMTypeOf(argVal.Type()), "{") {
+		return c.lowerStringToCString(argVal), true
+	}
+	dst := c.root.nextReg(sema.TypeCString)
+	c.root.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: sema.TypeCString})
+	return dst, true
+}
+
+func (c *CallLowerer) lowerStringBuiltin(call *ast.CallExpr) (hir.Value, bool) {
+	if len(call.Args) == 0 {
+		return nil, false
+	}
+	// Construct a string directly from a byte pointer and explicit length.
+	// This avoids the temporary []byte and its extra copy.
+	if len(call.Args) == 2 {
+		ptrVal := c.root.Expr.LowerExpr(call.Args[0])
+		lenVal := c.root.Expr.LowerExpr(call.Args[1])
+		raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		c.root.emit(&hir.InstrCallStatic{
+			Dst:        raw,
+			CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+			Args:       []hir.Value{ptrVal, lenVal},
+		})
+		return c.root.makeString(raw, lenVal), true
+	}
+	argVal := c.root.Expr.LowerExpr(call.Args[0])
+	if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
+		rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		rawLen := c.root.nextReg(sema.TypeInt)
+		c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
+		c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
+		raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		c.root.emit(&hir.InstrCallStatic{
+			Dst:        raw,
+			CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+			Args:       []hir.Value{rawPtr, rawLen},
+		})
+		return c.root.makeString(raw, rawLen), true
+	}
+	if argVal.Type() == sema.TypeCString || semaTypeName(argVal.Type()) == "cstring" {
+		return c.lowerCStringToString(argVal), true
+	}
+	if ptrType, ok := argVal.Type().(*sema.PointerType); ok && ptrType.Base == sema.TypeByte {
+		return c.lowerCStringToString(argVal), true
+	}
+	if sema.LLVMTypeOf(argVal.Type()) == "i8*" {
+		return c.lowerCStringToString(argVal), true
+	}
+	return argVal, true
+}
+
+func (c *CallLowerer) lowerSizeofCall(call *ast.CallExpr) hir.Value {
+	logger.LogVerbose2("[Verbose2] CallLowerer LowerCall CallExpr: ast=%T (%+v)\n", call, call)
+	if len(call.Args) == 1 {
+		arg := call.Args[0]
+		t := c.ResolveTypeFromExpr(arg)
+		if t == nil || t == sema.TypeVoid {
+			argVal := c.root.Expr.LowerExpr(arg)
+			t = argVal.Type()
+		}
+		if t != nil && t != sema.TypeVoid {
+			if pt, isPtr := t.(*sema.PointerType); isPtr {
+				t = pt.Base
+			}
+			sz := int64(sema.SizeOf(t))
+			if st, _ := c.root.findStruct(t); st != nil {
+				stSz := int64(st.Size())
+				if stSz > sz {
+					sz = stSz
+				}
+				if sz <= int64(sema.PointerSize) && strings.Contains(st.Name, "__") {
+					baseName := strings.Split(strings.TrimPrefix(st.Name, "*"), "__")[0]
+					if baseSt, _ := c.root.findStructByName(baseName); baseSt != nil && len(baseSt.Fields) > 0 {
+						baseSz := int64(baseSt.Size())
+						if baseSz > sz {
+							sz = baseSz
+						}
+					}
+				}
+			}
+			return &hir.ConstInt{Val: sz, Typ: sema.TypeInt}
+		}
+	}
+	return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+}
+
+func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
+	var chanTypeNode *ast.ChanType
+	if ct, ok := call.Args[0].(*ast.ChanType); ok {
+		chanTypeNode = ct
+	} else if ice, ok := call.Args[0].(*ast.ImplicitCastExpr); ok {
+		if ct, ok := ice.Expr.(*ast.ChanType); ok {
+			chanTypeNode = ct
+		}
+	}
+
+	if chanTypeNode != nil {
+		elemType := c.root.semaCtx.ResolveType(chanTypeNode.Elem)
+		resChanType := &sema.ChanType{Elem: elemType}
+		capVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+		if len(call.Args) >= 2 {
+			capVal = c.root.Expr.LowerExpr(call.Args[1])
+		}
+		dst := c.root.nextReg(resChanType)
+		c.root.emit(&hir.InstrChanMake{Dst: dst, ElemType: elemType, Cap: capVal})
+		return dst
+	}
+
+	if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
+		kType := c.root.semaCtx.ResolveType(mapTypeNode.Key)
+		vType := c.root.semaCtx.ResolveType(mapTypeNode.Value)
+		resMapType := &sema.MapType{Key: kType, Value: vType}
+		isStr := 0
+		if kType == sema.TypeString {
+			isStr = 1
+		}
+		capVal := hir.Value(&hir.ConstInt{Val: 16, Typ: sema.TypeInt})
+		if len(call.Args) >= 2 {
+			capVal = c.root.Expr.LowerExpr(call.Args[1])
+		}
+		dst := c.root.nextReg(resMapType)
+		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_create", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
+		return dst
+	}
+	if slNode, okSlice := call.Args[0].(*ast.SliceType); okSlice {
+		elemType := c.root.semaCtx.ResolveType(slNode.Elem)
+		resSliceType := &sema.SliceType{Elem: elemType}
+		lenVal := c.root.Expr.LowerExpr(call.Args[1])
+		capVal := lenVal
+		if len(call.Args) >= 3 {
+			capVal = c.root.Expr.LowerExpr(call.Args[2])
+		}
+		elemSize := sema.SizeOf(elemType)
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+		callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		c.root.emit(&hir.InstrCallStatic{Dst: callocRaw, CalleeName: "calloc", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}}})
+
+		t1 := c.root.nextReg(resSliceType)
+		c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(resSliceType), Val: callocRaw, Index: 0})
+		t2 := c.root.nextReg(resSliceType)
+		c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: lenVal, Index: 1})
+		t3 := c.root.nextReg(resSliceType)
+		c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: capVal, Index: 2})
+		return t3
+	}
+	return nil
+}
+
+func (c *CallLowerer) lowerInterfaceMethodCall(call *ast.CallExpr, mem *ast.MemberExpr, objPtr hir.Value, iface *sema.InterfaceType) hir.Value {
+	methodIdx := 0
+	var targetMethod sema.Method
+	foundMethod := false
+	for idx, m := range iface.Methods {
+		if m.Name == mem.Field.Value {
+			methodIdx = idx
+			targetMethod = m
+			foundMethod = true
+			break
+		}
+	}
+	if !foundMethod {
+		panic(fmt.Sprintf("[Lower Error] method '%s' not found on interface", mem.Field.Value))
+	}
+
+	callArgs := call.Args
+	if len(callArgs) < len(targetMethod.ParamTypes) {
+		if fnDecl := c.findFuncDecl(mem.Field.Value); fnDecl != nil {
+			callArgs = c.fillDefaultArgs(callArgs, fnDecl.Params)
+		}
+		for len(callArgs) < len(targetMethod.ParamTypes) {
+			if targetMethod.ParamTypes[len(callArgs)] != sema.TypeInt {
+				break
+			}
+			callArgs = append(callArgs, &ast.IntegerLiteral{
+				Token: token.Token{Type: token.INT, Literal: "-1"},
+				Value: -1,
+			})
+		}
+	}
+
+	args := c.lowerArgs(callArgs, targetMethod.ParamTypes, targetMethod.IsVariadic, false, targetMethod.VariadicElem, call.HasEllipsis)
+	var retType sema.Type = sema.TypeVoid
+	if len(targetMethod.ReturnTypes) == 1 {
+		retType = targetMethod.ReturnTypes[0]
+	} else if len(targetMethod.ReturnTypes) > 1 {
+		retType = &sema.TupleType{Types: targetMethod.ReturnTypes}
+	}
+	var dst *hir.Reg
+	if retType != sema.TypeVoid {
+		dst = c.root.nextReg(retType)
+	}
+	ifaceVal := c.root.nextReg(iface)
+	c.root.emit(&hir.InstrLoad{Dst: ifaceVal, Ptr: objPtr})
+	c.root.emit(&hir.InstrCallIface{
+		Dst:         dst,
+		IfaceVal:    ifaceVal,
+		MethodIndex: methodIdx,
+		MethodName:  mem.Field.Value,
+		Args:        args,
+	})
+	return dst
+}
+
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	if call != nil {
 		restoreLocation := c.root.setTokenLocation(c.root.sourceFile, call.Token)
@@ -974,6 +1264,11 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		}
 	}
 
+	return c.lowerCallRemainder(call)
+}
+
+// LowerCall's remaining dispatch paths live in a separate helper to keep the entry point small.
+func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	// 2. 言語組み込み関数 (make, close, delete, len, cap, append, string, cstring, )
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
@@ -985,100 +1280,10 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			return nil
 
 		case "make":
-			var chanTypeNode *ast.ChanType
-			if ct, ok := call.Args[0].(*ast.ChanType); ok {
-				chanTypeNode = ct
-			} else if ice, ok := call.Args[0].(*ast.ImplicitCastExpr); ok {
-				if ct, ok := ice.Expr.(*ast.ChanType); ok {
-					chanTypeNode = ct
-				}
-			}
-
-			if chanTypeNode != nil {
-				elemType := c.root.semaCtx.ResolveType(chanTypeNode.Elem)
-				resChanType := &sema.ChanType{Elem: elemType}
-				capVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
-				if len(call.Args) >= 2 {
-					capVal = c.root.Expr.LowerExpr(call.Args[1])
-				}
-				dst := c.root.nextReg(resChanType)
-				c.root.emit(&hir.InstrChanMake{Dst: dst, ElemType: elemType, Cap: capVal})
-				return dst
-			}
-
-			if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
-				kType := c.root.semaCtx.ResolveType(mapTypeNode.Key)
-				vType := c.root.semaCtx.ResolveType(mapTypeNode.Value)
-				resMapType := &sema.MapType{Key: kType, Value: vType}
-				isStr := 0
-				if kType == sema.TypeString {
-					isStr = 1
-				}
-				capVal := hir.Value(&hir.ConstInt{Val: 16, Typ: sema.TypeInt})
-				if len(call.Args) >= 2 {
-					capVal = c.root.Expr.LowerExpr(call.Args[1])
-				}
-				dst := c.root.nextReg(resMapType)
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_create", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
-				return dst
-			}
-			if slNode, okSlice := call.Args[0].(*ast.SliceType); okSlice {
-				elemType := c.root.semaCtx.ResolveType(slNode.Elem)
-				resSliceType := &sema.SliceType{Elem: elemType}
-				lenVal := c.root.Expr.LowerExpr(call.Args[1])
-				capVal := lenVal
-				if len(call.Args) >= 3 {
-					capVal = c.root.Expr.LowerExpr(call.Args[2])
-				}
-				elemSize := sema.SizeOf(elemType)
-				if elemSize <= 0 {
-					elemSize = 1
-				}
-				callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				c.root.emit(&hir.InstrCallStatic{Dst: callocRaw, CalleeName: "calloc", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}}})
-
-				t1 := c.root.nextReg(resSliceType)
-				c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(resSliceType), Val: callocRaw, Index: 0})
-				t2 := c.root.nextReg(resSliceType)
-				c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: lenVal, Index: 1})
-				t3 := c.root.nextReg(resSliceType)
-				c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: capVal, Index: 2})
-				return t3
-			}
+			return c.lowerMakeCall(call)
 
 		case "sizeof":
-			logger.LogVerbose2("[Verbose2] CallLowerer LowerCall CallExpr: ast=%T (%+v)\n", call, call)
-			if len(call.Args) == 1 {
-				arg := call.Args[0]
-				t := c.ResolveTypeFromExpr(arg)
-				if t == nil || t == sema.TypeVoid {
-					argVal := c.root.Expr.LowerExpr(arg)
-					t = argVal.Type()
-				}
-				if t != nil && t != sema.TypeVoid {
-					if pt, isPtr := t.(*sema.PointerType); isPtr {
-						t = pt.Base
-					}
-					sz := int64(sema.SizeOf(t))
-					if st, _ := c.root.findStruct(t); st != nil {
-						stSz := int64(st.Size())
-						if stSz > sz {
-							sz = stSz
-						}
-						if sz <= int64(sema.PointerSize) && strings.Contains(st.Name, "__") {
-							baseName := strings.Split(strings.TrimPrefix(st.Name, "*"), "__")[0]
-							if baseSt, _ := c.root.findStructByName(baseName); baseSt != nil && len(baseSt.Fields) > 0 {
-								baseSz := int64(baseSt.Size())
-								if baseSz > sz {
-									sz = baseSz
-								}
-							}
-						}
-					}
-					return &hir.ConstInt{Val: sz, Typ: sema.TypeInt}
-				}
-			}
-			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+			return c.lowerSizeofCall(call)
 
 		case "recover":
 			// Go-Hike has no host panic value, but compiler packages use recover
@@ -1131,74 +1336,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 			return c.LowerAppend(call)
 
 		case "string":
-			if len(call.Args) > 0 {
-				// Construct a string directly from a byte pointer and explicit
-				// length. This avoids the temporary []byte and its extra copy.
-				if len(call.Args) == 2 {
-					ptrVal := c.root.Expr.LowerExpr(call.Args[0])
-					lenVal := c.root.Expr.LowerExpr(call.Args[1])
-					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					c.root.emit(&hir.InstrCallStatic{
-						Dst:        raw,
-						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
-						Args:       []hir.Value{ptrVal, lenVal},
-					})
-					return c.root.makeString(raw, lenVal)
-				}
-				argVal := c.root.Expr.LowerExpr(call.Args[0])
-				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
-					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					rawLen := c.root.nextReg(sema.TypeInt)
-					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
-					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
-					raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					c.root.emit(&hir.InstrCallStatic{
-						Dst:        raw,
-						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
-						Args:       []hir.Value{rawPtr, rawLen},
-					})
-					return c.root.makeString(raw, rawLen)
-				}
-				if argVal.Type() == sema.TypeCString || semaTypeName(argVal.Type()) == "cstring" {
-					return c.lowerCStringToString(argVal)
-				}
-				if ptrType, ok := argVal.Type().(*sema.PointerType); ok && ptrType.Base == sema.TypeByte {
-					return c.lowerCStringToString(argVal)
-				}
-				if sema.LLVMTypeOf(argVal.Type()) == "i8*" {
-					return c.lowerCStringToString(argVal)
-				}
-				return argVal
+			if value, handled := c.lowerStringBuiltin(call); handled {
+				return value
 			}
 
 		case "cstring":
-			if len(call.Args) > 0 {
-				// cstring(ptr, len) uses the same NUL-terminated runtime
-				// representation, but preserves the cstring static type.
-				if len(call.Args) == 2 {
-					ptrVal := c.root.Expr.LowerExpr(call.Args[0])
-					lenVal := c.root.Expr.LowerExpr(call.Args[1])
-					dst := c.root.nextReg(sema.TypeCString)
-					c.root.emit(&hir.InstrCallStatic{
-						Dst:        dst,
-						CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
-						Args:       []hir.Value{ptrVal, lenVal},
-					})
-					return dst
-				}
-				argVal := c.root.Expr.LowerExpr(call.Args[0])
-				if argVal.Type() == sema.TypeCString {
-					return argVal
-				}
-				if argVal.Type() == sema.TypeString || semaTypeName(argVal.Type()) == "string" {
-					return c.lowerStringToCString(argVal)
-				}
-				if strings.HasPrefix(sema.LLVMTypeOf(argVal.Type()), "{") {
-					return c.lowerStringToCString(argVal)
-				}
-				dst := c.root.nextReg(sema.TypeCString)
-				c.root.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: sema.TypeCString})
-				return dst
+			if value, handled := c.lowerCStringBuiltin(call); handled {
+				return value
 			}
 		}
 	}
@@ -1207,71 +1351,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
 		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, japanese.NewShiftJIS)
 		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent && c.isPackageName(pkgIdent.Value) {
-			methodName := mem.Field.Value
-			if c.root.semaCtx.GoHikeMode && pkgIdent.Value == "sort" && methodName == "Strings" {
-				if len(call.Args) != 1 {
-					panic(fmt.Sprintf("[Lower Error] sort.Strings expects one argument, got %d", len(call.Args)))
-				}
-				arg := c.root.Expr.LowerExpr(call.Args[0])
-				c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_sort_strings", Args: []hir.Value{arg}})
-				return nil
-			}
-			targetFnName := pkgIdent.Value + "_" + methodName
-			targetFn, canonicalName := c.root.semaCtx.LookupFunction(targetFnName)
-			if targetFn == nil {
-				targetFn, canonicalName = c.root.semaCtx.LookupFunction(methodName)
-			}
-
-			if targetFn == nil {
-				panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))
-			}
-
-			params := c.getFuncParams(targetFn, canonicalName)
-			callArgs := c.fillDefaultArgs(call.Args, params)
-
-			if semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil {
-				if fnDecl := c.findFuncDecl(canonicalName); fnDecl != nil && fnDecl.Body != nil {
-					return c.inlineVariadicCall(fnDecl, &ast.CallExpr{
-						Token:       call.Token,
-						Function:    call.Function,
-						Args:        callArgs,
-						HasEllipsis: call.HasEllipsis,
-					})
-				}
-			}
-
-			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
-			args := c.lowerArgs(callArgs, targetFn.ParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
-
-			var retType sema.Type = sema.TypeVoid
-			if len(targetFn.ReturnTypes) == 1 {
-				retType = targetFn.ReturnTypes[0]
-			} else if len(targetFn.ReturnTypes) > 1 {
-				retType = &sema.TupleType{Types: targetFn.ReturnTypes}
-			}
-
-			var dst *hir.Reg = nil
-			if retType != sema.TypeVoid {
-				dst = c.root.nextReg(retType)
-			}
-
-			callee := canonicalName
-			if semaFuncCFunc(targetFn) {
-				if semaFuncCFuncAst(targetFn) != nil && !semaFuncCFuncAst(targetFn).IsAlias() {
-					callee = "__hike_impl_" + semaFuncName(targetFn)
-				} else if semaFuncCFuncTarget(targetFn) != "" {
-					callee = semaFuncCFuncTarget(targetFn)
-				} else {
-					callee = "c_" + canonicalName
-				}
-			} else if semaFuncExtern(targetFn) {
-				if semaFuncIRName(targetFn) != "" {
-					callee = semaFuncIRName(targetFn)
-				}
-			}
-
-			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
-			return dst
+			return c.lowerPackageMemberCall(call, mem, pkgIdent)
 		}
 
 		// 3B. インターフェースまたは構造体/基本型のメソッド呼び出し
@@ -1280,64 +1360,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 		// インターフェースメソッド呼び出し (動的ディスパッチ)
 		if iface, isIface := objType.(*sema.InterfaceType); isIface && !iface.IsAny() {
-			methodIdx := 0
-			var targetMethod sema.Method
-			foundMethod := false
-			for idx, m := range iface.Methods {
-				if m.Name == mem.Field.Value {
-					methodIdx = idx
-					targetMethod = m
-					foundMethod = true
-					break
-				}
-			}
-
-			if !foundMethod {
-				panic(fmt.Sprintf("[Lower Error] method '%s' not found on interface", mem.Field.Value))
-			}
-
-			callArgs := call.Args
-			if len(callArgs) < len(targetMethod.ParamTypes) {
-				if fnDecl := c.findFuncDecl(mem.Field.Value); fnDecl != nil {
-					callArgs = c.fillDefaultArgs(callArgs, fnDecl.Params)
-				}
-				if len(callArgs) < len(targetMethod.ParamTypes) {
-					for i := len(callArgs); i < len(targetMethod.ParamTypes); i++ {
-						if targetMethod.ParamTypes[i] == sema.TypeInt {
-							callArgs = append(callArgs, &ast.IntegerLiteral{
-								Token: token.Token{Type: token.INT, Literal: "-1"},
-								Value: -1,
-							})
-						}
-					}
-				}
-			}
-
-			args := c.lowerArgs(callArgs, targetMethod.ParamTypes, targetMethod.IsVariadic, false, targetMethod.VariadicElem, call.HasEllipsis)
-
-			var retType sema.Type = sema.TypeVoid
-			if len(targetMethod.ReturnTypes) == 1 {
-				retType = targetMethod.ReturnTypes[0]
-			} else if len(targetMethod.ReturnTypes) > 1 {
-				retType = &sema.TupleType{Types: targetMethod.ReturnTypes}
-			}
-
-			var dst *hir.Reg = nil
-			if retType != sema.TypeVoid {
-				dst = c.root.nextReg(retType)
-			}
-
-			ifaceVal := c.root.nextReg(iface)
-			c.root.emit(&hir.InstrLoad{Dst: ifaceVal, Ptr: objPtr})
-
-			c.root.emit(&hir.InstrCallIface{
-				Dst:         dst,
-				IfaceVal:    ifaceVal,
-				MethodIndex: methodIdx,
-				MethodName:  mem.Field.Value,
-				Args:        args,
-			})
-			return dst
+			return c.lowerInterfaceMethodCall(call, mem, objPtr, iface)
 		}
 
 		// 静的型メソッド呼び出し (構造体および基本型エイリアス)

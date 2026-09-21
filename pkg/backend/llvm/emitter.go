@@ -623,6 +623,126 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 // emitInstructionBody emits the LLVM generated for one HIR instruction. The
 // wrapper above attaches the source location to the final generated LLVM
 // instruction, including instructions which expand to several LLVM lines.
+func (e *Emitter) emitAsync(i *hir.InstrAsync, intLLVM string) {
+	retLLVM := e.getRetLLVMType(i.RetTypes)
+	retSize := e.getRetSize(i.RetTypes)
+	thunkName := e.getOrCreateAsyncThunk(retLLVM)
+
+	envSize := sema.PointerSize * 2
+	rawEnv := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %d)\n", rawEnv, intLLVM, envSize))
+	arrEnv := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i8**\n", arrEnv, rawEnv))
+
+	pFn := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 0\n", pFn, arrEnv))
+	fnVal := e.formatVal(i.FnPtr)
+	if i.FnPtr != nil && i.FnPtr.Type() != nil && i.FnPtr.Type().LLVMType() != "i8*" {
+		castFn := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castFn, i.FnPtr.Type().LLVMType(), fnVal))
+		fnVal = castFn
+	}
+	e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", fnVal, pFn))
+
+	pEnv := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 1\n", pEnv, arrEnv))
+	envVal := "null"
+	if i.EnvPtr != nil {
+		envVal = e.formatVal(i.EnvPtr)
+		if i.EnvPtr.Type() != nil && i.EnvPtr.Type().LLVMType() != "i8*" {
+			castEnv := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
+			envVal = castEnv
+		}
+	}
+	e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", envVal, pEnv))
+
+	thunkPtr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast void (i8*, i8*)* @%s to i8*\n", thunkPtr, thunkName))
+	taskPtr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_task* @__hike_async(i8* %s, i8* %s, %s %d)\n",
+		taskPtr, thunkPtr, rawEnv, intLLVM, retSize))
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__hike_task* %s to i8*\n", i.Dst, taskPtr))
+}
+
+func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
+	calleeName := i.CalleeName
+	if intrinsic := llvmIntrinsicName(calleeName); intrinsic != "" {
+		calleeName = intrinsic
+	} else {
+		calleeName = e.functionSymbol(calleeName)
+	}
+	args := make([]string, len(i.Args))
+	for idx, a := range i.Args {
+		if a == nil {
+			logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] is nil!\n", i.CalleeName, idx)
+			args[idx] = "i8* null"
+			continue
+		}
+		if a.Type() == nil {
+			logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] has nil Type()! Val=%v\n", i.CalleeName, idx, a)
+			args[idx] = fmt.Sprintf("i64 %s", e.formatVal(a))
+			continue
+		}
+		args[idx] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
+	}
+
+	isVar, varSig := e.isVariadicFunc(i.CalleeName)
+	if isVar {
+		if i.Dst != nil {
+			e.b.WriteString(fmt.Sprintf("  %s = call %s %s @%s(%s)\n",
+				i.Dst, i.Dst.Typ.LLVMType(), varSig, calleeName, strings.Join(args, ", ")))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  call void %s @%s(%s)\n",
+				varSig, calleeName, strings.Join(args, ", ")))
+		}
+	} else {
+		if i.Dst != nil {
+			e.b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n",
+				i.Dst, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
+		}
+	}
+}
+
+func (e *Emitter) emitGetElemPtr(i *hir.InstrGetElemPtr, intLLVM string) {
+	baseType := i.BasePtr.Type()
+	idxLLVM := intLLVM
+	if i.Index != nil && i.Index.Type() != nil {
+		idxLLVM = i.Index.Type().LLVMType()
+	}
+
+	if pt, ok := baseType.(*sema.PointerType); ok {
+		if ar, okArr := pt.Base.(*sema.ArrayType); okArr {
+			e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, %s %s\n",
+				i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), idxLLVM, e.formatVal(i.Index)))
+			return
+		}
+	}
+
+	var elemLLVM string
+	if pt, ok := i.Dst.Typ.(*sema.PointerType); ok {
+		elemLLVM = pt.Base.LLVMType()
+	} else if strings.HasSuffix(i.Dst.Typ.LLVMType(), "*") {
+		elemLLVM = strings.TrimSuffix(i.Dst.Typ.LLVMType(), "*")
+	} else {
+		elemLLVM = "i8"
+	}
+
+	baseVal := e.formatVal(i.BasePtr)
+	expectedBaseType := elemLLVM + "*"
+	if baseType != nil && baseType.LLVMType() != expectedBaseType {
+		castBase := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n",
+			castBase, baseType.LLVMType(), baseVal, expectedBaseType))
+		baseVal = castBase
+	}
+
+	e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, %s %s\n",
+		i.Dst, elemLLVM, expectedBaseType, baseVal, idxLLVM, e.formatVal(i.Index)))
+}
+
 func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 	if inst == nil {
 		logger.LogVerbose2("[Verbose2] emitInstruction: <nil>\n")
@@ -750,80 +870,10 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 			i.Dst, stName, expectedBaseType, baseVal, i.FieldIndex))
 
 	case *hir.InstrGetElemPtr:
-		baseType := i.BasePtr.Type()
-		idxLLVM := intLLVM
-		if i.Index != nil && i.Index.Type() != nil {
-			idxLLVM = i.Index.Type().LLVMType()
-		}
-
-		if pt, ok := baseType.(*sema.PointerType); ok {
-			if ar, okArr := pt.Base.(*sema.ArrayType); okArr {
-				e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, %s %s\n",
-					i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), idxLLVM, e.formatVal(i.Index)))
-				return
-			}
-		}
-
-		var elemLLVM string
-		if pt, ok := i.Dst.Typ.(*sema.PointerType); ok {
-			elemLLVM = pt.Base.LLVMType()
-		} else if strings.HasSuffix(i.Dst.Typ.LLVMType(), "*") {
-			elemLLVM = strings.TrimSuffix(i.Dst.Typ.LLVMType(), "*")
-		} else {
-			elemLLVM = "i8"
-		}
-
-		baseVal := e.formatVal(i.BasePtr)
-		expectedBaseType := elemLLVM + "*"
-		if baseType != nil && baseType.LLVMType() != expectedBaseType {
-			castBase := e.nextTmp()
-			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n",
-				castBase, baseType.LLVMType(), baseVal, expectedBaseType))
-			baseVal = castBase
-		}
-
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, %s %s\n",
-			i.Dst, elemLLVM, expectedBaseType, baseVal, idxLLVM, e.formatVal(i.Index)))
+		e.emitGetElemPtr(i, intLLVM)
 
 	case *hir.InstrCallStatic:
-		calleeName := i.CalleeName
-		if intrinsic := llvmIntrinsicName(calleeName); intrinsic != "" {
-			calleeName = intrinsic
-		} else {
-			calleeName = e.functionSymbol(calleeName)
-		}
-		args := make([]string, len(i.Args))
-		for idx, a := range i.Args {
-			if a == nil {
-				logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] is nil!\n", i.CalleeName, idx)
-				args[idx] = "i8* null"
-				continue
-			}
-			if a.Type() == nil {
-				logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] has nil Type()! Val=%v\n", i.CalleeName, idx, a)
-				args[idx] = fmt.Sprintf("i64 %s", e.formatVal(a))
-				continue
-			}
-			args[idx] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
-		}
-
-		isVar, varSig := e.isVariadicFunc(i.CalleeName)
-		if isVar {
-			if i.Dst != nil {
-				e.b.WriteString(fmt.Sprintf("  %s = call %s %s @%s(%s)\n",
-					i.Dst, i.Dst.Typ.LLVMType(), varSig, calleeName, strings.Join(args, ", ")))
-			} else {
-				e.b.WriteString(fmt.Sprintf("  call void %s @%s(%s)\n",
-					varSig, calleeName, strings.Join(args, ", ")))
-			}
-		} else {
-			if i.Dst != nil {
-				e.b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n",
-					i.Dst, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
-			} else {
-				e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
-			}
-		}
+		e.emitCallStatic(i)
 
 	case *hir.InstrInlineAsm:
 		if e.isWasmTarget() {
@@ -855,45 +905,7 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 		e.emitCallIface(i)
 
 	case *hir.InstrAsync:
-		retLLVM := e.getRetLLVMType(i.RetTypes)
-		retSize := e.getRetSize(i.RetTypes)
-		thunkName := e.getOrCreateAsyncThunk(retLLVM)
-
-		envSize := sema.PointerSize * 2
-		rawEnv := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = call i8* @malloc(%s %d)\n", rawEnv, intLLVM, envSize))
-		arrEnv := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to i8**\n", arrEnv, rawEnv))
-
-		pFn := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 0\n", pFn, arrEnv))
-		fnVal := e.formatVal(i.FnPtr)
-		if i.FnPtr != nil && i.FnPtr.Type() != nil && i.FnPtr.Type().LLVMType() != "i8*" {
-			castFn := e.nextTmp()
-			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castFn, i.FnPtr.Type().LLVMType(), fnVal))
-			fnVal = castFn
-		}
-		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", fnVal, pFn))
-
-		pEnv := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds i8*, i8** %s, i32 1\n", pEnv, arrEnv))
-		envVal := "null"
-		if i.EnvPtr != nil {
-			envVal = e.formatVal(i.EnvPtr)
-			if i.EnvPtr.Type() != nil && i.EnvPtr.Type().LLVMType() != "i8*" {
-				castEnv := e.nextTmp()
-				e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", castEnv, i.EnvPtr.Type().LLVMType(), envVal))
-				envVal = castEnv
-			}
-		}
-		e.b.WriteString(fmt.Sprintf("  store i8* %s, i8** %s\n", envVal, pEnv))
-
-		thunkPtr := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = bitcast void (i8*, i8*)* @%s to i8*\n", thunkPtr, thunkName))
-		taskPtr := e.nextTmp()
-		e.b.WriteString(fmt.Sprintf("  %s = call %%struct.__hike_task* @__hike_async(i8* %s, i8* %s, %s %d)\n",
-			taskPtr, thunkPtr, rawEnv, intLLVM, retSize))
-		e.b.WriteString(fmt.Sprintf("  %s = bitcast %%struct.__hike_task* %s to i8*\n", i.Dst, taskPtr))
+		e.emitAsync(i, intLLVM)
 
 	case *hir.InstrTaskWait:
 		taskPtr := e.nextTmp()
