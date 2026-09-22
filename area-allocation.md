@@ -62,6 +62,46 @@ area(64) {
 // result remains valid here because deepcopy allocated ordinary heap storage.
 ```
 
+Directly copying an area-backed value into a variable declared outside the
+area is a compile-time error. This rule applies to strings, slices, pointers,
+and structs containing area-sensitive members:
+
+```hike
+var result string
+
+area() {
+    value := "temporary"
+    result = value // compile-time error
+}
+```
+
+The same restriction applies to slices and pointer-based structures:
+
+```hike
+var items []int
+var saved *Item
+
+area() {
+    values := []int{1, 2, 3}
+    item := &Item{}
+    items = values // compile-time error
+    saved = item   // compile-time error
+}
+```
+
+Use `deepcopy` explicitly when the value must outlive the area:
+
+```hike
+area() {
+    values := []int{1, 2, 3}
+    items = deepcopy(values)
+    saved = deepcopy(item)
+}
+```
+
+The compiler rejects these shallow copies because the copied values would still
+refer to storage that is released when the area ends.
+
 `deepcopy` copies string data, slice contents, arrays, structs, and pointer
 targets into ordinary heap storage. Pointer members are followed recursively.
 Function values cannot be deep-copied, and cyclic object graphs are rejected
