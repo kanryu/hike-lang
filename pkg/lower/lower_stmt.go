@@ -77,11 +77,27 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 	case *ast.BreakStmt:
 		if len(s.root.loopStack) > 0 {
 			ctx := s.root.loopStack[len(s.root.loopStack)-1]
+			if ctx.structured {
+				targetID := ctx.breakControlID
+				targetLabel := ctx.breakLabel
+				if ctx.breakTarget >= 0 {
+					targetID = ctx.breakTarget
+				}
+				s.root.appendStructuredNode(&hir.BrNode{Target: targetLabel, TargetID: targetID})
+			}
 			s.root.terminate(&hir.InstrJump{Target: ctx.breakBlock.Label})
 		}
 	case *ast.ContinueStmt:
 		if len(s.root.loopStack) > 0 {
 			ctx := s.root.loopStack[len(s.root.loopStack)-1]
+			if ctx.structured {
+				targetID := ctx.continueControlID
+				targetLabel := ctx.continueLabel
+				if ctx.continueTarget >= 0 {
+					targetID = ctx.continueTarget
+				}
+				s.root.appendStructuredNode(&hir.BrNode{Target: targetLabel, TargetID: targetID})
+			}
 			s.root.terminate(&hir.InstrJump{Target: ctx.continueBlock.Label})
 		}
 	}
@@ -678,7 +694,22 @@ func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
 	thenBB := s.root.newBlock("if.then")
 	elseBB := s.root.newBlock("if.else")
 	endBB := s.root.newBlock("if.end")
-
+	var structuredIf *hir.IfNode
+	var structuredContinuation *hir.BlockNode
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+	}
+	if !s.root.structuredUnsupported && len(s.root.structuredStack) > 0 {
+		structuredIf = &hir.IfNode{Label: thenBB.Label, Cond: condVal}
+		s.root.appendStructuredNode(structuredIf)
+		// Keep a continuation immediately after the if.  It is replaced by
+		// the next control node when one is emitted, or remains as the
+		// ordinary-instruction container when the next item is not control.
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredIf, structuredParentDepth)
+		structuredIf.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+	}
 	if is.Alternative != nil {
 		s.root.terminate(&hir.InstrBranch{Cond: condVal, ThenTarget: thenBB.Label, ElseTarget: elseBB.Label})
 	} else {
@@ -686,14 +717,30 @@ func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
 	}
 
 	s.root.setBlock(thenBB)
+	if structuredIf != nil {
+		s.root.pushStructuredFrame(structuredIf.Label)
+		s.root.pushStructuredBody(&structuredIf.Then)
+	}
 	s.LowerStmt(is.Consequence)
+	if structuredIf != nil {
+		s.root.popStructuredBody()
+		s.root.popStructuredFrame()
+	}
 	if s.root.curBlock.Terminator == nil {
 		s.root.terminate(&hir.InstrJump{Target: endBB.Label})
 	}
 
 	if is.Alternative != nil {
 		s.root.setBlock(elseBB)
+		if structuredIf != nil {
+			s.root.pushStructuredFrame(structuredIf.Label)
+			s.root.pushStructuredBody(&structuredIf.Else)
+		}
 		s.LowerStmt(is.Alternative)
+		if structuredIf != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+		}
 		if s.root.curBlock.Terminator == nil {
 			s.root.terminate(&hir.InstrJump{Target: endBB.Label})
 		}
@@ -707,14 +754,52 @@ func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
 		s.LowerStmt(fs.Init)
 	}
 
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+	}
 	condBB := s.root.newBlock("for.cond")
 	bodyBB := s.root.newBlock("for.body")
 	postBB := s.root.newBlock("for.post")
 	endBB := s.root.newBlock("for.end")
+	if !s.root.structuredUnsupported && len(s.root.structuredStack) > 0 {
+		structuredBlock = &hir.BlockNode{Label: endBB.Label}
+		structuredLoop = &hir.LoopNode{Label: condBB.Label}
+		s.root.appendStructuredNode(structuredBlock)
+		s.root.pushStructuredFrame(structuredBlock.Label)
+		s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredLoop)
+		s.root.pushStructuredFrame(structuredLoop.Label)
+		s.root.pushStructuredBody(&structuredLoop.Body)
+	}
+	var structuredContinuation *hir.BlockNode
+	if structuredBlock != nil {
+		// The continuation is a sibling of the outer loop block, so it uses
+		// the depth that was active before the loop's wrapper was opened.
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
+		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+		structuredLoop.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), structuredLoop.Index())
+	}
 
-	s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: postBB})
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: postBB,
+		structured:        structuredLoop != nil,
+		breakLabel:        structuredBlockLabel(structuredBlock),
+		continueLabel:     structuredLoopLabel(structuredLoop),
+		breakControlID:    controlID(structuredContinuation),
+		continueControlID: controlID(structuredLoop),
+		breakTarget:       controlID(structuredContinuation),
+		continueTarget:    controlID(structuredLoop),
+	})
 	defer func() {
 		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if structuredLoop != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			s.root.popStructuredFrame()
+		}
 	}()
 
 	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
@@ -722,13 +807,29 @@ func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
 	s.root.setBlock(condBB)
 	if fs.Cond != nil {
 		condVal := s.root.Expr.LowerExpr(fs.Cond)
+		var structuredCond *hir.IfNode
+		if structuredLoop != nil {
+			structuredCond = &hir.IfNode{Label: bodyBB.Label, Cond: condVal}
+			s.root.appendStructuredNode(structuredCond)
+			s.root.appendStructuredNodeTo(&structuredCond.Else, &hir.BrNode{Target: structuredBlockLabel(structuredBlock), TargetID: controlID(structuredBlock)})
+			s.root.pushStructuredFrame(structuredCond.Label)
+			s.root.pushStructuredBody(&structuredCond.Then)
+		}
 		s.root.terminate(&hir.InstrBranch{Cond: condVal, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
+		if structuredCond != nil {
+			// The loop body is lowered below while this structured scope remains
+			// active; pop it immediately after lowering the source body.
+		}
 	} else {
 		s.root.terminate(&hir.InstrJump{Target: bodyBB.Label})
 	}
 
 	s.root.setBlock(bodyBB)
 	s.LowerStmt(fs.Body)
+	if structuredLoop != nil && fs.Cond != nil {
+		s.root.popStructuredBody()
+		s.root.popStructuredFrame()
+	}
 	if s.root.curBlock.Terminator == nil {
 		s.root.terminate(&hir.InstrJump{Target: postBB.Label})
 	}
@@ -737,9 +838,66 @@ func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
 	if fs.Post != nil {
 		s.LowerStmt(fs.Post)
 	}
+	if structuredLoop != nil {
+		s.root.appendStructuredNode(&hir.BrNode{Target: structuredLoopLabel(structuredLoop), TargetID: controlID(structuredLoop)})
+	}
 	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
 
 	s.root.setBlock(endBB)
+}
+
+func structuredBlockLabel(node *hir.BlockNode) string {
+	if node == nil {
+		return ""
+	}
+	return node.Label
+}
+
+func structuredLoopLabel(node *hir.LoopNode) string {
+	if node == nil {
+		return ""
+	}
+	return node.Label
+}
+
+func controlID(node hir.ControlElement) int {
+	if node == nil {
+		return -1
+	}
+	// A typed nil pointer can be stored in the interface while a structured
+	// construct is disabled (for example after an unsupported switch). Treat
+	// it as absent before invoking the node method.
+	switch n := node.(type) {
+	case *hir.BlockNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.LoopNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.IfNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.BrNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.BrIfNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.BrTableNode:
+		if n == nil {
+			return -1
+		}
+	case *hir.TableNode:
+		if n == nil {
+			return -1
+		}
+	}
+	return node.Index()
 }
 
 func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
@@ -754,14 +912,17 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	xType := xVal.Type()
 
 	if isAsyncRecv && s.lowerAsyncRange(fr, targetExpr, xType) {
+		s.root.structuredUnsupported = true
 		return
 	}
 
 	if s.lowerIterableRange(fr, targetExpr, xVal, xType) {
+		s.root.structuredUnsupported = true
 		return
 	}
 
 	if s.lowerMapRange(fr, xVal, xType) {
+		s.root.structuredUnsupported = true
 		return
 	}
 
@@ -799,6 +960,27 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 	s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+	}
+	if !s.root.structuredUnsupported && len(s.root.structuredStack) > 0 {
+		structuredBlock = &hir.BlockNode{Label: "forrange.end"}
+		structuredLoop = &hir.LoopNode{Label: "forrange.cond"}
+		s.root.appendStructuredNode(structuredBlock)
+		s.root.pushStructuredFrame(structuredBlock.Label)
+		s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredLoop)
+		s.root.pushStructuredFrame(structuredLoop.Label)
+		s.root.pushStructuredBody(&structuredLoop.Body)
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
+		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+		structuredLoop.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), structuredLoop.Index())
+	}
+
 	var oldKeySym, oldValSym hir.Value
 	var oldKeyTyp, oldValTyp sema.Type
 	var hasOldKey, hasOldVal bool
@@ -834,9 +1016,23 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	postBB := s.root.newBlock("forrange.post")
 	endBB := s.root.newBlock("forrange.end")
 
-	s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: postBB})
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: postBB,
+		structured:        structuredLoop != nil,
+		breakLabel:        structuredBlockLabel(structuredBlock),
+		continueLabel:     structuredLoopLabel(structuredLoop),
+		breakControlID:    controlID(structuredContinuation),
+		continueControlID: controlID(structuredLoop),
+		breakTarget:       controlID(structuredContinuation),
+		continueTarget:    controlID(structuredLoop),
+	})
 	defer func() {
 		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if structuredLoop != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			s.root.popStructuredFrame()
+		}
 	}()
 
 	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
@@ -846,6 +1042,14 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.emit(&hir.InstrLoad{Dst: curIdx, Ptr: idxAlloca})
 	cmpReg := s.root.nextReg(sema.TypeBool)
 	s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpLt, L: curIdx, R: lenVal})
+	var structuredCond *hir.IfNode
+	if structuredLoop != nil {
+		structuredCond = &hir.IfNode{Label: bodyBB.Label, Cond: cmpReg}
+		s.root.appendStructuredNode(structuredCond)
+		s.root.appendStructuredNodeTo(&structuredCond.Else, &hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+		s.root.pushStructuredFrame(structuredCond.Label)
+		s.root.pushStructuredBody(&structuredCond.Then)
+	}
 	s.root.terminate(&hir.InstrBranch{Cond: cmpReg, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
 
 	s.root.setBlock(bodyBB)
@@ -861,6 +1065,10 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	}
 
 	s.LowerStmt(fr.Body)
+	if structuredCond != nil {
+		s.root.popStructuredBody()
+		s.root.popStructuredFrame()
+	}
 	if s.root.curBlock.Terminator == nil {
 		s.root.terminate(&hir.InstrJump{Target: postBB.Label})
 	}
@@ -869,6 +1077,9 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	incIdx := s.root.nextReg(sema.TypeInt)
 	s.root.emit(&hir.InstrBinary{Dst: incIdx, Op: hir.OpAdd, L: curIdx, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
 	s.root.emit(&hir.InstrStore{Val: incIdx, Ptr: idxAlloca})
+	if structuredLoop != nil {
+		s.root.appendStructuredNode(&hir.BrNode{Target: structuredLoop.Label, TargetID: structuredLoop.Index()})
+	}
 	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
 
 	s.root.setBlock(endBB)
@@ -1592,6 +1803,42 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 	return false
 }
 
+func numericSwitchCases(ss *ast.SwitchStmt) ([][]int64, int64, int64, bool) {
+	if ss == nil {
+		return nil, 0, 0, false
+	}
+	var cases [][]int64
+	seen := make(map[int64]bool)
+	var min, max int64
+	haveValue := false
+	for _, cc := range ss.Cases {
+		if len(cc.Values) == 0 {
+			continue
+		}
+		values := make([]int64, 0, len(cc.Values))
+		for _, expr := range cc.Values {
+			literal, ok := expr.(*ast.IntegerLiteral)
+			if !ok || seen[literal.Value] {
+				return nil, 0, 0, false
+			}
+			seen[literal.Value] = true
+			values = append(values, literal.Value)
+			if !haveValue || literal.Value < min {
+				min = literal.Value
+			}
+			if !haveValue || literal.Value > max {
+				max = literal.Value
+			}
+			haveValue = true
+		}
+		cases = append(cases, values)
+	}
+	if !haveValue || max-min > 4096 {
+		return nil, 0, 0, false
+	}
+	return cases, min, max, true
+}
+
 func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	if ss.Init != nil {
 		s.LowerStmt(ss.Init)
@@ -1599,13 +1846,63 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 
 	switchVal := s.root.Expr.LowerExpr(ss.Value)
 	endBB := s.root.newBlock("switch.end")
+	numericValues, tableMin, tableMax, numericSwitch := numericSwitchCases(ss)
+	var structuredBlock *hir.BlockNode
+	var structuredTable *hir.TableNode
+	var structuredContinuation *hir.BlockNode
+	var structuredCaseBody *hir.ControlBody
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+	}
+	if !s.root.structuredUnsupported && len(s.root.structuredStack) > 0 {
+		structuredBlock = &hir.BlockNode{Label: endBB.Label}
+		s.root.appendStructuredNode(structuredBlock)
+		if numericSwitch {
+			tableIndex := switchVal
+			if tableMin != 0 {
+				reg := s.root.nextReg(switchVal.Type())
+				tableIndex = reg
+				s.root.emit(&hir.InstrBinary{Dst: reg, Op: hir.OpSub, L: switchVal, R: &hir.ConstInt{Val: tableMin, Typ: sema.TypeInt}})
+			}
+			tableTargets := make([]int, int(tableMax-tableMin+1))
+			for i := range tableTargets {
+				tableTargets[i] = -1
+			}
+			structuredTable = &hir.TableNode{Label: endBB.Label + ".table", IndexValue: tableIndex, Min: tableMin, Targets: tableTargets, DefaultTarget: -1}
+			for caseIndex, values := range numericValues {
+				structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{Values: values})
+				for _, value := range values {
+					structuredTable.Targets[value-tableMin] = caseIndex
+				}
+			}
+			s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredTable)
+		}
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
+		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+		s.root.pushStructuredFrame(structuredBlock.Label)
+		s.root.pushStructuredBody(&structuredBlock.Body)
+		structuredCaseBody = &structuredBlock.Body
+	}
 
-	s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: endBB})
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: endBB,
+		structured:     structuredBlock != nil,
+		breakLabel:     structuredBlockLabel(structuredBlock),
+		breakControlID: controlID(structuredContinuation),
+		breakTarget:    controlID(structuredContinuation),
+	})
 	defer func() {
 		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if structuredBlock != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+		}
 	}()
 
 	var defaultCase *ast.CaseClause = nil
+	caseOrdinal := 0
 
 	for _, cc := range ss.Cases {
 		if len(cc.Values) == 0 {
@@ -1617,6 +1914,12 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 		nextCaseBB := s.root.newBlock("switch.case.next")
 
 		var matchedCond hir.Value = nil
+		structuredStack := s.root.structuredStack
+		if structuredTable != nil {
+			// Keep case comparisons in the legacy CFG only; the structured
+			// table dispatches directly by the integer index.
+			s.root.structuredStack = nil
+		}
 		for _, valExpr := range cc.Values {
 			vVal := s.root.Expr.LowerExpr(valExpr)
 			var cmpReg *hir.Reg
@@ -1645,12 +1948,40 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 				matchedCond = orReg
 			}
 		}
+		s.root.structuredStack = structuredStack
+
+		var structuredCase *hir.IfNode
+		if structuredBlock != nil && structuredTable == nil {
+			// Each case is represented as an if/else chain inside the
+			// switch block. This preserves structured control without
+			// introducing a backend-specific switch node yet.
+			structuredCase = &hir.IfNode{Label: caseBodyBB.Label, Cond: matchedCond}
+			if len(s.root.structuredStack) > 0 {
+				s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
+			}
+			s.root.appendStructuredNode(structuredCase)
+			s.root.pushStructuredFrame(structuredCase.Label)
+			s.root.pushStructuredBody(&structuredCase.Then)
+		} else if structuredTable != nil {
+			s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Cases[caseOrdinal].Body
+		}
+		caseOrdinal++
 
 		s.root.terminate(&hir.InstrBranch{Cond: matchedCond, ThenTarget: caseBodyBB.Label, ElseTarget: nextCaseBB.Label})
 
 		s.root.setBlock(caseBodyBB)
 		for _, stmt := range cc.Body {
 			s.LowerStmt(stmt)
+		}
+		if structuredCase != nil {
+			s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			structuredCaseBody = &structuredCase.Else
+		} else if structuredTable != nil {
+			if len(s.root.structuredStack) > 0 {
+				s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredBlock.Body
+			}
 		}
 		if s.root.curBlock.Terminator == nil {
 			s.root.terminate(&hir.InstrJump{Target: endBB.Label})
@@ -1660,8 +1991,24 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	}
 
 	if defaultCase != nil {
+		if structuredBlock != nil && len(s.root.structuredStack) > 0 {
+			if structuredTable != nil {
+				structuredCaseBody = &structuredTable.Default
+			}
+			s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
+		}
 		for _, stmt := range defaultCase.Body {
 			s.LowerStmt(stmt)
+		}
+		if structuredBlock != nil && structuredTable == nil {
+			s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+		}
+	}
+	if structuredBlock != nil {
+		if defaultCase == nil {
+			if len(s.root.structuredStack) > 0 {
+				s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
+			}
 		}
 	}
 	if s.root.curBlock.Terminator == nil {
@@ -1679,10 +2026,37 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 	exprVal := s.root.Expr.LowerExpr(tss.Expr)
 	exprType := exprVal.Type()
 	endBB := s.root.newBlock("typeswitch.end")
+	var structuredBlock *hir.BlockNode
+	var structuredContinuation *hir.BlockNode
+	var structuredCaseBody *hir.ControlBody
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+	}
+	if !s.root.structuredUnsupported && len(s.root.structuredStack) > 0 {
+		structuredBlock = &hir.BlockNode{Label: endBB.Label}
+		s.root.appendStructuredNode(structuredBlock)
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
+		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+		s.root.pushStructuredFrame(structuredBlock.Label)
+		s.root.pushStructuredBody(&structuredBlock.Body)
+		structuredCaseBody = &structuredBlock.Body
+	}
 
-	s.root.loopStack = append(s.root.loopStack, loopContext{breakBlock: endBB, continueBlock: endBB})
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: endBB,
+		structured:     structuredBlock != nil,
+		breakLabel:     structuredBlockLabel(structuredBlock),
+		breakControlID: controlID(structuredContinuation),
+		breakTarget:    controlID(structuredContinuation),
+	})
 	defer func() {
 		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if structuredBlock != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+		}
 	}()
 
 	dataPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -1742,6 +2116,17 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 			}
 		}
 
+		var structuredCase *hir.IfNode
+		if structuredBlock != nil {
+			structuredCase = &hir.IfNode{Label: caseBodyBB.Label, Cond: matchedCond}
+			if len(s.root.structuredStack) > 0 {
+				s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
+			}
+			s.root.appendStructuredNode(structuredCase)
+			s.root.pushStructuredFrame(structuredCase.Label)
+			s.root.pushStructuredBody(&structuredCase.Then)
+		}
+
 		s.root.terminate(&hir.InstrBranch{Cond: matchedCond, ThenTarget: caseBodyBB.Label, ElseTarget: nextCaseBB.Label})
 
 		s.root.setBlock(caseBodyBB)
@@ -1773,6 +2158,12 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		for _, innerStmt := range c.Body {
 			s.LowerStmt(innerStmt)
 		}
+		if structuredCase != nil {
+			s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			structuredCaseBody = &structuredCase.Else
+		}
 		if s.root.curBlock.Terminator == nil {
 			s.root.terminate(&hir.InstrJump{Target: endBB.Label})
 		}
@@ -1781,6 +2172,9 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 	}
 
 	if defaultCase != nil {
+		if structuredBlock != nil && len(s.root.structuredStack) > 0 {
+			s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
+		}
 		if tss.Variable != nil {
 			vAlloca := s.root.nextReg(&sema.PointerType{Base: exprType}, tss.Variable.Value)
 			s.root.emit(&hir.InstrAlloca{Dst: vAlloca, AllocType: exprType})
@@ -1791,6 +2185,12 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		for _, innerStmt := range defaultCase.Body {
 			s.LowerStmt(innerStmt)
 		}
+		if structuredBlock != nil {
+			s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+		}
+	}
+	if structuredBlock != nil && defaultCase == nil && len(s.root.structuredStack) > 0 {
+		s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
 	}
 	if s.root.curBlock.Terminator == nil {
 		s.root.terminate(&hir.InstrJump{Target: endBB.Label})

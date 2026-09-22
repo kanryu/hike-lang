@@ -29,6 +29,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	}
 
 	hirFn := c.createFunction(fn, irName, returnTypes)
+	c.root.initFunctionControl(hirFn)
 
 	if fn.Body == nil {
 		c.lowerExternSignature(fn, hirFn)
@@ -57,6 +58,11 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	if c.root.curBlock.Terminator == nil {
 		c.emitFallthroughReturn(isMain, returnTypes)
 	}
+	if !c.root.structuredUnsupported {
+		hirFn.StructuredBody = c.root.structuredRoot
+		hir.FlattenTransparentBlocks(hirFn)
+		hirFn.StructuredReady = true
+	}
 }
 
 func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
@@ -69,6 +75,7 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 		c.root.symbolTypes[name] = typ
 	}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.resetStructuredState()
 	c.root.regCount = 0
 	c.root.escapedVars = make(map[string]bool)
 	if fn.Body != nil {
@@ -589,6 +596,10 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	prevTypes := c.root.symbolTypes
 	prevLoopStack := c.root.loopStack
 	prevDeferStack := c.root.deferStack
+	prevStructuredRoot := c.root.structuredRoot
+	prevStructuredStack := c.root.structuredStack
+	prevStructuredUnsupported := c.root.structuredUnsupported
+	prevStructuredFrames := c.root.structuredFrames
 	prevEscapedVars := c.root.escapedVars
 	prevRegCount := c.root.regCount
 
@@ -597,6 +608,8 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.symbolTypes = make(map[string]sema.Type)
 	c.root.loopStack = []loopContext{}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.resetStructuredState()
+	c.root.initFunctionControl(anonFn)
 	c.root.regCount = 0
 	if fl.Body != nil {
 		c.root.escapedVars = sema.CollectAllCapturesInBlock(fl.Body)
@@ -670,6 +683,11 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 			c.root.terminate(&hir.InstrReturn{Vals: defaults})
 		}
 	}
+	if !c.root.structuredUnsupported {
+		anonFn.StructuredBody = c.root.structuredRoot
+		hir.FlattenTransparentBlocks(anonFn)
+		anonFn.StructuredReady = true
+	}
 
 	c.root.hirProg.Functions = append(c.root.hirProg.Functions, anonFn)
 
@@ -679,6 +697,10 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.symbolTypes = prevTypes
 	c.root.loopStack = prevLoopStack
 	c.root.deferStack = prevDeferStack
+	c.root.structuredRoot = prevStructuredRoot
+	c.root.structuredStack = prevStructuredStack
+	c.root.structuredUnsupported = prevStructuredUnsupported
+	c.root.structuredFrames = prevStructuredFrames
 	c.root.escapedVars = prevEscapedVars
 	c.root.regCount = prevRegCount
 

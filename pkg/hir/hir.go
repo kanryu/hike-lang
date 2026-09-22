@@ -539,6 +539,28 @@ type InstrBranch struct {
 	ElseTarget string
 }
 
+// InstrBrTable is the CFG form of a structured br_table.  Structured HIR
+// lowers its depth targets to block labels before reaching a backend, so the
+// existing LLVM and dispatcher-based Wasm emitters can consume it directly.
+type InstrBrTable struct {
+	Index         Value
+	Targets       []string
+	DefaultTarget string
+}
+
+func (i *InstrBrTable) Result() *Reg { return nil }
+func (i *InstrBrTable) Successors() []string {
+	result := append([]string{}, i.Targets...)
+	if i.DefaultTarget != "" {
+		result = append(result, i.DefaultTarget)
+	}
+	return result
+}
+func (i *InstrBrTable) String() string {
+	return fmt.Sprintf("  br_table %s, [%s], label %%%s", i.Index,
+		strings.Join(i.Targets, ", "), i.DefaultTarget)
+}
+
 func (i *InstrBranch) Result() *Reg         { return nil }
 func (i *InstrBranch) Successors() []string { return []string{i.ThenTarget, i.ElseTarget} }
 func (i *InstrBranch) String() string {
@@ -609,8 +631,25 @@ type Function struct {
 	Params      []*Reg
 	ReturnTypes []sema.Type
 	Blocks      []*BasicBlock
-	IsVariadic  bool
-	IsExtern    bool
+	// ControlNodes is the zero-based function-local table for structured
+	// control elements. A branch target ID indexes this slice directly.
+	ControlNodes []ControlElement
+	// ControlRoot is the first control-table entry. ControlExit is registered
+	// immediately after it, but emitted as the final empty structured block.
+	// It is the safe fallback continuation for control elements whose more
+	// precise Next link has not been assigned yet.
+	ControlExit *BlockNode
+	ControlRoot *BlockNode
+	// StructuredReady is set only when all control-producing lowering paths in
+	// this function have been migrated. Partial structured bodies remain
+	// inspectable but must not replace the executable CFG yet.
+	StructuredReady bool
+	// StructuredBody is populated during the structured-HIR migration. A
+	// function may temporarily carry either representation; backends should
+	// preserve the existing Blocks fallback until all lowerers are migrated.
+	StructuredBody ControlBody
+	IsVariadic     bool
+	IsExtern       bool
 
 	// -------------------------------------------------------------------------
 	// CFunc / C ABI 連携用フィールド
@@ -618,6 +657,27 @@ type Function struct {
 	IsCFunc       bool
 	IsPassThrough bool
 	CFuncTarget   string
+}
+
+// ControlNodeAt resolves a structured-control ID without a label scan.
+func (f *Function) ControlNodeAt(id int) (ControlElement, bool) {
+	if f == nil || id < 0 || id >= len(f.ControlNodes) {
+		return nil, false
+	}
+	return f.ControlNodes[id], true
+}
+
+// BranchDepth converts an absolute target depth into the relative depth used
+// by structured backends. The target is resolved by direct array indexing.
+func (f *Function) BranchDepth(branch ControlElement, targetID int) (int, bool) {
+	if branch == nil {
+		return 0, false
+	}
+	target, ok := f.ControlNodeAt(targetID)
+	if !ok || target.Depth() >= branch.Depth() {
+		return 0, false
+	}
+	return branch.Depth() - target.Depth() - 1, true
 }
 
 func (f *Function) String() string {

@@ -646,6 +646,13 @@ func (e *Emitter) function(fn *hir.Function) {
 	if hirFunctionExtern(fn) {
 		return
 	}
+	if fn.StructuredReady && len(fn.StructuredBody) > 0 {
+		if blocks, err := hir.LowerStructuredBody(fn); err == nil {
+			structured := *fn
+			structured.Blocks = blocks
+			fn = &structured
+		}
+	}
 	e.b.WriteString("  (func ")
 	e.b.WriteString(e.functionSymbol(fn.Name))
 	for _, p := range fn.Params {
@@ -765,6 +772,13 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hi
 	case *hir.InstrBranch:
 		thenIdx, elseIdx := blockIndex(x.ThenTarget, blocks), blockIndex(x.ElseTarget, blocks)
 		fmt.Fprintf(&e.b, "          (if %s (then (local.set $pc (i32.const %d)) (br $cfg_dispatch)) (else (local.set $pc (i32.const %d)) (br $cfg_dispatch)))\n", e.val(x.Cond), thenIdx, elseIdx)
+	case *hir.InstrBrTable:
+		labels := make([]string, len(x.Targets))
+		for i, target := range x.Targets {
+			labels[i] = fmt.Sprintf("$cfg_%d", blockIndex(target, blocks))
+		}
+		defaultLabel := fmt.Sprintf("$cfg_%d", blockIndex(x.DefaultTarget, blocks))
+		fmt.Fprintf(&e.b, "          (br_table %s %s)\n", strings.Join(labels, " ")+" "+defaultLabel, e.val(x.Index))
 	case *hir.InstrReturn:
 		if len(x.Vals) == 0 {
 			e.defaultReturn(fn)

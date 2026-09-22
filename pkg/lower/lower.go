@@ -11,33 +11,48 @@ import (
 )
 
 type loopContext struct {
-	breakBlock    *hir.BasicBlock
-	continueBlock *hir.BasicBlock
+	breakBlock        *hir.BasicBlock
+	continueBlock     *hir.BasicBlock
+	structured        bool
+	breakLabel        string
+	continueLabel     string
+	breakControlID    int
+	continueControlID int
+	breakTarget       int
+	continueTarget    int
+}
+
+type structuredFrame struct {
+	label string
 }
 
 // LowererはIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
 type Lowerer struct {
-	prog            *ast.Program
-	semaCtx         *sema.Context
-	hirProg         *hir.Program
-	curFunc         *hir.Function
-	curBlock        *hir.BasicBlock
-	regCount        int
-	blockCount      int
-	anonFuncCount   int
-	stringPool      map[string]*hir.ConstString
-	symbols         map[string]hir.Value
-	symbolTypes     map[string]sema.Type
-	loopStack       []loopContext
-	deferStack      []*ast.CallExpr
-	itabs           map[string]*hir.ItabDef
-	escapedVars     map[string]bool
-	is32Bit         bool // Compilerから伝播される32bitターゲットフラグ
-	recordLocations bool
-	regionMode      bool
-	sourceFile      string
-	sourceLoc       hir.SourceLocation
-	module          string
+	prog                  *ast.Program
+	semaCtx               *sema.Context
+	hirProg               *hir.Program
+	curFunc               *hir.Function
+	curBlock              *hir.BasicBlock
+	regCount              int
+	blockCount            int
+	anonFuncCount         int
+	stringPool            map[string]*hir.ConstString
+	symbols               map[string]hir.Value
+	symbolTypes           map[string]sema.Type
+	loopStack             []loopContext
+	deferStack            []*ast.CallExpr
+	structuredRoot        hir.ControlBody
+	structuredStack       []*hir.ControlBody
+	structuredFrames      []structuredFrame
+	structuredUnsupported bool
+	itabs                 map[string]*hir.ItabDef
+	escapedVars           map[string]bool
+	is32Bit               bool // Compilerから伝播される32bitターゲットフラグ
+	recordLocations       bool
+	regionMode            bool
+	sourceFile            string
+	sourceLoc             hir.SourceLocation
+	module                string
 	// globalInitRemaining is consumed while synthetic global initializer
 	// statements are lowered at the beginning of main.
 	globalInitRemaining int
@@ -82,17 +97,20 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 		// Go-Hike's wasm32 runtime currently cannot safely hash interface keys.
 		// Keep source locations disabled for the self-hosted path and avoid
 		// allocating the interface-keyed map there.
-		hirProg:         &hir.Program{ModuleName: astProgramPackage(prog)},
-		module:          astProgramPackage(prog),
-		stringPool:      make(map[string]*hir.ConstString),
-		symbols:         make(map[string]hir.Value),
-		symbolTypes:     make(map[string]sema.Type),
-		loopStack:       []loopContext{},
-		deferStack:      []*ast.CallExpr{},
-		itabs:           make(map[string]*hir.ItabDef),
-		escapedVars:     make(map[string]bool),
-		is32Bit:         false,
-		recordLocations: true,
+		hirProg:          &hir.Program{ModuleName: astProgramPackage(prog)},
+		module:           astProgramPackage(prog),
+		stringPool:       make(map[string]*hir.ConstString),
+		symbols:          make(map[string]hir.Value),
+		symbolTypes:      make(map[string]sema.Type),
+		loopStack:        []loopContext{},
+		deferStack:       []*ast.CallExpr{},
+		structuredRoot:   hir.ControlBody{},
+		structuredStack:  []*hir.ControlBody{},
+		structuredFrames: []structuredFrame{},
+		itabs:            make(map[string]*hir.ItabDef),
+		escapedVars:      make(map[string]bool),
+		is32Bit:          false,
+		recordLocations:  true,
 	}
 
 	// 各サブローワーの初期化
@@ -351,6 +369,10 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 		l.curBlock.Instructions = append(l.curBlock.Instructions, instr)
 		l.recordLocation(instr)
 	}
+	if !l.structuredUnsupported && len(l.structuredStack) > 0 {
+		current := l.structuredDestination()
+		*current = append(*current, &hir.InstructionNode{Instruction: instr})
+	}
 }
 
 func (l *Lowerer) terminate(term hir.Terminator) {
@@ -358,6 +380,241 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		l.curBlock.Terminator = term
 		l.recordLocation(term)
 	}
+	if !l.structuredUnsupported && len(l.structuredStack) > 0 {
+		current := l.structuredDestination()
+		switch t := term.(type) {
+		case *hir.InstrReturn:
+			*current = append(*current, &hir.ReturnNode{Values: t.Vals})
+		case *hir.InstrUnreachable:
+			*current = append(*current, &hir.UnreachableNode{})
+		}
+	}
+}
+
+func (l *Lowerer) resetStructuredState() {
+	l.structuredRoot = hir.ControlBody{}
+	l.structuredStack = []*hir.ControlBody{&l.structuredRoot}
+	l.structuredUnsupported = false
+	l.structuredFrames = []structuredFrame{}
+}
+
+func (l *Lowerer) initFunctionControl(fn *hir.Function) {
+	if fn == nil {
+		return
+	}
+	root := &hir.BlockNode{Label: fn.Name + ".control.root"}
+	exit := &hir.BlockNode{
+		Label:                   fn.Name + ".control.exit",
+		FunctionExit:            true,
+		ContinuationPlaceholder: true,
+		ReplacedByID:            -1,
+		ContinuationOf:          root,
+	}
+	l.registerControlElementAt(root, 0)
+	fn.ControlExit = exit
+	fn.ControlRoot = root
+	l.registerControlElementAt(exit, 1)
+	root.SetControlLinks(exit.Index(), exit.Index(), -1)
+	root.Body = hir.ControlBody{exit}
+	l.structuredRoot = hir.ControlBody{root}
+	l.structuredStack = []*hir.ControlBody{&root.Body}
+}
+
+func (l *Lowerer) appendExistingStructuredNode(node hir.ControlNode) {
+	if node == nil || len(l.structuredStack) == 0 {
+		return
+	}
+	current := l.structuredStack[len(l.structuredStack)-1]
+	*current = append(*current, node)
+}
+
+func (l *Lowerer) pushStructuredBody(body *hir.ControlBody) {
+	l.structuredStack = append(l.structuredStack, body)
+}
+
+func (l *Lowerer) popStructuredBody() {
+	if len(l.structuredStack) > 1 {
+		l.structuredStack = l.structuredStack[:len(l.structuredStack)-1]
+	}
+}
+
+func (l *Lowerer) pushStructuredFrame(label string) {
+	l.structuredFrames = append(l.structuredFrames, structuredFrame{label: label})
+}
+
+func (l *Lowerer) popStructuredFrame() {
+	if len(l.structuredFrames) > 0 {
+		l.structuredFrames = l.structuredFrames[:len(l.structuredFrames)-1]
+	}
+}
+
+func (l *Lowerer) structuredDepth(label string) (uint32, bool) {
+	for i := len(l.structuredFrames) - 1; i >= 0; i-- {
+		if l.structuredFrames[i].label == label {
+			return uint32(len(l.structuredFrames) - 1 - i), true
+		}
+	}
+	return 0, false
+}
+
+func (l *Lowerer) appendStructuredNode(node hir.ControlNode) {
+	if l.structuredUnsupported || node == nil || len(l.structuredStack) == 0 {
+		return
+	}
+	current := l.structuredStack[len(l.structuredStack)-1]
+	l.appendStructuredNodeTo(current, node)
+}
+
+func (l *Lowerer) appendStructuredNodeTo(body *hir.ControlBody, node hir.ControlNode) {
+	if l.structuredUnsupported || body == nil || node == nil {
+		return
+	}
+	if element, ok := node.(hir.ControlElement); ok {
+		l.registerControlElement(element)
+	}
+	if idx := lastContinuationIndex(*body); idx >= 0 {
+		last, ok := (*body)[idx].(*hir.BlockNode)
+		if ok && last.ContinuationPlaceholder && len(last.Body) == 0 {
+			if predecessor := last.ContinuationOf; predecessor != nil {
+				predecessor.SetControlLinks(controlNodeIndex(node), predecessor.BreakTarget(), predecessor.ContinueTarget())
+			}
+			if last.FunctionExit {
+				*body = append(*body, nil)
+				copy((*body)[idx+1:], (*body)[idx:])
+				(*body)[idx] = node
+				return
+			}
+			last.ReplacedByID = controlNodeIndex(node)
+			(*body)[idx] = node
+			return
+		}
+		if ok && last.ContinuationPlaceholder {
+			last.Body = append(last.Body, node)
+			return
+		}
+	}
+	if len(*body) > 0 {
+		if last, ok := (*body)[len(*body)-1].(*hir.BlockNode); ok && last.FunctionExit {
+			if predecessor := last.ContinuationOf; predecessor != nil {
+				predecessor.SetControlLinks(controlNodeIndex(node), predecessor.BreakTarget(), predecessor.ContinueTarget())
+			}
+			*body = append(*body, nil)
+			copy((*body)[len(*body)-1:], (*body)[len(*body)-2:])
+			(*body)[len(*body)-2] = node
+			return
+		}
+	}
+	*body = append(*body, node)
+}
+
+func (l *Lowerer) structuredDestination() *hir.ControlBody {
+	current := l.structuredStack[len(l.structuredStack)-1]
+	if idx := lastContinuationIndex(*current); idx >= 0 {
+		if last, ok := (*current)[idx].(*hir.BlockNode); ok && last.ContinuationPlaceholder {
+			return &last.Body
+		}
+	}
+	if l.curFunc != nil && l.curFunc.ControlRoot != nil && len(*current) > 0 {
+		if last, ok := (*current)[len(*current)-1].(*hir.BlockNode); ok && last.FunctionExit {
+			continuation := l.appendContinuationAfter(current, l.curFunc.ControlRoot, len(l.structuredFrames))
+			return &continuation.Body
+		}
+	}
+	if len(*current) > 0 {
+		if predecessor, ok := (*current)[len(*current)-1].(hir.ControlElement); ok {
+			continuation := l.appendContinuationAfter(current, predecessor, len(l.structuredFrames))
+			if continuation != nil {
+				return &continuation.Body
+			}
+		}
+	}
+	if continuation := l.appendInstructionBlock(current, len(l.structuredFrames)); continuation != nil {
+		return &continuation.Body
+	}
+	return current
+}
+
+func (l *Lowerer) appendInstructionBlock(body *hir.ControlBody, depth int) *hir.BlockNode {
+	if l.structuredUnsupported || body == nil {
+		return nil
+	}
+	l.blockCount++
+	block := &hir.BlockNode{
+		Label:                   fmt.Sprintf("control.instructions.%d", l.blockCount),
+		ContinuationPlaceholder: true,
+		ReplacedByID:            -1,
+	}
+	l.registerControlElementAt(block, depth)
+	if len(*body) > 0 {
+		if last, ok := (*body)[len(*body)-1].(*hir.BlockNode); ok && last.FunctionExit {
+			*body = append(*body, nil)
+			copy((*body)[len(*body)-1:], (*body)[len(*body)-2:])
+			(*body)[len(*body)-2] = block
+			return block
+		}
+	}
+	*body = append(*body, block)
+	return block
+}
+
+func lastContinuationIndex(body hir.ControlBody) int {
+	if len(body) == 0 {
+		return -1
+	}
+	idx := len(body) - 1
+	if last, ok := body[idx].(*hir.BlockNode); ok && last.FunctionExit {
+		idx--
+	}
+	return idx
+}
+
+func (l *Lowerer) appendContinuationAfter(body *hir.ControlBody, predecessor hir.ControlElement, depth int) *hir.BlockNode {
+	if l.structuredUnsupported || body == nil || predecessor == nil {
+		return nil
+	}
+	l.blockCount++
+	placeholder := &hir.BlockNode{
+		Label:                   fmt.Sprintf("control.next.%d", l.blockCount),
+		ContinuationPlaceholder: true,
+		ContinuationOf:          predecessor,
+		ReplacedByID:            -1,
+	}
+	l.registerControlElementAt(placeholder, depth)
+	predecessor.SetControlLinks(placeholder.Index(), predecessor.BreakTarget(), predecessor.ContinueTarget())
+	if len(*body) > 0 {
+		if last, ok := (*body)[len(*body)-1].(*hir.BlockNode); ok && last.FunctionExit {
+			*body = append(*body, nil)
+			copy((*body)[len(*body)-1:], (*body)[len(*body)-2:])
+			(*body)[len(*body)-2] = placeholder
+			return placeholder
+		}
+	}
+	*body = append(*body, placeholder)
+	return placeholder
+}
+
+func controlNodeIndex(node hir.ControlNode) int {
+	if element, ok := node.(hir.ControlElement); ok {
+		return element.Index()
+	}
+	return -1
+}
+
+func (l *Lowerer) registerControlElement(element hir.ControlElement) int {
+	return l.registerControlElementAt(element, len(l.structuredFrames))
+}
+
+func (l *Lowerer) registerControlElementAt(element hir.ControlElement, depth int) int {
+	if l.curFunc == nil {
+		return -1
+	}
+	id := len(l.curFunc.ControlNodes)
+	element.SetControlPosition(id, depth+1)
+	l.curFunc.ControlNodes = append(l.curFunc.ControlNodes, element)
+	if l.curFunc.ControlExit != nil && element != l.curFunc.ControlExit && element.Next() < 0 {
+		element.SetControlLinks(l.curFunc.ControlExit.Index(), element.BreakTarget(), element.ContinueTarget())
+	}
+	return id
 }
 
 func (l *Lowerer) recordLocation(instr hir.Instruction) {

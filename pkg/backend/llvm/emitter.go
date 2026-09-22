@@ -432,6 +432,15 @@ func (e *Emitter) intrinsicFeatures(fn *hir.Function) string {
 }
 
 func (e *Emitter) emitFunction(fn *hir.Function) {
+	if fn.StructuredReady && len(fn.StructuredBody) > 0 {
+		if blocks, err := hir.LowerStructuredBody(fn); err == nil {
+			structured := *fn
+			structured.Blocks = blocks
+			fn = &structured
+		} else {
+			logger.LogVerbose2("[Verbose2] structured HIR fallback for @%s: %v\n", fn.Name, err)
+		}
+	}
 	logger.LogVerbose2("[Verbose2] --- Emit Function: @%s (blocks=%d) ---\n", fn.Name, len(fn.Blocks))
 	isMain := (fn.Name == "main")
 	retTypeStr := "void"
@@ -1498,6 +1507,15 @@ func (e *Emitter) emitTerminatorBody(term hir.Terminator, isMain bool) {
 	case *hir.InstrBranch:
 		e.b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n",
 			e.formatVal(t.Cond), t.ThenTarget, t.ElseTarget))
+
+	case *hir.InstrBrTable:
+		indexType := t.Index.Type().LLVMType()
+		var cases strings.Builder
+		for value, target := range t.Targets {
+			fmt.Fprintf(&cases, " %s %d, label %%%s", indexType, value, target)
+		}
+		e.b.WriteString(fmt.Sprintf("  switch %s %s, label %%%s [%s ]\n",
+			indexType, e.formatVal(t.Index), t.DefaultTarget, cases.String()))
 
 	case *hir.InstrUnreachable:
 		e.b.WriteString("  unreachable\n")
