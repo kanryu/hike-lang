@@ -10,9 +10,18 @@ import (
 	"hikec-go/pkg/token"
 )
 
+// basicBlock is the temporary, lowering-only block representation used while
+// translating AST statements. Structured HIR is assembled separately and
+// backends derive their own CFG when needed.
+type basicBlock struct {
+	Label        string
+	Instructions []hir.Instruction
+	Terminator   hir.Terminator
+}
+
 type loopContext struct {
-	breakBlock        *hir.BasicBlock
-	continueBlock     *hir.BasicBlock
+	breakBlock        *basicBlock
+	continueBlock     *basicBlock
 	structured        bool
 	breakLabel        string
 	continueLabel     string
@@ -28,31 +37,31 @@ type structuredFrame struct {
 
 // LowererはIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
 type Lowerer struct {
-	prog                  *ast.Program
-	semaCtx               *sema.Context
-	hirProg               *hir.Program
-	curFunc               *hir.Function
-	curBlock              *hir.BasicBlock
-	regCount              int
-	blockCount            int
-	anonFuncCount         int
-	stringPool            map[string]*hir.ConstString
-	symbols               map[string]hir.Value
-	symbolTypes           map[string]sema.Type
-	loopStack             []loopContext
-	deferStack            []*ast.CallExpr
-	structuredRoot        hir.ControlBody
-	structuredStack       []*hir.ControlBody
-	structuredFrames      []structuredFrame
-	structuredUnsupported bool
-	itabs                 map[string]*hir.ItabDef
-	escapedVars           map[string]bool
-	is32Bit               bool // Compilerから伝播される32bitターゲットフラグ
-	recordLocations       bool
-	regionMode            bool
-	sourceFile            string
-	sourceLoc             hir.SourceLocation
-	module                string
+	prog             *ast.Program
+	semaCtx          *sema.Context
+	hirProg          *hir.Program
+	curFunc          *hir.Function
+	curBlock         *basicBlock
+	legacyBlocks     []*basicBlock
+	regCount         int
+	blockCount       int
+	anonFuncCount    int
+	stringPool       map[string]*hir.ConstString
+	symbols          map[string]hir.Value
+	symbolTypes      map[string]sema.Type
+	loopStack        []loopContext
+	deferStack       []*ast.CallExpr
+	structuredRoot   hir.ControlBody
+	structuredStack  []*hir.ControlBody
+	structuredFrames []structuredFrame
+	itabs            map[string]*hir.ItabDef
+	escapedVars      map[string]bool
+	is32Bit          bool // Compilerから伝播される32bitターゲットフラグ
+	recordLocations  bool
+	regionMode       bool
+	sourceFile       string
+	sourceLoc        hir.SourceLocation
+	module           string
 	// globalInitRemaining is consumed while synthetic global initializer
 	// statements are lowered at the beginning of main.
 	globalInitRemaining int
@@ -231,10 +240,12 @@ func (l *Lowerer) Lower() *hir.Program {
 			l.sourceFile = d.Filename
 			l.Call.LowerFunc(d)
 			l.finishRegionFunction()
+			l.discardStructuredCFG()
 
 		case *ast.CFuncDecl:
 			l.Call.LowerCFunc(d)
 			l.finishRegionFunction()
+			l.discardStructuredCFG()
 
 		case *ast.ExternFuncDecl:
 			l.Call.LowerExternFunc(d)
@@ -269,7 +280,6 @@ func (l *Lowerer) Lower() *hir.Program {
 				Name:        irName,
 				Params:      params,
 				ReturnTypes: fn.ReturnTypes,
-				Blocks:      nil,
 				IsVariadic:  fn.IsVariadic,
 				IsExtern:    true,
 			})
@@ -284,15 +294,18 @@ func (l *Lowerer) Lower() *hir.Program {
 // together. Explicit malloc/free calls remain untouched, and future escape
 // analysis can promote individual allocations back to the heap here.
 func (l *Lowerer) finishRegionFunction() {
-	if !l.regionMode || l.curFunc == nil || l.curFunc.IsExtern || len(l.curFunc.Blocks) == 0 {
+	if l.curFunc == nil || l.curFunc.IsExtern || len(l.legacyBlocks) == 0 {
+		return
+	}
+	if !l.regionMode {
 		return
 	}
 	region := l.nextReg(&sema.PointerType{Base: sema.TypeByte}, "region")
-	first := l.curFunc.Blocks[0]
+	first := l.legacyBlocks[0]
 	regionBegin := &hir.InstrRegionBegin{Dst: region}
 	first.Instructions = append([]hir.Instruction{regionBegin}, first.Instructions...)
 	l.recordFunctionLocation(regionBegin, l.curFunc)
-	for _, bb := range l.curFunc.Blocks {
+	for _, bb := range l.legacyBlocks {
 		// A value returned from this function outlives its region. Promote the
 		// allocation back to the ordinary heap before rewriting instructions.
 		returned := make(map[*hir.Reg]bool)
@@ -325,6 +338,13 @@ func (l *Lowerer) finishRegionFunction() {
 	}
 }
 
+// discardStructuredCFG drops the lowerer's temporary CFG only after all
+// function-level passes (notably region rewriting) have completed. Structured
+// HIR remains the authoritative representation for migrated functions.
+func (l *Lowerer) discardStructuredCFG() {
+	l.legacyBlocks = nil
+}
+
 func (l *Lowerer) recordFunctionLocation(instr hir.Instruction, fn *hir.Function) {
 	if l.recordLocations && instr != nil && fn != nil && fn.Location.Line > 0 {
 		if l.hirProg.InstructionLocations == nil {
@@ -349,18 +369,18 @@ func (l *Lowerer) nextReg(typ sema.Type, name ...string) *hir.Reg {
 	return &hir.Reg{ID: l.regCount, Typ: typ, Name: regName}
 }
 
-func (l *Lowerer) newBlock(labelPrefix string) *hir.BasicBlock {
+func (l *Lowerer) newBlock(labelPrefix string) *basicBlock {
 	l.blockCount++
-	return &hir.BasicBlock{
+	return &basicBlock{
 		Label:        fmt.Sprintf("%s.%d", labelPrefix, l.blockCount),
 		Instructions: []hir.Instruction{},
 	}
 }
 
-func (l *Lowerer) setBlock(bb *hir.BasicBlock) {
+func (l *Lowerer) setBlock(bb *basicBlock) {
 	l.curBlock = bb
 	if l.curFunc != nil {
-		l.curFunc.Blocks = append(l.curFunc.Blocks, bb)
+		l.legacyBlocks = append(l.legacyBlocks, bb)
 	}
 }
 
@@ -369,7 +389,7 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 		l.curBlock.Instructions = append(l.curBlock.Instructions, instr)
 		l.recordLocation(instr)
 	}
-	if !l.structuredUnsupported && len(l.structuredStack) > 0 {
+	if len(l.structuredStack) > 0 {
 		current := l.structuredDestination()
 		*current = append(*current, &hir.InstructionNode{Instruction: instr})
 	}
@@ -380,7 +400,7 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		l.curBlock.Terminator = term
 		l.recordLocation(term)
 	}
-	if !l.structuredUnsupported && len(l.structuredStack) > 0 {
+	if len(l.structuredStack) > 0 {
 		current := l.structuredDestination()
 		switch t := term.(type) {
 		case *hir.InstrReturn:
@@ -394,7 +414,6 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 func (l *Lowerer) resetStructuredState() {
 	l.structuredRoot = hir.ControlBody{}
 	l.structuredStack = []*hir.ControlBody{&l.structuredRoot}
-	l.structuredUnsupported = false
 	l.structuredFrames = []structuredFrame{}
 }
 
@@ -458,7 +477,7 @@ func (l *Lowerer) structuredDepth(label string) (uint32, bool) {
 }
 
 func (l *Lowerer) appendStructuredNode(node hir.ControlNode) {
-	if l.structuredUnsupported || node == nil || len(l.structuredStack) == 0 {
+	if node == nil || len(l.structuredStack) == 0 {
 		return
 	}
 	current := l.structuredStack[len(l.structuredStack)-1]
@@ -466,7 +485,7 @@ func (l *Lowerer) appendStructuredNode(node hir.ControlNode) {
 }
 
 func (l *Lowerer) appendStructuredNodeTo(body *hir.ControlBody, node hir.ControlNode) {
-	if l.structuredUnsupported || body == nil || node == nil {
+	if body == nil || node == nil {
 		return
 	}
 	if element, ok := node.(hir.ControlElement); ok {
@@ -535,7 +554,7 @@ func (l *Lowerer) structuredDestination() *hir.ControlBody {
 }
 
 func (l *Lowerer) appendInstructionBlock(body *hir.ControlBody, depth int) *hir.BlockNode {
-	if l.structuredUnsupported || body == nil {
+	if body == nil {
 		return nil
 	}
 	l.blockCount++
@@ -569,7 +588,7 @@ func lastContinuationIndex(body hir.ControlBody) int {
 }
 
 func (l *Lowerer) appendContinuationAfter(body *hir.ControlBody, predecessor hir.ControlElement, depth int) *hir.BlockNode {
-	if l.structuredUnsupported || body == nil || predecessor == nil {
+	if body == nil || predecessor == nil {
 		return nil
 	}
 	l.blockCount++

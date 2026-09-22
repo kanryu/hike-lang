@@ -82,7 +82,7 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 		resultLines := make(map[*hir.Reg]uint32)
 		returnRegs := make(map[*hir.Reg]bool)
 		returnLine := uint32(0)
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			if ret, ok := bb.Terminator.(*hir.InstrReturn); ok && len(ret.Vals) == 1 {
 				if returned, ok := ret.Vals[0].(*hir.Reg); ok {
 					returnRegs[returned] = true
@@ -105,7 +105,7 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 			})
 			seenNames[name] = true
 		}
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			for _, instr := range bb.Instructions {
 				result := instr.Result()
 				instrLine := instructionLine(e.p, instr, line)
@@ -158,7 +158,7 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 		// identifier, but it is still useful at a return breakpoint. Expose it
 		// as a synthetic `return` variable using the actual Wasm local that holds
 		// the expression result.
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			ret, ok := bb.Terminator.(*hir.InstrReturn)
 			if !ok || len(ret.Vals) != 1 || seenNames["return_of_function"] {
 				continue

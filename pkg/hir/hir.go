@@ -590,26 +590,6 @@ func (i *InstrUnreachable) Result() *Reg         { return nil }
 func (i *InstrUnreachable) Successors() []string { return nil }
 func (i *InstrUnreachable) String() string       { return "  unreachable" }
 
-type BasicBlock struct {
-	Label        string
-	Instructions []Instruction
-	Terminator   Terminator
-}
-
-func (b *BasicBlock) String() string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s:\n", b.Label))
-	for _, inst := range b.Instructions {
-		sb.WriteString(inst.String())
-		sb.WriteString("\n")
-	}
-	if b.Terminator != nil {
-		sb.WriteString(b.Terminator.String())
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
 type ItabMethodEntry struct {
 	MethodName   string
 	TargetFnName string
@@ -630,7 +610,6 @@ type Function struct {
 	Location    SourceLocation
 	Params      []*Reg
 	ReturnTypes []sema.Type
-	Blocks      []*BasicBlock
 	// ControlNodes is the zero-based function-local table for structured
 	// control elements. A branch target ID indexes this slice directly.
 	ControlNodes []ControlElement
@@ -640,13 +619,8 @@ type Function struct {
 	// precise Next link has not been assigned yet.
 	ControlExit *BlockNode
 	ControlRoot *BlockNode
-	// StructuredReady is set only when all control-producing lowering paths in
-	// this function have been migrated. Partial structured bodies remain
-	// inspectable but must not replace the executable CFG yet.
-	StructuredReady bool
-	// StructuredBody is populated during the structured-HIR migration. A
-	// function may temporarily carry either representation; backends should
-	// preserve the existing Blocks fallback until all lowerers are migrated.
+	// StructuredBody is the authoritative function representation. Backends
+	// may derive a temporary CFG from it, but the HIR function does not own one.
 	StructuredBody ControlBody
 	IsVariadic     bool
 	IsExtern       bool
@@ -715,8 +689,8 @@ func (f *Function) String() string {
 		prefix = "cfunc"
 	}
 	sb.WriteString(fmt.Sprintf("%s @%s(%s) %s {\n", prefix, f.Name, strings.Join(params, ", "), retTypeStr))
-	for _, bb := range f.Blocks {
-		sb.WriteString(bb.String())
+	if len(f.StructuredBody) > 0 {
+		sb.WriteString(f.StructuredBody.String())
 	}
 	sb.WriteString("}\n")
 	return sb.String()

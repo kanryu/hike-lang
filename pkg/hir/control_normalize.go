@@ -33,7 +33,12 @@ func markBodyReferences(referenced map[int]bool, body ControlBody) {
 		case *BlockNode:
 			markBodyReferences(referenced, n.Body)
 		case *LoopNode:
+			markBodyReferences(referenced, n.Init)
 			markBodyReferences(referenced, n.Body)
+			markBodyReferences(referenced, n.Post)
+			if n.BodyExit != nil {
+				markBodyReferences(referenced, n.BodyExit.Body)
+			}
 		case *IfNode:
 			markBodyReferences(referenced, n.Then)
 			markBodyReferences(referenced, n.Else)
@@ -61,7 +66,12 @@ func flattenControlBody(body ControlBody, referenced map[int]bool) ControlBody {
 		case *BlockNode:
 			n.Body = flattenControlBody(n.Body, referenced)
 		case *LoopNode:
+			n.Init = flattenControlBody(n.Init, referenced)
 			n.Body = flattenControlBody(n.Body, referenced)
+			n.Post = flattenControlBody(n.Post, referenced)
+			if n.BodyExit != nil {
+				n.BodyExit.Body = flattenControlBody(n.BodyExit.Body, referenced)
+			}
 		case *IfNode:
 			n.Then = flattenControlBody(n.Then, referenced)
 			n.Else = flattenControlBody(n.Else, referenced)

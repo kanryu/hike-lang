@@ -9,11 +9,10 @@ import (
 
 // ControlNode is the structured-control counterpart of the CFG terminators.
 //
-// The existing BasicBlock representation is intentionally kept in place while
-// the lowerer is migrated. A backend may consume StructuredBody when it is
-// present, and continue to consume Blocks for functions that have not been
-// migrated yet. Every structured construct owns a unique label; branch nodes
-// refer to that label and the backend resolves it to its target representation.
+// Structured control is lowered to transient backend blocks only when a
+// backend requires them. Every structured construct owns a unique label;
+// branch nodes refer to that label and the backend resolves it to its target
+// representation.
 type ControlNode interface {
 	String() string
 }
@@ -109,7 +108,19 @@ type LoopNode struct {
 	ControlDepth int
 	Label        string
 	ResultTypes  []sema.Type
+	// Init and Condition allow source-level for variants to normalize to one
+	// loop shape. A nil Condition represents an infinite loop.
+	Init      ControlBody
+	Condition Value
+	// Body, Post, Exit, and Continuation form the canonical loop layout.
+	// Post is executed by continue and after each body iteration; Exit is the
+	// loop-local merge point; Continuation is the first node after the loop.
+	// BodyExit is the explicit boundary from Body to Post.
+	BodyExit     *BlockNode
 	Body         ControlBody
+	Post         ControlBody
+	Exit         *BlockNode
+	Continuation *BlockNode
 }
 
 func (n *LoopNode) Depth() int                       { return n.ControlDepth }
@@ -117,7 +128,11 @@ func (n *LoopNode) Index() int                       { return n.ID }
 func (n *LoopNode) SetControlPosition(id, depth int) { n.ID, n.ControlDepth = id, depth }
 
 func (n *LoopNode) String() string {
-	return fmt.Sprintf("  loop %s {\n%s\n  }", n.Label, indentControlBody(n.Body))
+	condition := "<none>"
+	if n.Condition != nil {
+		condition = n.Condition.String()
+	}
+	return fmt.Sprintf("  loop %s {\n  init:\n%s\n  condition: %s\n  body:\n%s\n  post:\n%s\n  }", n.Label, indentControlBody(n.Init), condition, indentControlBody(n.Body), indentControlBody(n.Post))
 }
 
 type IfNode struct {

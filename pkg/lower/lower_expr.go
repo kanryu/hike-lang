@@ -1576,16 +1576,21 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		e.root.emit(&hir.InstrStore{Val: &hir.ConstBool{Val: false, Typ: sema.TypeBool}, Ptr: resAlloca})
 
 		leftVal := e.LowerExpr(node.Left)
-		rhsBB := e.root.newBlock("land.rhs")
-		endBB := e.root.newBlock("land.end")
-
-		e.root.terminate(&hir.InstrBranch{Cond: leftVal, ThenTarget: rhsBB.Label, ElseTarget: endBB.Label})
-
-		e.root.setBlock(rhsBB)
+		rightBB := e.root.newBlock("logical.and.right")
+		endBB := e.root.newBlock("logical.and.end")
+		e.root.terminate(&hir.InstrBranch{Cond: leftVal, ThenTarget: rightBB.Label, ElseTarget: endBB.Label})
+		e.root.setBlock(rightBB)
+		shortCircuit := &hir.IfNode{Label: "logical.and", Cond: leftVal}
+		e.root.appendStructuredNode(shortCircuit)
+		e.root.pushStructuredFrame(shortCircuit.Label)
+		e.root.pushStructuredBody(&shortCircuit.Then)
 		rightVal := e.LowerExpr(node.Right)
 		e.root.emit(&hir.InstrStore{Val: rightVal, Ptr: resAlloca})
-		e.root.terminate(&hir.InstrJump{Target: endBB.Label})
-
+		e.root.popStructuredBody()
+		e.root.popStructuredFrame()
+		if e.root.curBlock.Terminator == nil {
+			e.root.terminate(&hir.InstrJump{Target: endBB.Label})
+		}
 		e.root.setBlock(endBB)
 		finalReg := e.root.nextReg(sema.TypeBool)
 		e.root.emit(&hir.InstrLoad{Dst: finalReg, Ptr: resAlloca})
@@ -1598,16 +1603,21 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		e.root.emit(&hir.InstrStore{Val: &hir.ConstBool{Val: true, Typ: sema.TypeBool}, Ptr: resAlloca})
 
 		leftVal := e.LowerExpr(node.Left)
-		rhsBB := e.root.newBlock("lor.rhs")
-		endBB := e.root.newBlock("lor.end")
-
-		e.root.terminate(&hir.InstrBranch{Cond: leftVal, ThenTarget: endBB.Label, ElseTarget: rhsBB.Label})
-
-		e.root.setBlock(rhsBB)
+		rightBB := e.root.newBlock("logical.or.right")
+		endBB := e.root.newBlock("logical.or.end")
+		e.root.terminate(&hir.InstrBranch{Cond: leftVal, ThenTarget: endBB.Label, ElseTarget: rightBB.Label})
+		shortCircuit := &hir.IfNode{Label: "logical.or", Cond: leftVal}
+		e.root.appendStructuredNode(shortCircuit)
+		e.root.pushStructuredFrame(shortCircuit.Label)
+		e.root.pushStructuredBody(&shortCircuit.Else)
+		e.root.setBlock(rightBB)
 		rightVal := e.LowerExpr(node.Right)
 		e.root.emit(&hir.InstrStore{Val: rightVal, Ptr: resAlloca})
-		e.root.terminate(&hir.InstrJump{Target: endBB.Label})
-
+		e.root.popStructuredBody()
+		e.root.popStructuredFrame()
+		if e.root.curBlock.Terminator == nil {
+			e.root.terminate(&hir.InstrJump{Target: endBB.Label})
+		}
 		e.root.setBlock(endBB)
 		finalReg := e.root.nextReg(sema.TypeBool)
 		e.root.emit(&hir.InstrLoad{Dst: finalReg, Ptr: resAlloca})
@@ -1976,10 +1986,21 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	if trapOnFailure {
 		okBB := e.root.newBlock("typeassert.ok")
 		failBB := e.root.newBlock("typeassert.fail")
+		var structuredAssert *hir.IfNode
+		if len(e.root.structuredStack) > 0 {
+			structuredAssert = &hir.IfNode{Label: okBB.Label, Cond: matchReg}
+			e.root.appendStructuredNode(structuredAssert)
+			e.root.pushStructuredFrame(structuredAssert.Label)
+			e.root.pushStructuredBody(&structuredAssert.Else)
+		}
 		e.root.terminate(&hir.InstrBranch{Cond: matchReg, ThenTarget: okBB.Label, ElseTarget: failBB.Label})
 		e.root.setBlock(failBB)
 		e.root.emit(&hir.InstrCallStatic{CalleeName: "llvm.trap"})
 		e.root.terminate(&hir.InstrUnreachable{})
+		if structuredAssert != nil {
+			e.root.popStructuredBody()
+			e.root.popStructuredFrame()
+		}
 		e.root.setBlock(okBB)
 	}
 

@@ -1603,15 +1603,32 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	finalCapAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "finalCap")
 	c.root.emit(&hir.InstrAlloca{Dst: finalPtrAlloca, AllocType: &sema.PointerType{Base: slType.Elem}})
 	c.root.emit(&hir.InstrAlloca{Dst: finalCapAlloca, AllocType: sema.TypeInt})
+	var structuredAppend *hir.IfNode
+	if len(c.root.structuredStack) > 0 {
+		structuredAppend = &hir.IfNode{Label: growBB.Label, Cond: growCond}
+		c.root.appendStructuredNode(structuredAppend)
+	}
 
 	c.root.terminate(&hir.InstrBranch{Cond: growCond, ThenTarget: growBB.Label, ElseTarget: noGrowBB.Label})
 
 	c.root.setBlock(noGrowBB)
+	if structuredAppend != nil {
+		c.root.pushStructuredFrame(structuredAppend.Label)
+		c.root.pushStructuredBody(&structuredAppend.Else)
+	}
 	c.root.emit(&hir.InstrStore{Val: oldTypedPtr, Ptr: finalPtrAlloca})
 	c.root.emit(&hir.InstrStore{Val: oldCap, Ptr: finalCapAlloca})
+	if structuredAppend != nil {
+		c.root.popStructuredBody()
+		c.root.popStructuredFrame()
+	}
 	c.root.terminate(&hir.InstrJump{Target: storeBB.Label})
 
 	c.root.setBlock(growBB)
+	if structuredAppend != nil {
+		c.root.pushStructuredFrame(structuredAppend.Label)
+		c.root.pushStructuredBody(&structuredAppend.Then)
+	}
 	doubleCap := c.root.nextReg(sema.TypeInt)
 	c.root.emit(&hir.InstrBinary{Dst: doubleCap, Op: hir.OpMul, L: oldCap, R: &hir.ConstInt{Val: 2, Typ: sema.TypeInt}})
 	newCap := c.root.nextReg(sema.TypeInt)
@@ -1633,6 +1650,10 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 
 	c.root.emit(&hir.InstrStore{Val: newTypedPtr, Ptr: finalPtrAlloca})
 	c.root.emit(&hir.InstrStore{Val: newCap, Ptr: finalCapAlloca})
+	if structuredAppend != nil {
+		c.root.popStructuredBody()
+		c.root.popStructuredFrame()
+	}
 	c.root.terminate(&hir.InstrJump{Target: storeBB.Label})
 
 	c.root.setBlock(storeBB)

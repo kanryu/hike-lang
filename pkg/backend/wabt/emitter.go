@@ -3,9 +3,11 @@ package wabt
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
+	"hikec-go/pkg/backend/structuredcfg"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
 )
@@ -367,7 +369,7 @@ func (e *Emitter) asyncSignature(fn *hir.InstrAsync) int {
 
 func (e *Emitter) prepareTypes() {
 	for _, fn := range e.p.Functions {
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			for _, in := range bb.Instructions {
 				switch x := in.(type) {
 				case *hir.InstrAsync:
@@ -646,12 +648,11 @@ func (e *Emitter) function(fn *hir.Function) {
 	if hirFunctionExtern(fn) {
 		return
 	}
-	if fn.StructuredReady && len(fn.StructuredBody) > 0 {
-		if blocks, err := hir.LowerStructuredBody(fn); err == nil {
-			structured := *fn
-			structured.Blocks = blocks
-			fn = &structured
-		}
+	structured := canEmitStructuredSubset(fn.StructuredBody)
+	var blocks []*structuredcfg.BasicBlock
+	if !structured {
+		fmt.Fprintf(os.Stderr, "[wabt] structured HIR fallback to CFG: function=%s\n", fn.Name)
+		blocks = e.blocksForEmission(fn)
 	}
 	e.b.WriteString("  (func ")
 	e.b.WriteString(e.functionSymbol(fn.Name))
@@ -666,13 +667,19 @@ func (e *Emitter) function(fn *hir.Function) {
 		}
 	}
 	regs := map[string]bool{}
-	for _, bb := range fn.Blocks {
-		for _, in := range bb.Instructions {
-			if r := in.Result(); r != nil {
-				n := reg(r)
-				if !regs[n] {
-					fmt.Fprintf(&e.b, " (local $%s %s)", n, watType(r.Typ))
-					regs[n] = true
+	if structured {
+		for _, in := range structuredInstructions(fn.StructuredBody) {
+			if r := in.Result(); r != nil && !regs[reg(r)] {
+				fmt.Fprintf(&e.b, " (local $%s %s)", reg(r), watType(r.Typ))
+				regs[reg(r)] = true
+			}
+		}
+	} else {
+		for _, bb := range blocks {
+			for _, in := range bb.Instructions {
+				if r := in.Result(); r != nil && !regs[reg(r)] {
+					fmt.Fprintf(&e.b, " (local $%s %s)", reg(r), watType(r.Typ))
+					regs[reg(r)] = true
 				}
 			}
 		}
@@ -690,7 +697,12 @@ func (e *Emitter) function(fn *hir.Function) {
 		e.b.WriteString("    (call $__hike_thread_pump)\n")
 	}
 	e.b.WriteString("    (local.set $frame_sp (global.get $__sp))\n")
-	e.emitCFG(fn)
+	if structured {
+		e.emitStructuredSubset(fn.StructuredBody, "    ")
+		e.defaultReturn(fn)
+	} else {
+		e.emitCFG(fn, blocks)
+	}
 	e.b.WriteString("  )\n")
 	// Export user functions as well as main/C ABI functions.  This gives the
 	// Wasmtime test harness a stable entry point for string-returning test
@@ -702,25 +714,37 @@ func (e *Emitter) function(fn *hir.Function) {
 	}
 }
 
+func (e *Emitter) blocksForEmission(fn *hir.Function) []*structuredcfg.BasicBlock {
+	if fn == nil {
+		return nil
+	}
+	blocks, err := structuredcfg.LowerStructuredBody(fn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[wabt] CFG fallback failed: function=%s error=%v\n", fn.Name, err)
+		return nil
+	}
+	return blocks
+}
+
 // emitCFG uses a small program-counter dispatcher. Each HIR basic block is a
 // WAT case selected by br_table; this handles arbitrary forward/back edges
 // without requiring a fragile source-level if/loop reconstruction.
-func (e *Emitter) emitCFG(fn *hir.Function) {
-	if len(fn.Blocks) == 0 {
+func (e *Emitter) emitCFG(fn *hir.Function, blocks []*structuredcfg.BasicBlock) {
+	if len(blocks) == 0 {
 		e.b.WriteString("    (unreachable)\n")
 		return
 	}
 	e.b.WriteString("    (block $cfg_exit\n      (loop $cfg_dispatch\n")
-	for i := len(fn.Blocks) - 1; i >= 0; i-- {
+	for i := len(blocks) - 1; i >= 0; i-- {
 		fmt.Fprintf(&e.b, "        (block $cfg_%d\n", i)
 	}
-	labels := make([]string, len(fn.Blocks)+1)
-	for i := range fn.Blocks {
+	labels := make([]string, len(blocks)+1)
+	for i := range blocks {
 		labels[i] = fmt.Sprintf("$cfg_%d", i)
 	}
-	labels[len(fn.Blocks)] = "$cfg_exit"
+	labels[len(blocks)] = "$cfg_exit"
 	fmt.Fprintf(&e.b, "          (br_table %s (local.get $pc))\n", strings.Join(labels, " "))
-	for _, bb := range fn.Blocks {
+	for _, bb := range blocks {
 		e.b.WriteString("        )\n")
 		fmt.Fprintf(&e.b, "        ;; %s\n", bb.Label)
 		for _, in := range bb.Instructions {
@@ -738,7 +762,7 @@ func (e *Emitter) emitCFG(fn *hir.Function) {
 			if _, ok := bb.Terminator.(*hir.InstrReturn); ok {
 				e.debugMarker()
 			}
-			e.cfgTerminator(bb.Terminator, fn, fn.Blocks)
+			e.cfgTerminator(bb.Terminator, fn, blocks)
 		} else {
 			e.defaultReturn(fn)
 		}
@@ -760,12 +784,17 @@ func (e *Emitter) defaultReturn(fn *hir.Function) {
 	e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
 	if fn.Name == "main" {
 		e.b.WriteString("          (return (i32.const 0))\n")
+	} else if len(fn.ReturnTypes) > 1 {
+		// Multi-value HIR returns are represented by a packed pointer in WAT.
+		e.b.WriteString("          (return (i32.const 0))\n")
+	} else if len(fn.ReturnTypes) == 1 {
+		e.b.WriteString(fmt.Sprintf("          (return (%s.const 0))\n", watType(fn.ReturnTypes[0])))
 	} else {
 		e.b.WriteString("          (return)\n")
 	}
 }
 
-func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*hir.BasicBlock) {
+func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*structuredcfg.BasicBlock) {
 	switch x := t.(type) {
 	case *hir.InstrJump:
 		e.branchTo(x.Target, blocks)
@@ -869,7 +898,7 @@ func unsignedInteger(t sema.Type) bool {
 	return false
 }
 
-func blockIndex(label string, blocks []*hir.BasicBlock) int {
+func blockIndex(label string, blocks []*structuredcfg.BasicBlock) int {
 	for i, b := range blocks {
 		if b.Label == label {
 			return i
@@ -877,7 +906,7 @@ func blockIndex(label string, blocks []*hir.BasicBlock) int {
 	}
 	return len(blocks)
 }
-func (e *Emitter) branchTo(label string, blocks []*hir.BasicBlock) {
+func (e *Emitter) branchTo(label string, blocks []*structuredcfg.BasicBlock) {
 	fmt.Fprintf(&e.b, "          (local.set $pc (i32.const %d))\n          (br $cfg_dispatch)\n", blockIndex(label, blocks))
 }
 

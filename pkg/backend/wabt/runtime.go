@@ -380,7 +380,7 @@ func (e *Emitter) emitRuntime() {
 		if len(fn.ReturnTypes) > 1 {
 			visit("malloc")
 		}
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			for _, in := range bb.Instructions {
 				if x, ok := in.(*hir.InstrCallStatic); ok {
 					visit(x.CalleeName)

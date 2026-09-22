@@ -36,7 +36,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		return
 	}
 
-	entryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	entryBB := &basicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(entryBB)
 
 	if isMain {
@@ -58,11 +58,8 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	if c.root.curBlock.Terminator == nil {
 		c.emitFallthroughReturn(isMain, returnTypes)
 	}
-	if !c.root.structuredUnsupported {
-		hirFn.StructuredBody = c.root.structuredRoot
-		hir.FlattenTransparentBlocks(hirFn)
-		hirFn.StructuredReady = true
-	}
+	hirFn.StructuredBody = c.root.structuredRoot
+	hir.FlattenTransparentBlocks(hirFn)
 }
 
 func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
@@ -76,6 +73,7 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 	}
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.resetStructuredState()
+	c.root.legacyBlocks = nil
 	c.root.regCount = 0
 	c.root.escapedVars = make(map[string]bool)
 	if fn.Body != nil {
@@ -143,7 +141,6 @@ func (c *CallLowerer) createFunction(fn *ast.FuncDecl, irName string, returnType
 		Location:    hir.SourceLocation{Filename: fn.Filename, Line: fn.Token.Line, Column: fn.Token.Col},
 		Params:      []*hir.Reg{},
 		ReturnTypes: returnTypes,
-		Blocks:      []*hir.BasicBlock{},
 		IsVariadic:  fn.Body == nil && fn.IsVariadic,
 		IsExtern:    fn.Body == nil,
 	}
@@ -156,7 +153,6 @@ func (c *CallLowerer) lowerExternSignature(fn *ast.FuncDecl, hirFn *hir.Function
 	if fn.Name.Value == "os_now_ns" || fn.Name.Value == "os_sleep_ms" {
 		return
 	}
-	hirFn.Blocks = nil
 	for i, param := range fn.Params {
 		paramType := c.root.semaCtx.ResolveType(param.Type)
 		if param.IsVariadic {
@@ -323,7 +319,6 @@ func (c *CallLowerer) LowerExternFunc(efn *ast.ExternFuncDecl) {
 		Name:        cName,
 		Params:      params,
 		ReturnTypes: returnTypes,
-		Blocks:      nil,
 		IsVariadic:  efn.IsVariadic,
 		IsExtern:    true,
 		IsCFunc:     true,
@@ -360,8 +355,10 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 	c.resetCFuncState(cfn)
 
 	implFn := c.newCFuncImplementation(cfn, implName, returnTypes)
+	c.root.resetStructuredState()
+	c.root.initFunctionControl(implFn)
 
-	entryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	entryBB := &basicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(entryBB)
 
 	trampolineParamTypes := c.lowerCFuncParameters(cfn, implFn)
@@ -373,11 +370,16 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 	if c.root.curBlock.Terminator == nil {
 		c.emitCFuncFallthroughReturn(returnTypes)
 	}
+	implFn.StructuredBody = c.root.structuredRoot
+	hir.FlattenTransparentBlocks(implFn)
+	c.root.legacyBlocks = nil
 
 	// ② 外部公開用トランポリン関数 (<TargetCName>) を生成
 	trampolineFn := c.newCFuncTrampoline(cfn, targetCName, returnTypes)
+	c.root.resetStructuredState()
+	c.root.initFunctionControl(trampolineFn)
 
-	tEntryBB := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	tEntryBB := &basicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(tEntryBB)
 
 	callArgs := c.lowerCFuncTrampolineParameters(trampolineParamTypes, trampolineFn)
@@ -396,6 +398,9 @@ func (c *CallLowerer) LowerCFunc(cfn *ast.CFuncDecl) {
 	})
 
 	c.emitCFuncTrampolineReturn(callDst, returnTypes)
+	trampolineFn.StructuredBody = c.root.structuredRoot
+	hir.FlattenTransparentBlocks(trampolineFn)
+	c.root.legacyBlocks = nil
 }
 
 func (c *CallLowerer) emitCFuncTrampolineReturn(callDst *hir.Reg, returnTypes []sema.Type) {
@@ -478,7 +483,6 @@ func (c *CallLowerer) newCFuncTrampoline(cfn *ast.CFuncDecl, name string, return
 		},
 		Params:        []*hir.Reg{},
 		ReturnTypes:   returnTypes,
-		Blocks:        []*hir.BasicBlock{},
 		IsVariadic:    cfn.IsVariadic,
 		IsExtern:      false,
 		IsCFunc:       true,
@@ -500,7 +504,6 @@ func (c *CallLowerer) newCFuncImplementation(cfn *ast.CFuncDecl, name string, re
 		},
 		Params:        []*hir.Reg{},
 		ReturnTypes:   returnTypes,
-		Blocks:        []*hir.BasicBlock{},
 		IsVariadic:    cfn.IsVariadic,
 		IsExtern:      false,
 		IsCFunc:       false,
@@ -516,6 +519,8 @@ func (c *CallLowerer) resetCFuncState(cfn *ast.CFuncDecl) {
 	c.root.symbolTypes = make(map[string]sema.Type)
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.regCount = 0
+	c.root.legacyBlocks = nil
+	c.root.resetStructuredState()
 	c.root.escapedVars = sema.CollectAllCapturesInBlock(cfn.Body)
 }
 
@@ -542,7 +547,6 @@ func (c *CallLowerer) lowerExternalCFunc(cfn *ast.CFuncDecl, targetCName string,
 		Name:          targetCName,
 		Params:        params,
 		ReturnTypes:   returnTypes,
-		Blocks:        nil,
 		IsVariadic:    cfn.IsVariadic,
 		IsExtern:      true,
 		IsCFunc:       true,
@@ -577,7 +581,6 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		Name:        anonName,
 		Params:      []*hir.Reg{},
 		ReturnTypes: ft.ReturnTypes,
-		Blocks:      []*hir.BasicBlock{},
 		IsVariadic:  fl.IsVariadic,
 		IsExtern:    false,
 	}
@@ -592,13 +595,13 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 
 	prevFunc := c.root.curFunc
 	prevBlock := c.root.curBlock
+	prevLegacyBlocks := c.root.legacyBlocks
 	prevSymbols := c.root.symbols
 	prevTypes := c.root.symbolTypes
 	prevLoopStack := c.root.loopStack
 	prevDeferStack := c.root.deferStack
 	prevStructuredRoot := c.root.structuredRoot
 	prevStructuredStack := c.root.structuredStack
-	prevStructuredUnsupported := c.root.structuredUnsupported
 	prevStructuredFrames := c.root.structuredFrames
 	prevEscapedVars := c.root.escapedVars
 	prevRegCount := c.root.regCount
@@ -606,6 +609,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.curFunc = anonFn
 	c.root.symbols = make(map[string]hir.Value)
 	c.root.symbolTypes = make(map[string]sema.Type)
+	c.root.legacyBlocks = nil
 	c.root.loopStack = []loopContext{}
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.resetStructuredState()
@@ -623,7 +627,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		anonFn.Params = append(anonFn.Params, envParamReg)
 	}
 
-	anonEntry := &hir.BasicBlock{Label: "entry", Instructions: []hir.Instruction{}}
+	anonEntry := &basicBlock{Label: "entry", Instructions: []hir.Instruction{}}
 	c.root.setBlock(anonEntry)
 
 	if len(captures) > 0 {
@@ -683,23 +687,20 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 			c.root.terminate(&hir.InstrReturn{Vals: defaults})
 		}
 	}
-	if !c.root.structuredUnsupported {
-		anonFn.StructuredBody = c.root.structuredRoot
-		hir.FlattenTransparentBlocks(anonFn)
-		anonFn.StructuredReady = true
-	}
+	anonFn.StructuredBody = c.root.structuredRoot
+	hir.FlattenTransparentBlocks(anonFn)
 
 	c.root.hirProg.Functions = append(c.root.hirProg.Functions, anonFn)
 
 	c.root.curFunc = prevFunc
 	c.root.curBlock = prevBlock
+	c.root.legacyBlocks = prevLegacyBlocks
 	c.root.symbols = prevSymbols
 	c.root.symbolTypes = prevTypes
 	c.root.loopStack = prevLoopStack
 	c.root.deferStack = prevDeferStack
 	c.root.structuredRoot = prevStructuredRoot
 	c.root.structuredStack = prevStructuredStack
-	c.root.structuredUnsupported = prevStructuredUnsupported
 	c.root.structuredFrames = prevStructuredFrames
 	c.root.escapedVars = prevEscapedVars
 	c.root.regCount = prevRegCount

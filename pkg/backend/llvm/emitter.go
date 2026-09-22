@@ -276,7 +276,7 @@ func (e *Emitter) emitItabs() {
 func (e *Emitter) emitFunctions() {
 	referencedExterns := make(map[string]bool)
 	for _, fn := range e.prog.Functions {
-		for _, bb := range fn.Blocks {
+		for _, bb := range e.blocksForEmission(fn) {
 			for _, inst := range bb.Instructions {
 				if call, ok := inst.(*hir.InstrCallStatic); ok {
 					if llvmIntrinsicName(call.CalleeName) == "" {
@@ -334,6 +334,21 @@ func (e *Emitter) emitFunctions() {
 		e.declaredSymbols[fn.Name] = true
 		e.emitFunction(fn)
 	}
+}
+
+// blocksForEmission is the single CFG view used by LLVM-side prepasses. For
+// structured functions it performs the same HIR control lowering as
+// emitFunction, so extern discovery uses the same temporary CFG.
+func (e *Emitter) blocksForEmission(fn *hir.Function) []*basicBlock {
+	if fn == nil {
+		return nil
+	}
+	blocks, err := lowerStructuredBody(fn)
+	if err != nil {
+		logger.LogVerbose2("[Verbose2] structured HIR prepass fallback for @%s: %v\n", fn.Name, err)
+		return nil
+	}
+	return blocks
 }
 
 // External functions use the C representation for strings. Hike functions
@@ -409,7 +424,7 @@ func llvmIntrinsicFeature(name string) string {
 
 func (e *Emitter) intrinsicFeatures(fn *hir.Function) string {
 	features := make(map[string]bool)
-	for _, bb := range fn.Blocks {
+	for _, bb := range e.blocksForEmission(fn) {
 		for _, inst := range bb.Instructions {
 			if call, ok := inst.(*hir.InstrCallStatic); ok {
 				if feature := llvmIntrinsicFeature(call.CalleeName); feature != "" {
@@ -432,16 +447,8 @@ func (e *Emitter) intrinsicFeatures(fn *hir.Function) string {
 }
 
 func (e *Emitter) emitFunction(fn *hir.Function) {
-	if fn.StructuredReady && len(fn.StructuredBody) > 0 {
-		if blocks, err := hir.LowerStructuredBody(fn); err == nil {
-			structured := *fn
-			structured.Blocks = blocks
-			fn = &structured
-		} else {
-			logger.LogVerbose2("[Verbose2] structured HIR fallback for @%s: %v\n", fn.Name, err)
-		}
-	}
-	logger.LogVerbose2("[Verbose2] --- Emit Function: @%s (blocks=%d) ---\n", fn.Name, len(fn.Blocks))
+	blocks := e.blocksForEmission(fn)
+	logger.LogVerbose2("[Verbose2] --- Emit Function: @%s (blocks=%d) ---\n", fn.Name, len(blocks))
 	isMain := (fn.Name == "main")
 	retTypeStr := "void"
 	if isMain {
@@ -480,7 +487,7 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 	}
 	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr, debugTag))
 
-	for _, bb := range fn.Blocks {
+	for _, bb := range blocks {
 		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
 		e.b.WriteString(fmt.Sprintf("%s:\n", bb.Label))
 		for _, inst := range bb.Instructions {
@@ -489,15 +496,42 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 		if bb.Terminator != nil {
 			e.emitTerminator(bb.Terminator, isMain)
 		} else {
-			if isMain {
-				e.b.WriteString("  ret i32 0\n")
-			} else {
-				e.b.WriteString("  ret void\n")
-			}
+			e.emitDefaultReturn(fn, isMain)
 		}
 	}
 
 	e.b.WriteString("}\n\n")
+}
+
+func (e *Emitter) emitDefaultReturn(fn *hir.Function, isMain bool) {
+	if isMain {
+		e.b.WriteString("  ret i32 0\n")
+		return
+	}
+	if len(fn.ReturnTypes) == 0 {
+		e.b.WriteString("  ret void\n")
+		return
+	}
+	if len(fn.ReturnTypes) > 1 {
+		types := make([]string, len(fn.ReturnTypes))
+		for i, typ := range fn.ReturnTypes {
+			types[i] = typ.LLVMType()
+		}
+		e.b.WriteString(fmt.Sprintf("  ret { %s } zeroinitializer\n", strings.Join(types, ", ")))
+		return
+	}
+	typ := fn.ReturnTypes[0].LLVMType()
+	zero := "0"
+	if strings.HasPrefix(typ, "i") {
+		zero = "0"
+	} else if strings.HasPrefix(typ, "f") {
+		zero = "0.0"
+	} else if strings.HasSuffix(typ, "*") {
+		zero = "null"
+	} else {
+		zero = "zeroinitializer"
+	}
+	e.b.WriteString(fmt.Sprintf("  ret %s %s\n", typ, zero))
 }
 
 func (e *Emitter) isVariadicFunc(name string) (bool, string) {
