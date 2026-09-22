@@ -527,6 +527,7 @@ func (e *Emitter) Emit() string {
 	e.b.WriteString("  (global $__panic_cause (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__panic_site (mut i32) (i32.const -1))\n")
 	e.b.WriteString("  (global $__panic_active (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__hike_lock_state (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (export \"__hike_heap\" (global $__heap))\n")
 	e.b.WriteString("  (global $__region_active (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_begin_count (mut i32) (i32.const 0))\n")
@@ -1371,6 +1372,10 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.set(x.Dst, "("+memoryOp(x.Dst.Typ, true)+" "+e.val(x.Ptr)+")")
 	case *hir.InstrStore:
 		e.emitStore(x)
+	case *hir.InstrLock:
+		e.b.WriteString("    (call $__hike_lock)\n")
+	case *hir.InstrUnlock:
+		e.b.WriteString("    (call $__hike_unlock)\n")
 	case *hir.InstrCast:
 		e.set(x.Dst, castExpr(x.Val.Type(), x.ToType, e.val(x.Val)))
 	case *hir.InstrUnboxInterface:

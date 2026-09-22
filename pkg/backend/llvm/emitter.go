@@ -968,6 +968,10 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 				i.Val.Type().LLVMType(), e.formatVal(i.Val),
 				expectedPtrType, ptrVal))
 		}
+	case *hir.InstrLock:
+		e.b.WriteString("  call void @__hike_lock()\n")
+	case *hir.InstrUnlock:
+		e.b.WriteString("  call void @__hike_unlock()\n")
 
 	case *hir.InstrBinary:
 		e.emitBinary(i)

@@ -99,6 +99,7 @@ const (
 	CASE        = "CASE"
 	DEFAULT     = "DEFAULT"
 	DEFER       = "DEFER"
+	LOCK        = "LOCK"
 	AREA        = "AREA"
 	THREADABLE  = "THREADABLE"
 	CONCURRENT  = "CONCURRENT"
@@ -121,7 +122,7 @@ var GoHikeConstantNames = []string{
 	"PACKAGE", "IMPORT", "FUNC", "CFUNC", "EXTERN", "JFUNC", "INLINEASM",
 	"PASSTHROUGH", "MAP", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
 	"INTERFACE", "CONST", "IOTA", "RANGE", "BREAK", "CONTINUE", "IF", "ELSE",
-	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "AREA", "THREADABLE", "CONCURRENT", "NIL", "VAR", "IMPLICIT_CAST",
+	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "LOCK", "AREA", "THREADABLE", "CONCURRENT", "NIL", "VAR", "IMPLICIT_CAST",
 }
 
 var keywords = map[string]TokenType{
@@ -150,6 +151,7 @@ var keywords = map[string]TokenType{
 	"default":     DEFAULT,
 	"return":      RETURN,
 	"defer":       DEFER,
+	"lock":        LOCK,
 	"area":        AREA,
 	"threadable":  THREADABLE,
 	"concurrent":  CONCURRENT,
@@ -182,6 +184,9 @@ func LookupIdent(ident string) TokenType {
 	}
 	if keywordBytesEqual(ident, "concurrent") {
 		return CONCURRENT
+	}
+	if keywordBytesEqual(ident, "lock") {
+		return LOCK
 	}
 	return IDENT
 }

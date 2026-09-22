@@ -16,6 +16,23 @@ declare void @free(i8*)
 @__hike_panic_cause_state = internal global { i32, i8* } zeroinitializer
 @__hike_panic_site_state = internal global i32 -1
 @__hike_panic_active = internal global i1 false
+@__hike_lock_state = internal global i32 0
+
+define internal void @__hike_lock() {
+entry:
+  br label %retry
+retry:
+  %attempt = cmpxchg i32* @__hike_lock_state, i32 0, i32 1 acquire acquire
+  %acquired = extractvalue { i32, i1 } %attempt, 1
+  br i1 %acquired, label %done, label %retry
+done:
+  ret void
+}
+define internal void @__hike_unlock() {
+entry:
+  store atomic i32 0, i32* @__hike_lock_state release, align 4
+  ret void
+}
 
 declare void @llvm.trap()
 

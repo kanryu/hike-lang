@@ -26,6 +26,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_string_retain": true, "__hike_string_release": true,
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_fatal": true,
 	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
+	"__hike_lock": true, "__hike_unlock": true,
 	"llvm.trap":           true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
 	"__hike_area_begin": true, "__hike_area_alloc": true, "__hike_area_end": true,
@@ -75,6 +76,13 @@ func normalizeWabtRuntimeName(name string) string {
 }
 
 var wasmRuntime = map[string]runtimeFunc{
+	"__hike_lock": runtimeFunc{body: `(func $__hike_lock
+    (block $done
+      (loop $retry
+        (br_if $done (i32.eqz (i32.atomic.rmw.cmpxchg (i32.const 65528) (i32.const 0) (i32.const 1) (i32.const 0))))
+		        (br $retry))))`},
+	"__hike_unlock": runtimeFunc{body: `(func $__hike_unlock
+    (i32.atomic.store (i32.const 65528) (i32.const 0)))`},
 	"__hike_panic_set": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_panic_set (param $value i32) (param $cause i32) (param $site i32)
     (local $record i32)
     (local.set $record (call $malloc (i32.const 8)))
@@ -455,6 +463,10 @@ func (e *Emitter) emitRuntime() {
 					visit(x.CalleeName)
 				}
 				switch in.(type) {
+				case *hir.InstrLock:
+					visit("__hike_lock")
+				case *hir.InstrUnlock:
+					visit("__hike_unlock")
 				case *hir.InstrHeapAlloc:
 					visit("malloc")
 				case *hir.InstrChanMake:
@@ -482,11 +494,30 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)
 			if ok {
+				if name == "__hike_lock" {
+					if e.concurrent {
+						fn.body = `(func $__hike_lock
+    (block $done
+      (loop $retry
+        (br_if $done (i32.eqz (i32.atomic.rmw.cmpxchg (i32.const 65528) (i32.const 0) (i32.const 1) (i32.const 0))))
+		        (br $retry))))`
+					} else {
+						fn.body = `(func $__hike_lock
+    (block $done
+      (loop $retry
+        (br_if $done (if (result i32) (i32.eqz (global.get $__hike_lock_state)) (then (global.set $__hike_lock_state (i32.const 1)) (i32.const 1)) (else (i32.const 0))))
+		        (br $retry))))`
+					}
+				}
+				if name == "__hike_unlock" && !e.concurrent {
+					fn.body = `(func $__hike_unlock
+    (global.set $__hike_lock_state (i32.const 0)))`
+				}
 				e.b.WriteString("  " + fn.body + "\n")
 				e.runtimeFunctions++
 			}

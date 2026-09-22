@@ -2,6 +2,31 @@ package wabt_test
 
 import "testing"
 
+func TestWabtThreadVariablesLockProtectsConcurrentUpdate(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+var concurrent(32) {
+    balance int
+    version int
+}
+
+func main() int {
+    lock {
+        balance = 100
+        version = version + 1
+    }
+    lock {
+        balance = balance + 25
+        version = version + 1
+    }
+    return balance + version
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=127\n"; got != want {
+		t.Fatalf("Wabt lock result = %q, want %q", got, want)
+	}
+}
+
 func TestWabtThreadVariablesBasicStorage(t *testing.T) {
 	wasm := buildWabt(t, `package main
 

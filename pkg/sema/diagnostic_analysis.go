@@ -5,6 +5,7 @@ import (
 	"hikec-go/pkg/diag"
 	"hikec-go/pkg/token"
 	"path"
+	"reflect"
 	"strings"
 )
 
@@ -386,12 +387,65 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		return
 	case *ast.DeferStmt:
 		return
+	case *ast.LockStmt:
+		if astContainsNode(reflect.ValueOf(s.Body), reflect.TypeOf((*ast.LockStmt)(nil))) {
+			reporter.Errorf(filename, s.Token.Line, s.Token.Col, "nested lock blocks are not allowed")
+		}
+		if astContainsNode(reflect.ValueOf(s.Body), reflect.TypeOf((*ast.CallExpr)(nil))) {
+			reporter.Errorf(filename, s.Token.Line, s.Token.Col, "function calls are not allowed inside a lock block")
+		}
+		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, packageNames, reporter, filename)
 	case *ast.AreaStmt:
 		if s.Size != nil {
 			c.InferExprTypeWithDiag(s.Size, locals, reporter, filename)
 		}
 		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, packageNames, reporter, filename)
 	}
+}
+
+func astContainsNode(value reflect.Value, target reflect.Type) bool {
+	return astContainsNodeSeen(value, target, make(map[uintptr]bool))
+}
+
+func astContainsNodeSeen(value reflect.Value, target reflect.Type, seen map[uintptr]bool) bool {
+	if !value.IsValid() {
+		return false
+	}
+	if value.Type() == target {
+		return true
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return false
+		}
+		return astContainsNodeSeen(value.Elem(), target, seen)
+	case reflect.Pointer:
+		if value.IsNil() {
+			return false
+		}
+		ptr := value.Pointer()
+		if ptr != 0 && seen[ptr] {
+			return false
+		}
+		if ptr != 0 {
+			seen[ptr] = true
+		}
+		return astContainsNodeSeen(value.Elem(), target, seen)
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if astContainsNodeSeen(value.Field(i), target, seen) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if astContainsNodeSeen(value.Index(i), target, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkTupleAssignment verifies the exact value sequence produced by a

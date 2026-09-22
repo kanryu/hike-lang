@@ -137,3 +137,27 @@ Use `threadable` when each worker needs private scratch state, counters, or
 temporary buffers. Use `concurrent` when all workers must observe the same
 state. The two models describe different ownership rules and should not be
 treated as interchangeable storage classes.
+
+## Coordinated updates with locks
+
+Atomic access is guaranteed per variable. It does not make a sequence of
+accesses to several variables atomic as a group. Use a `lock` block when a
+consistent multi-variable update is required:
+
+```hike
+lock {
+    balance = balance - 100
+    version = version + 1
+}
+```
+
+The following restrictions apply to lock blocks:
+
+- A lock block must not contain another lock block.
+- Function calls are not permitted inside a lock block.
+- The block may only protect accesses to concurrent module variables.
+
+These restrictions prevent recursive locking, hidden lock acquisition, and
+deadlocks caused by calls that acquire locks indirectly. Lock blocks should be
+short and contain only the operations required to preserve the intended
+invariant.

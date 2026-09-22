@@ -84,6 +84,14 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 			}
 			s.root.deferStack = append(s.root.deferStack, node.Call)
 		}
+	case *ast.LockStmt:
+		s.root.emit(&hir.InstrLock{})
+		if node.Body != nil {
+			for _, inner := range node.Body.Statements {
+				s.LowerStmt(inner)
+			}
+		}
+		s.root.emit(&hir.InstrUnlock{})
 	case *ast.AreaStmt:
 		s.LowerAreaStmt(node)
 	case *ast.BreakStmt:

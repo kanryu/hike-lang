@@ -2,6 +2,38 @@ package e2e_test
 
 import "testing"
 
+func TestThreadVariablesLockProtectsConcurrentUpdate(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+var concurrent(32) {
+    balance int
+    version int
+}
+
+func main() int {
+    lock {
+        balance = 100
+        version = version + 1
+    }
+    lock {
+        balance = balance + 25
+        version = version + 1
+    }
+    printf("BALANCE=%d,VERSION=%d\n", balance, version)
+    return 0
+}
+`,
+		ExpectedOut:  "BALANCE=125,VERSION=2",
+		ExpectedExit: 0,
+	})
+}
+
 func TestThreadVariablesThreadLocalIsolation(t *testing.T) {
 	t.Parallel()
 

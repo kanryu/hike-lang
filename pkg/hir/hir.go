@@ -304,6 +304,16 @@ func (i *InstrStore) String() string {
 	return fmt.Sprintf("  store %s %s, %s", i.Val.Type().TypeName(), i.Val, i.Ptr)
 }
 
+type InstrLock struct{}
+
+func (i *InstrLock) Result() *Reg   { return nil }
+func (i *InstrLock) String() string { return "  lock" }
+
+type InstrUnlock struct{}
+
+func (i *InstrUnlock) Result() *Reg   { return nil }
+func (i *InstrUnlock) String() string { return "  unlock" }
+
 type InstrBinary struct {
 	Dst          *Reg
 	Op           Opcode
