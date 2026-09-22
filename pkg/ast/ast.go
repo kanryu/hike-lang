@@ -109,6 +109,26 @@ func (vd *VarDecl) declNode()            {}
 func (vd *VarDecl) statementNode()       {}
 func (vd *VarDecl) TokenLiteral() string { return vd.Token.Literal }
 
+// MemoryBlockDecl declares module-scoped storage with a backend-specific
+// lifetime and synchronization model. The variables inside the block are
+// declarations, not a nested function scope.
+type MemoryBlockKind int
+
+const (
+	ThreadableMemoryBlock MemoryBlockKind = iota
+	ConcurrentMemoryBlock
+)
+
+type MemoryBlockDecl struct {
+	Token token.Token
+	Kind  MemoryBlockKind
+	Size  Expression
+	Vars  []*VarDecl
+}
+
+func (md *MemoryBlockDecl) declNode()            {}
+func (md *MemoryBlockDecl) TokenLiteral() string { return md.Token.Literal }
+
 type Program struct {
 	Package string
 	Imports []*ImportDecl

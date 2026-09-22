@@ -1294,6 +1294,8 @@ func resolveDeclarationTypes(prog *ast.Program, ctx *Context) {
 		switch d := decl.(type) {
 		case *ast.VarDecl:
 			registerGlobalType(d, ctx)
+		case *ast.MemoryBlockDecl:
+			registerMemoryBlockTypes(d, ctx)
 		case *ast.FuncDecl:
 			resolveFuncDeclType(d, ctx)
 		case *ast.ExternFuncDecl:
@@ -1353,6 +1355,24 @@ func registerGlobalType(decl *ast.VarDecl, ctx *Context) {
 		typ = TypeInt
 	}
 	ctx.Globals[decl.Name.Value] = typ
+}
+
+func registerMemoryBlockTypes(decl *ast.MemoryBlockDecl, ctx *Context) {
+	// A zero size means "backend default". Backends may choose a target
+	// appropriate default without making the source language depend on a
+	// particular memory layout.
+	var size int64
+	if decl.Size != nil {
+		if value, ok := ctx.evalConstInt(decl.Size); ok && value > 0 {
+			size = value * 1024
+		}
+	}
+	for _, variable := range decl.Vars {
+		registerGlobalType(variable, ctx)
+		name := variable.Name.Value
+		ctx.GlobalMemoryBlocks[name] = decl.Kind
+		ctx.GlobalMemorySizes[name] = size
+	}
 }
 
 func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {

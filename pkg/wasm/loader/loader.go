@@ -109,6 +109,10 @@ func mangleDecl(pkg string, decl ast.Decl) {
 		d.Name.Value = pkg + "_" + d.Name.Value
 	case *ast.VarDecl:
 		d.Name.Value = pkg + "_" + d.Name.Value
+	case *ast.MemoryBlockDecl:
+		for _, variable := range d.Vars {
+			variable.Name.Value = pkg + "_" + variable.Name.Value
+		}
 	case *ast.ConstDecl:
 		d.Name.Value = pkg + "_" + d.Name.Value
 	}

@@ -221,18 +221,39 @@ func (l *Lowerer) BuiltinName(baseName string) string {
 func (l *Lowerer) Lower() *hir.Program {
 	// 1. グローバル変数の登録
 	for name, typ := range l.semaCtx.Globals {
-		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{Name: name, Typ: typ})
+		memoryClass := hir.GlobalMemoryNormal
+		if blockKind, ok := l.semaCtx.GlobalMemoryBlocks[name]; ok {
+			switch blockKind {
+			case ast.ThreadableMemoryBlock:
+				memoryClass = hir.GlobalMemoryThreadable
+			case ast.ConcurrentMemoryBlock:
+				memoryClass = hir.GlobalMemoryConcurrent
+			}
+		}
+		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{
+			Name: name, Typ: typ, MemoryClass: memoryClass,
+			MemorySize: l.semaCtx.GlobalMemorySizes[name],
+		})
 	}
 
 	// グローバル変数の初期化式（var x = expr）を代入文として収集
 	var globalInits []ast.Statement
 	for _, decl := range l.prog.Decls {
-		if vd, ok := decl.(*ast.VarDecl); ok && vd.Value != nil {
-			globalInits = append(globalInits, &ast.AssignStmt{
-				Token: vd.Token,
-				Left:  []ast.Expression{vd.Name},
-				Right: []ast.Expression{vd.Value},
-			})
+		vars := []*ast.VarDecl{}
+		switch d := decl.(type) {
+		case *ast.VarDecl:
+			vars = append(vars, d)
+		case *ast.MemoryBlockDecl:
+			vars = append(vars, d.Vars...)
+		}
+		for _, vd := range vars {
+			if vd.Value != nil {
+				globalInits = append(globalInits, &ast.AssignStmt{
+					Token: vd.Token,
+					Left:  []ast.Expression{vd.Name},
+					Right: []ast.Expression{vd.Value},
+				})
+			}
 		}
 	}
 

@@ -2,6 +2,8 @@ package parser
 
 import (
 	"fmt"
+	"unicode"
+	"unicode/utf8"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/lexer"
@@ -235,7 +237,13 @@ func (p *Parser) ParseProgram() *ast.Program {
 			}
 
 		case token.VAR:
-			if p.peekTokenIs(token.LPAREN) {
+			if p.peekTokenIs(token.THREADABLE) || p.peekTokenIs(token.CONCURRENT) {
+				md := p.parseMemoryBlockDecl()
+				if md != nil {
+					prog.Decls = append(prog.Decls, md)
+				}
+				p.nextToken()
+			} else if p.peekTokenIs(token.LPAREN) {
 				// Go-style grouped variable declarations: var ( A = ...; B = ... ).
 				p.nextToken() // '('
 				for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
@@ -641,6 +649,55 @@ func (p *Parser) parseVarDecl() *ast.VarDecl {
 	decl := &ast.VarDecl{Token: p.curToken}
 	p.nextToken()
 	return p.parseVarSpecWithToken(decl.Token)
+}
+
+func (p *Parser) parseMemoryBlockDecl() *ast.MemoryBlockDecl {
+	varTok := p.curToken
+	p.nextToken()
+	block := &ast.MemoryBlockDecl{Token: varTok}
+	switch p.curToken.Type {
+	case token.THREADABLE:
+		block.Kind = ast.ThreadableMemoryBlock
+	case token.CONCURRENT:
+		block.Kind = ast.ConcurrentMemoryBlock
+	default:
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected threadable or concurrent memory block", p.curToken.Line, p.curToken.Col))
+		return nil
+	}
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		block.Size = p.parseExpression(LOWEST)
+	}
+	if !p.expectPeek(token.RPAREN) || !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+
+	// The block body is deliberately parsed as a list of variable
+	// specifications. It does not introduce a function or local scope.
+	p.nextToken()
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.SEMICOLON) {
+			p.nextToken()
+			continue
+		}
+		if !p.curTokenIs(token.IDENT) {
+			p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected a variable name in memory block", p.curToken.Line, p.curToken.Col))
+			p.nextToken()
+			continue
+		}
+		vd := p.parseVarSpec()
+		if vd != nil {
+			if first, _ := utf8.DecodeRuneInString(vd.Name.Value); unicode.IsUpper(first) {
+				p.errors = append(p.errors, fmt.Sprintf("[%d:%d] memory block variable %q must start with a lowercase letter", vd.Token.Line, vd.Token.Col, vd.Name.Value))
+			}
+			block.Vars = append(block.Vars, vd)
+		}
+		p.nextToken()
+	}
+	return block
 }
 
 // parseVarSpec parses one variable specification with the current token on

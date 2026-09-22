@@ -80,7 +80,7 @@ const (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--mode=normal|concurrent] [--source=path] [--wat-output=path] [--string|--string-info] [--dump-memory=path]")
+	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--mode=normal|concurrent] [--workers=N] [--source=path] [--wat-output=path] [--string|--string-info] [--dump-memory=path]")
 }
 
 func main() {
@@ -94,6 +94,7 @@ func main() {
 	dumpPath := ""
 	sourcePath := ""
 	watOutputPath := ""
+	workerCount := 1
 	for _, arg := range os.Args[3:] {
 		switch {
 		case arg == "--string":
@@ -107,6 +108,13 @@ func main() {
 			dumpPath = strings.TrimPrefix(arg, "--dump-memory=")
 		case strings.HasPrefix(arg, "--source="):
 			sourcePath = strings.TrimPrefix(arg, "--source=")
+		case strings.HasPrefix(arg, "--workers="):
+			parsed, parseErr := strconv.Atoi(strings.TrimPrefix(arg, "--workers="))
+			if parseErr != nil || parsed < 1 {
+				fmt.Fprintf(os.Stderr, "wasm-checker: invalid worker count %q\n", arg)
+				os.Exit(2)
+			}
+			workerCount = parsed
 		case strings.HasPrefix(arg, "--wat-output="):
 			watOutputPath = strings.TrimPrefix(arg, "--wat-output=")
 		default:
@@ -116,6 +124,10 @@ func main() {
 	}
 	if mode != "normal" && mode != "concurrent" {
 		fmt.Fprintf(os.Stderr, "wasm-checker: invalid mode %q\n", mode)
+		os.Exit(2)
+	}
+	if mode != "concurrent" && workerCount != 1 {
+		fmt.Fprintln(os.Stderr, "wasm-checker: --workers requires --mode=concurrent")
 		os.Exit(2)
 	}
 	var sourceText string
@@ -177,8 +189,11 @@ func main() {
 	}
 	var pending []pendingTask
 	var pendingMu sync.Mutex
-	var workerStore *wasmtime.Store
-	var workerInstance *wasmtime.Instance
+	type workerRuntime struct {
+		store    *wasmtime.Store
+		instance *wasmtime.Instance
+	}
+	var workers []workerRuntime
 	var instance *wasmtime.Instance
 	var generatedWAT string
 	const sourceObjectBase = 8 * 1024 * 1024
@@ -259,27 +274,30 @@ func main() {
 		tasks := append([]pendingTask(nil), pending...)
 		pending = nil
 		pendingMu.Unlock()
-		if mode == "concurrent" && instance != nil && workerInstance != nil {
+		if mode == "concurrent" && instance != nil && len(workers) > 0 {
 			for _, name := range []string{"eventloop_queue", "eventloop_running"} {
 				mainGlobal := instance.GetExport(store, "__hike_global_"+name)
-				workerGlobal := workerInstance.GetExport(workerStore, "__hike_global_"+name)
-				if mainGlobal != nil && workerGlobal != nil && mainGlobal.Global() != nil && workerGlobal.Global() != nil {
-					if err := workerGlobal.Global().Set(workerStore, mainGlobal.Global().Get(store)); err != nil {
-						fmt.Fprintf(os.Stderr, "wasm-checker: synchronize worker global %s: %v\n", name, err)
+				for _, worker := range workers {
+					workerGlobal := worker.instance.GetExport(worker.store, "__hike_global_"+name)
+					if mainGlobal != nil && workerGlobal != nil && mainGlobal.Global() != nil && workerGlobal.Global() != nil {
+						if err := workerGlobal.Global().Set(worker.store, mainGlobal.Global().Get(store)); err != nil {
+							fmt.Fprintf(os.Stderr, "wasm-checker: synchronize worker global %s: %v\n", name, err)
+						}
 					}
 				}
 			}
 		}
-		for _, task := range tasks {
-			if running := workerInstance.GetExport(workerStore, "__hike_global_eventloop_running"); running != nil && running.Global() != nil {
-				_ = running.Global().Set(workerStore, wasmtime.ValI32(1))
+		for index, task := range tasks {
+			worker := workers[index%len(workers)]
+			if running := worker.instance.GetExport(worker.store, "__hike_global_eventloop_running"); running != nil && running.Global() != nil {
+				_ = running.Global().Set(worker.store, wasmtime.ValI32(1))
 			}
-			dispatch := workerInstance.GetFunc(workerStore, "__hike_worker_dispatch")
+			dispatch := worker.instance.GetFunc(worker.store, "__hike_worker_dispatch")
 			if dispatch == nil {
 				fmt.Fprintln(os.Stderr, "wasm-checker: worker dispatcher is missing")
 				continue
 			}
-			if _, callErr := dispatch.Call(workerStore, task.fn, task.env, task.task, task.sig); callErr != nil {
+			if _, callErr := dispatch.Call(worker.store, task.fn, task.env, task.task, task.sig); callErr != nil {
 				fmt.Fprintf(os.Stderr, "wasm-checker: worker failed: %v\n", callErr)
 			}
 		}
@@ -288,53 +306,58 @@ func main() {
 		os.Exit(1)
 	}
 	if mode == "concurrent" {
-		workerStore = wasmtime.NewStore(engine)
-		defer workerStore.Close()
-		workerLinker := wasmtime.NewLinker(engine)
-		defer workerLinker.Close()
-		workerLinkerPtr := reflect.ValueOf(workerLinker).Elem().FieldByName("_ptr").Pointer()
-		if C.hike_define_shared_memory(unsafe.Pointer(enginePtr), unsafe.Pointer(workerLinkerPtr), unsafe.Pointer(reflect.ValueOf(workerStore.Context()).Pointer())) == 0 {
-			fmt.Fprintln(os.Stderr, "wasm-checker: failed to connect worker shared memory")
-			os.Exit(1)
-		}
-		if err := workerLinker.DefineFunc(workerStore, "env", "hike_thread_spawn", func(_ *wasmtime.Caller, fn, env, task, sig int32) {
-			pendingMu.Lock()
-			pending = append(pending, pendingTask{fn: fn, env: env, task: task, sig: sig})
-			pendingMu.Unlock()
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "wasm-checker: define worker spawn: %v\n", err)
-			os.Exit(1)
-		}
-		if err := workerLinker.DefineFunc(workerStore, "env", "hike_thread_pump", func(_ *wasmtime.Caller) {}); err != nil {
-			fmt.Fprintf(os.Stderr, "wasm-checker: define worker pump: %v\n", err)
-			os.Exit(1)
-		}
-		var workerErr error
-		workerInstance, workerErr = workerLinker.Instantiate(workerStore, module)
-		if workerErr != nil {
-			fmt.Fprintf(os.Stderr, "wasm-checker: instantiate worker: %v\n", workerErr)
-			os.Exit(1)
-		}
-		if workerMain := workerInstance.GetFunc(workerStore, "main"); workerMain != nil {
-			if _, err := workerMain.Call(workerStore, int32(0), int32(0)); err != nil {
-				fmt.Fprintf(os.Stderr, "wasm-checker: initialize worker globals: %v\n", err)
+		for workerID := 0; workerID < workerCount; workerID++ {
+			workerStore := wasmtime.NewStore(engine)
+			workerLinker := wasmtime.NewLinker(engine)
+			workerLinkerPtr := reflect.ValueOf(workerLinker).Elem().FieldByName("_ptr").Pointer()
+			if C.hike_define_shared_memory(unsafe.Pointer(enginePtr), unsafe.Pointer(workerLinkerPtr), unsafe.Pointer(reflect.ValueOf(workerStore.Context()).Pointer())) == 0 {
+				fmt.Fprintln(os.Stderr, "wasm-checker: failed to connect worker shared memory")
 				os.Exit(1)
 			}
-		}
-		workerID := 0
-		workerBase := concurrentArenaBase + workerID*concurrentArenaSize
-		if workerStack := workerInstance.GetExport(workerStore, "__hike_sp"); workerStack != nil && workerStack.Global() != nil {
-			if err := workerStack.Global().Set(workerStore, wasmtime.ValI32(int32(workerBase))); err != nil {
-				fmt.Fprintf(os.Stderr, "wasm-checker: relocate worker stack: %v\n", err)
+			if err := workerLinker.DefineFunc(workerStore, "env", "hike_thread_spawn", func(_ *wasmtime.Caller, fn, env, task, sig int32) {
+				pendingMu.Lock()
+				pending = append(pending, pendingTask{fn: fn, env: env, task: task, sig: sig})
+				pendingMu.Unlock()
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: define worker spawn: %v\n", err)
 				os.Exit(1)
 			}
-		}
-		if workerHeap := workerInstance.GetExport(workerStore, "__hike_heap"); workerHeap != nil && workerHeap.Global() != nil {
-			if err := workerHeap.Global().Set(workerStore, wasmtime.ValI32(int32(workerBase+concurrentHeapOffset))); err != nil {
-				fmt.Fprintf(os.Stderr, "wasm-checker: relocate worker heap: %v\n", err)
+			if err := workerLinker.DefineFunc(workerStore, "env", "hike_thread_pump", func(_ *wasmtime.Caller) {}); err != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: define worker pump: %v\n", err)
 				os.Exit(1)
 			}
+			workerInstance, workerErr := workerLinker.Instantiate(workerStore, module)
+			if workerErr != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker: instantiate worker: %v\n", workerErr)
+				os.Exit(1)
+			}
+			if workerMain := workerInstance.GetFunc(workerStore, "main"); workerMain != nil {
+				if _, err := workerMain.Call(workerStore, int32(0), int32(0)); err != nil {
+					fmt.Fprintf(os.Stderr, "wasm-checker: initialize worker globals: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			workerBase := concurrentArenaBase + workerID*concurrentArenaSize
+			if workerStack := workerInstance.GetExport(workerStore, "__hike_sp"); workerStack != nil && workerStack.Global() != nil {
+				if err := workerStack.Global().Set(workerStore, wasmtime.ValI32(int32(workerBase))); err != nil {
+					fmt.Fprintf(os.Stderr, "wasm-checker: relocate worker stack: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			if workerHeap := workerInstance.GetExport(workerStore, "__hike_heap"); workerHeap != nil && workerHeap.Global() != nil {
+				if err := workerHeap.Global().Set(workerStore, wasmtime.ValI32(int32(workerBase+concurrentHeapOffset))); err != nil {
+					fmt.Fprintf(os.Stderr, "wasm-checker: relocate worker heap: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			workers = append(workers, workerRuntime{store: workerStore, instance: workerInstance})
+			workerLinker.Close()
 		}
+		defer func() {
+			for _, worker := range workers {
+				worker.store.Close()
+			}
+		}()
 	}
 	instance, err = linker.Instantiate(store, module)
 	if err != nil {
@@ -375,14 +398,16 @@ func main() {
 			}
 		}
 	}
-	if mode == "concurrent" && workerInstance != nil && stringResult {
+	if mode == "concurrent" && len(workers) > 0 && stringResult {
 		for _, name := range []string{"eventloop_queue", "eventloop_running", "testOutputBuffer", "mainDeviceID"} {
 			mainGlobal := instance.GetExport(store, "__hike_global_"+name)
-			workerGlobal := workerInstance.GetExport(workerStore, "__hike_global_"+name)
-			if mainGlobal != nil && workerGlobal != nil && mainGlobal.Global() != nil && workerGlobal.Global() != nil {
-				if err := workerGlobal.Global().Set(workerStore, mainGlobal.Global().Get(store)); err != nil {
-					fmt.Fprintf(os.Stderr, "wasm-checker: synchronize worker global %s: %v\n", name, err)
-					os.Exit(1)
+			for _, worker := range workers {
+				workerGlobal := worker.instance.GetExport(worker.store, "__hike_global_"+name)
+				if mainGlobal != nil && workerGlobal != nil && mainGlobal.Global() != nil && workerGlobal.Global() != nil {
+					if err := workerGlobal.Global().Set(worker.store, mainGlobal.Global().Get(store)); err != nil {
+						fmt.Fprintf(os.Stderr, "wasm-checker: synchronize worker global %s: %v\n", name, err)
+						os.Exit(1)
+					}
 				}
 			}
 		}

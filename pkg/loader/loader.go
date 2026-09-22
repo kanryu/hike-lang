@@ -332,6 +332,14 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			}
 			mangled = append(mangled, d)
 
+		case *ast.MemoryBlockDecl:
+			if pkgName != "main" {
+				for _, variable := range d.Vars {
+					variable.Name.Value = pkgName + "_" + variable.Name.Value
+				}
+			}
+			mangled = append(mangled, d)
+
 		case *ast.ConstDecl:
 			if pkgName != "main" {
 				d.Name.Value = pkgName + "_" + d.Name.Value

@@ -130,10 +130,39 @@ func TestHikeWabtConcurrentStringCases(t *testing.T) {
 	}
 }
 
+func TestHikeWabtConcurrentMultipleWorkers(t *testing.T) {
+	if os.Getenv("HIKE_WABT_INCLUDE_STUBS") != "1" {
+		t.Skip("multi-worker checker cases are opt-in; set HIKE_WABT_INCLUDE_STUBS=1")
+	}
+	if !checkerSupportsConcurrentMode() || !checkerSupportsWorkers() {
+		t.Skip("wasm-checker does not support concurrent multi-worker mode")
+	}
+	source := `package main
+
+func testOutput() string {
+    first := Async(func() string { return "A" })
+    second := Async(func() string { return "B" })
+    third := Async(func() string { return "C" })
+    fourth := Async(func() string { return "D" })
+    return <-first + <-second + <-third + <-fourth
+}
+`
+	got := buildAndRunHikeWabtStringWithCheckerModeAndWorkers(t, source, "testOutput", false, "concurrent", 2)
+	if got != "ABCD" {
+		t.Fatalf("multi-worker Wasmtime result = %q, want %q", got, "ABCD")
+	}
+}
+
 func checkerSupportsConcurrentMode() bool {
 	cmd := exec.Command(wasmtimeBin)
 	out, _ := cmd.CombinedOutput()
 	return strings.Contains(string(out), "--mode=normal|concurrent")
+}
+
+func checkerSupportsWorkers() bool {
+	cmd := exec.Command(wasmtimeBin)
+	out, _ := cmd.CombinedOutput()
+	return strings.Contains(string(out), "--workers=N")
 }
 
 func isConcurrentStringCase(path string) bool {

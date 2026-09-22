@@ -81,9 +81,19 @@ func (c *ConstNil) Type() sema.Type { return c.Typ }
 func (c *ConstNil) String() string  { return "nil" }
 
 type GlobalVar struct {
-	Name string
-	Typ  sema.Type
+	Name        string
+	Typ         sema.Type
+	MemoryClass GlobalMemoryClass
+	MemorySize  int64
 }
+
+type GlobalMemoryClass int
+
+const (
+	GlobalMemoryNormal GlobalMemoryClass = iota
+	GlobalMemoryThreadable
+	GlobalMemoryConcurrent
+)
 
 func (g *GlobalVar) Type() sema.Type { return g.Typ }
 func (g *GlobalVar) String() string  { return fmt.Sprintf("@%s", g.Name) }

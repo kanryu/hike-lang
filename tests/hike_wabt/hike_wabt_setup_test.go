@@ -175,6 +175,10 @@ func buildAndRunHikeWabtStringMode(t *testing.T, source, function string, struct
 }
 
 func buildAndRunHikeWabtStringWithCheckerMode(t *testing.T, source, function string, structured bool, checkerMode string) string {
+	return buildAndRunHikeWabtStringWithCheckerModeAndWorkers(t, source, function, structured, checkerMode, 1)
+}
+
+func buildAndRunHikeWabtStringWithCheckerModeAndWorkers(t *testing.T, source, function string, structured bool, checkerMode string, workers int) string {
 	t.Helper()
 	requireHikeWabtTools(t)
 	tmp := t.TempDir()
@@ -210,6 +214,9 @@ func buildAndRunHikeWabtStringWithCheckerMode(t *testing.T, source, function str
 	// bootstrap sequence.
 	if checkerMode != "normal" {
 		args = append(args, "--mode="+checkerMode)
+	}
+	if workers > 1 {
+		args = append(args, fmt.Sprintf("--workers=%d", workers))
 	}
 	args = append(args, mode)
 	run := exec.Command(wasmtimeBin, args...)

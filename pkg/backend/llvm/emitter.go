@@ -182,11 +182,35 @@ func (e *Emitter) emitConstants() {
 func (e *Emitter) emitGlobals() {
 	align := sema.PointerSize
 	for _, g := range e.prog.Globals {
-		e.b.WriteString(fmt.Sprintf("@%s = global %s zeroinitializer, align %d\n", g.Name, g.Typ.LLVMType(), align))
+		storage := "global"
+		if g.MemoryClass == hir.GlobalMemoryThreadable {
+			storage = "thread_local global"
+		}
+		e.b.WriteString(fmt.Sprintf("@%s = %s %s zeroinitializer, align %d\n", g.Name, storage, g.Typ.LLVMType(), align))
+		if g.MemoryClass == hir.GlobalMemoryConcurrent && llvmAtomicGlobalType(g.Typ) {
+			e.b.WriteString(fmt.Sprintf("; concurrent global: %s (atomic accesses)\n", g.Name))
+		}
 	}
 	if len(e.prog.Globals) > 0 {
 		e.b.WriteString("\n")
 	}
+}
+
+func llvmAtomicGlobalType(t sema.Type) bool {
+	switch t.(type) {
+	case *sema.BasicType, *sema.PointerType:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Emitter) concurrentGlobal(v hir.Value) (*hir.GlobalVar, bool) {
+	g, ok := v.(*hir.GlobalVar)
+	if !ok || g.MemoryClass != hir.GlobalMemoryConcurrent || !llvmAtomicGlobalType(g.Typ) {
+		return nil, false
+	}
+	return g, true
 }
 
 func (e *Emitter) emitItabs() {
@@ -919,7 +943,11 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castPtr, i.Ptr.Type().LLVMType(), ptrVal, expectedPtrType))
 			ptrVal = castPtr
 		}
-		e.b.WriteString(fmt.Sprintf("  %s = load %s, %s %s\n", i.Dst, i.Dst.Typ.LLVMType(), expectedPtrType, ptrVal))
+		if _, atomic := e.concurrentGlobal(i.Ptr); atomic {
+			e.b.WriteString(fmt.Sprintf("  %s = load atomic %s, %s %s unordered, align %d\n", i.Dst, i.Dst.Typ.LLVMType(), expectedPtrType, ptrVal, sema.PointerSize))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  %s = load %s, %s %s\n", i.Dst, i.Dst.Typ.LLVMType(), expectedPtrType, ptrVal))
+		}
 
 	case *hir.InstrStore:
 		if i.Ptr == nil || i.Val == nil {
@@ -933,9 +961,13 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 			e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to %s\n", castPtr, i.Ptr.Type().LLVMType(), ptrVal, expectedPtrType))
 			ptrVal = castPtr
 		}
-		e.b.WriteString(fmt.Sprintf("  store %s %s, %s %s\n",
-			i.Val.Type().LLVMType(), e.formatVal(i.Val),
-			expectedPtrType, ptrVal))
+		if _, atomic := e.concurrentGlobal(i.Ptr); atomic {
+			e.b.WriteString(fmt.Sprintf("  store atomic %s %s, %s %s unordered, align %d\n", i.Val.Type().LLVMType(), e.formatVal(i.Val), expectedPtrType, ptrVal, sema.PointerSize))
+		} else {
+			e.b.WriteString(fmt.Sprintf("  store %s %s, %s %s\n",
+				i.Val.Type().LLVMType(), e.formatVal(i.Val),
+				expectedPtrType, ptrVal))
+		}
 
 	case *hir.InstrBinary:
 		e.emitBinary(i)
