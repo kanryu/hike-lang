@@ -590,6 +590,50 @@ func (i *InstrUnreachable) Result() *Reg         { return nil }
 func (i *InstrUnreachable) Successors() []string { return nil }
 func (i *InstrUnreachable) String() string       { return "  unreachable" }
 
+// InstrPanic is the semantic panic terminator. Backends must preserve Value
+// and SiteID when they implement panic records; legacy emitters may lower it
+// to an unreachable trap until their runtime support is available.
+type InstrPanic struct {
+	Value  Value
+	Cause  Value
+	SiteID int
+}
+
+func (i *InstrPanic) Result() *Reg         { return nil }
+func (i *InstrPanic) Successors() []string { return nil }
+func (i *InstrPanic) String() string {
+	if i.Cause != nil {
+		return fmt.Sprintf("  panic %s cause %s (site %d)", i.Value, i.Cause, i.SiteID)
+	}
+	return fmt.Sprintf("  panic %s (site %d)", i.Value, i.SiteID)
+}
+
+// PanicSite is immutable source metadata attached to a dynamic panic value.
+// The value itself remains an HIR operand and is handled by the eventual
+// runtime panic record; this table only describes where the panic originated.
+type PanicSite struct {
+	ID       int
+	Function string
+	Location SourceLocation
+}
+
+// PanicRecord describes the runtime ABI shared by native and Wasm backends.
+// Value is represented indirectly by the backend-specific heap pointer; TypeID
+// lets recover restore the dynamic value without depending on a Go type.
+type PanicRecord struct {
+	Value  Value
+	TypeID int64
+	SiteID int
+}
+
+// DeferEntry describes one defer registration in source order.  The backend
+// uses the ordinal to build its cleanup/unwind chain; it must not depend on
+// an AST pointer or on a backend-specific label.
+type DeferEntry struct {
+	ID       int
+	Location SourceLocation
+}
+
 type ItabMethodEntry struct {
 	MethodName   string
 	TargetFnName string
@@ -606,10 +650,17 @@ type ItabDef struct {
 }
 
 type Function struct {
-	Name        string
-	Location    SourceLocation
-	Params      []*Reg
-	ReturnTypes []sema.Type
+	Name       string
+	Location   SourceLocation
+	PanicSites []PanicSite
+	Defers     []DeferEntry
+	// HasLocalRecover is true only when this function directly defers a
+	// function literal containing recover.  A recover implemented by another
+	// function is deliberately unsupported: an uncaught panic is fatal at the
+	// point where it is raised.
+	HasLocalRecover bool
+	Params          []*Reg
+	ReturnTypes     []sema.Type
 	// ControlNodes is the zero-based function-local table for structured
 	// control elements. A branch target ID indexes this slice directly.
 	ControlNodes []ControlElement

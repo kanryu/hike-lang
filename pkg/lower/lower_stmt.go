@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -72,6 +73,15 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 		s.LowerReturnStmt(node)
 	case *ast.DeferStmt:
 		if node.Call != nil {
+			if s.root.curFunc != nil {
+				s.root.curFunc.Defers = append(s.root.curFunc.Defers, hir.DeferEntry{
+					ID:       len(s.root.curFunc.Defers),
+					Location: s.root.sourceLoc,
+				})
+				if fn, ok := node.Call.Function.(*ast.FuncLit); ok && funcLitContainsRecover(fn) {
+					s.root.curFunc.HasLocalRecover = true
+				}
+			}
 			s.root.deferStack = append(s.root.deferStack, node.Call)
 		}
 	case *ast.BreakStmt:
@@ -101,6 +111,69 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 			s.root.terminate(&hir.InstrJump{Target: ctx.continueBlock.Label})
 		}
 	}
+}
+
+// funcLitContainsRecover recognizes only a recover written in the deferred
+// function literal itself.  A call to another helper that eventually calls
+// recover cannot safely identify the panic frame at lowering time and is
+// intentionally treated as unsupported by the backends.
+func funcLitContainsRecover(fn *ast.FuncLit) bool {
+	if fn == nil {
+		return false
+	}
+	return astValueContainsRecover(reflect.ValueOf(fn.Body), make(map[uintptr]bool))
+}
+
+// astValueContainsRecover walks the small AST subtree of a deferred function
+// literal.  BodyTokens are not guaranteed to be retained after parsing, so
+// inspecting the AST is required for recover calls nested in if/switch/etc.
+func astValueContainsRecover(v reflect.Value, seen map[uintptr]bool) bool {
+	if !v.IsValid() {
+		return false
+	}
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return false
+		}
+		return astValueContainsRecover(v.Elem(), seen)
+	}
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return false
+		}
+		ptr := v.Pointer()
+		if seen[ptr] {
+			return false
+		}
+		seen[ptr] = true
+		if v.CanInterface() {
+			switch n := v.Interface().(type) {
+			case *ast.Identifier:
+				return n.Value == "recover" || n.Value == "recover_cause" || n.Value == "recover_site"
+			case *ast.CallExpr:
+				if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "recover" || id.Value == "recover_cause" || id.Value == "recover_site") {
+					return true
+				}
+			}
+		}
+		return astValueContainsRecover(v.Elem(), seen)
+	}
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if astValueContainsRecover(v.Index(i), seen) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanInterface() && astValueContainsRecover(field, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func statementToken(stmt ast.Statement) token.Token {

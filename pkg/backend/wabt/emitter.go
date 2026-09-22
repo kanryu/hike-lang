@@ -523,6 +523,10 @@ func (e *Emitter) Emit() string {
 	e.b.WriteString("  (export \"__hike_sp\" (global $__sp))\n")
 	// Leave room for the main stack and the concurrent worker arena.
 	e.b.WriteString("  (global $__heap (mut i32) (i32.const 196608))\n")
+	e.b.WriteString("  (global $__panic_value (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__panic_cause (mut i32) (i32.const 0))\n")
+	e.b.WriteString("  (global $__panic_site (mut i32) (i32.const -1))\n")
+	e.b.WriteString("  (global $__panic_active (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (export \"__hike_heap\" (global $__heap))\n")
 	e.b.WriteString("  (global $__region_active (mut i32) (i32.const 0))\n")
 	e.b.WriteString("  (global $__region_begin_count (mut i32) (i32.const 0))\n")
@@ -881,6 +885,19 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*st
 			fmt.Fprintf(&e.b, "          (return %s)\n", strings.Join(values, " "))
 		}
 	case *hir.InstrUnreachable:
+		e.b.WriteString("          (unreachable)\n")
+	case *hir.InstrPanic:
+		if fn.HasLocalRecover {
+			e.b.WriteString("          (if (call $__hike_panic_is_active)\n")
+			e.b.WriteString("            (then (call $__hike_panic_fatal (i32.const ")
+			e.b.WriteString(strconv.Itoa(x.SiteID))
+			e.b.WriteString(")) (unreachable))\n")
+			e.b.WriteString("            (else ")
+			e.defaultReturn(fn)
+			e.b.WriteString("))\n")
+			return
+		}
+		e.b.WriteString(fmt.Sprintf("          (call $__hike_panic_fatal (i32.const %d))\n", x.SiteID))
 		e.b.WriteString("          (unreachable)\n")
 	}
 }

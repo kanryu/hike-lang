@@ -273,6 +273,21 @@ type UnreachableNode struct{}
 
 func (n *UnreachableNode) String() string { return "  unreachable" }
 
+// PanicNode is the structured representation of a dynamic panic terminator.
+// SiteID indexes the owning function's immutable PanicSites table.
+type PanicNode struct {
+	Value  Value
+	Cause  Value
+	SiteID int
+}
+
+func (n *PanicNode) String() string {
+	if n.Cause != nil {
+		return fmt.Sprintf("  panic %s cause %s (site %d)", n.Value, n.Cause, n.SiteID)
+	}
+	return fmt.Sprintf("  panic %s (site %d)", n.Value, n.SiteID)
+}
+
 // ValidateControlBody checks the structural invariants needed by a Wasm-like
 // structured backend.  A branch depth may target any enclosing block or loop;
 // a body with no enclosing construct cannot contain a branch.  This validator

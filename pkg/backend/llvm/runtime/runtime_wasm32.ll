@@ -12,6 +12,47 @@ declare void @free(i8*)
 @__hike_region_end_count_stat = internal global i64 0
 @__hike_region_allocated_bytes_stat = internal global i64 0
 @__hike_region_released_bytes_stat = internal global i64 0
+@__hike_panic_value = internal global { i32, i8* } zeroinitializer
+@__hike_panic_cause_state = internal global { i32, i8* } zeroinitializer
+@__hike_panic_site_state = internal global i32 -1
+@__hike_panic_active = internal global i1 false
+
+declare void @llvm.trap()
+
+define internal void @__hike_panic_set({ i32, i8* } %value, { i32, i8* } %cause, i32 %site) {
+entry:
+  store { i32, i8* } %value, { i32, i8* }* @__hike_panic_value
+  store { i32, i8* } %cause, { i32, i8* }* @__hike_panic_cause_state
+  store i32 %site, i32* @__hike_panic_site_state
+  store i1 true, i1* @__hike_panic_active
+  ret void
+}
+define internal { i32, i8* } @__hike_panic_get() {
+entry:
+  %value = load { i32, i8* }, { i32, i8* }* @__hike_panic_value
+  store i1 false, i1* @__hike_panic_active
+  ret { i32, i8* } %value
+}
+define internal { i32, i8* } @__hike_panic_cause() {
+entry:
+  %cause = load { i32, i8* }, { i32, i8* }* @__hike_panic_cause_state
+  ret { i32, i8* } %cause
+}
+define internal i32 @__hike_panic_site() {
+entry:
+  %site = load i32, i32* @__hike_panic_site_state
+  ret i32 %site
+}
+define internal i1 @__hike_panic_is_active() {
+entry:
+  %active = load i1, i1* @__hike_panic_active
+  ret i1 %active
+}
+define internal void @__hike_panic_fatal(i32 %site) {
+entry:
+  call void @llvm.trap()
+  unreachable
+}
 define internal i32 @__hike_region_active_count() {
 entry:
   %v = load i64, i64* @__hike_region_active_stat

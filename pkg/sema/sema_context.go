@@ -1390,7 +1390,11 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 	}
 	if id, ok := e.Function.(*ast.Identifier); ok {
 		switch astIdentifierValue(id) {
-		case "len", "cap", "sizeof", "recover": // sizeof/recover 組み込みサポート
+		case "len", "cap", "sizeof":
+			return TypeInt
+		case "recover", "recover_cause":
+			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+		case "recover_site":
 			return TypeInt
 		case "panic":
 			return TypeVoid

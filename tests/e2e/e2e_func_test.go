@@ -89,6 +89,36 @@ func main() int {
 	})
 }
 
+// A panic may be recovered by a deferred function literal in the same Hike
+// function.  This is the supported recovery boundary for native execution.
+func TestHTTPFunc_PanicRecoverInSameFunction(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+var recovered int
+
+func localRecover() {
+    defer func() {
+        if recover() != nil {
+            recovered = 1
+        }
+    }()
+    panic("boom")
+}
+
+func main() int {
+    localRecover()
+    return recovered
+}
+`,
+		ExpectedOut:  "",
+		ExpectedExit: 1,
+	})
+}
+
 // String slices appended through a variadic expansion must retain the same
 // fat-pointer representation as their source values.
 func TestHTTPFunc_AppendStringSliceRepresentation(t *testing.T) {

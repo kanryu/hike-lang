@@ -26,6 +26,17 @@ type Emitter struct {
 	declaredSymbols map[string]bool
 	userSymbols     map[string]string
 	debugMgr        *debug.DebugManager
+	currentFn       *hir.Function
+	currentFnID     int
+	panicTermID     int
+	currentIsMain   bool
+}
+
+// panicLabel returns an emitter-owned label for a function's defer chain.
+// HIR deliberately stores only defer order; LLVM spelling stays local to this
+// backend and cannot collide with source labels.
+func (e *Emitter) panicLabel(functionID, deferID int, suffix string) string {
+	return fmt.Sprintf("panic.%s.%d.%d", suffix, functionID, deferID)
 }
 
 func (e *Emitter) SetVerboseLevel(level int) {
@@ -125,10 +136,18 @@ func (e *Emitter) emitPrologue() {
 	if e.debugMgr.Enabled() {
 		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 	}
-
 	// ターゲットトリプルに応じた適切なランタイムIRを出力
 	e.b.WriteString(GetRuntimeIR(e.targetTriple))
 	e.b.WriteString("\n\n")
+}
+
+func (e *Emitter) programHasPanic() bool {
+	for _, fn := range e.prog.Functions {
+		if len(fn.PanicSites) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Emitter) emitTypeDefs() {
@@ -294,7 +313,7 @@ func (e *Emitter) emitFunctions() {
 		}
 	}
 
-	for _, fn := range e.prog.Functions {
+	for fnID, fn := range e.prog.Functions {
 		if fn.IsExtern {
 			if llvmIntrinsicName(fn.Name) != "" {
 				continue
@@ -332,7 +351,7 @@ func (e *Emitter) emitFunctions() {
 		}
 
 		e.declaredSymbols[fn.Name] = true
-		e.emitFunction(fn)
+		e.emitFunction(fn, fnID)
 	}
 }
 
@@ -446,7 +465,7 @@ func (e *Emitter) intrinsicFeatures(fn *hir.Function) string {
 	return strings.Join(selected, ",")
 }
 
-func (e *Emitter) emitFunction(fn *hir.Function) {
+func (e *Emitter) emitFunction(fn *hir.Function, functionID int) {
 	blocks := e.blocksForEmission(fn)
 	logger.LogVerbose2("[Verbose2] --- Emit Function: @%s (blocks=%d) ---\n", fn.Name, len(blocks))
 	isMain := (fn.Name == "main")
@@ -486,7 +505,10 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 		debugTag = fmt.Sprintf(" !dbg !%d", spID)
 	}
 	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr, debugTag))
-
+	e.currentFn = fn
+	e.currentFnID = functionID
+	e.currentIsMain = isMain
+	e.panicTermID = 0
 	for _, bb := range blocks {
 		logger.LogVerbose2("[Verbose2]   Block: %s (insts=%d)\n", bb.Label, len(bb.Instructions))
 		e.b.WriteString(fmt.Sprintf("%s:\n", bb.Label))
@@ -499,8 +521,8 @@ func (e *Emitter) emitFunction(fn *hir.Function) {
 			e.emitDefaultReturn(fn, isMain)
 		}
 	}
-
 	e.b.WriteString("}\n\n")
+	e.currentFn = nil
 }
 
 func (e *Emitter) emitDefaultReturn(fn *hir.Function, isMain bool) {
@@ -1552,6 +1574,24 @@ func (e *Emitter) emitTerminatorBody(term hir.Terminator, isMain bool) {
 			indexType, e.formatVal(t.Index), t.DefaultTarget, cases.String()))
 
 	case *hir.InstrUnreachable:
+		e.b.WriteString("  unreachable\n")
+
+	case *hir.InstrPanic:
+		if e.currentFn != nil && e.currentFn.HasLocalRecover {
+			active := e.nextTmp()
+			fatalLabel := e.panicLabel(e.currentFnID, e.panicTermID, "fatal")
+			recoveredLabel := e.panicLabel(e.currentFnID, e.panicTermID, "recovered")
+			e.panicTermID++
+			e.b.WriteString(fmt.Sprintf("  %s = call i1 @__hike_panic_is_active()\n", active))
+			e.b.WriteString(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s\n", active, fatalLabel, recoveredLabel))
+			e.b.WriteString(fmt.Sprintf("%s:\n", fatalLabel))
+			e.b.WriteString(fmt.Sprintf("  call void @__hike_panic_fatal(i32 %d)\n", t.SiteID))
+			e.b.WriteString("  unreachable\n")
+			e.b.WriteString(fmt.Sprintf("%s:\n", recoveredLabel))
+			e.emitDefaultReturn(e.currentFn, e.currentIsMain)
+			return
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @__hike_panic_fatal(i32 %d)\n", t.SiteID))
 		e.b.WriteString("  unreachable\n")
 
 	case *hir.InstrReturn:

@@ -36,6 +36,30 @@ func main() int {
 	}
 }
 
+func TestWabtPanicRecoverInSameFunction(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+var recovered int
+
+func localRecover() {
+    defer func() {
+        if recover() != nil {
+            recovered = 1
+        }
+    }()
+    panic("boom")
+}
+
+func main() int {
+    localRecover()
+    return recovered
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=1\n"; got != want {
+		t.Fatalf("Wabt same-function panic recovery result = %q, want %q", got, want)
+	}
+}
+
 func TestWabtHTTPFuncEscapedParamsAndReceiver(t *testing.T) {
 	wasm := buildWabt(t, `package main
 

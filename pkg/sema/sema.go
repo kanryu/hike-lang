@@ -1923,7 +1923,7 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			name := node.Value
 			if !params[name] && !locals[name] && !seen[name] {
 				switch name {
-				case "true", "false", "nil", "len", "cap", "append", "delete", "make", "sizeof", "panic", "recover",
+				case "true", "false", "nil", "len", "cap", "append", "delete", "make", "sizeof", "panic", "recover", "recover_cause", "recover_site",
 					"int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte", "string", "cstring", "bool", "float32", "float64", "void", "any", "error":
 					return
 				}

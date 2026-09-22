@@ -96,6 +96,19 @@ func heapAllocType(a *hir.InstrHeapAlloc) sema.Type {
 // SetRegionMode enables arena allocation for compiler-generated heap values.
 func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 
+func (l *Lowerer) registerPanicSite() int {
+	if l.curFunc == nil {
+		return -1
+	}
+	id := len(l.curFunc.PanicSites)
+	l.curFunc.PanicSites = append(l.curFunc.PanicSites, hir.PanicSite{
+		ID:       id,
+		Function: l.curFunc.Name,
+		Location: l.sourceLoc,
+	})
+	return id
+}
+
 // SetRecordLocations controls optional source-location bookkeeping.
 func (l *Lowerer) SetRecordLocations(enabled bool) { l.recordLocations = enabled }
 
@@ -407,6 +420,8 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 			*current = append(*current, &hir.ReturnNode{Values: t.Vals})
 		case *hir.InstrUnreachable:
 			*current = append(*current, &hir.UnreachableNode{})
+		case *hir.InstrPanic:
+			*current = append(*current, &hir.PanicNode{Value: t.Value, Cause: t.Cause, SiteID: t.SiteID})
 		}
 	}
 }

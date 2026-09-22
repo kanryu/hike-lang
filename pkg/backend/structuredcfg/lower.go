@@ -159,6 +159,10 @@ func (l *lowerer) body(body hir.ControlBody, visible map[int]string) error {
 			l.ensure()
 			l.current.Terminator = &hir.InstrUnreachable{}
 			l.current = l.newBlock("after.unreachable")
+		case *hir.PanicNode:
+			l.ensure()
+			l.current.Terminator = &hir.InstrPanic{Value: n.Value, Cause: n.Cause, SiteID: n.SiteID}
+			l.current = l.newBlock("after.panic")
 		default:
 			return fmt.Errorf("unsupported structured node %T", node)
 		}

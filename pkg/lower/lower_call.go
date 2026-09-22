@@ -1273,10 +1273,38 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
 		case "panic":
-			if len(call.Args) > 0 {
-				c.root.Expr.LowerExpr(call.Args[0])
+			if len(call.Args) != 1 && len(call.Args) != 2 {
+				panic(fmt.Sprintf("[Lower Error] panic expects one value or a message and cause, got %d arguments", len(call.Args)))
 			}
-			c.root.terminate(&hir.InstrUnreachable{})
+			// Preserve the dynamic operand evaluation now. The panic record and
+			// defer unwinding are added by the next lowering phase; the source
+			// site is already stable in HIR for both backends.
+			var value hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+			if len(call.Args) > 0 {
+				value = c.root.Expr.LowerExpr(call.Args[0])
+			}
+			panicType := &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
+			value = c.root.emitValueCoerce(value, panicType)
+			var cause hir.Value
+			if len(call.Args) == 2 {
+				cause = c.root.Expr.LowerExpr(call.Args[1])
+				cause = c.root.emitValueCoerce(cause, panicType)
+			}
+			siteID := c.root.registerPanicSite()
+			// Store the boxed value before running deferred calls so a deferred
+			// recover() observes the panic that caused the unwind.
+			c.root.emit(&hir.InstrCallStatic{
+				CalleeName: "__hike_panic_set",
+				Args: []hir.Value{
+					value,
+					&hir.ConstZero{Typ: panicType},
+					&hir.ConstInt{Val: int64(siteID), Typ: sema.TypeInt32},
+				},
+			})
+			for i := len(c.root.deferStack) - 1; i >= 0; i-- {
+				c.LowerCall(c.root.deferStack[i])
+			}
+			c.root.terminate(&hir.InstrPanic{Value: value, Cause: cause, SiteID: siteID})
 			return nil
 
 		case "make":
@@ -1286,9 +1314,21 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			return c.lowerSizeofCall(call)
 
 		case "recover":
-			// Go-Hike has no host panic value, but compiler packages use recover
-			// only to normalize failures.  A nil opaque interface is sufficient.
-			return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+			panicType := &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
+			dst := c.root.nextReg(panicType, "recover")
+			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_panic_get"})
+			return dst
+
+		case "recover_cause":
+			panicType := &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
+			dst := c.root.nextReg(panicType, "recover_cause")
+			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_panic_cause"})
+			return dst
+
+		case "recover_site":
+			dst := c.root.nextReg(sema.TypeInt, "recover_site")
+			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_panic_site"})
+			return dst
 
 		case "close":
 			if len(call.Args) > 0 {

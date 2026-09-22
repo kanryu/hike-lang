@@ -24,6 +24,8 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_map_set": true, "__hike_map_get": true,
 	"__hike_map_delete":    true,
 	"__hike_string_retain": true, "__hike_string_release": true,
+	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_fatal": true,
+	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
 	"llvm.trap":           true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
 	"__hike_sort_strings": true,
@@ -72,6 +74,30 @@ func normalizeWabtRuntimeName(name string) string {
 }
 
 var wasmRuntime = map[string]runtimeFunc{
+	"__hike_panic_set": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_panic_set (param $value i32) (param $cause i32) (param $site i32)
+    (local $record i32)
+    (local.set $record (call $malloc (i32.const 8)))
+    (memory.copy (local.get $record) (local.get $value) (i32.const 8))
+    (global.set $__panic_value (local.get $record))
+    (if (i32.ne (local.get $cause) (i32.const 0))
+      (then
+        (local.set $record (call $malloc (i32.const 8)))
+        (memory.copy (local.get $record) (local.get $cause) (i32.const 8))
+        (global.set $__panic_cause (local.get $record))))
+    (global.set $__panic_site (local.get $site))
+    (global.set $__panic_active (i32.const 1)))`},
+	"__hike_panic_get": runtimeFunc{body: `(func $__hike_panic_get (result i32)
+    (global.set $__panic_active (i32.const 0))
+    (global.get $__panic_value))`},
+	"__hike_panic_cause": runtimeFunc{body: `(func $__hike_panic_cause (result i32)
+    (global.get $__panic_cause))`},
+	"__hike_panic_site": runtimeFunc{body: `(func $__hike_panic_site (result i32)
+    (global.get $__panic_site))`},
+	"__hike_panic_is_active": runtimeFunc{body: `(func $__hike_panic_is_active (result i32)
+    (global.get $__panic_active))`},
+	"__hike_panic_fatal": runtimeFunc{deps: []string{"llvm.trap"}, body: `(func $__hike_panic_fatal (param $site i32)
+    ;; The site ID remains available through $__panic_site for host diagnostics.
+    (call $llvm.trap))`},
 	"malloc": runtimeFunc{body: `(func $malloc (param $n i32) (result i32)
     (local $p i32) (local $next i32) (local $pages i32)
     (local.set $p (global.get $__heap))
@@ -397,10 +423,17 @@ func (e *Emitter) emitRuntime() {
 				case *hir.InstrRegionEnd:
 					visit("__hike_region_end")
 				}
+				if _, ok := bb.Terminator.(*hir.InstrPanic); ok {
+					visit("__hike_panic_fatal")
+					visit("__hike_panic_set")
+					if fn.HasLocalRecover {
+						visit("__hike_panic_is_active")
+					}
+				}
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,159 @@ func main() int {
     return value + 1
 }
 `
+
+const panicSiteSource = `package main
+
+func main() int {
+    panic("boom")
+    return 0
+}
+`
+
+const llvmPanicInvokeSource = `package main
+
+func mark() {}
+
+func child() {
+    panic("boom")
+}
+
+func main() int {
+    defer mark()
+    child()
+    return 0
+}
+`
+
+func TestHIRRecordsPanicSite(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "panic.hike")
+	if err := os.WriteFile(sourcePath, []byte(panicSiteSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("wabt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, _, _, err := New(tgt).CompileToHIR(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Functions) == 0 || len(program.Functions[0].PanicSites) != 1 {
+		t.Fatalf("panic site table = %#v, want one site", program.Functions)
+	}
+	site := program.Functions[0].PanicSites[0]
+	if site.ID != 0 || site.Function != "main" || site.Location.Filename != sourcePath || site.Location.Line != 4 {
+		t.Fatalf("unexpected panic site: %#v", site)
+	}
+}
+
+func TestBackendsEmitPanicRecordCall(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "panic.hike")
+	if err := os.WriteFile(sourcePath, []byte(panicSiteSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	wabtTarget, err := target.ParseTarget("wabt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wat, _, _, err := New(wabtTarget).CompileToWAT(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(wat, "__hike_panic_set") || !strings.Contains(wat, "i32.const 0") {
+		t.Fatalf("WAT does not contain panic record call:\n%s", wat)
+	}
+	llvmTarget, err := target.ParseTarget("linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	llvm, _, _, err := New(llvmTarget).CompileToLLVM(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(llvm, "@__hike_panic_set") {
+		t.Fatalf("LLVM IR does not contain panic record call:\n%s", llvm)
+	}
+}
+
+func TestLLVMDeferFunctionUsesFatalPanicPath(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "panic_invoke.hike")
+	if err := os.WriteFile(sourcePath, []byte(llvmPanicInvokeSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, _, _, err := New(tgt).CompileToLLVM(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"@__hike_panic_fatal", "call void @__hike_panic_fatal"} {
+		if !strings.Contains(ir, marker) {
+			t.Fatalf("LLVM IR does not contain %q:\n%s", marker, ir)
+		}
+	}
+	for _, marker := range []string{"invoke", "landingpad", "__gxx_personality"} {
+		if strings.Contains(ir, marker) {
+			t.Fatalf("LLVM IR unexpectedly contains cross-function EH marker %q:\n%s", marker, ir)
+		}
+	}
+	llvmAs, err := exec.LookPath("llvm-as")
+	if err != nil {
+		t.Skip("llvm-as is not installed")
+	}
+	irPath := filepath.Join(tmp, "panic_invoke.ll")
+	bcPath := filepath.Join(tmp, "panic_invoke.bc")
+	if err := os.WriteFile(irPath, []byte(ir), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(llvmAs, irPath, "-o", bcPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("llvm-as rejected generated IR: %v\n%s\nIR:\n%s", err, output, ir)
+	}
+}
+
+func TestLLVMWindowsDeferUsesFatalPanicPath(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "panic_windows.hike")
+	if err := os.WriteFile(sourcePath, []byte(llvmPanicInvokeSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir, _, _, err := New(tgt).CompileToLLVM(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"@__hike_panic_fatal", "call void @__hike_panic_fatal"} {
+		if !strings.Contains(ir, marker) {
+			t.Fatalf("Windows LLVM IR does not contain %q:\n%s", marker, ir)
+		}
+	}
+	for _, marker := range []string{"__gxx_personality_seh0", "catch i8* null", "__cxa_begin_catch", "__cxa_rethrow", "invoke", "landingpad"} {
+		if strings.Contains(ir, marker) {
+			t.Fatalf("Windows LLVM IR unexpectedly contains cross-function EH marker %q:\n%s", marker, ir)
+		}
+	}
+	llvmAs, err := exec.LookPath("llvm-as")
+	if err != nil {
+		t.Skip("llvm-as is not installed")
+	}
+	irPath := filepath.Join(tmp, "panic_windows.ll")
+	bcPath := filepath.Join(tmp, "panic_windows.bc")
+	if err := os.WriteFile(irPath, []byte(ir), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(llvmAs, irPath, "-o", bcPath).CombinedOutput(); err != nil {
+		t.Fatalf("llvm-as rejected Windows IR: %v\n%s", err, output)
+	}
+}
 
 func TestHIRInstructionsKeepHikeSourceLocations(t *testing.T) {
 	tmp := t.TempDir()
