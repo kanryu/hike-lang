@@ -381,3 +381,37 @@ Channels in Hike are tracked via an aligned control block containing ring-buffer
 
 2. **Atomic Buffer Transfer**: Values are copied directly into the target slot via `memcpy`. When transmitting `func()` closures, the 16-byte fat pointer `{ i8*, i8* }` (function pointer + captured environment) moves across the ring buffer as an atomic unit, preventing partial writes.
 
+### Threadable and Concurrent Module Variables
+
+Hike also provides explicit module-level storage models for concurrent
+programs. `threadable` variables are allocated independently for each worker
+thread, so workers can process their own state in parallel without modifying
+another worker's instance.
+
+```hike
+var threadable(64) {
+    workerCount int
+}
+```
+
+`concurrent` variables are shared between participating workers. The language
+guarantees atomic access to these variables at the language level. Scalar
+accesses use atomic operations where supported, while composite values use the
+corresponding synchronization mechanism.
+
+```hike
+var concurrent(64) {
+    completed int
+}
+```
+
+Atomicity applies to an individual variable access. Use a `lock` block when a
+consistent update must cover multiple concurrent variables:
+
+```hike
+lock {
+    balance = balance - 100
+    version = version + 1
+}
+```
+
