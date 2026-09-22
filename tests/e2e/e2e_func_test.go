@@ -119,6 +119,124 @@ func main() int {
 	})
 }
 
+func TestHTTPFunc_AreaStatement(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func main() int {
+    area(64) {
+        values := make([]int, 4)
+        values[0] = 7
+    }
+    area() {
+        values := make([]int, 2)
+        values[0] = 3
+        area() {
+            nested := make([]int, 1)
+            nested[0] = 5
+        }
+    }
+    return 9
+}
+`,
+		ExpectedOut:  "",
+		ExpectedExit: 9,
+	})
+}
+
+func TestHTTPFunc_AreaStringDeepCopy(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    first := ""
+    second := ""
+    firstPtr := uintptr(0)
+    secondPtr := uintptr(0)
+    area(64) {
+        value := string([]byte{'f', 'i', 'r', 's', 't'})
+        areaValue := cstring(value)
+        firstPtr = uintptr(areaValue)
+        first = deepcopy(value)
+        printf("AREA1_PTR=%p VALUE=%s\n", areaValue, first)
+    }
+    area(64) {
+        value := string([]byte{'s', 'e', 'c', 'o', 'n', 'd'})
+        areaValue := cstring(value)
+        secondPtr = uintptr(areaValue)
+        second = deepcopy(value)
+        printf("AREA2_PTR=%p VALUE=%s\n", areaValue, second)
+    }
+    printf("OUT=%s,%s\n", first, second)
+    if firstPtr != secondPtr {
+        return 2
+    }
+    return 0
+}
+`,
+		ExpectedOutRegex: `(?s)^AREA1_PTR=[0-9a-fA-F]+ VALUE=first\nAREA2_PTR=[0-9a-fA-F]+ VALUE=second\nOUT=first,second$`,
+		ExpectedExit:     0,
+	})
+}
+
+func TestHTTPFunc_DeepCopySlice(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    result := 0
+    area(64) {
+        source := []int{1, 2, 3}
+        copied := deepcopy(source)
+        source[0] = 9
+        printf("SLICE=%d,%d,%d\n", copied[0], len(copied), cap(copied))
+        result = copied[0]
+    }
+    return result
+}
+`,
+		ExpectedOut:  "SLICE=1,3,3",
+		ExpectedExit: 1,
+	})
+}
+
+func TestHTTPFunc_DeepCopyPointerStruct(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Item struct {
+    value int
+    text string
+}
+
+func main() int {
+    var result *Item
+    area(64) {
+        item := Item{value: 7, text: string([]byte{'a', 'r', 'e', 'a'})}
+        result = deepcopy(&item)
+        item.value = 9
+    }
+    printf("PTR=%d,%s\n", result.value, result.text)
+    return result.value
+}
+`,
+		ExpectedOut:  "PTR=7,area",
+		ExpectedExit: 7,
+	})
+}
+
 // String slices appended through a variadic expansion must retain the same
 // fat-pointer representation as their source values.
 func TestHTTPFunc_AppendStringSliceRepresentation(t *testing.T) {

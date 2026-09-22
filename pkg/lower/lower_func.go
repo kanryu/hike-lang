@@ -72,6 +72,7 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 		c.root.symbolTypes[name] = typ
 	}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.areaStack = []*hir.Reg{}
 	c.root.resetStructuredState()
 	c.root.legacyBlocks = nil
 	c.root.regCount = 0
@@ -600,6 +601,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	prevTypes := c.root.symbolTypes
 	prevLoopStack := c.root.loopStack
 	prevDeferStack := c.root.deferStack
+	prevAreaStack := c.root.areaStack
 	prevStructuredRoot := c.root.structuredRoot
 	prevStructuredStack := c.root.structuredStack
 	prevStructuredFrames := c.root.structuredFrames
@@ -612,6 +614,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.legacyBlocks = nil
 	c.root.loopStack = []loopContext{}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.areaStack = []*hir.Reg{}
 	c.root.resetStructuredState()
 	c.root.initFunctionControl(anonFn)
 	c.root.regCount = 0
@@ -699,6 +702,7 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.symbolTypes = prevTypes
 	c.root.loopStack = prevLoopStack
 	c.root.deferStack = prevDeferStack
+	c.root.areaStack = prevAreaStack
 	c.root.structuredRoot = prevStructuredRoot
 	c.root.structuredStack = prevStructuredStack
 	c.root.structuredFrames = prevStructuredFrames

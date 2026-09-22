@@ -46,6 +46,8 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"malloc": true, "calloc": true, "free": true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
 	"__hike_region_begin32": true, "__hike_region_alloc32": true, "__hike_region_end32": true,
+	"__hike_area_begin": true, "__hike_area_alloc": true, "__hike_area_end": true,
+	"__hike_area_begin32": true, "__hike_area_alloc32": true, "__hike_area_end32": true,
 	"__hike_region_active_count": true, "__hike_region_begin_count": true, "__hike_region_end_count": true,
 	"__hike_region_allocated_bytes": true, "__hike_region_released_bytes": true,
 

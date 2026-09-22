@@ -235,6 +235,40 @@ type InstrRegionEnd struct{ Region Value }
 func (i *InstrRegionEnd) Result() *Reg   { return nil }
 func (i *InstrRegionEnd) String() string { return fmt.Sprintf("  region_end %s", i.Region) }
 
+// Area instructions delimit a lexical area-memory scope. Unlike the optional
+// function-wide region pass, these instructions are emitted at source scope
+// boundaries and may be nested.
+type InstrAreaBegin struct {
+	Dst    *Reg
+	Size   Value
+	Parent Value
+}
+
+func (i *InstrAreaBegin) Result() *Reg { return i.Dst }
+func (i *InstrAreaBegin) String() string {
+	if i.Size == nil {
+		return fmt.Sprintf("  %s = area_begin", i.Dst)
+	}
+	return fmt.Sprintf("  %s = area_begin %s", i.Dst, i.Size)
+}
+
+type InstrAreaAlloc struct {
+	Dst       *Reg
+	Area      Value
+	Size      Value
+	AllocType sema.Type
+}
+
+func (i *InstrAreaAlloc) Result() *Reg { return i.Dst }
+func (i *InstrAreaAlloc) String() string {
+	return fmt.Sprintf("  %s = area_alloc %s, %s", i.Dst, i.AllocType.TypeName(), i.Size)
+}
+
+type InstrAreaEnd struct{ Area Value }
+
+func (i *InstrAreaEnd) Result() *Reg   { return nil }
+func (i *InstrAreaEnd) String() string { return fmt.Sprintf("  area_end %s", i.Area) }
+
 func (i *InstrHeapAlloc) Result() *Reg { return i.Dst }
 func (i *InstrHeapAlloc) String() string {
 	return fmt.Sprintf("  %s = heapalloc %s, %s", i.Dst, i.AllocType.TypeName(), i.Size)

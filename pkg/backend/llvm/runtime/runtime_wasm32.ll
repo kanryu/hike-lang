@@ -130,6 +130,99 @@ entry:
   ret void
 }
 
+%struct.__hike_area32 = type { i8*, i32, i32, i8*, i32 }
+define internal i8* @__hike_area_begin32(i32 %size, i8* %parent) {
+entry:
+  %a = call i8* @malloc(i32 20)
+  %isroot = icmp eq i8* %parent, null
+  br i1 %isroot, label %root, label %nested
+root:
+  %default = icmp eq i32 %size, 0
+  %cap = select i1 %default, i32 16384, i32 %size
+  %buf = call i8* @malloc(i32 %cap)
+  %ap = bitcast i8* %a to %struct.__hike_area32*
+  %p0 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %ap, i32 0, i32 0
+  store i8* %buf, i8** %p0
+  %p1 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %ap, i32 0, i32 1
+  store i32 0, i32* %p1
+  %p2 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %ap, i32 0, i32 2
+  store i32 %cap, i32* %p2
+  %p3 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %ap, i32 0, i32 3
+  store i8* null, i8** %p3
+  %p4 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %ap, i32 0, i32 4
+  store i32 0, i32* %p4
+  ret i8* %a
+nested:
+  %pp = bitcast i8* %parent to %struct.__hike_area32*
+  %usedp = getelementptr %struct.__hike_area32, %struct.__hike_area32* %pp, i32 0, i32 1
+  %start = load i32, i32* %usedp
+  %capp = getelementptr %struct.__hike_area32, %struct.__hike_area32* %pp, i32 0, i32 2
+  %pcap = load i32, i32* %capp
+  %remaining = sub i32 %pcap, %start
+  %half = udiv i32 %remaining, 2
+  %next = add i32 %start, %half
+  store i32 %next, i32* %usedp
+  %bufp = getelementptr %struct.__hike_area32, %struct.__hike_area32* %pp, i32 0, i32 0
+  %base = load i8*, i8** %bufp
+  %bufn = getelementptr i8, i8* %base, i32 %start
+  %apn = bitcast i8* %a to %struct.__hike_area32*
+  %n0 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %apn, i32 0, i32 0
+  store i8* %bufn, i8** %n0
+  %n1 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %apn, i32 0, i32 1
+  store i32 0, i32* %n1
+  %n2 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %apn, i32 0, i32 2
+  store i32 %half, i32* %n2
+  %n3 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %apn, i32 0, i32 3
+  store i8* %parent, i8** %n3
+  %n4 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %apn, i32 0, i32 4
+  store i32 %start, i32* %n4
+  ret i8* %a
+}
+define internal i8* @__hike_area_alloc32(i8* %r, i32 %n) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_area32*
+  %p1 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 1
+  %old = load i32, i32* %p1
+  %aligned0 = add i32 %old, 7
+  %aligned = and i32 %aligned0, -8
+  %next = add i32 %aligned, %n
+  %p2 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 2
+  %cap = load i32, i32* %p2
+  %ok = icmp ule i32 %next, %cap
+  br i1 %ok, label %in, label %fallback
+in:
+  %p0 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  %ret = getelementptr i8, i8* %buf, i32 %aligned
+  store i32 %next, i32* %p1
+  ret i8* %ret
+fallback:
+  %heap = call i8* @malloc(i32 %n)
+  ret i8* %heap
+}
+define internal void @__hike_area_end32(i8* %r) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_area32*
+  %p3 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 3
+  %parent = load i8*, i8** %p3
+  %nested = icmp ne i8* %parent, null
+  br i1 %nested, label %restore, label %root
+restore:
+  %pp = bitcast i8* %parent to %struct.__hike_area32*
+  %usedp = getelementptr %struct.__hike_area32, %struct.__hike_area32* %pp, i32 0, i32 1
+  %p4 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 4
+  %start = load i32, i32* %p4
+  store i32 %start, i32* %usedp
+  call void @free(i8* %r)
+  ret void
+root:
+  %p0 = getelementptr %struct.__hike_area32, %struct.__hike_area32* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  call void @free(i8* %buf)
+  call void @free(i8* %r)
+  ret void
+}
+
 ; --- POSIX / WASM Host Threading & Synchronization Imports ---
 declare i32 @hike_thread_spawn(void (i8*)*, i8*)
 declare i8* @hike_event_create()
@@ -605,6 +698,22 @@ entry:
   call void @hike_event_signal(i8* %ev_s)
 
   call void @__hike_chan_unlock(i32* %p_lock)
+  ret void
+}
+
+define internal i8* @__hike_area_begin32(i32 %size) {
+entry:
+  %r = call i8* @__hike_region_begin32()
+  ret i8* %r
+}
+define internal i8* @__hike_area_alloc32(i8* %r, i32 %n) {
+entry:
+  %p = call i8* @__hike_region_alloc32(i8* %r, i32 %n)
+  ret i8* %p
+}
+define internal void @__hike_area_end32(i8* %r) {
+entry:
+  call void @__hike_region_end32(i8* %r)
   ret void
 }
 

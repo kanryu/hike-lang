@@ -1406,6 +1406,20 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.set(x.Dst, "(call $__hike_region_alloc "+e.val(x.Region)+" "+e.val(x.Size)+")")
 	case *hir.InstrRegionEnd:
 		e.b.WriteString("    (call $__hike_region_end " + e.val(x.Region) + ")\n")
+	case *hir.InstrAreaBegin:
+		size := "(i32.const 0)"
+		if x.Size != nil {
+			size = e.val(x.Size)
+		}
+		parent := "(i32.const 0)"
+		if x.Parent != nil {
+			parent = e.val(x.Parent)
+		}
+		e.set(x.Dst, "(call $__hike_area_begin "+size+" "+parent+")")
+	case *hir.InstrAreaAlloc:
+		e.set(x.Dst, "(call $__hike_area_alloc "+e.val(x.Area)+" "+e.val(x.Size)+")")
+	case *hir.InstrAreaEnd:
+		e.b.WriteString("    (call $__hike_area_end " + e.val(x.Area) + ")\n")
 	case *hir.InstrGetFieldPtr:
 		offset := 0
 		if p, ok := x.BasePtr.Type().(*sema.PointerType); ok {

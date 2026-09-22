@@ -845,6 +845,45 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 		}
 		e.b.WriteString(fmt.Sprintf("  call void @%s(i8* %s)\n", name, e.formatVal(i.Region)))
 
+	case *hir.InstrAreaBegin:
+		name := "__hike_area_begin"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		sizeType := intLLVM
+		if e.isWasmTarget() {
+			sizeType = "i32"
+		}
+		size := fmt.Sprintf("%s 0", sizeType)
+		if i.Size != nil {
+			size = fmt.Sprintf("%s %s", sizeType, e.formatVal(i.Size))
+		}
+		parent := "i8* null"
+		if i.Parent != nil {
+			parent = fmt.Sprintf("i8* %s", e.formatVal(i.Parent))
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @%s(%s, %s)\n", i.Dst, name, size, parent))
+
+	case *hir.InstrAreaAlloc:
+		name := "__hike_area_alloc"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		sizeType := intLLVM
+		if e.isWasmTarget() {
+			sizeType = "i32"
+		}
+		raw := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @%s(i8* %s, %s %s)\n", raw, name, e.formatVal(i.Area), sizeType, e.formatVal(i.Size)))
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", i.Dst, raw, i.AllocType.LLVMType()))
+
+	case *hir.InstrAreaEnd:
+		name := "__hike_area_end"
+		if e.isWasmTarget() {
+			name += "32"
+		}
+		e.b.WriteString(fmt.Sprintf("  call void @%s(i8* %s)\n", name, e.formatVal(i.Area)))
+
 	case *hir.InstrAlloca:
 		e.b.WriteString(fmt.Sprintf("  %s = alloca %s\n", i.Dst, i.AllocType.LLVMType()))
 		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[hir.InstructionKey(inst)])

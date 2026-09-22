@@ -84,6 +84,8 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 			}
 			s.root.deferStack = append(s.root.deferStack, node.Call)
 		}
+	case *ast.AreaStmt:
+		s.LowerAreaStmt(node)
 	case *ast.BreakStmt:
 		if len(s.root.loopStack) > 0 {
 			ctx := s.root.loopStack[len(s.root.loopStack)-1]
@@ -111,6 +113,43 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 			s.root.terminate(&hir.InstrJump{Target: ctx.continueBlock.Label})
 		}
 	}
+}
+
+// LowerAreaStmt lowers the lexical area scope. The optional source argument
+// is expressed in KiB; the backend runtime applies its default when Size is
+// nil. Allocations made while areaStack is non-empty are redirected by the
+// common emitter path to the current area arena.
+func (s *StmtLowerer) LowerAreaStmt(node *ast.AreaStmt) {
+	if node == nil || node.Body == nil {
+		return
+	}
+	var size hir.Value
+	if node.Size != nil {
+		size = s.root.Expr.LowerExpr(node.Size)
+		if size != nil && size.Type() != sema.TypeInt {
+			size = s.root.emitValueCoerce(size, sema.TypeInt)
+		}
+		bytes := s.root.nextReg(sema.TypeInt, "area_bytes")
+		s.root.emit(&hir.InstrBinary{
+			Dst: bytes,
+			Op:  hir.OpMul,
+			L:   size,
+			R:   &hir.ConstInt{Val: 1024, Typ: sema.TypeInt},
+		})
+		size = bytes
+	}
+	area := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "area")
+	var parent hir.Value
+	if len(s.root.areaStack) > 0 {
+		parent = s.root.areaStack[len(s.root.areaStack)-1]
+	}
+	s.root.emit(&hir.InstrAreaBegin{Dst: area, Size: size, Parent: parent})
+	s.root.areaStack = append(s.root.areaStack, area)
+	for _, inner := range node.Body.Statements {
+		s.LowerStmt(inner)
+	}
+	s.root.emit(&hir.InstrAreaEnd{Area: area})
+	s.root.areaStack = s.root.areaStack[:len(s.root.areaStack)-1]
 }
 
 // funcLitContainsRecover recognizes only a recover written in the deferred
@@ -201,6 +240,8 @@ func statementToken(stmt ast.Statement) token.Token {
 	case *ast.ReturnStmt:
 		return node.Token
 	case *ast.DeferStmt:
+		return node.Token
+	case *ast.AreaStmt:
 		return node.Token
 	case *ast.BreakStmt:
 		return node.Token

@@ -28,6 +28,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
 	"llvm.trap":           true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
+	"__hike_area_begin": true, "__hike_area_alloc": true, "__hike_area_end": true,
 	"__hike_sort_strings": true,
 }
 
@@ -185,6 +186,48 @@ var wasmRuntime = map[string]runtimeFunc{
 	    (global.set $__region_active (i32.sub (global.get $__region_active) (i32.const 1)))
 	    (global.set $__region_end_count (i32.add (global.get $__region_end_count) (i32.const 1)))
 	    (global.set $__region_released_bytes (i32.add (global.get $__region_released_bytes) (local.get $released))))`},
+	"__hike_area_begin": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_area_begin (param $size i32) (param $parent i32) (result i32)
+    (local $a i32) (local $cap i32) (local $start i32) (local $remaining i32) (local $half i32)
+    (local.set $a (call $malloc (i32.const 20)))
+    (if (i32.eqz (local.get $parent))
+      (then
+        (local.set $cap (select (local.get $size) (i32.const 16384) (i32.eqz (local.get $size))))
+        (i32.store (local.get $a) (call $malloc (local.get $cap)))
+        (i32.store offset=4 (local.get $a) (i32.const 0))
+        (i32.store offset=8 (local.get $a) (local.get $cap))
+        (i32.store offset=12 (local.get $a) (i32.const 0))
+        (i32.store offset=16 (local.get $a) (i32.const 0)))
+      (else
+        (local.set $start (i32.load offset=4 (local.get $parent)))
+        (local.set $remaining (i32.sub (i32.load offset=8 (local.get $parent)) (local.get $start)))
+        (local.set $half (i32.div_u (local.get $remaining) (i32.const 2)))
+        (i32.store offset=4 (local.get $parent) (i32.add (local.get $start) (local.get $half)))
+        (i32.store (local.get $a) (i32.add (i32.load (local.get $parent)) (local.get $start)))
+        (i32.store offset=4 (local.get $a) (i32.const 0))
+        (i32.store offset=8 (local.get $a) (local.get $half))
+        (i32.store offset=12 (local.get $a) (local.get $parent))
+        (i32.store offset=16 (local.get $a) (local.get $start))))
+    (local.get $a))`},
+	"__hike_area_alloc": runtimeFunc{deps: []string{"malloc"}, body: `(func $__hike_area_alloc (param $r i32) (param $n i32) (result i32)
+    (local $cur i32) (local $aligned i32) (local $next i32)
+    (local.set $cur (i32.load offset=4 (local.get $r)))
+    (local.set $aligned (i32.and (i32.add (local.get $cur) (i32.const 7)) (i32.const -8)))
+    (local.set $next (i32.add (local.get $aligned) (local.get $n)))
+    (if (i32.le_u (local.get $next) (i32.load offset=8 (local.get $r)))
+      (then
+        (i32.store offset=4 (local.get $r) (local.get $next))
+        (return (i32.add (i32.load (local.get $r)) (local.get $aligned)))))
+    (call $malloc (local.get $n)))`},
+	"__hike_area_end": runtimeFunc{deps: []string{"free"}, body: `(func $__hike_area_end (param $r i32)
+    (local $parent i32)
+    (local.set $parent (i32.load offset=12 (local.get $r)))
+    (if (i32.eqz (local.get $parent))
+      (then
+        (call $free (i32.load (local.get $r)))
+        (call $free (local.get $r)))
+      (else
+        (i32.store offset=4 (local.get $parent) (i32.load offset=16 (local.get $r)))
+        (call $free (local.get $r)))))`},
 	"__hike_region_active_count":    {body: `(func $__hike_region_active_count (result i32) (global.get $__region_active))`},
 	"__hike_region_begin_count":     {body: `(func $__hike_region_begin_count (result i32) (global.get $__region_begin_count))`},
 	"__hike_region_end_count":       {body: `(func $__hike_region_end_count (result i32) (global.get $__region_end_count))`},
@@ -422,6 +465,12 @@ func (e *Emitter) emitRuntime() {
 					visit("__hike_region_alloc")
 				case *hir.InstrRegionEnd:
 					visit("__hike_region_end")
+				case *hir.InstrAreaBegin:
+					visit("__hike_area_begin")
+				case *hir.InstrAreaAlloc:
+					visit("__hike_area_alloc")
+				case *hir.InstrAreaEnd:
+					visit("__hike_area_end")
 				}
 				if _, ok := bb.Terminator.(*hir.InstrPanic); ok {
 					visit("__hike_panic_fatal")
@@ -433,7 +482,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

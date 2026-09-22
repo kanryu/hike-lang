@@ -29,6 +29,12 @@ func AnalyzeWithReporterModes(prog *ast.Program, reporter *diag.Reporter, filena
 		return nil, nil
 	}
 	ctx.RegionModeEnabled = regionEnabled
+	if regionEnabled && programContainsArea(prog) {
+		if reporter != nil {
+			reporter.AddRaw(filename, "region and area memory models cannot be used together")
+		}
+		return nil, nil
+	}
 	if !regionEnabled {
 		for _, imp := range prog.Imports {
 			if strings.Trim(imp.Path, "\"`") == "std/alloc/region" {
@@ -43,6 +49,78 @@ func AnalyzeWithReporterModes(prog *ast.Program, reporter *diag.Reporter, filena
 		ctx.collectDiagnostics(prog, reporter, filename)
 	}
 	return ctx, nil
+}
+
+func programContainsArea(prog *ast.Program) bool {
+	if prog == nil {
+		return false
+	}
+	for _, decl := range prog.Decls {
+		var body *ast.BlockStmt
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			body = d.Body
+		case *ast.CFuncDecl:
+			body = d.Body
+		}
+		if blockContainsArea(body) {
+			return true
+		}
+	}
+	return false
+}
+
+func blockContainsArea(block *ast.BlockStmt) bool {
+	if block == nil {
+		return false
+	}
+	for _, stmt := range block.Statements {
+		if statementContainsArea(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementContainsArea(stmt ast.Statement) bool {
+	switch s := stmt.(type) {
+	case *ast.AreaStmt:
+		return true
+	case *ast.BlockStmt:
+		return blockContainsArea(s)
+	case *ast.IfStmt:
+		if blockContainsArea(s.Consequence) || statementContainsArea(s.Alternative) {
+			return true
+		}
+		return statementContainsArea(s.Init)
+	case *ast.ForStmt:
+		return blockContainsArea(s.Body) || statementContainsArea(s.Init) || statementContainsArea(s.Post)
+	case *ast.ForRangeStmt:
+		return blockContainsArea(s.Body)
+	case *ast.SwitchStmt:
+		if statementContainsArea(s.Init) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			for _, nested := range clause.Body {
+				if statementContainsArea(nested) {
+					return true
+				}
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if statementContainsArea(s.Init) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			for _, nested := range clause.Body {
+				if statementContainsArea(nested) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (c *Context) collectDiagnostics(prog *ast.Program, reporter *diag.Reporter, filename string) {
@@ -193,6 +271,11 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		return
 	case *ast.DeferStmt:
 		return
+	case *ast.AreaStmt:
+		if s.Size != nil {
+			c.InferExprTypeWithDiag(s.Size, locals, reporter, filename)
+		}
+		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, packageNames, reporter, filename)
 	}
 }
 

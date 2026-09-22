@@ -674,6 +674,18 @@ type DeferStmt struct {
 func (ds *DeferStmt) statementNode()       {}
 func (ds *DeferStmt) TokenLiteral() string { return ds.Token.Literal }
 
+// AreaStmt is a lexical area-memory scope. It resembles a function call in
+// source syntax, but is a statement with lifetime semantics rather than a
+// callable value.
+type AreaStmt struct {
+	Token token.Token
+	Size  Expression
+	Body  *BlockStmt
+}
+
+func (as *AreaStmt) statementNode()       {}
+func (as *AreaStmt) TokenLiteral() string { return as.Token.Literal }
+
 type BreakStmt struct {
 	Token token.Token
 }

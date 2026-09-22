@@ -603,6 +603,11 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 				stmt.Call = call
 			}
 		}
+	case *ast.AreaStmt:
+		stmt.Size = t.transformExpr(stmt.Size)
+		if stmt.Body != nil {
+			t.transformStmt(stmt.Body)
+		}
 	case *ast.ReturnStmt:
 		for i, val := range stmt.Values {
 			stmt.Values[i] = t.transformExpr(val)
@@ -1385,6 +1390,14 @@ func (t *Transformer) substituteAstStmt(s ast.Statement, typeMap map[string]ast.
 			Token: st.Token,
 			Call:  newCall,
 		}
+	case *ast.AreaStmt:
+		var body *ast.BlockStmt
+		if st.Body != nil {
+			if transformed, ok := t.substituteAstStmt(st.Body, typeMap, orderedTypeArgs).(*ast.BlockStmt); ok {
+				body = transformed
+			}
+		}
+		return &ast.AreaStmt{Token: st.Token, Size: t.substituteAstExpr(st.Size, typeMap, orderedTypeArgs), Body: body}
 	case *ast.ReturnStmt:
 		newVals := make([]ast.Expression, len(st.Values))
 		for i, v := range st.Values {

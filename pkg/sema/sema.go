@@ -105,6 +105,41 @@ func SizeOf(typ Type) int {
 	return 0
 }
 
+// DeepCopyError reports whether a value can be copied out of an area.
+// Pointers are valid deep-copy roots, but executable values and recursive
+// object graphs are not representable by the compile-time copier.
+func DeepCopyError(typ Type) string {
+	return deepCopyError(typ, make(map[Type]bool))
+}
+
+func deepCopyError(typ Type, visiting map[Type]bool) string {
+	if typ == nil {
+		return "cannot deep-copy an untyped value"
+	}
+	switch t := typ.(type) {
+	case *PointerType:
+		return deepCopyError(t.Base, visiting)
+	case *FuncType:
+		return "cannot deep-copy function value"
+	case *SliceType:
+		return deepCopyError(t.Elem, visiting)
+	case *ArrayType:
+		return deepCopyError(t.Elem, visiting)
+	case *StructType:
+		if visiting[t] {
+			return fmt.Sprintf("cannot deep-copy recursive type %s", typeNameOf(t))
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
+		for _, field := range t.Fields {
+			if err := deepCopyError(field.Type, visiting); err != "" {
+				return fmt.Sprintf("cannot deep-copy field %s: %s", field.Name, err)
+			}
+		}
+	}
+	return ""
+}
+
 func typeLLVMOf(typ Type) string {
 	if typ == nil {
 		return ""
@@ -1837,6 +1872,8 @@ func CollectAllCapturesInBlock(b *ast.BlockStmt) map[string]bool {
 			if st.Call != nil {
 				walkExpr(st.Call)
 			}
+		case *ast.AreaStmt:
+			walkStmt(st.Body)
 		case *ast.AssignStmt:
 			for _, l := range st.Left {
 				walkExpr(l)
@@ -2012,6 +2049,8 @@ func ScanCapturesFromLit(fl *ast.FuncLit) []string {
 			if st.Call != nil {
 				walkExpr(st.Call)
 			}
+		case *ast.AreaStmt:
+			walkStmt(st.Body)
 		case *ast.AssignStmt:
 			for _, r := range st.Right {
 				walkExpr(r)
@@ -2587,6 +2626,11 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return checkStmt(st.Body)
 		case *ast.ForRangeStmt:
 			if err := checkExpr(st.X); err != nil {
+				return err
+			}
+			return checkStmt(st.Body)
+		case *ast.AreaStmt:
+			if err := checkExpr(st.Size); err != nil {
 				return err
 			}
 			return checkStmt(st.Body)

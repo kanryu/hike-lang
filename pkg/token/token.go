@@ -99,6 +99,7 @@ const (
 	CASE        = "CASE"
 	DEFAULT     = "DEFAULT"
 	DEFER       = "DEFER"
+	AREA        = "AREA"
 	NIL         = "NIL"
 	VAR         = "VAR"
 
@@ -118,7 +119,7 @@ var GoHikeConstantNames = []string{
 	"PACKAGE", "IMPORT", "FUNC", "CFUNC", "EXTERN", "JFUNC", "INLINEASM",
 	"PASSTHROUGH", "MAP", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
 	"INTERFACE", "CONST", "IOTA", "RANGE", "BREAK", "CONTINUE", "IF", "ELSE",
-	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "NIL", "VAR", "IMPLICIT_CAST",
+	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "AREA", "NIL", "VAR", "IMPLICIT_CAST",
 }
 
 var keywords = map[string]TokenType{
@@ -147,6 +148,7 @@ var keywords = map[string]TokenType{
 	"default":     DEFAULT,
 	"return":      RETURN,
 	"defer":       DEFER,
+	"area":        AREA,
 	"break":       BREAK,
 	"continue":    CONTINUE,
 	"nil":         NIL,

@@ -999,6 +999,103 @@ func (c *CallLowerer) lowerStringBuiltin(call *ast.CallExpr) (hir.Value, bool) {
 	return argVal, true
 }
 
+// lowerDeepCopyBuiltin copies a string's bytes into the ordinary heap. This
+// is deliberately different from string assignment, which preserves the
+// backing storage and is therefore unsafe for values created in an area.
+func (c *CallLowerer) lowerDeepCopyBuiltin(call *ast.CallExpr) (hir.Value, bool) {
+	if len(call.Args) != 1 {
+		return nil, false
+	}
+	arg := c.root.Expr.LowerExpr(call.Args[0])
+	if arg == nil || sema.DeepCopyError(arg.Type()) != "" {
+		return nil, false
+	}
+	if sl, ok := arg.Type().(*sema.SliceType); ok {
+		rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "deepcopy")
+		length := c.root.nextReg(sema.TypeInt, "deepcopy_len")
+		c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: arg, Index: 0})
+		c.root.emit(&hir.InstrExtractValue{Dst: length, Agg: arg, Index: 1})
+		elemSize := sema.SizeOf(sl.Elem)
+		if elemSize <= 0 {
+			elemSize = 1
+		}
+		bytes := c.root.nextReg(sema.TypeInt, "deepcopy_bytes")
+		c.root.emit(&hir.InstrBinary{Dst: bytes, Op: hir.OpMul, L: length, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+		copyBuf := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "deepcopy")
+		c.root.emit(&hir.InstrHeapAlloc{Dst: copyBuf, Size: bytes, AllocType: sema.TypeByte, KeepOnHeap: true})
+		c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{copyBuf, rawPtr, bytes}})
+		result := c.root.nextReg(sl)
+		v1 := c.root.nextReg(sl)
+		c.root.emit(&hir.InstrInsertValue{Dst: v1, Agg: c.root.defaultConstValue(sl), Val: copyBuf, Index: 0})
+		v2 := c.root.nextReg(sl)
+		c.root.emit(&hir.InstrInsertValue{Dst: v2, Agg: v1, Val: length, Index: 1})
+		c.root.emit(&hir.InstrInsertValue{Dst: result, Agg: v2, Val: length, Index: 2})
+		return result, true
+	}
+	return c.lowerDeepCopyValue(arg, arg.Type(), make(map[sema.Type]bool)), true
+}
+
+// lowerDeepCopyValue emits a type-directed copy. Pointer fields are followed
+// and copied into ordinary heap storage instead of preserving their address.
+func (c *CallLowerer) lowerDeepCopyValue(value hir.Value, typ sema.Type, visiting map[sema.Type]bool) hir.Value {
+	if c.root.isStringType(typ) {
+		data, length := c.root.stringParts(value)
+		return c.lowerDeepCopyBytes(data, length)
+	}
+	switch t := typ.(type) {
+	case *sema.PointerType:
+		if visiting[t.Base] {
+			return value
+		}
+		loaded := c.root.nextReg(t.Base, "deepcopy_value")
+		c.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: value})
+		copied := c.lowerDeepCopyValue(loaded, t.Base, visiting)
+		buf := c.root.nextReg(value.Type(), "deepcopy_ptr")
+		c.root.emit(&hir.InstrHeapAlloc{Dst: buf, Size: &hir.ConstInt{Val: int64(sema.SizeOf(t.Base)), Typ: sema.TypeInt}, AllocType: t.Base, KeepOnHeap: true})
+		c.root.emit(&hir.InstrStore{Val: copied, Ptr: buf})
+		return buf
+	case *sema.StructType:
+		if visiting[t] {
+			return value
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
+		result := c.root.defaultConstValue(t)
+		for i, field := range t.Fields {
+			fieldVal := c.root.nextReg(field.Type, "deepcopy_field")
+			c.root.emit(&hir.InstrExtractValue{Dst: fieldVal, Agg: value, Index: i})
+			copied := c.lowerDeepCopyValue(fieldVal, field.Type, visiting)
+			inserted := c.root.nextReg(t, "deepcopy_struct")
+			c.root.emit(&hir.InstrInsertValue{Dst: inserted, Agg: result, Val: copied, Index: i})
+			result = inserted
+		}
+		return result
+	case *sema.ArrayType:
+		result := c.root.defaultConstValue(t)
+		for i := 0; i < t.Len; i++ {
+			item := c.root.nextReg(t.Elem, "deepcopy_array")
+			c.root.emit(&hir.InstrExtractValue{Dst: item, Agg: value, Index: i})
+			copied := c.lowerDeepCopyValue(item, t.Elem, visiting)
+			inserted := c.root.nextReg(t, "deepcopy_array")
+			c.root.emit(&hir.InstrInsertValue{Dst: inserted, Agg: result, Val: copied, Index: i})
+			result = inserted
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func (c *CallLowerer) lowerDeepCopyBytes(data, length hir.Value) hir.Value {
+	copyBuf := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "deepcopy")
+	c.root.emit(&hir.InstrHeapAlloc{Dst: copyBuf, Size: length, AllocType: sema.TypeByte, KeepOnHeap: true})
+	c.root.emit(&hir.InstrCallStatic{
+		CalleeName: c.root.BuiltinName("memcpy"),
+		Args:       []hir.Value{copyBuf, data, length},
+	})
+	return c.root.makeString(copyBuf, length)
+}
+
 func (c *CallLowerer) lowerSizeofCall(call *ast.CallExpr) hir.Value {
 	logger.LogVerbose2("[Verbose2] CallLowerer LowerCall CallExpr: ast=%T (%+v)\n", call, call)
 	if len(call.Args) == 1 {
@@ -1377,6 +1474,11 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 
 		case "string":
 			if value, handled := c.lowerStringBuiltin(call); handled {
+				return value
+			}
+
+		case "deepcopy":
+			if value, handled := c.lowerDeepCopyBuiltin(call); handled {
 				return value
 			}
 

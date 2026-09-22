@@ -60,6 +60,101 @@ func main() int {
 	}
 }
 
+func TestWabtAreaStatement(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+func main() int {
+    area(64) {
+        values := make([]int, 4)
+        values[0] = 7
+    }
+    area() {
+        values := make([]int, 2)
+        values[0] = 3
+        area() {
+            nested := make([]int, 1)
+            nested[0] = 5
+        }
+    }
+    return 9
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=9\n"; got != want {
+		t.Fatalf("Wabt area statement result = %q, want %q", got, want)
+	}
+}
+
+func TestWabtAreaStringDeepCopy(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+func main() int {
+    first := ""
+    second := ""
+    area(64) {
+        value := string([]byte{'f', 'i', 'r', 's', 't'})
+        first = deepcopy(value)
+    }
+    area(64) {
+        value := string([]byte{'s', 'e', 'c', 'o', 'n', 'd'})
+        second = deepcopy(value)
+    }
+    if first == "first" && second == "second" {
+        return 1
+    }
+    return 0
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=1\n"; got != want {
+		t.Fatalf("Wabt area string deepcopy result = %q, want %q", got, want)
+	}
+}
+
+func TestWabtDeepCopySlice(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+func main() int {
+    area(64) {
+        source := []int{1, 2, 3}
+        copied := deepcopy(source)
+        source[0] = 9
+        if copied[0] == 1 && len(copied) == 3 && cap(copied) == 3 {
+            return 1
+        }
+    }
+    return 0
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=1\n"; got != want {
+		t.Fatalf("Wabt slice deepcopy result = %q, want %q", got, want)
+	}
+}
+
+func TestWabtDeepCopyPointerStruct(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+type Item struct {
+    value int
+    text string
+}
+
+func main() int {
+    var result *Item
+    area(64) {
+        item := Item{value: 7, text: string([]byte{'a', 'r', 'e', 'a'})}
+        result = deepcopy(&item)
+        item.value = 9
+    }
+    if result.value == 7 {
+        return 1
+    }
+    return 0
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=1\n"; got != want {
+		t.Fatalf("Wabt pointer struct deepcopy result = %q, want %q", got, want)
+	}
+}
+
 func TestWabtHTTPFuncEscapedParamsAndReceiver(t *testing.T) {
 	wasm := buildWabt(t, `package main
 

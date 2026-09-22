@@ -1392,6 +1392,11 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 		switch astIdentifierValue(id) {
 		case "len", "cap", "sizeof":
 			return TypeInt
+		case "deepcopy":
+			if len(e.Args) == 1 {
+				return c.InferExprType(e.Args[0], locals)
+			}
+			return TypeBad
 		case "recover", "recover_cause":
 			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
 		case "recover_site":
@@ -2300,6 +2305,8 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeInt}}
 		case "string", "cstring":
 			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeString}}
+		case "deepcopy":
+			return &FuncType{Name: "deepcopy"}
 		case "bool":
 			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeBool}}
 		case "float32", "float64":

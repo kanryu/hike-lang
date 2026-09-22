@@ -51,6 +51,7 @@ type Lowerer struct {
 	symbolTypes      map[string]sema.Type
 	loopStack        []loopContext
 	deferStack       []*ast.CallExpr
+	areaStack        []*hir.Reg
 	structuredRoot   hir.ControlBody
 	structuredStack  []*hir.ControlBody
 	structuredFrames []structuredFrame
@@ -126,6 +127,7 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 		symbolTypes:      make(map[string]sema.Type),
 		loopStack:        []loopContext{},
 		deferStack:       []*ast.CallExpr{},
+		areaStack:        []*hir.Reg{},
 		structuredRoot:   hir.ControlBody{},
 		structuredStack:  []*hir.ControlBody{},
 		structuredFrames: []structuredFrame{},
@@ -398,6 +400,14 @@ func (l *Lowerer) setBlock(bb *basicBlock) {
 }
 
 func (l *Lowerer) emit(instr hir.Instruction) {
+	if alloc, ok := instr.(*hir.InstrHeapAlloc); ok && len(l.areaStack) > 0 && !alloc.KeepOnHeap {
+		instr = &hir.InstrAreaAlloc{
+			Dst:       alloc.Dst,
+			Area:      l.areaStack[len(l.areaStack)-1],
+			Size:      alloc.Size,
+			AllocType: alloc.AllocType,
+		}
+	}
 	if l.curBlock != nil {
 		l.curBlock.Instructions = append(l.curBlock.Instructions, instr)
 		l.recordLocation(instr)
@@ -409,6 +419,11 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 }
 
 func (l *Lowerer) terminate(term hir.Terminator) {
+	if (isAreaExitTerminator(term)) && len(l.areaStack) > 0 {
+		for i := len(l.areaStack) - 1; i >= 0; i-- {
+			l.emit(&hir.InstrAreaEnd{Area: l.areaStack[i]})
+		}
+	}
 	if l.curBlock != nil && l.curBlock.Terminator == nil {
 		l.curBlock.Terminator = term
 		l.recordLocation(term)
@@ -423,6 +438,15 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		case *hir.InstrPanic:
 			*current = append(*current, &hir.PanicNode{Value: t.Value, Cause: t.Cause, SiteID: t.SiteID})
 		}
+	}
+}
+
+func isAreaExitTerminator(term hir.Terminator) bool {
+	switch term.(type) {
+	case *hir.InstrReturn, *hir.InstrPanic:
+		return true
+	default:
+		return false
 	}
 }
 

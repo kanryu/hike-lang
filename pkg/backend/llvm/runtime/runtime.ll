@@ -148,6 +148,102 @@ entry:
   ret void
 }
 
+; Lexical area allocator. A root area owns a separate arena. Nested areas
+; reserve half of the remaining parent area and restore the parent cursor on
+; exit, so all nested allocations become invalid in O(1).
+%struct.__hike_area = type { i8*, i64, i64, i8*, i64 }
+define internal i8* @__hike_area_begin(i64 %size, i8* %parent) {
+entry:
+  %a = call i8* @malloc(i64 40)
+  %isroot = icmp eq i8* %parent, null
+  br i1 %isroot, label %root, label %nested
+root:
+  %default = icmp eq i64 %size, 0
+  %cap = select i1 %default, i64 16384, i64 %size
+  %buf = call i8* @malloc(i64 %cap)
+  %ap = bitcast i8* %a to %struct.__hike_area*
+  %p0 = getelementptr %struct.__hike_area, %struct.__hike_area* %ap, i32 0, i32 0
+  store i8* %buf, i8** %p0
+  %p1 = getelementptr %struct.__hike_area, %struct.__hike_area* %ap, i32 0, i32 1
+  store i64 0, i64* %p1
+  %p2 = getelementptr %struct.__hike_area, %struct.__hike_area* %ap, i32 0, i32 2
+  store i64 %cap, i64* %p2
+  %p3 = getelementptr %struct.__hike_area, %struct.__hike_area* %ap, i32 0, i32 3
+  store i8* null, i8** %p3
+  %p4 = getelementptr %struct.__hike_area, %struct.__hike_area* %ap, i32 0, i32 4
+  store i64 0, i64* %p4
+  ret i8* %a
+nested:
+  %pp = bitcast i8* %parent to %struct.__hike_area*
+  %usedp = getelementptr %struct.__hike_area, %struct.__hike_area* %pp, i32 0, i32 1
+  %start = load i64, i64* %usedp
+  %capp = getelementptr %struct.__hike_area, %struct.__hike_area* %pp, i32 0, i32 2
+  %pcap = load i64, i64* %capp
+  %remaining = sub i64 %pcap, %start
+  %half = udiv i64 %remaining, 2
+  %next = add i64 %start, %half
+  store i64 %next, i64* %usedp
+  %bufp = getelementptr %struct.__hike_area, %struct.__hike_area* %pp, i32 0, i32 0
+  %base = load i8*, i8** %bufp
+  %bufn = getelementptr i8, i8* %base, i64 %start
+  %apn = bitcast i8* %a to %struct.__hike_area*
+  %n0 = getelementptr %struct.__hike_area, %struct.__hike_area* %apn, i32 0, i32 0
+  store i8* %bufn, i8** %n0
+  %n1 = getelementptr %struct.__hike_area, %struct.__hike_area* %apn, i32 0, i32 1
+  store i64 0, i64* %n1
+  %n2 = getelementptr %struct.__hike_area, %struct.__hike_area* %apn, i32 0, i32 2
+  store i64 %half, i64* %n2
+  %n3 = getelementptr %struct.__hike_area, %struct.__hike_area* %apn, i32 0, i32 3
+  store i8* %parent, i8** %n3
+  %n4 = getelementptr %struct.__hike_area, %struct.__hike_area* %apn, i32 0, i32 4
+  store i64 %start, i64* %n4
+  ret i8* %a
+}
+define internal i8* @__hike_area_alloc(i8* %r, i64 %n) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_area*
+  %p1 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 1
+  %old = load i64, i64* %p1
+  %aligned0 = add i64 %old, 7
+  %aligned = and i64 %aligned0, -8
+  %next = add i64 %aligned, %n
+  %p2 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 2
+  %cap = load i64, i64* %p2
+  %ok = icmp ule i64 %next, %cap
+  br i1 %ok, label %in, label %fallback
+in:
+  %p0 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  %ret = getelementptr i8, i8* %buf, i64 %aligned
+  store i64 %next, i64* %p1
+  ret i8* %ret
+fallback:
+  %heap = call i8* @malloc(i64 %n)
+  ret i8* %heap
+}
+define internal void @__hike_area_end(i8* %r) {
+entry:
+  %rp = bitcast i8* %r to %struct.__hike_area*
+  %p3 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 3
+  %parent = load i8*, i8** %p3
+  %nested = icmp ne i8* %parent, null
+  br i1 %nested, label %restore, label %root
+restore:
+  %pp = bitcast i8* %parent to %struct.__hike_area*
+  %usedp = getelementptr %struct.__hike_area, %struct.__hike_area* %pp, i32 0, i32 1
+  %p4 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 4
+  %start = load i64, i64* %p4
+  store i64 %start, i64* %usedp
+  call void @free(i8* %r)
+  ret void
+root:
+  %p0 = getelementptr %struct.__hike_area, %struct.__hike_area* %rp, i32 0, i32 0
+  %buf = load i8*, i8** %p0
+  call void @free(i8* %buf)
+  call void @free(i8* %r)
+  ret void
+}
+
 ; ------------------------------------------------------------------------------
 ; Pure Memory & String Builtin Implementations (64-bit Native, Libc-Free)
 ; ------------------------------------------------------------------------------

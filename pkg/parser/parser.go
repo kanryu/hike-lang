@@ -1006,6 +1006,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseReturnStmt()
 	case token.DEFER:
 		return p.parseDeferStmt()
+	case token.AREA:
+		return p.parseAreaStmt()
 	case token.BREAK:
 		return &ast.BreakStmt{Token: p.curToken}
 	case token.CONTINUE:
@@ -1013,6 +1015,23 @@ func (p *Parser) parseStatement() ast.Statement {
 	default:
 		return p.parseAssignOrExprStmt()
 	}
+}
+
+func (p *Parser) parseAreaStmt() ast.Statement {
+	areaTok := p.curToken
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	var size ast.Expression
+	if !p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		size = p.parseExpression(LOWEST)
+	}
+	if !p.expectPeek(token.RPAREN) || !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+	return &ast.AreaStmt{Token: areaTok, Size: size, Body: p.parseBlockStmt()}
 }
 
 func (p *Parser) parseVarStmt() ast.Statement {

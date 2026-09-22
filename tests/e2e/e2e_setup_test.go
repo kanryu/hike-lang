@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -68,11 +69,12 @@ func TestMain(m *testing.M) {
 }
 
 type HikeTestCase struct {
-	Source       string
-	Files        map[string]string
-	Target       string
-	ExpectedOut  string
-	ExpectedExit int
+	Source           string
+	Files            map[string]string
+	Target           string
+	ExpectedOut      string
+	ExpectedOutRegex string
+	ExpectedExit     int
 }
 
 // 各テスト関数から呼び出される共通実行ヘルパー
@@ -161,6 +163,17 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 	actualOut := normalize(stdout.String())
 	expectedOut := normalize(tc.ExpectedOut)
 	if actualOut != expectedOut {
-		t.Errorf("出力不一致:\n[期待値]:\n%s\n[実際値]:\n%s\n[Stderr]: %s", expectedOut, actualOut, stderr.String())
+		if tc.ExpectedOutRegex == "" {
+			t.Errorf("出力不一致:\n[期待値]:\n%s\n[実際値]:\n%s\n[Stderr]: %s", expectedOut, actualOut, stderr.String())
+		}
+	}
+	if tc.ExpectedOutRegex != "" {
+		matched, err := regexp.MatchString(tc.ExpectedOutRegex, actualOut)
+		if err != nil {
+			t.Fatalf("出力正規表現が不正です: %v", err)
+		}
+		if !matched {
+			t.Errorf("出力が正規表現に一致しません:\n[期待値]: %s\n[実際値]: %s", tc.ExpectedOutRegex, actualOut)
+		}
 	}
 }
