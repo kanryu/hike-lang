@@ -701,22 +701,6 @@ entry:
   ret void
 }
 
-define internal i8* @__hike_area_begin32(i32 %size) {
-entry:
-  %r = call i8* @__hike_region_begin32()
-  ret i8* %r
-}
-define internal i8* @__hike_area_alloc32(i8* %r, i32 %n) {
-entry:
-  %p = call i8* @__hike_region_alloc32(i8* %r, i32 %n)
-  ret i8* %p
-}
-define internal void @__hike_area_end32(i8* %r) {
-entry:
-  call void @__hike_region_end32(i8* %r)
-  ret void
-}
-
 ; ------------------------------------------------------------------------------
 ; String Runtime Functions (32-bit, wasm32)
 ; ------------------------------------------------------------------------------

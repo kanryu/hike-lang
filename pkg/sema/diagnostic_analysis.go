@@ -156,8 +156,123 @@ func (c *Context) collectDiagnostics(prog *ast.Program, reporter *diag.Reporter,
 		for _, p := range params {
 			locals[p.Name.Value] = TypeInt
 		}
+		c.checkAreaEscapes(body, cloneAreaTypes(locals), reporter, filename)
 		c.checkDiagnosticBlock(body, locals, returns, packageNames, reporter, filename)
 	}
+}
+
+// checkAreaEscapes rejects shallow copies of area-backed values into an outer
+// variable. Such values would retain a pointer into storage invalidated when
+// the area ends; callers must use deepcopy instead.
+func (c *Context) checkAreaEscapes(block *ast.BlockStmt, locals map[string]Type, reporter *diag.Reporter, filename string) {
+	c.checkAreaEscapeBlock(block, locals, nil, reporter, filename)
+}
+
+func (c *Context) checkAreaEscapeBlock(block *ast.BlockStmt, locals map[string]Type, areaNames map[string]bool, reporter *diag.Reporter, filename string) {
+	if block == nil {
+		return
+	}
+	for _, stmt := range block.Statements {
+		switch s := stmt.(type) {
+		case *ast.AreaStmt:
+			innerLocals := cloneAreaTypes(locals)
+			innerNames := cloneAreaNames(areaNames)
+			c.checkAreaEscapeBlock(s.Body, innerLocals, innerNames, reporter, filename)
+		case *ast.VarDecl:
+			var t Type = TypeInt
+			if s.Value != nil {
+				t = c.InferExprType(s.Value, locals)
+			}
+			if s.Type != nil {
+				t = c.ResolveType(s.Type)
+			}
+			locals[s.Name.Value] = t
+			if areaNames != nil {
+				areaNames[s.Name.Value] = true
+			}
+		case *ast.AssignStmt:
+			if s.Token.Type == token.DEFINE || s.Token.Literal == ":=" {
+				for i, left := range s.Left {
+					if ident, ok := left.(*ast.Identifier); ok {
+						var t Type = TypeInt
+						if i < len(s.Right) {
+							t = c.InferExprType(s.Right[i], locals)
+						}
+						locals[ident.Value] = t
+						if areaNames != nil {
+							areaNames[ident.Value] = true
+						}
+					}
+				}
+			} else if areaNames != nil {
+				for i, left := range s.Left {
+					if _, ok := left.(*ast.Identifier); !ok || i >= len(s.Right) {
+						continue
+					}
+					right, ok := s.Right[i].(*ast.Identifier)
+					if !ok || !areaNames[right.Value] {
+						continue
+					}
+					t := c.InferExprType(s.Right[i], locals)
+					if areaEscapeType(t) {
+						reporter.Errorf(filename, s.Token.Line, s.Token.Col, "cannot copy area value %s outside its area; use deepcopy", typeNameOf(t))
+					}
+				}
+			}
+		case *ast.IfStmt:
+			c.checkAreaEscapeBlock(s.Consequence, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+			if alt, ok := s.Alternative.(*ast.BlockStmt); ok {
+				c.checkAreaEscapeBlock(alt, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+			}
+		case *ast.ForStmt:
+			c.checkAreaEscapeBlock(s.Body, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+		case *ast.ForRangeStmt:
+			c.checkAreaEscapeBlock(s.Body, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+		case *ast.SwitchStmt:
+			for _, clause := range s.Cases {
+				c.checkAreaEscapeBlock(&ast.BlockStmt{Statements: clause.Body}, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+			}
+		case *ast.TypeSwitchStmt:
+			for _, clause := range s.Cases {
+				c.checkAreaEscapeBlock(&ast.BlockStmt{Statements: clause.Body}, cloneAreaTypes(locals), cloneAreaNames(areaNames), reporter, filename)
+			}
+		}
+	}
+}
+
+func cloneAreaTypes(src map[string]Type) map[string]Type {
+	dst := make(map[string]Type, len(src))
+	for name, typ := range src {
+		dst[name] = typ
+	}
+	return dst
+}
+
+func cloneAreaNames(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src)+1)
+	for name, present := range src {
+		dst[name] = present
+	}
+	return dst
+}
+
+func areaEscapeType(typ Type) bool {
+	if typ == nil {
+		return false
+	}
+	switch t := typ.(type) {
+	case *BasicType:
+		return t == TypeString || t.Name == "string"
+	case *PointerType, *SliceType:
+		return true
+	case *StructType:
+		for _, field := range t.Fields {
+			if areaEscapeType(field.Type) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Context) checkDiagnosticBlock(block *ast.BlockStmt, locals map[string]Type, returns []ast.TypeExpr, packageNames map[string]bool, reporter *diag.Reporter, filename string) {
