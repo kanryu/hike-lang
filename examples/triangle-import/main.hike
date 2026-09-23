@@ -1,0 +1,44 @@
+package main
+
+import "github.com/kanryu/hike-gpu-webgpu/gpu/webgpu"
+
+var context int
+var vertexBuffer int
+var uniformBuffer int
+var pipeline int
+var bindGroup int
+
+cfunc InitApp() {
+    vertices := []float32{
+        0.0, 0.8, 0.0, 1.0, 0.2, 0.3,
+        -0.69282, -0.4, 0.0, 0.2, 1.0, 0.4,
+        0.69282, -0.4, 0.0, 0.2, 0.5, 1.0,
+    }
+    shaderCode := "struct Uniforms { angle: f32, };\n@group(0) @binding(0) var<uniform> uniforms: Uniforms;\nstruct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec3<f32>, };\n@vertex fn vs(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>) -> VertexOutput {\nlet c = cos(uniforms.angle); let s = sin(uniforms.angle);\nlet x = c * position.x - s * position.y;\nlet y = s * position.x + c * position.y;\nvar output: VertexOutput; output.position = vec4<f32>(x, y, position.z, 1.0);\noutput.color = color; return output; }\n@fragment fn fs(input: VertexOutput) -> @location(0) vec4<f32> { return vec4<f32>(input.color, 1.0); }"
+    context = webgpu.NewContext("gpu-canvas", 960, 640)
+    vertexBuffer = webgpu.CreateBuffer(context, 72, 40)
+    webgpu.WriteBuffer(context, vertexBuffer, &vertices[0], len(vertices))
+    uniformBuffer = webgpu.CreateBuffer(context, 16, 72)
+    shader := webgpu.CreateShaderModule(context, shaderCode)
+    pipeline = webgpu.CreateRenderPipeline(context, shader, 24)
+    bindGroup = webgpu.CreateBindGroup(context, pipeline, uniformBuffer)
+}
+
+cfunc RenderFrame(angle float64) {
+    if context != 0 {
+        uniform := []float32{float32(angle)}
+        webgpu.WriteBuffer(context, uniformBuffer, &uniform[0], len(uniform))
+        webgpu.Draw(context, pipeline, bindGroup, vertexBuffer, 3)
+    }
+}
+
+cfunc Resize(width int, height int) {
+    webgpu.Resize(context, width, height)
+}
+
+cfunc Shutdown() {
+    if context != 0 {
+        webgpu.Close(context)
+        context = 0
+    }
+}

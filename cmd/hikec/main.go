@@ -37,6 +37,7 @@ func printUsage() {
 	fmt.Println("  emit-js     Generate the WebAssembly JavaScript runtime")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary (Wabt uses wat2wasm)")
 	fmt.Println("  run         Build and immediately execute the Hike program (supports native and Wasm via Node.js)")
+	fmt.Println("  get         Download modules listed in hike.mod into .hike/deps")
 	fmt.Println("\nOptions for go:")
 	fmt.Println("  -o <path>        Output .syso file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wabt)")
@@ -91,6 +92,9 @@ func main() {
 	case "run":
 		cmdArgs = os.Args[2:]
 		runRun(cmdArgs)
+	case "get":
+		cmdArgs = os.Args[2:]
+		runGet(cmdArgs)
 	case "help", "-h", "--help":
 		printUsage()
 	default:

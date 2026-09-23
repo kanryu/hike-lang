@@ -9,10 +9,12 @@ import (
 )
 
 type Module struct {
-	Name     string            // モジュール名 (例: hike-lang)
-	Version  string            // Hikeバージョン
-	RootDir  string            // hike.mod が存在する絶対パス
-	Replaces map[string]string // replace ディレクティブ (例: "std/json" => "../../std/json")
+	Name         string            // モジュール名 (例: hike-lang)
+	Version      string            // Hikeバージョン
+	RootDir      string            // hike.mod が存在する絶対パス
+	Replaces     map[string]string // replace ディレクティブ (例: "std/json" => "../../std/json")
+	Requires     map[string]string // require ディレクティブ (例: "github.com/example/lib" => "v0.1.0")
+	RequireOrder []string          // require ディレクティブの宣言順
 }
 
 // FindModuleRoot は開始ディレクトリから親ディレクトリを遡り、hike.mod を探索してモジュール情報を構築します
@@ -20,7 +22,7 @@ func FindModuleRoot(startDir string) (*Module, error) {
 	absDir, err := filepath.Abs(startDir)
 	if err != nil {
 		cwd, _ := os.Getwd()
-		return &Module{RootDir: cwd, Replaces: make(map[string]string)}, err
+		return &Module{RootDir: cwd, Replaces: make(map[string]string), Requires: make(map[string]string)}, err
 	}
 
 	cur := absDir
@@ -43,6 +45,7 @@ func FindModuleRoot(startDir string) (*Module, error) {
 		Name:     filepath.Base(cwd),
 		RootDir:  cwd,
 		Replaces: make(map[string]string),
+		Requires: make(map[string]string),
 	}, nil
 }
 
@@ -56,6 +59,7 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 	mod := &Module{
 		RootDir:  rootDir,
 		Replaces: make(map[string]string),
+		Requires: make(map[string]string),
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -75,6 +79,13 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 			mod.Name = parts[1]
 		case "hike":
 			mod.Version = parts[1]
+		case "require":
+			if len(parts) >= 3 {
+				if _, exists := mod.Requires[parts[1]]; !exists {
+					mod.RequireOrder = append(mod.RequireOrder, parts[1])
+				}
+				mod.Requires[parts[1]] = parts[2]
+			}
 		case "replace":
 			// 形式1: replace std/json => ../../std/json
 			// 形式2: replace std/json ../../std/json
@@ -131,7 +142,16 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 		cleanPath = strings.TrimPrefix(cleanPath, m.Name+"/")
 	}
 
-	// 3. モジュールルート起点 (std/json, pkg/parser など)
+	// 3. 取得済み依存モジュール。依存のモジュール名をそのまま
+	// ディレクトリ階層へ写像するため、GitHub以外のホストも扱える。
+	if m.RootDir != "" {
+		depTarget := filepath.Join(m.RootDir, ".hike", "deps", filepath.FromSlash(importPath))
+		if fi, err := os.Stat(depTarget); err == nil && fi.IsDir() {
+			return depTarget, nil
+		}
+	}
+
+	// 4. モジュールルート起点 (std/json, pkg/parser など)
 	if m.RootDir != "" {
 		modTarget := filepath.Join(m.RootDir, cleanPath)
 		if fi, err := os.Stat(modTarget); err == nil && fi.IsDir() {
@@ -139,7 +159,7 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 		}
 	}
 
-	// 4. コンパイラ実行バイナリ隣接標準ライブラリ（フォールバック）
+	// 5. コンパイラ実行バイナリ隣接標準ライブラリ（フォールバック）
 	if exePath, err := os.Executable(); err == nil {
 		exeStd := filepath.Join(filepath.Dir(exePath), "..", cleanPath)
 		if fi, err := os.Stat(exeStd); err == nil && fi.IsDir() {
@@ -147,7 +167,7 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 		}
 	}
 
-	// 5. 呼び出し元ファイルディレクトリ直下探索
+	// 6. 呼び出し元ファイルディレクトリ直下探索
 	currTarget := filepath.Join(fromDir, importPath)
 	if fi, err := os.Stat(currTarget); err == nil && fi.IsDir() {
 		return currTarget, nil

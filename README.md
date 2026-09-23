@@ -148,7 +148,7 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 * **First-Class C-ABI Support**: Emits pure C-ABI binaries and automatically emits matching `.h` headers for C/C++ host integration.
 * **2-Pass Stack Iterators**: Custom containers can provide zero-allocation `for-range` traversal using compile-time stack allocation (`alloca`).
 * **Closures with Escape Analysis**: Lexical closures capture by reference. Variables escaping their stack lifetime are promoted to the heap, unified under a 2-word fat pointer ABI.
-* **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`).
+* **Built-in Module Management**: `hike.mod` declares dependencies with `require`, and `hikec get` downloads them into the project-local `.hike/deps` tree.
 * **Dual WebAssembly Backends**: Use LLVM/Clang for an optimized `wasm32` module, or WABT for direct WAT-to-Wasm generation and browser-oriented debugging.
 * **Optional Region Allocation**: `--alloc=region` groups eligible function-local allocations into bump arenas and releases them in O(1) at the region boundary.
 * **Scoped Area Memory**: `area(...) { ... }` provides explicit, thread-local scoped storage with bulk release at block exit; values that outlive the block must be copied explicitly.
@@ -1217,6 +1217,7 @@ Usage: hikec <command> [options] <source.hike... | directory>
 
 Commands:
   go        Compile a directory of .go.hike files into one .syso object
+  get       Download modules listed in hike.mod into .hike/deps
   emit-ir   Generate target LLVM IR (.ll) (default for a source input)
   emit-js   Generate the WebAssembly JavaScript runtime.js bridge
   build     Compile Hike source into a native or WebAssembly binary via Clang

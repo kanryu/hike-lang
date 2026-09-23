@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hike WebGPU Triangle — Imported Module</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111f; }
+    main { width: min(960px, 94vw); }
+    h1 { font-size: 1.2rem; font-weight: 500; color: #c7d2fe; }
+    canvas { display: block; width: 100%; aspect-ratio: 3 / 2; border: 1px solid #334155; border-radius: 12px; background: #0f172a; }
+    #canvas-info, #frame-info { color: #64748b; font-size: .82rem; margin-top: .55rem; }
+    #status { color: #94a3b8; font-size: .9rem; margin-top: .7rem; }
+    #log { height: 10rem; overflow: auto; margin-top: .7rem; padding: .7rem; border: 1px solid #1e293b; border-radius: 8px; background: #020617; color: #94a3b8; font: .72rem/1.45 ui-monospace, monospace; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Hike × WebGPU — imported rendering module</h1>
+    <canvas id="gpu-canvas" width="960" height="640"></canvas>
+    <div id="canvas-info">Canvas ID: gpu-canvas · framebuffer: 960 × 640</div>
+    <div id="status">Loading WebAssembly and WebGPU…</div>
+    <div id="frame-info">Frame: 0 · angle: 0.000</div>
+    <pre id="log">[Hike WebAssembly] waiting for runtime.js…</pre>
+  </main>
+  <script src="runtime.js"></script>
+  <script>
+    const logElement = document.getElementById("log");
+    const frameInfoElement = document.getElementById("frame-info");
+    function appendLog(event, details) {
+      const line = `[Hike WebAssembly] ${event} ${JSON.stringify(details || {})}`;
+      console.log(line);
+      logElement.textContent += `\n${line}`;
+      logElement.scrollTop = logElement.scrollHeight;
+    }
+    const runtime = new HikeRuntime({
+      wasmUrl: "main.wasm",
+      onLog: appendLog,
+      onFrame: ({ frame, angle }) => {
+        frameInfoElement.textContent = `Frame: ${frame} · angle: ${angle.toFixed(3)}`;
+      }
+    });
+    runtime.load().catch((error) => {
+      console.error("Hike WebAssembly startup failed", error);
+      appendLog("startup:failed", { message: error.message });
+      document.getElementById("status").textContent = `Startup failed: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
