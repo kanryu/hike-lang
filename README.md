@@ -115,6 +115,7 @@ documents below for the exact implementation boundaries.
 | [`wasm.md`](wasm.md) | wasm32 target behavior, JavaScript runtime integration, exports, memory access, and testing. |
 | [`concurrency.md`](concurrency.md) | Async tasks, channels, worker synchronization, closure transfer, and generated task bridges. |
 | [`thread-variables.md`](thread-variables.md) | Threadable and concurrent module variables, visibility, storage, and synchronization rules. |
+| [`external-module.md`](external-module.md) | External module declarations, `hikec get`, repository checkouts, and release source archives. |
 | [`eventloop.md`](eventloop.md) | Event-loop abstractions built on channels, task invocation, and asynchronous result handling. |
 | [`build-constraints-and-assembly.md`](build-constraints-and-assembly.md) | Build constraints and the inline assembly syntax and lowering rules. |
 | [`without_cgo.md`](without_cgo.md) | C-ABI integration without cgo, `.syso` builds, and ownership rules at language boundaries. |
@@ -902,16 +903,38 @@ clang -O3 main.ll -L/path/to/libs -lmy_c_library -o app.exe
 ## Module Management (`hike.mod`)
 
 Hike resolves local dependencies and package roots via `hike.mod` in the project root.
+External Hike packages can be imported by declaring a `require` directive and
+running `hikec get`. The command downloads the requested project into
+`.hike/deps`, after which its packages are available through normal Hike
+imports.
 
 ```text
 module my-project
 
 hike 0.1.0
 
-# Remap import path to local directory
-replace std/encoding/json => ../../std/encoding/json
+require github.com/kanryu/hike-gpu-webgpu v0.1.0
 
 ```
+
+```bash
+hikec get
+```
+
+When a package should be resolved from a directory relative to the project,
+`replace` can be used. The path is resolved from the project module root; it
+does not download or manage an external dependency:
+
+```text
+replace github.com/kanryu/hike-gpu-webgpu => ../../gpu/webgpu
+```
+
+Use `require` with `hikec get` for project-managed external dependencies, and
+use `replace` when a package should be resolved through a project-relative
+directory.
+
+For repository checkouts, release source archives, and dependency refresh
+behavior, see [`external-module.md`](external-module.md).
 
 
 
@@ -1294,6 +1317,8 @@ Unknown non-option arguments are treated as source files or directories. The
 ---
 
 ## Roadmap
+
+* [x] External module imports and `hikec get` dependency installation
 
 * [x] Interface-valued `AsyncIterable` dispatch for `for value := range <-stream`
 
