@@ -3,7 +3,10 @@ package filepath
 import "std/strings"
 
 func Abs(p string) (string, error) { return p, nil }
+func IsAbs(p string) bool { return len(p) > 0 && (p[0] == '/' || p[0] == '\\') }
 func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
+func FromSlash(p string) string { return p }
+func Rel(base string, target string) (string, error) { return target, nil }
 func Clean(p string) string { return p }
 func Base(p string) string {
     normalized := ToSlash(p)

@@ -364,6 +364,13 @@ func (e *ExprLowerer) lowerMemberExpr(node *ast.MemberExpr) hir.Value {
 		if e.root.semaCtx.GoHikeMode && (pkgId.Value == "token" || pkgId.Value == "runtime") {
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
+		if e.root.semaCtx.GoHikeMode && pkgId.Value == "os" &&
+			(node.Field.Value == "Stdin" || node.Field.Value == "Stdout" || node.Field.Value == "Stderr") {
+			return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+		}
+		if e.root.semaCtx.GoHikeMode && pkgId.Value == "filepath" && node.Field.Value == "Separator" {
+			return e.root.getStringConst("/")
+		}
 	}
 
 	basePtr := e.LowerStructPtr(node.Object)
@@ -1288,7 +1295,27 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 	if node.Type == nil || isNilNamedType(node.Type) {
 		panic(fmt.Sprintf("[Lower Error] struct literal has no type at %d:%d", node.Token.Line, node.Token.Col))
 	}
-	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	resolvedType := e.root.semaCtx.ResolveType(node.Type)
+	if slType, ok := resolvedType.(*sema.SliceType); ok {
+		// Go permits composite slice literals to arrive through the generic
+		// StructLiteral AST path (notably for pointer-prefixed literals).
+		elements := make([]ast.Expression, 0, len(node.Fields))
+		for _, field := range node.Fields {
+			if field != nil {
+				elements = append(elements, field.Value)
+			}
+		}
+		sliceType := &ast.SliceType{Token: node.Type.Token, Elem: semaTypeToTypeExpr(slType.Elem)}
+		sliceValue := e.lowerSliceLiteral(&ast.SliceLiteral{Token: node.Token, Type: sliceType, Elements: elements})
+		slicePtr := e.root.nextReg(&sema.PointerType{Base: slType})
+		e.root.emit(&hir.InstrAlloca{Dst: slicePtr, AllocType: slType})
+		e.root.emit(&hir.InstrStore{Val: sliceValue, Ptr: slicePtr})
+		return slicePtr
+	}
+	stType, ok := resolvedType.(*sema.StructType)
+	if !ok {
+		panic(fmt.Sprintf("[Lower Error] composite literal is not a struct at %d:%d", node.Token.Line, node.Token.Col))
+	}
 	for _, field := range node.Fields {
 		if field == nil || field.Name == nil {
 			continue
@@ -1626,6 +1653,11 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 
 	leftVal := e.LowerExpr(node.Left)
 	rightVal := e.LowerExpr(node.Right)
+	leftReg, leftIsReg := leftVal.(*hir.Reg)
+	rightReg, rightIsReg := rightVal.(*hir.Reg)
+	if leftVal == nil || rightVal == nil || (leftIsReg && leftReg == nil) || (rightIsReg && rightReg == nil) || leftVal.Type() == nil || rightVal.Type() == nil {
+		panic(fmt.Sprintf("[Lower Error] binary operand is nil: op=%s left=%T right=%T at %d:%d", node.Operator, node.Left, node.Right, node.Token.Line, node.Token.Col))
+	}
 
 	if tup, isTup := leftVal.Type().(*sema.TupleType); isTup && len(tup.Types) > 0 {
 		elem0 := e.root.nextReg(tup.Types[0])

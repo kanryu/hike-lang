@@ -130,12 +130,13 @@ func deepCopyError(typ Type, visiting map[Type]bool) string {
 			return fmt.Sprintf("cannot deep-copy recursive type %s", typeNameOf(t))
 		}
 		visiting[t] = true
-		defer delete(visiting, t)
 		for _, field := range t.Fields {
 			if err := deepCopyError(field.Type, visiting); err != "" {
+				delete(visiting, t)
 				return fmt.Sprintf("cannot deep-copy field %s: %s", field.Name, err)
 			}
 		}
+		delete(visiting, t)
 	}
 	return ""
 }
@@ -2225,7 +2226,7 @@ func insertCastsInBlock(b *ast.BlockStmt, locals map[string]Type, ctx *Context, 
 
 		case *ast.AssignStmt:
 			isDefine := (s.Token.Type == token.DEFINE) || (s.Token.Literal == ":=") ||
-				(s.Token.Type == token.VAR) || (s.Token.Literal == "var") || (s.Type != nil)
+				(s.Token.Type == token.VAR) || (s.Token.Type == token.CONST) || (s.Token.Literal == "var") || (s.Type != nil)
 
 			if isDefine {
 				if len(s.Left) > 1 && len(s.Right) == 1 {

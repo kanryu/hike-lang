@@ -3,6 +3,8 @@ package exec
 type Cmd struct {
     Path string
     Args []string
+    Dir string
+    Stdin *byte
     Stdout *byte
     Stderr *byte
 }
@@ -16,7 +18,10 @@ func (e *ExitError) ExitCode() int {
 }
 
 func Command(name string, args ...string) *Cmd {
-    return &Cmd{Path: name, Args: args}
+	return &Cmd{Path: name, Args: args}
 }
 
+func LookPath(name string) (string, error) { return name, nil }
+
 func (c *Cmd) Run() error { return nil }
+func (c *Cmd) CombinedOutput() ([]byte, error) { return []byte{}, nil }

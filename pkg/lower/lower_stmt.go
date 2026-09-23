@@ -2,7 +2,6 @@ package lower
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"hikec-go/pkg/ast"
@@ -146,17 +145,17 @@ func (s *StmtLowerer) LowerAreaStmt(node *ast.AreaStmt) {
 		})
 		size = bytes
 	}
-	area := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "area")
+	areaPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "area")
 	var parent hir.Value
 	if len(s.root.areaStack) > 0 {
 		parent = s.root.areaStack[len(s.root.areaStack)-1]
 	}
-	s.root.emit(&hir.InstrAreaBegin{Dst: area, Size: size, Parent: parent})
-	s.root.areaStack = append(s.root.areaStack, area)
+	s.root.emit(&hir.InstrAreaBegin{Dst: areaPtr, Size: size, Parent: parent})
+	s.root.areaStack = append(s.root.areaStack, areaPtr)
 	for _, inner := range node.Body.Statements {
 		s.LowerStmt(inner)
 	}
-	s.root.emit(&hir.InstrAreaEnd{Area: area})
+	s.root.emit(&hir.InstrAreaEnd{Area: areaPtr})
 	s.root.areaStack = s.root.areaStack[:len(s.root.areaStack)-1]
 }
 
@@ -168,57 +167,161 @@ func funcLitContainsRecover(fn *ast.FuncLit) bool {
 	if fn == nil {
 		return false
 	}
-	return astValueContainsRecover(reflect.ValueOf(fn.Body), make(map[uintptr]bool))
+	return astStatementContainsRecover(fn.Body)
 }
 
-// astValueContainsRecover walks the small AST subtree of a deferred function
-// literal.  BodyTokens are not guaranteed to be retained after parsing, so
-// inspecting the AST is required for recover calls nested in if/switch/etc.
-func astValueContainsRecover(v reflect.Value, seen map[uintptr]bool) bool {
-	if !v.IsValid() {
+// astStatementContainsRecover walks the AST nodes that can occur inside a
+// deferred function literal.  This is deliberately explicit instead of using
+// reflection so the compiler remains usable without the reflect package.
+func astStatementContainsRecover(stmt ast.Statement) bool {
+	switch n := stmt.(type) {
+	case *ast.BlockStmt:
+		for _, child := range n.Statements {
+			if astStatementContainsRecover(child) {
+				return true
+			}
+		}
+	case *ast.ExprStmt:
+		return astExpressionContainsRecover(n.Expr)
+	case *ast.AssignStmt:
+		for _, expr := range append(n.Left, n.Right...) {
+			if astExpressionContainsRecover(expr) {
+				return true
+			}
+		}
+	case *ast.VarDecl:
+		return astExpressionContainsRecover(n.Value)
+	case *ast.ReturnStmt:
+		for _, expr := range n.Values {
+			if astExpressionContainsRecover(expr) {
+				return true
+			}
+		}
+	case *ast.DeferStmt:
+		return astExpressionContainsRecover(n.Call)
+	case *ast.SendStmt:
+		return astExpressionContainsRecover(n.Chan) || astExpressionContainsRecover(n.Value)
+	case *ast.LockStmt:
+		return astStatementContainsRecover(n.Body)
+	case *ast.AreaStmt:
+		return astExpressionContainsRecover(n.Size) || astStatementContainsRecover(n.Body)
+	case *ast.IfStmt:
+		return astStatementContainsRecover(n.Init) || astExpressionContainsRecover(n.Condition) ||
+			astStatementContainsRecover(n.Consequence) || astStatementContainsRecover(n.Alternative)
+	case *ast.ForStmt:
+		return astStatementContainsRecover(n.Init) || astExpressionContainsRecover(n.Cond) ||
+			astStatementContainsRecover(n.Post) || astStatementContainsRecover(n.Body)
+	case *ast.ForRangeStmt:
+		return astExpressionContainsRecover(n.Key) || astExpressionContainsRecover(n.Value) ||
+			astExpressionContainsRecover(n.X) || astStatementContainsRecover(n.Body)
+	case *ast.CaseClause:
+		for _, expr := range n.Values {
+			if astExpressionContainsRecover(expr) {
+				return true
+			}
+		}
+		for _, child := range n.Body {
+			if astStatementContainsRecover(child) {
+				return true
+			}
+		}
+	case *ast.SwitchStmt:
+		if astStatementContainsRecover(n.Init) || astExpressionContainsRecover(n.Value) {
+			return true
+		}
+		for _, clause := range n.Cases {
+			if astStatementContainsRecover(clause) {
+				return true
+			}
+		}
+	case *ast.TypeCaseClause:
+		for _, child := range n.Body {
+			if astStatementContainsRecover(child) {
+				return true
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if astStatementContainsRecover(n.Init) || astExpressionContainsRecover(n.Expr) {
+			return true
+		}
+		for _, clause := range n.Cases {
+			if astStatementContainsRecover(clause) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func astExpressionContainsRecover(expr ast.Expression) bool {
+	if expr == nil {
 		return false
 	}
-	if v.Kind() == reflect.Interface {
-		if v.IsNil() {
-			return false
+	switch n := expr.(type) {
+	case *ast.Identifier:
+		return n.Value == "recover" || n.Value == "recover_cause" || n.Value == "recover_site"
+	case *ast.CallExpr:
+		if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "recover" || id.Value == "recover_cause" || id.Value == "recover_site") {
+			return true
 		}
-		return astValueContainsRecover(v.Elem(), seen)
-	}
-	if v.Kind() == reflect.Pointer {
-		if v.IsNil() {
-			return false
+		if astExpressionContainsRecover(n.Function) {
+			return true
 		}
-		ptr := v.Pointer()
-		if seen[ptr] {
-			return false
-		}
-		seen[ptr] = true
-		if v.CanInterface() {
-			switch n := v.Interface().(type) {
-			case *ast.Identifier:
-				return n.Value == "recover" || n.Value == "recover_cause" || n.Value == "recover_site"
-			case *ast.CallExpr:
-				if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "recover" || id.Value == "recover_cause" || id.Value == "recover_site") {
-					return true
-				}
-			}
-		}
-		return astValueContainsRecover(v.Elem(), seen)
-	}
-	switch v.Kind() {
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if astValueContainsRecover(v.Index(i), seen) {
+		for _, arg := range n.Args {
+			if astExpressionContainsRecover(arg) {
 				return true
 			}
 		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			field := v.Field(i)
-			if field.CanInterface() && astValueContainsRecover(field, seen) {
+	case *ast.PrefixExpr:
+		return astExpressionContainsRecover(n.Right)
+	case *ast.ReceiveExpr:
+		return astExpressionContainsRecover(n.Expr)
+	case *ast.AsyncExpr:
+		return astExpressionContainsRecover(n.Fn)
+	case *ast.BinaryExpr:
+		return astExpressionContainsRecover(n.Left) || astExpressionContainsRecover(n.Right)
+	case *ast.IndexExpr:
+		return astExpressionContainsRecover(n.Left) || astExpressionContainsRecover(n.Index)
+	case *ast.GenericInstExpr:
+		return astExpressionContainsRecover(n.Left)
+	case *ast.MemberExpr:
+		return astExpressionContainsRecover(n.Object)
+	case *ast.InlineAsmExpr:
+		for _, operand := range n.Operands {
+			if astExpressionContainsRecover(operand) {
 				return true
 			}
 		}
+	case *ast.SliceExpr:
+		return astExpressionContainsRecover(n.Left) || astExpressionContainsRecover(n.Low) || astExpressionContainsRecover(n.High)
+	case *ast.SliceLiteral:
+		for _, element := range n.Elements {
+			if astExpressionContainsRecover(element) {
+				return true
+			}
+		}
+	case *ast.StructLiteral:
+		for _, field := range n.Fields {
+			if field != nil && astExpressionContainsRecover(field.Value) {
+				return true
+			}
+		}
+	case *ast.ArrayLiteral:
+		for _, element := range n.Elements {
+			if astExpressionContainsRecover(element) {
+				return true
+			}
+		}
+	case *ast.MapLiteral:
+		for _, entry := range n.Entries {
+			if entry != nil && (astExpressionContainsRecover(entry.Key) || astExpressionContainsRecover(entry.Value)) {
+				return true
+			}
+		}
+	case *ast.TypeAssertExpr:
+		return astExpressionContainsRecover(n.Expr)
+	case *ast.FuncLit:
+		return astStatementContainsRecover(n.Body)
 	}
 	return false
 }
@@ -426,7 +529,7 @@ func (s *StmtLowerer) lowerDefineAssignment(stmt *ast.AssignStmt, rhsVals []hir.
 
 func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	isDefine := (stmt.Token.Type == token.DEFINE) || (stmt.Token.Literal == ":=") ||
-		(stmt.Token.Type == token.VAR) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
+		(stmt.Token.Type == token.VAR) || (stmt.Token.Type == token.CONST) || (stmt.Token.Literal == "var") || (stmt.Type != nil)
 
 	// 多値アンパック代入 (v, ok := expr)
 	if len(stmt.Left) > 1 && len(stmt.Right) == 1 {

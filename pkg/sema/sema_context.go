@@ -505,6 +505,12 @@ func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
 	if interfaceName == "hir_Value" {
 		return true
 	}
+	if interfaceName == "hir_ControlElement" && concreteName != "void" {
+		// Imported HIR methods can lose their concrete receiver metadata during
+		// Go-Hike self-hosting. Keep this structured-control boundary opaque in
+		// compatibility mode, like the other imported HIR interfaces.
+		return true
+	}
 	if interfaceName == "error" && concreteName != "void" {
 		// Error values returned by Go-shaped package stubs are opaque to the
 		// Hike checker; their concrete representation is not used by lowering.

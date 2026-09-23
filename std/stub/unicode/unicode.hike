@@ -7,3 +7,6 @@ func IsSpace(r int) bool {
 func IsLetter(r int) bool {
     return (r >= 65 && r <= 90) || (r >= 97 && r <= 122)
 }
+
+func IsUpper(r int) bool { return r >= 65 && r <= 90 }
+func IsDigit(r int) bool { return r >= 48 && r <= 57 }

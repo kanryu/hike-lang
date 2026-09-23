@@ -55,6 +55,7 @@ func TestGroupedTypedParameters(t *testing.T) {
 	source := `package sample
 func WriteWasmJSRuntimeMode(destPath, mode string, programs ...*int) error { return nil }
 func AnalyzeWithReporterModes(prog *int, reporter *int, filename string, regionEnabled, goHikeEnabled bool) *int { return nil }
+func registerBuiltinCapabilities(receiverName, methodName string, params, returns []Type, fn *FuncType, ctx *Context) {}
 `
 	p := New(lexer.New(source))
 	program := p.ParseProgram()
@@ -75,12 +76,48 @@ func AnalyzeWithReporterModes(prog *int, reporter *int, filename string, regionE
 	if !ok || len(fn.Params) != 5 {
 		t.Fatalf("expected five expanded parameters in trailing group, got %T with %d params", program.Decls[1], len(fn.Params))
 	}
+	fn, ok = program.Decls[2].(*ast.FuncDecl)
+	if !ok || len(fn.Params) != 6 {
+		t.Fatalf("expected six parameters in slice-typed groups, got %T with %d params", program.Decls[2], len(fn.Params))
+	}
+	if _, ok := fn.Params[2].Type.(*ast.SliceType); !ok {
+		t.Fatalf("params did not receive a slice type: %T", fn.Params[2].Type)
+	}
+	if _, ok := fn.Params[3].Type.(*ast.SliceType); !ok {
+		t.Fatalf("slice-typed grouped parameters were not expanded correctly")
+	}
+}
+
+func TestGoHikeControlSyntax(t *testing.T) {
+	source := `package sample
+	type ControlNode int
+	type ControlElement interface { SetControlPosition(index, depth int); SetControlLinks(next, breakTarget, continueTarget int) }
+	type ControlBody []ControlNode
+func check(nodes []string, visible map[string]bool) {
+    for _, target := range append(append([]string{}, nodes...), "default") {
+        if !visible[target] { return }
+    }
+}
+`
+	p := New(lexer.New(source))
+	program := p.ParseProgram()
+	if len(p.Errors()) != 0 {
+		t.Fatalf("unexpected parse errors: %v", p.Errors())
+	}
+	control, ok := program.Decls[1].(*ast.TypeDecl)
+	if !ok || len(control.Type.(*ast.InterfaceType).Methods) != 2 {
+		t.Fatalf("expected grouped interface methods to parse")
+	}
+	links := control.Type.(*ast.InterfaceType).Methods[1]
+	if len(links.ParamTypes) != 3 {
+		t.Fatalf("expected three grouped parameters, got %d", len(links.ParamTypes))
+	}
 }
 
 func TestTypeSwitchMultiplePointerCases(t *testing.T) {
 	source := `package sample
 func inspect(v any) int {
-    switch v.(type) {
+	 switch v.(type) {
     case *ast.IntegerLiteral, *ast.CharLiteral:
         return 1
     case *ast.FloatLiteral:

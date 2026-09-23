@@ -500,7 +500,7 @@ func (e *Emitter) emitRuntime() {
 			fn, ok := lookupWasmRuntime(name)
 			if ok {
 				if name == "__hike_lock" {
-					if e.concurrent {
+					if e.Concurrent {
 						fn.body = `(func $__hike_lock
     (block $done
       (loop $retry
@@ -514,7 +514,7 @@ func (e *Emitter) emitRuntime() {
 		        (br $retry))))`
 					}
 				}
-				if name == "__hike_unlock" && !e.concurrent {
+				if name == "__hike_unlock" && !e.Concurrent {
 					fn.body = `(func $__hike_unlock
     (global.set $__hike_lock_state (i32.const 0)))`
 				}

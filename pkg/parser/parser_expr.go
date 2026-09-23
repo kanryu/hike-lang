@@ -126,8 +126,11 @@ func isTypeLikeExpr(e ast.Expression) bool {
 			return isTypeLikeExpr(expr.Right)
 		}
 	case *ast.MemberExpr:
-		if len(expr.Field.Value) > 0 && expr.Field.Value[0] >= 'A' && expr.Field.Value[0] <= 'Z' {
-			return true
+		// A selector such as fn.Name is normally a value expression. Treating
+		// every exported-looking field as a type made ordinary indexing like
+		// table[fn.Name] look like a generic instantiation.
+		if object, ok := expr.Object.(*ast.Identifier); ok {
+			return isBasicTypeName(object.Value) || (len(object.Value) > 0 && object.Value[0] >= 'A' && object.Value[0] <= 'Z')
 		}
 	}
 	return false
@@ -869,7 +872,12 @@ func (p *Parser) parseCallExpr(fn ast.Expression) *ast.CallExpr {
 				continue
 			}
 
+			oldAllow := p.allowStructLit
+			// Composite literals are valid inside call arguments, including
+			// nested calls such as append([]string{}, values...).
+			p.allowStructLit = true
 			arg := p.parseExpression(LOWEST)
+			p.allowStructLit = oldAllow
 			if p.peekTokenIs(token.ELLIPSIS) {
 				p.nextToken()
 				hasEllipsis = true

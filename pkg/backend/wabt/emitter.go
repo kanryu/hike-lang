@@ -31,7 +31,7 @@ type Emitter struct {
 	taskCalls        map[*hir.Reg]taskCallSignature
 	asyncTypes       map[string]int
 	asyncSigs        []taskCallSignature
-	concurrent       bool
+	Concurrent       bool
 	debugInfo        bool
 	runtimeFunctions int
 }
@@ -47,7 +47,7 @@ func New(p *hir.Program, _ *sema.Context) *Emitter {
 
 // SetConcurrent enables the shared-memory/host-worker ABI used by the
 // concurrent Wasm build mode. Normal Wasm keeps the synchronous future ABI.
-func (e *Emitter) SetConcurrent(enabled bool) { e.concurrent = enabled }
+func (e *Emitter) SetConcurrent(enabled bool) { e.Concurrent = enabled }
 
 // SetDebugInfo enables WAT markers used to recover HIR instruction offsets
 // after wat2wasm has assembled the module. The markers are harmless blocks and
@@ -483,7 +483,7 @@ func (e *Emitter) Emit() string {
 	}
 	e.prepareTypes()
 	e.b.WriteString("(module\n")
-	if e.concurrent && len(e.asyncSigs) > 0 {
+	if e.Concurrent && len(e.asyncSigs) > 0 {
 		e.b.WriteString("  (import \"env\" \"hike_thread_spawn\" (func $__hike_thread_spawn (param i32) (param i32) (param i32) (param i32)))\n")
 		e.b.WriteString("  (import \"env\" \"hike_thread_pump\" (func $__hike_thread_pump))\n")
 	}
@@ -510,7 +510,7 @@ func (e *Emitter) Emit() string {
 	// Keep the requested initial stack address valid while leaving room for
 	// static data and the runtime heap. Concurrent mode uses a one-megabyte
 	// shared-memory budget; the checker assigns the worker arena within it.
-	if e.concurrent {
+	if e.Concurrent {
 		e.b.WriteString("  (import \"env\" \"memory\" (memory 16 16 shared))\n")
 		e.b.WriteString("  (export \"memory\" (memory 0))\n")
 	} else {
@@ -535,7 +535,7 @@ func (e *Emitter) Emit() string {
 	e.b.WriteString("  (global $__region_released_bytes (mut i32) (i32.const 0))\n")
 	for _, g := range e.p.Globals {
 		fmt.Fprintf(&e.b, "  (global $%s (mut %s) (%s.const 0))\n", g.Name, watType(g.Typ), watType(g.Typ))
-		if e.concurrent && (strings.HasPrefix(g.Name, "eventloop_") || g.Name == "testOutputBuffer" || g.Name == "mainDeviceID") {
+		if e.Concurrent && (strings.HasPrefix(g.Name, "eventloop_") || g.Name == "testOutputBuffer" || g.Name == "mainDeviceID") {
 			fmt.Fprintf(&e.b, "  (export \"__hike_global_%s\" (global $%s))\n", g.Name, g.Name)
 		}
 	}
@@ -552,13 +552,13 @@ func (e *Emitter) Emit() string {
 	e.emitItabData()
 	e.emitTypeDefs()
 	e.emitRuntime()
-	if e.concurrent {
+	if e.Concurrent {
 		e.emitAsyncDispatcher()
 	}
 	for _, fn := range e.p.Functions {
 		e.function(fn)
 	}
-	if e.concurrent {
+	if e.Concurrent {
 		e.emitConcurrentBootstrap()
 	}
 	e.b.WriteString(")\n")
@@ -695,7 +695,7 @@ func (e *Emitter) function(fn *hir.Function) {
 		fmt.Fprintf(&e.b, " (local $__ret_multi i32)")
 	}
 	e.b.WriteString("\n")
-	if e.concurrent && strings.HasSuffix(fn.Name, "eventloop_Run") {
+	if e.Concurrent && strings.HasSuffix(fn.Name, "eventloop_Run") {
 		// The host must not start workers before the event loop is ready. Mark
 		// the loop active and pump deferred workers at its entry point.
 		e.b.WriteString("    (global.set $eventloop_running (i32.const 1))\n")
@@ -1102,7 +1102,7 @@ func (e *Emitter) emitStore(x *hir.InstrStore) {
 }
 
 func (e *Emitter) emitTaskWait(x *hir.InstrTaskWait) {
-	if !e.concurrent {
+	if !e.Concurrent {
 		future, _ := x.Task.Type().(*sema.FutureType)
 		var retTypes []sema.Type
 		if future != nil {
@@ -1304,7 +1304,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.callArgTotal = 0
 		e.callArgUsed = 0
 	case *hir.InstrAsync:
-		if e.concurrent {
+		if e.Concurrent {
 			e.emitConcurrentAsync(x)
 			break
 		}

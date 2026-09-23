@@ -4,6 +4,16 @@ import (
 	"std/errors"
 )
 
+func Unquote(s string) (string, error) {
+	if len(s) < 2 {
+		return "", errors.New("invalid syntax")
+	}
+	if (s[0] == byte(34) && s[len(s)-1] == byte(34)) || (s[0] == byte(96) && s[len(s)-1] == byte(96)) {
+		return s[1:len(s)-1], nil
+	}
+	return "", errors.New("invalid syntax")
+}
+
 func Itoa(n int) string {
 	if n == 0 {
 		return "0"

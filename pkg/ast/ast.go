@@ -82,6 +82,7 @@ func BuildInternalKey(pkg string, ident string, structName string) string {
 
 type ImportDecl struct {
 	Token token.Token
+	Alias string
 	Path  string
 }
 

@@ -22,6 +22,22 @@ func TestNumericSwitchCasesBuildDenseTableMetadata(t *testing.T) {
 	}
 }
 
+func TestFuncLitContainsRecoverWithoutReflection(t *testing.T) {
+	fn := &ast.FuncLit{Body: &ast.BlockStmt{Statements: []ast.Statement{
+		&ast.IfStmt{Consequence: &ast.BlockStmt{Statements: []ast.Statement{
+			&ast.ExprStmt{Expr: &ast.CallExpr{Function: &ast.Identifier{Value: "recover_cause"}}},
+		}}},
+	}}}
+	if !funcLitContainsRecover(fn) {
+		t.Fatal("nested recover call was not detected")
+	}
+	if funcLitContainsRecover(&ast.FuncLit{Body: &ast.BlockStmt{Statements: []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{Function: &ast.Identifier{Value: "other"}}},
+	}}}) {
+		t.Fatal("unrelated call was reported as recover")
+	}
+}
+
 func TestFunctionControlLayoutKeepsExitAtRootTail(t *testing.T) {
 	l := &Lowerer{}
 	fn := &hir.Function{Name: "f"}

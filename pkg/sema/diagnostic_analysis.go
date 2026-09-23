@@ -5,7 +5,6 @@ import (
 	"hikec-go/pkg/diag"
 	"hikec-go/pkg/token"
 	"path"
-	"reflect"
 	"strings"
 )
 
@@ -304,7 +303,7 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		locals[s.Name.Value] = declType
 
 	case *ast.AssignStmt:
-		isDefine := s.Type != nil || s.Token.Literal == ":=" || s.Token.Type == token.DEFINE || s.Token.Type == token.VAR
+		isDefine := s.Type != nil || s.Token.Literal == ":=" || s.Token.Type == token.DEFINE || s.Token.Type == token.VAR || s.Token.Type == token.CONST
 		if isDefine {
 			rightTypes := make([]Type, len(s.Right))
 			for i, right := range s.Right {
@@ -388,10 +387,10 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 	case *ast.DeferStmt:
 		return
 	case *ast.LockStmt:
-		if astContainsNode(reflect.ValueOf(s.Body), reflect.TypeOf((*ast.LockStmt)(nil))) {
+		if statementContainsLock(s.Body) {
 			reporter.Errorf(filename, s.Token.Line, s.Token.Col, "nested lock blocks are not allowed")
 		}
-		if astContainsNode(reflect.ValueOf(s.Body), reflect.TypeOf((*ast.CallExpr)(nil))) {
+		if statementContainsCall(s.Body) {
 			reporter.Errorf(filename, s.Token.Line, s.Token.Col, "function calls are not allowed inside a lock block")
 		}
 		c.checkDiagnosticBlock(s.Body, cloneTypes(locals), returns, packageNames, reporter, filename)
@@ -403,47 +402,182 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 	}
 }
 
-func astContainsNode(value reflect.Value, target reflect.Type) bool {
-	return astContainsNodeSeen(value, target, make(map[uintptr]bool))
+func statementContainsLock(stmt ast.Statement) bool {
+	switch s := stmt.(type) {
+	case *ast.LockStmt:
+		return true
+	case *ast.BlockStmt:
+		for _, child := range s.Statements {
+			if statementContainsLock(child) {
+				return true
+			}
+		}
+	case *ast.IfStmt:
+		return statementContainsLock(s.Init) || statementContainsLock(s.Consequence) || statementContainsLock(s.Alternative)
+	case *ast.ForStmt:
+		return statementContainsLock(s.Init) || statementContainsLock(s.Post) || statementContainsLock(s.Body)
+	case *ast.ForRangeStmt:
+		return statementContainsLock(s.Body)
+	case *ast.SwitchStmt:
+		if statementContainsLock(s.Init) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			for _, child := range clause.Body {
+				if statementContainsLock(child) {
+					return true
+				}
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if statementContainsLock(s.Init) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			for _, child := range clause.Body {
+				if statementContainsLock(child) {
+					return true
+				}
+			}
+		}
+	case *ast.CaseClause:
+		for _, child := range s.Body {
+			if statementContainsLock(child) {
+				return true
+			}
+		}
+	case *ast.TypeCaseClause:
+		for _, child := range s.Body {
+			if statementContainsLock(child) {
+				return true
+			}
+		}
+	case *ast.AreaStmt:
+		return statementContainsLock(s.Body)
+	}
+	return false
 }
 
-func astContainsNodeSeen(value reflect.Value, target reflect.Type, seen map[uintptr]bool) bool {
-	if !value.IsValid() {
+func statementContainsCall(stmt ast.Statement) bool {
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		for _, child := range s.Statements {
+			if statementContainsCall(child) {
+				return true
+			}
+		}
+	case *ast.ExprStmt:
+		return expressionContainsCall(s.Expr)
+	case *ast.AssignStmt:
+		return expressionsContainCall(s.Left) || expressionsContainCall(s.Right)
+	case *ast.VarDecl:
+		return expressionContainsCall(s.Value)
+	case *ast.ReturnStmt:
+		return expressionsContainCall(s.Values)
+	case *ast.DeferStmt:
+		return expressionContainsCall(s.Call)
+	case *ast.SendStmt:
+		return expressionContainsCall(s.Chan) || expressionContainsCall(s.Value)
+	case *ast.IfStmt:
+		return statementContainsCall(s.Init) || expressionContainsCall(s.Condition) || statementContainsCall(s.Consequence) || statementContainsCall(s.Alternative)
+	case *ast.ForStmt:
+		return statementContainsCall(s.Init) || expressionContainsCall(s.Cond) || statementContainsCall(s.Post) || statementContainsCall(s.Body)
+	case *ast.ForRangeStmt:
+		return expressionContainsCall(s.Key) || expressionContainsCall(s.Value) || expressionContainsCall(s.X) || statementContainsCall(s.Body)
+	case *ast.SwitchStmt:
+		if statementContainsCall(s.Init) || expressionContainsCall(s.Value) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			if expressionsContainCall(clause.Values) || statementContainsCall(clause) {
+				return true
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if statementContainsCall(s.Init) || expressionContainsCall(s.Expr) {
+			return true
+		}
+		for _, clause := range s.Cases {
+			if statementContainsCall(clause) {
+				return true
+			}
+		}
+	case *ast.CaseClause:
+		if expressionsContainCall(s.Values) {
+			return true
+		}
+		for _, child := range s.Body {
+			if statementContainsCall(child) {
+				return true
+			}
+		}
+	case *ast.TypeCaseClause:
+		for _, child := range s.Body {
+			if statementContainsCall(child) {
+				return true
+			}
+		}
+	case *ast.LockStmt, *ast.AreaStmt:
+		if s, ok := stmt.(*ast.LockStmt); ok {
+			return statementContainsCall(s.Body)
+		}
+		return statementContainsCall(stmt.(*ast.AreaStmt).Body)
+	}
+	return false
+}
+
+func expressionsContainCall(exprs []ast.Expression) bool {
+	for _, expr := range exprs {
+		if expressionContainsCall(expr) {
+			return true
+		}
+	}
+	return false
+}
+
+func expressionContainsCall(expr ast.Expression) bool {
+	if expr == nil {
 		return false
 	}
-	if value.Type() == target {
+	switch e := expr.(type) {
+	case *ast.CallExpr:
 		return true
-	}
-	switch value.Kind() {
-	case reflect.Interface:
-		if value.IsNil() {
-			return false
-		}
-		return astContainsNodeSeen(value.Elem(), target, seen)
-	case reflect.Pointer:
-		if value.IsNil() {
-			return false
-		}
-		ptr := value.Pointer()
-		if ptr != 0 && seen[ptr] {
-			return false
-		}
-		if ptr != 0 {
-			seen[ptr] = true
-		}
-		return astContainsNodeSeen(value.Elem(), target, seen)
-	case reflect.Struct:
-		for i := 0; i < value.NumField(); i++ {
-			if astContainsNodeSeen(value.Field(i), target, seen) {
+	case *ast.PrefixExpr:
+		return expressionContainsCall(e.Right)
+	case *ast.ReceiveExpr:
+		return expressionContainsCall(e.Expr)
+	case *ast.AsyncExpr:
+		return expressionContainsCall(e.Fn)
+	case *ast.BinaryExpr:
+		return expressionContainsCall(e.Left) || expressionContainsCall(e.Right)
+	case *ast.IndexExpr:
+		return expressionContainsCall(e.Left) || expressionContainsCall(e.Index)
+	case *ast.MemberExpr:
+		return expressionContainsCall(e.Object)
+	case *ast.GenericInstExpr:
+		return expressionContainsCall(e.Left)
+	case *ast.SliceExpr:
+		return expressionContainsCall(e.Left) || expressionContainsCall(e.Low) || expressionContainsCall(e.High)
+	case *ast.SliceLiteral:
+		return expressionsContainCall(e.Elements)
+	case *ast.ArrayLiteral:
+		return expressionsContainCall(e.Elements)
+	case *ast.StructLiteral:
+		for _, field := range e.Fields {
+			if field != nil && expressionContainsCall(field.Value) {
 				return true
 			}
 		}
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < value.Len(); i++ {
-			if astContainsNodeSeen(value.Index(i), target, seen) {
+	case *ast.MapLiteral:
+		for _, entry := range e.Entries {
+			if entry != nil && (expressionContainsCall(entry.Key) || expressionContainsCall(entry.Value)) {
 				return true
 			}
 		}
+	case *ast.TypeAssertExpr:
+		return expressionContainsCall(e.Expr)
+	case *ast.FuncLit:
+		return statementContainsCall(e.Body)
 	}
 	return false
 }

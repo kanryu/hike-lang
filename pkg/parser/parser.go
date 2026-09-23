@@ -342,7 +342,12 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 					if p.tokens[candidate].Type != token.IDENT {
 						break
 					}
-					if candidate+1 < len(p.tokens) && p.tokens[candidate+1].Type == token.IDENT {
+					// The shared type may start with any type-expression token,
+					// not only an identifier. For example, Go permits
+					// `params, returns []Type`.
+					if candidate+1 < len(p.tokens) &&
+						p.tokens[candidate+1].Type != token.COMMA &&
+						p.tokens[candidate+1].Type != token.RPAREN {
 						names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
 						typeIdx = candidate + 1
 						break
@@ -732,15 +737,27 @@ func (p *Parser) parseImportDecl() []*ast.ImportDecl {
 	if p.curTokenIs(token.LPAREN) {
 		for !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.EOF) {
 			p.nextToken()
+			alias := ""
+			if p.curTokenIs(token.IDENT) {
+				alias = p.curToken.Literal
+				p.nextToken()
+			}
 			if p.curTokenIs(token.STRING) {
-				imports = append(imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
+				imports = append(imports, &ast.ImportDecl{Token: p.curToken, Alias: alias, Path: p.curToken.Literal})
 				p.log(fmt.Sprintf("[%d:%d] Imported '%s'", p.curToken.Line, p.curToken.Col, p.curToken.Literal))
 			}
 		}
 		p.expectPeek(token.RPAREN)
-	} else if p.curTokenIs(token.STRING) {
-		imports = append(imports, &ast.ImportDecl{Token: p.curToken, Path: p.curToken.Literal})
-		p.log(fmt.Sprintf("[%d:%d] Imported '%s'", p.curToken.Line, p.curToken.Col, p.curToken.Literal))
+	} else {
+		alias := ""
+		if p.curTokenIs(token.IDENT) {
+			alias = p.curToken.Literal
+			p.nextToken()
+		}
+		if p.curTokenIs(token.STRING) {
+			imports = append(imports, &ast.ImportDecl{Token: p.curToken, Alias: alias, Path: p.curToken.Literal})
+			p.log(fmt.Sprintf("[%d:%d] Imported '%s'", p.curToken.Line, p.curToken.Col, p.curToken.Literal))
+		}
 	}
 	return imports
 }
@@ -787,7 +804,8 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	stmt.Name = p.parseIdentifier()
 	p.nextToken()
 
-	if p.curTokenIs(token.LBRACKET) {
+	// A leading [] is a slice type, not a type-parameter list.
+	if p.curTokenIs(token.LBRACKET) && !p.peekTokenIs(token.RBRACKET) {
 		stmt.TypeParams = p.parseTypeParams()
 		p.nextToken()
 	}
@@ -997,10 +1015,51 @@ func (p *Parser) parseInterfaceMethods(it *ast.InterfaceType) {
 		if !p.peekTokenIs(token.RPAREN) {
 			p.nextToken()
 			for {
+				// Interface method signatures may use Go's grouped parameter
+				// form, for example SetControlPosition(index, depth int).
+				// Interface methods only retain the parameter types, so skip
+				// all names in the group before parsing the shared type.
+				groupedNames := false
+				groupedCount := 0
+				if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
+					idx := p.curIdx()
+					// Scan all comma-separated identifiers.  The token after the
+					// last identifier is the shared type in forms such as
+					// `next, breakTarget, continueTarget int`.
+					candidate := idx
+					nameCount := 0
+					for candidate < len(p.tokens) && p.tokens[candidate].Type == token.IDENT {
+						nameCount++
+						candidate++
+						if candidate >= len(p.tokens) || p.tokens[candidate].Type != token.COMMA ||
+							candidate+1 >= len(p.tokens) || p.tokens[candidate+1].Type != token.IDENT {
+							break
+						}
+						candidate++
+					}
+					if candidate < len(p.tokens) && p.tokens[candidate].Type != token.COMMA &&
+						p.tokens[candidate].Type != token.RPAREN {
+						groupedNames = true
+						groupedCount = nameCount
+					}
+				}
+				if groupedNames {
+					for p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+						p.nextToken()
+					}
+				}
 				if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
 					p.nextToken()
 				}
-				paramTypes = append(paramTypes, p.parseTypeExpr())
+				typeExpr := p.parseTypeExpr()
+				if groupedCount > 0 {
+					for i := 0; i < groupedCount; i++ {
+						paramTypes = append(paramTypes, typeExpr)
+					}
+				} else {
+					paramTypes = append(paramTypes, typeExpr)
+				}
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()
 					if p.peekTokenIs(token.RPAREN) {
@@ -1052,6 +1111,11 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.SEMICOLON:
 		return nil
 	case token.VAR:
+		return p.parseVarStmt()
+	case token.CONST:
+		// Go permits local const declarations.  They share the same AST
+		// assignment shape as local variables; semantic analysis can enforce
+		// any const-specific restrictions later.
 		return p.parseVarStmt()
 	case token.IF:
 		return p.parseIfStmt()

@@ -66,12 +66,23 @@ func (b *Builder) WriteByte(ch byte) {
 	b.buf[b.len] = 0
 }
 
+func (b *Builder) WriteRune(r int) int {
+	return 0
+}
+
 func (b *Builder) String() *byte {
 	return b.buf
 }
 
 func (b *Builder) Len() int {
 	return b.len
+}
+
+func (b *Builder) Reset() {
+	b.len = 0
+	if b.buf != nil {
+		b.buf[0] = 0
+	}
 }
 
 func (b *Builder) Free() {

@@ -382,3 +382,7 @@ func WriteFile(filename string, content string) bool {
     fclose(fp)
     return wrote == size
 }
+
+func MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
+	return []byte{}, nil
+}

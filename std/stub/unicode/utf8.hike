@@ -1,0 +1,8 @@
+package utf8
+
+func DecodeRuneInString(s string) (rune, int) {
+	if len(s) == 0 {
+		return rune(0), 0
+	}
+	return rune(s[0]), 1
+}

@@ -1,5 +1,20 @@
 package bytes
 
+// Buffer is the small subset of bytes.Buffer required by the Go-Hike
+// self-hosting code generator. Its zero value is ready for use.
+type Buffer struct {
+    data []byte
+}
+
+func (b *Buffer) WriteString(s string) int {
+    b.data = append(b.data, []byte(s)...)
+    return len(s)
+}
+
+func (b *Buffer) Bytes() []byte {
+    return b.data
+}
+
 // Equal reports whether a and b are the same byte sequence.
 func Equal(a []byte, b []byte) bool {
     if len(a) != len(b) {
