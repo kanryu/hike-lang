@@ -1,19 +1,13 @@
 package main
 
 import (
-	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"hikec-go/pkg/mod"
 )
@@ -139,31 +133,60 @@ func downloadModuleArchive(rootDir, destination, modulePath, version string) err
 	if !strings.HasPrefix(modulePath, "github.com/") {
 		return fmt.Errorf("source archives are currently supported for github.com modules only: %s", modulePath)
 	}
-	archiveURL := "https://" + modulePath + "/archive/refs/tags/" + url.PathEscape(version) + ".tar.gz"
-	client := &http.Client{Timeout: 2 * time.Minute}
-	response, err := client.Get(archiveURL)
-	if err != nil {
-		return fmt.Errorf("download %s: %w", archiveURL, err)
+	depsRoot := filepath.Join(rootDir, ".hike", "deps")
+	if _, err := exec.LookPath("curl.exe"); err != nil {
+		if _, fallbackErr := exec.LookPath("curl"); fallbackErr != nil {
+			return fmt.Errorf("curl is required to download source archives")
+		}
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s returned HTTP %s", archiveURL, response.Status)
+	if _, err := exec.LookPath("tar.exe"); err != nil {
+		if _, fallbackErr := exec.LookPath("tar"); fallbackErr != nil {
+			return fmt.Errorf("tar is required to extract source archives")
+		}
+	}
+	archiveURL := "https://" + modulePath + "/archive/refs/tags/" + escapeArchiveVersion(version) + ".tar.gz"
+	archiveFile, err := os.CreateTemp(depsRoot, ".source-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("create archive file: %w", err)
+	}
+	archivePath := archiveFile.Name()
+	if err := archiveFile.Close(); err != nil {
+		_ = os.Remove(archivePath)
+		return err
+	}
+	defer os.Remove(archivePath)
+
+	curl := "curl.exe"
+	if _, err := exec.LookPath(curl); err != nil {
+		curl = "curl"
+	}
+	download := exec.Command(curl, "--location", "--fail", "--silent", "--show-error", "--output", archivePath, archiveURL)
+	if output, runErr := download.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("download %s: %w\n%s", archiveURL, runErr, strings.TrimSpace(string(output)))
 	}
 
-	depsRoot := filepath.Join(rootDir, ".hike", "deps")
 	stage, err := os.MkdirTemp(depsRoot, ".archive-*")
 	if err != nil {
 		return fmt.Errorf("create archive staging directory: %w", err)
 	}
 	defer os.RemoveAll(stage)
 
-	gz, err := gzip.NewReader(response.Body)
-	if err != nil {
-		return fmt.Errorf("open source archive: %w", err)
+	tar := "tar.exe"
+	if _, err := exec.LookPath(tar); err != nil {
+		tar = "tar"
 	}
-	defer gz.Close()
-	if err := extractSourceArchive(gz, stage); err != nil {
-		return fmt.Errorf("extract %s: %w", modulePath, err)
+	archiveArg, err := filepath.Rel(depsRoot, archivePath)
+	if err != nil {
+		return fmt.Errorf("resolve archive path: %w", err)
+	}
+	stageArg, err := filepath.Rel(depsRoot, stage)
+	if err != nil {
+		return fmt.Errorf("resolve staging path: %w", err)
+	}
+	extract := exec.Command(tar, "-xzf", archiveArg, "-C", stageArg, "--strip-components=1")
+	extract.Dir = depsRoot
+	if output, runErr := extract.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("extract %s: %w\n%s", modulePath, runErr, strings.TrimSpace(string(output)))
 	}
 
 	if err := os.RemoveAll(destination); err != nil {
@@ -179,61 +202,18 @@ func downloadModuleArchive(rootDir, destination, modulePath, version string) err
 	return nil
 }
 
-func extractSourceArchive(source io.Reader, destination string) error {
-	reader := tar.NewReader(source)
-	prefix := ""
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		name := filepath.ToSlash(header.Name)
-		parts := strings.Split(name, "/")
-		if len(parts) < 2 {
-			continue
-		}
-		if prefix == "" {
-			prefix = parts[0] + "/"
-		}
-		if !strings.HasPrefix(name, prefix) {
-			return fmt.Errorf("archive contains multiple roots")
-		}
-		rel := strings.TrimPrefix(name, prefix)
-		if rel == "" {
-			continue
-		}
-		if filepath.IsAbs(filepath.FromSlash(rel)) || rel == ".." || strings.HasPrefix(rel, "../") {
-			return fmt.Errorf("archive path escapes destination: %q", header.Name)
-		}
-		target := filepath.Join(destination, filepath.FromSlash(rel))
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
-			}
-			file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode)&0777)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(file, reader)
-			closeErr := file.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		case tar.TypeSymlink, tar.TypeLink:
-			return fmt.Errorf("archive links are not supported: %q", header.Name)
+func escapeArchiveVersion(version string) string {
+	// Release versions are expected to be tags such as v0.1.0. Keep the
+	// accepted character set narrow because this value becomes a URL path
+	// component passed to curl without a shell.
+	var b strings.Builder
+	for _, r := range version {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' || r == '/' {
+			b.WriteRune(r)
 		}
 	}
+	return b.String()
 }
 
 func ensureRequirements(module *mod.Module, requests map[string]string) error {

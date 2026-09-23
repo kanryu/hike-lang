@@ -136,5 +136,7 @@ external module copy.
 ## Current scope
 
 The source-archive path currently supports GitHub module paths. Repository
-checkout mode uses Git, while release mode intentionally installs only source
-files and does not leave a `.git` directory in the dependency tree.
+checkout mode uses Git. Release mode invokes the platform's `curl` command to
+download the tagged archive and `tar` to extract it, then installs only source
+files and does not leave a `.git` directory in the dependency tree. Both
+commands must be available on the host when installing an exact release.
