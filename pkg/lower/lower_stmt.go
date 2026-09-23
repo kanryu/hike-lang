@@ -1895,10 +1895,31 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 	var initFnName, nextChanFnName string
 	var nextChanFn *sema.FuncType
 	var finalRecv hir.Value
+	var ifaceVal *hir.Reg
+	var initMethodIndex, nextChanMethodIndex int
+	_, isInterface := xType.(*sema.InterfaceType)
 
 	objPtr := s.root.Expr.LowerStructPtr(targetExpr)
-	initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
-	nextChanFnName, nextChanFn, _, hasNextChan = s.root.Call.ResolveMethod(xType, "NextChannel", objPtr)
+	if iface, ok := xType.(*sema.InterfaceType); ok && !iface.IsAny() {
+		initMethod, initIdx := iface.GetMethod("InitIterator")
+		nextMethod, nextIdx := iface.GetMethod("NextChannel")
+		if initMethod != nil && nextMethod != nil {
+			initMethodIndex = initIdx
+			nextChanMethodIndex = nextIdx
+			nextChanFn = &sema.FuncType{
+				Name:        nextMethod.Name,
+				ParamTypes:  nextMethod.ParamTypes,
+				ReturnTypes: nextMethod.ReturnTypes,
+			}
+			hasInit = true
+			hasNextChan = true
+			ifaceVal = s.root.nextReg(iface)
+			s.root.emit(&hir.InstrLoad{Dst: ifaceVal, Ptr: objPtr})
+		}
+	} else {
+		initFnName, _, finalRecv, hasInit = s.root.Call.ResolveMethod(xType, "InitIterator", objPtr)
+		nextChanFnName, nextChanFn, _, hasNextChan = s.root.Call.ResolveMethod(xType, "NextChannel", objPtr)
+	}
 
 	if strings.Contains(semaTypeName(xType), "__") {
 		parts := strings.SplitN(strings.TrimPrefix(semaTypeName(xType), "*"), "__", 2)
@@ -1934,28 +1955,44 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 		if finalRecv == nil {
 			finalRecv = objPtr
 		}
-		if initFnMeta := s.root.semaCtx.Functions[initFnName]; initFnMeta != nil && len(initFnMeta.ParamTypes) > 0 {
-			_, isPtrExpected := initFnMeta.ParamTypes[0].(*sema.PointerType)
-			_, isPtrActual := finalRecv.Type().(*sema.PointerType)
-			if isPtrExpected && !isPtrActual {
-				allocaTmp := s.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
-				s.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
-				s.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
-				finalRecv = allocaTmp
-			} else if !isPtrExpected && isPtrActual {
-				ptrType := finalRecv.Type().(*sema.PointerType)
-				loadReg := s.root.nextReg(ptrType.Base)
-				s.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
-				finalRecv = loadReg
+		if !isInterface {
+			if initFnMeta := s.root.semaCtx.Functions[initFnName]; initFnMeta != nil && len(initFnMeta.ParamTypes) > 0 {
+				_, isPtrExpected := initFnMeta.ParamTypes[0].(*sema.PointerType)
+				_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+				if isPtrExpected && !isPtrActual {
+					allocaTmp := s.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+					s.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+					s.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+					finalRecv = allocaTmp
+				} else if !isPtrExpected && isPtrActual {
+					ptrType := finalRecv.Type().(*sema.PointerType)
+					loadReg := s.root.nextReg(ptrType.Base)
+					s.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+					finalRecv = loadReg
+				}
 			}
 		}
 
 		sizeReg := s.root.nextReg(sema.TypeInt)
-		s.root.emit(&hir.InstrCallStatic{Dst: sizeReg, CalleeName: initFnName, Args: []hir.Value{finalRecv, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}}})
+		if isInterface {
+			s.root.emit(&hir.InstrCallIface{
+				Dst:         sizeReg,
+				IfaceVal:    ifaceVal,
+				MethodIndex: initMethodIndex,
+				MethodName:  "InitIterator",
+				Args:        []hir.Value{&hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}},
+			})
+		} else {
+			s.root.emit(&hir.InstrCallStatic{Dst: sizeReg, CalleeName: initFnName, Args: []hir.Value{finalRecv, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}}})
+		}
 
 		bufReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		s.root.emit(&hir.InstrAllocaDynamic{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
-		s.root.emit(&hir.InstrCallStatic{CalleeName: initFnName, Args: []hir.Value{finalRecv, bufReg}})
+		if isInterface {
+			s.root.emit(&hir.InstrCallIface{IfaceVal: ifaceVal, MethodIndex: initMethodIndex, MethodName: "InitIterator", Args: []hir.Value{bufReg}})
+		} else {
+			s.root.emit(&hir.InstrCallStatic{CalleeName: initFnName, Args: []hir.Value{finalRecv, bufReg}})
+		}
 
 		var elemType sema.Type = sema.TypeInt
 		if len(nextChanFn.ReturnTypes) >= 1 {
@@ -2069,7 +2106,11 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 			retTupleType = &sema.TupleType{Types: nextChanFn.ReturnTypes}
 		}
 		nextRes := s.root.nextReg(retTupleType)
-		s.root.emit(&hir.InstrCallStatic{Dst: nextRes, CalleeName: nextChanFnName, Args: []hir.Value{finalRecv, bufReg}})
+		if isInterface {
+			s.root.emit(&hir.InstrCallIface{Dst: nextRes, IfaceVal: ifaceVal, MethodIndex: nextChanMethodIndex, MethodName: "NextChannel", Args: []hir.Value{bufReg}})
+		} else {
+			s.root.emit(&hir.InstrCallStatic{Dst: nextRes, CalleeName: nextChanFnName, Args: []hir.Value{finalRecv, bufReg}})
+		}
 		okReg := s.root.nextReg(sema.TypeBool)
 		s.root.emit(&hir.InstrExtractValue{Dst: okReg, Agg: nextRes, Index: 1})
 		if structuredLoop != nil {

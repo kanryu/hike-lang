@@ -2104,6 +2104,22 @@ func (c *Context) CheckAsyncIterable(t Type) (Type, *FuncType, *FuncType) {
 	if t == nil {
 		return nil, nil, nil
 	}
+	// Interface values are dispatched dynamically by the lowerer.  They do
+	// not have entries in Context.Methods, so looking them up by receiver name
+	// would incorrectly reject an otherwise valid AsyncIterable interface.
+	if iface, ok := t.(*InterfaceType); ok && !iface.IsAny() {
+		initMethod, _ := iface.GetMethod("InitIterator")
+		nextMethod, _ := iface.GetMethod("NextChannel")
+		if initMethod == nil || nextMethod == nil || len(nextMethod.ReturnTypes) == 0 {
+			return nil, nil, nil
+		}
+		if _, ok := nextMethod.ReturnTypes[0].(*ChanType); !ok {
+			return nil, nil, nil
+		}
+		return nextMethod.ReturnTypes[0].(*ChanType).Elem,
+			&FuncType{Name: initMethod.Name, ParamTypes: initMethod.ParamTypes, ReturnTypes: initMethod.ReturnTypes},
+			&FuncType{Name: nextMethod.Name, ParamTypes: nextMethod.ParamTypes, ReturnTypes: nextMethod.ReturnTypes}
+	}
 	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
 

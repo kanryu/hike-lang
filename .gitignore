@@ -27,7 +27,7 @@ output_*.ll
 *.prof
 /vendor/
 .gocache*
-.go-cache*
+.*go-cache*
 .codex-area-cache*
 .region-test-*/
 .region-case-*/
