@@ -89,24 +89,32 @@ including source-level stepping and return-value inspection.
 
 The compiler currently supports LLVM IR and WAT generation, native and
 wasm32/WABT builds, generic type/function specialization, closures with escape
-analysis, interfaces, collections, inline assembly, region allocation, and an
-automated native/WASM test suite. Recent implementation work has also
+analysis, interfaces, collections, inline assembly, region allocation,
+threadable and concurrent module variables, and an automated native/WASM test
+suite. Recent implementation work has also
 established a length-aware string representation with shared substring views,
 reference counting, and copy-on-write mutation.
 
-The project remains experimental. Region allocation is an opt-in,
-function-scoped arena strategy, and complete compiler-wide lifetime inference
-for every temporary and shared string buffer is not finished. See the linked
-design documents below for the exact implementation boundaries.
+Parts of the test suite already use a Hike-implemented compiler as a
+self-hosted prerequisite. Native self-hosting is therefore exercised, while
+running the self-hosted Hike compiler after compiling it to WebAssembly still
+requires validation.
+
+The project remains experimental. Region allocation and area allocation are
+explicit memory models, and complete compiler-wide lifetime inference for every
+temporary and shared string buffer is not finished. See the linked design
+documents below for the exact implementation boundaries.
 
 ### Documentation overview
 
 | Document | Summary |
 | --- | --- |
 | [`alloc-region.md`](alloc-region.md) | Region allocation, arena lifetime, escape promotion, diagnostics, examples, and limitations. |
+| [`area-allocation.md`](area-allocation.md) | Area blocks, scoped memory reuse, deep-copy requirements, and native/WASM behavior. |
 | [`encoding.md`](encoding.md) | UTF-8 rules, string and buffer layouts, shared substring views, reference counting, and copy-on-write. |
 | [`wasm.md`](wasm.md) | wasm32 target behavior, JavaScript runtime integration, exports, memory access, and testing. |
 | [`concurrency.md`](concurrency.md) | Async tasks, channels, worker synchronization, closure transfer, and generated task bridges. |
+| [`thread-variables.md`](thread-variables.md) | Threadable and concurrent module variables, visibility, storage, and synchronization rules. |
 | [`eventloop.md`](eventloop.md) | Event-loop abstractions built on channels, task invocation, and asynchronous result handling. |
 | [`build-constraints-and-assembly.md`](build-constraints-and-assembly.md) | Build constraints and the inline assembly syntax and lowering rules. |
 | [`without_cgo.md`](without_cgo.md) | C-ABI integration without cgo, `.syso` builds, and ownership rules at language boundaries. |
@@ -143,6 +151,9 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 * **Built-in Module Management**: `hike.mod` handles package imports and directory tree remapping (`replace`).
 * **Dual WebAssembly Backends**: Use LLVM/Clang for an optimized `wasm32` module, or WABT for direct WAT-to-Wasm generation and browser-oriented debugging.
 * **Optional Region Allocation**: `--alloc=region` groups eligible function-local allocations into bump arenas and releases them in O(1) at the region boundary.
+* **Scoped Area Memory**: `area(...) { ... }` provides explicit, thread-local scoped storage with bulk release at block exit; values that outlive the block must be copied explicitly.
+* **Threadable Module Variables**: Threadable variables are isolated per worker thread, while concurrent variables provide language-level atomic or locked access across workers.
+* **Practical Multithreading**: Area memory, threadable module variables, concurrent module variables, channels, and `Async` combine to make common multithreaded programs easier to express without requiring a garbage collector or an always-on scheduler.
 * **Length-Aware Strings**: Native strings use a fat representation with a backing pointer, byte offset, and byte length; substring views share storage and writes use copy-on-write when necessary.
 * **Source-Level DWARF Debugging**: Generates debug metadata for VS Code, GDB, and LLDB, plus Wasm DWARF custom sections for Chrome DevTools when using `-target wabt -g`.
 
@@ -648,9 +659,13 @@ func consume() int {
 }
 ```
 
-The `InitIterator` and `NextChannel` method pair is the `AsyncIterable[T]` protocol defined in `std/collections`. `for value := range <-stream` receives blocks in channel order and can stop early with `break`.
+The `InitIterator` and `NextChannel` method pair is the `AsyncIterable[T]` protocol defined in `std/collections`. `for value := range <-stream` receives blocks in channel order and can stop early with `break`. Both concrete streams and interface-typed streams are lowered through their respective method dispatch paths, including the concurrent WebAssembly runtime.
 
-Current limitation: asynchronous range lowering resolves these methods on the concrete stream type. Interface-typed streams such as a value returned as `collections.AsyncIterable[int]` are not yet supported reliably and should remain concrete until interface dispatch is extended for this path.
+For memory-heavy or highly concurrent code, combine this protocol with the
+memory models described in [`area-allocation.md`](area-allocation.md) and
+[`thread-variables.md`](thread-variables.md). Area blocks provide explicit
+scoped storage, threadable variables avoid cross-worker sharing, and concurrent
+variables provide synchronized shared state.
 
 ---
 
@@ -1279,7 +1294,7 @@ Unknown non-option arguments are treated as source files or directories. The
 
 ## Roadmap
 
-* [ ] Interface-valued `AsyncIterable` dispatch for `for value := range <-stream`
+* [x] Interface-valued `AsyncIterable` dispatch for `for value := range <-stream`
 
 
 * [x] Optional function-scoped region allocation (`--alloc=region`)
@@ -1289,7 +1304,13 @@ Unknown non-option arguments are treated as source files or directories. The
 * [ ] Package registry and remote dependency resolution
 
 
-* [ ] Self-hosting compiler frontend in Hike
+* [x] Self-hosting compiler frontend in Hike for the currently covered test paths
+* [ ] Validate the self-hosted Hike compiler when built and executed as WebAssembly
+
+The memory and concurrency models are intentionally explicit: area blocks,
+threadable variables, and concurrent variables are available today, while
+additional lifetime diagnostics and broader platform coverage remain future
+work.
 
 
 
