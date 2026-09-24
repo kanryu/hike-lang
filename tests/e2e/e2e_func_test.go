@@ -180,7 +180,11 @@ func main() int {
     return 0
 }
 `,
-		ExpectedOutRegex: `(?s)^AREA1_PTR=0x[0-9a-fA-F]+ VALUE=first\nAREA2_PTR=0x[0-9a-fA-F]+ VALUE=second\nOUT=first,second$`,
+		// %p is rendered with a 0x prefix by the native backend on some
+		// platforms, while the Windows backend emits the hexadecimal digits
+		// without that prefix. The test only needs to validate the pointer
+		// shape, not the platform-specific formatting.
+		ExpectedOutRegex: `(?s)^AREA1_PTR=(?:0x)?[0-9a-fA-F]+ VALUE=first\nAREA2_PTR=(?:0x)?[0-9a-fA-F]+ VALUE=second\nOUT=first,second$`,
 		ExpectedExit:     0,
 	})
 }
