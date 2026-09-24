@@ -1344,7 +1344,7 @@ Unknown non-option arguments are treated as source files or directories. The
 
 
 * [x] Optional function-scoped region allocation (`--alloc=region`)
-* [ ] Complete lexical lifetime inference and release handling for every temporary/shared string buffer
+* [x] Complete lexical lifetime inference and release handling for local string and slice values, including heap promotion for returned values and fixed-buffer reuse for repeated appends
 
 
 * [ ] Package registry and remote dependency resolution
