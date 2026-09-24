@@ -407,9 +407,10 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 	}
 
 	ptrReg := s.root.nextReg(&sema.PointerType{Base: targetType}, vd.Name.Value)
-	if vd.IsEscaped || s.root.escapedVars[vd.Name.Value] {
+	keepStringOrSliceOnHeap := len(s.root.areaStack) > 0 && s.root.isAreaHeapValue(targetType)
+	if vd.IsEscaped || s.root.escapedVars[vd.Name.Value] || keepStringOrSliceOnHeap {
 		sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(targetType)), Typ: sema.TypeInt}
-		s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: targetType})
+		s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: targetType, KeepOnHeapInArea: keepStringOrSliceOnHeap})
 	} else {
 		s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: targetType})
 	}
@@ -509,9 +510,10 @@ func (s *StmtLowerer) lowerDefineAssignment(stmt *ast.AssignStmt, rhsVals []hir.
 		}
 
 		ptrReg := s.root.nextReg(&sema.PointerType{Base: targetType}, astIDValue(ident))
-		if s.root.escapedVars[astIDValue(ident)] {
+		keepStringOrSliceOnHeap := len(s.root.areaStack) > 0 && s.root.isAreaHeapValue(targetType)
+		if s.root.escapedVars[astIDValue(ident)] || keepStringOrSliceOnHeap {
 			sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(targetType)), Typ: sema.TypeInt}
-			s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: targetType})
+			s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: targetType, KeepOnHeapInArea: keepStringOrSliceOnHeap})
 		} else {
 			s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: targetType})
 		}
@@ -718,7 +720,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				elemType = pt.Base
 			}
 			val = s.root.emitValueCoerce(val, elemType)
-			if s.root.isStringType(elemType) {
+			if s.root.isStringType(elemType) && op != "+=" {
 				oldVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: oldVal, Ptr: targetPtr})
 				s.root.releaseString(oldVal)
@@ -732,24 +734,30 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				curVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
 				if op == "+=" && s.root.isStringType(elemType) {
-					// Compound assignment bypasses LowerBinaryExpr, so string
-					// concatenation must be lowered here explicitly. Emitting a
-					// generic OpAdd would add the two string-view pointers as i32.
-					leftPtr, leftLen := s.root.stringParts(curVal)
-					rightPtr, rightLen := s.root.stringParts(val)
-					raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					s.root.emit(&hir.InstrCallStatic{
-						Dst:        raw,
-						CalleeName: s.root.BuiltinName("hike_strcat_len"),
-						Args:       []hir.Value{leftPtr, leftLen, rightPtr, rightLen},
-					})
-					length := s.root.nextReg(sema.TypeInt)
-					s.root.emit(&hir.InstrCallStatic{
-						Dst:        length,
-						CalleeName: s.root.BuiltinName("strlen"),
-						Args:       []hir.Value{raw},
-					})
-					val = s.root.makeString(raw, length)
+					// Compound assignment bypasses LowerBinaryExpr.  Use the
+					// append runtime so a uniquely owned string can reuse its
+					// 256-byte buffer instead of allocating on every +=.
+					leftPtr, leftOffset, leftLen := s.root.stringViewParts(curVal)
+					rightPtr, rightOffset, rightLen := s.root.stringViewParts(val)
+					if s.root.is32Bit {
+						raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+						s.root.emit(&hir.InstrCallStatic{
+							Dst:        raw,
+							CalleeName: s.root.BuiltinName("__hike_string_append"),
+							Args:       []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen},
+						})
+						length := s.root.nextReg(sema.TypeInt)
+						s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+						val = s.root.makeString(raw, length)
+					} else {
+						appended := s.root.nextReg(sema.TypeString)
+						s.root.emit(&hir.InstrCallStatic{
+							Dst:        appended,
+							CalleeName: s.root.BuiltinName("__hike_string_append"),
+							Args:       []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen},
+						})
+						val = appended
+					}
 					break
 				}
 				newVal := s.root.nextReg(elemType)
@@ -895,9 +903,10 @@ func (s *StmtLowerer) defineTupleElement(left ast.Expression, elemType sema.Type
 	}
 	name := astIDValue(ident)
 	ptrReg := s.root.nextReg(&sema.PointerType{Base: elemType}, name)
-	if s.root.escapedVars[name] {
+	keepStringOrSliceOnHeap := len(s.root.areaStack) > 0 && s.root.isAreaHeapValue(elemType)
+	if s.root.escapedVars[name] || keepStringOrSliceOnHeap {
 		sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(elemType)), Typ: sema.TypeInt}
-		s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: elemType})
+		s.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: elemType, KeepOnHeapInArea: keepStringOrSliceOnHeap})
 	} else {
 		s.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: elemType})
 	}
@@ -2750,13 +2759,68 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 	vals := make([]hir.Value, len(rs.Values))
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)
+		// A slice produced by an intermediate expression may still refer to
+		// an area-backed or otherwise temporary buffer.  Return an owned heap
+		// copy; a direct variable return preserves that variable's ownership.
+		if _, isSlice := val.Type().(*sema.SliceType); isSlice && !isDirectSliceIdentifier(v) {
+			val = s.root.Call.lowerDeepCopyValue(val, val.Type(), make(map[sema.Type]bool))
+		}
 		if s.root.curFunc != nil && i < len(s.root.curFunc.ReturnTypes) {
 			val = s.root.emitValueCoerce(val, s.root.curFunc.ReturnTypes[i])
 		}
 		vals[i] = val
 	}
 
+	// String concatenation creates an independent heap buffer.  The operands
+	// are no longer needed after the result has been produced, so release
+	// local string references consumed by a returned `A + B` expression.  A
+	// plain `return A` is deliberately excluded: the returned string owns the
+	// reference and must remain alive after the function's region ends.
+	for _, expr := range rs.Values {
+		if be, ok := expr.(*ast.BinaryExpr); ok && be.Operator == "+" {
+			s.releaseReturnedStringOperands(be)
+		}
+	}
+
 	s.root.terminate(&hir.InstrReturn{Vals: vals})
+}
+
+func isDirectSliceIdentifier(expr ast.Expression) bool {
+	_, ok := expr.(*ast.Identifier)
+	return ok
+}
+
+func (s *StmtLowerer) releaseReturnedStringOperands(expr *ast.BinaryExpr) {
+	seen := make(map[string]bool)
+	var visit func(ast.Expression)
+	visit = func(node ast.Expression) {
+		switch n := node.(type) {
+		case *ast.Identifier:
+			name := astIDValue(n)
+			if name == "" || seen[name] || s.root.symbols[name] == nil {
+				return
+			}
+			// Global variables are borrowed references and must not be released
+			// as if they were local ownerships.
+			if _, global := s.root.symbols[name].(*hir.GlobalVar); global {
+				return
+			}
+			if !s.root.isStringType(s.root.symbolTypes[name]) {
+				return
+			}
+			seen[name] = true
+			// Local symbols name their storage slot, while releaseString
+			// operates on the string value stored in that slot.
+			value := s.root.nextReg(s.root.symbolTypes[name])
+			s.root.emit(&hir.InstrLoad{Dst: value, Ptr: s.root.symbols[name]})
+			s.root.releaseString(value)
+		case *ast.BinaryExpr:
+			visit(n.Left)
+			visit(n.Right)
+		}
+	}
+	visit(expr.Left)
+	visit(expr.Right)
 }
 
 func (s *StmtLowerer) lowerTupleReturn(rs *ast.ReturnStmt) bool {

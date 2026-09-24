@@ -421,7 +421,7 @@ func (l *Lowerer) setBlock(bb *basicBlock) {
 }
 
 func (l *Lowerer) emit(instr hir.Instruction) {
-	if alloc, ok := instr.(*hir.InstrHeapAlloc); ok && len(l.areaStack) > 0 && !alloc.KeepOnHeap {
+	if alloc, ok := instr.(*hir.InstrHeapAlloc); ok && len(l.areaStack) > 0 && !alloc.KeepOnHeap && !alloc.KeepOnHeapInArea && !l.isAreaHeapValue(alloc.AllocType) {
 		instr = &hir.InstrAreaAlloc{
 			Dst:       alloc.Dst,
 			Area:      l.areaStack[len(l.areaStack)-1],
@@ -437,6 +437,18 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 		current := l.structuredDestination()
 		*current = append(*current, &hir.InstructionNode{Instruction: instr})
 	}
+}
+
+// Strings and slices keep their backing storage beyond the lexical area. The
+// slot holding the fat value is also heap-backed when its semantic type is
+// string or slice. Calls made from the area are lowered as separate functions
+// and are intentionally outside this decision.
+func (l *Lowerer) isAreaHeapValue(t sema.Type) bool {
+	if l.isStringType(t) {
+		return true
+	}
+	_, isSlice := t.(*sema.SliceType)
+	return isSlice
 }
 
 func (l *Lowerer) terminate(term hir.Terminator) {

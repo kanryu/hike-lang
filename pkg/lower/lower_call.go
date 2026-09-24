@@ -191,7 +191,7 @@ func (c *CallLowerer) lowerStringToCString(strVal hir.Value) hir.Value {
 	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
 
 	bufReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
 
 	c.root.emit(&hir.InstrCallStatic{
 		CalleeName: c.root.BuiltinName("memcpy"),
@@ -222,7 +222,7 @@ func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
 	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
 
 	bufReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
 
 	c.root.emit(&hir.InstrCallStatic{
 		CalleeName: c.root.BuiltinName("memcpy"),
@@ -490,9 +490,10 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 
 	mallocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrHeapAlloc{
-		Dst:       mallocRaw,
-		Size:      &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt},
-		AllocType: sema.TypeByte,
+		Dst:              mallocRaw,
+		Size:             &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt},
+		AllocType:        sema.TypeByte,
+		KeepOnHeapInArea: true,
 	})
 
 	typedBase := c.root.nextReg(&sema.PointerType{Base: elemType})
@@ -1811,7 +1812,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrBinary{Dst: newBytes, Op: hir.OpMul, L: newCap, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 
 	newRawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{Dst: newRawPtr, Size: newBytes, AllocType: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: newRawPtr, Size: newBytes, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
 
 	newTypedPtr := c.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	c.root.emit(&hir.InstrCast{Dst: newTypedPtr, Val: newRawPtr, ToType: &sema.PointerType{Base: slType.Elem}})
@@ -1882,7 +1883,7 @@ func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, s
 	totalBytes := c.root.nextReg(sema.TypeInt)
 	c.root.emit(&hir.InstrBinary{Dst: totalBytes, Op: hir.OpMul, L: totalLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{Dst: raw, Size: totalBytes, AllocType: sema.TypeByte})
+	c.root.emit(&hir.InstrHeapAlloc{Dst: raw, Size: totalBytes, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
 	oldBytes := c.root.nextReg(sema.TypeInt)
 	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	srcBytes := c.root.nextReg(sema.TypeInt)

@@ -780,7 +780,7 @@ func (e *ExprLowerer) lowerSliceLiteral(node *ast.SliceLiteral) hir.Value {
 	totalBytes := count * elemSize
 
 	mallocRaw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	e.root.emit(&hir.InstrHeapAlloc{Dst: mallocRaw, Size: &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt}, AllocType: sema.TypeByte})
+	e.root.emit(&hir.InstrHeapAlloc{Dst: mallocRaw, Size: &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt}, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
 
 	typedBase := e.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	e.root.emit(&hir.InstrCast{Dst: typedBase, Val: mallocRaw, ToType: &sema.PointerType{Base: slType.Elem}})

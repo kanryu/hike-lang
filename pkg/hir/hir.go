@@ -219,6 +219,9 @@ type InstrHeapAlloc struct {
 	AllocType sema.Type
 	// KeepOnHeap is true for values that escape the current function.
 	KeepOnHeap bool
+	// KeepOnHeapInArea prevents area lowering for backing storage belonging
+	// to a string or slice.  The allocation mode is otherwise unchanged.
+	KeepOnHeapInArea bool
 }
 
 // InstrRegionBegin/Alloc/End are emitted only when region allocation is enabled.

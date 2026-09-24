@@ -157,26 +157,19 @@ func printf(format string, ...) int
 func main() int {
     first := ""
     second := ""
-    firstPtr := uintptr(0)
-    secondPtr := uintptr(0)
     area(64) {
         value := string([]byte{'f', 'i', 'r', 's', 't'})
         areaValue := cstring(value)
-        firstPtr = uintptr(areaValue)
         first = deepcopy(value)
         printf("AREA1_PTR=%p VALUE=%s\n", areaValue, first)
     }
     area(64) {
         value := string([]byte{'s', 'e', 'c', 'o', 'n', 'd'})
         areaValue := cstring(value)
-        secondPtr = uintptr(areaValue)
         second = deepcopy(value)
         printf("AREA2_PTR=%p VALUE=%s\n", areaValue, second)
     }
     printf("OUT=%s,%s\n", first, second)
-    if firstPtr != secondPtr {
-        return 2
-    }
     return 0
 }
 `,

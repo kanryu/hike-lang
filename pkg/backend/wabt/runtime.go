@@ -23,7 +23,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_map_create": true, "__hike_map_len": true,
 	"__hike_map_set": true, "__hike_map_get": true,
 	"__hike_map_delete":    true,
-	"__hike_string_retain": true, "__hike_string_release": true,
+	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_append": true,
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_fatal": true,
 	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
 	"__hike_lock": true, "__hike_unlock": true,
@@ -64,6 +64,8 @@ func normalizeWabtRuntimeName(name string) string {
 		return "__hike_string_retain"
 	case "__hike_string_release32":
 		return "__hike_string_release"
+	case "__hike_string_append32":
+		return "__hike_string_append"
 	case "__hike_region_begin32":
 		return "__hike_region_begin"
 	case "__hike_region_alloc32":
@@ -330,6 +332,12 @@ var wasmRuntime = map[string]runtimeFunc{
     (memory.copy (i32.add (local.get $p) (local.get $alen)) (local.get $b) (local.get $blen))
     (i32.store8 (i32.add (local.get $p) (i32.add (local.get $alen) (local.get $blen))) (i32.const 0))
 	(local.get $p))`},
+	"__hike_string_append": runtimeFunc{deps: []string{"hike_strcat_len"}, body: `(func $__hike_string_append (param $a i32) (param $offset i32) (param $alen i32) (param $b i32) (param $boffset i32) (param $blen i32) (result i32)
+    (call $hike_strcat_len
+      (i32.add (local.get $a) (local.get $offset))
+      (local.get $alen)
+      (i32.add (local.get $b) (local.get $boffset))
+      (local.get $blen)))`},
 	"__hike_map_create": runtimeFunc{deps: []string{"calloc"}, body: `(func $__hike_map_create (param $cap i32) (param $is_str i32) (result i32)
     (local $m i32) (local $n i32) (local $buckets i32)
     (local.set $n (select (local.get $cap) (i32.const 16) (i32.ge_u (local.get $cap) (i32.const 16))))

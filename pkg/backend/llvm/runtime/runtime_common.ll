@@ -843,6 +843,69 @@ return_copy:
   ret { i8*, i32, i32 } %copy2
 }
 
+; Append to a string variable. Unique buffers reserve 256 bytes on the first
+; append and are reused while the accumulated string fits in that capacity.
+define internal { i8*, i32, i32 } @__hike_string_append(i8* %base, i32 %offset, i32 %len, i8* %b, i32 %blen) #0 {
+entry:
+  %total = add i32 %len, %blen
+  %len64 = zext i32 %len to i64
+  %blen64 = zext i32 %blen to i64
+  %raw = getelementptr inbounds i8, i8* %base, i64 -8
+  %cap_ptr = bitcast i8* %raw to i32*
+  %cap = load i32, i32* %cap_ptr
+  %ref = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref32 = bitcast i8* %ref to i32*
+  %count = load i32, i32* %ref32
+  %available = sub i32 %cap, %offset
+  %fits = icmp uge i32 %available, %total
+  %unique = icmp eq i32 %count, 1
+  %reuse_ok = and i1 %unique, %fits
+  br i1 %reuse_ok, label %reuse, label %copy
+reuse:
+  %dst = getelementptr inbounds i8, i8* %base, i32 %offset
+  %dst_b = getelementptr inbounds i8, i8* %dst, i32 %len
+  call i8* @memcpy(i8* %dst_b, i8* %b, i64 %blen64)
+  %nul = getelementptr inbounds i8, i8* %dst, i32 %total
+  store i8 0, i8* %nul
+  %reuse0 = insertvalue { i8*, i32, i32 } undef, i8* %base, 0
+  %reuse1 = insertvalue { i8*, i32, i32 } %reuse0, i32 %offset, 1
+  %reuse2 = insertvalue { i8*, i32, i32 } %reuse1, i32 %total, 2
+  ret { i8*, i32, i32 } %reuse2
+copy:
+  %large = icmp ugt i32 %total, 256
+  %new_cap = select i1 %large, i32 %total, i32 256
+  %alloc_size32 = add i32 %new_cap, 9
+  %alloc_size = zext i32 %alloc_size32 to i64
+  %new_raw = call i8* @malloc(i64 %alloc_size)
+  %new_cap_ptr = bitcast i8* %new_raw to i32*
+  store i32 %new_cap, i32* %new_cap_ptr
+  %new_ref = getelementptr inbounds i8, i8* %new_raw, i64 4
+  %new_ref32 = bitcast i8* %new_ref to i32*
+  store i32 1, i32* %new_ref32
+  %new_data = getelementptr inbounds i8, i8* %new_raw, i64 8
+  %src = getelementptr inbounds i8, i8* %base, i32 %offset
+  call i8* @memcpy(i8* %new_data, i8* %src, i64 %len64)
+  %new_b = getelementptr inbounds i8, i8* %new_data, i32 %len
+  call i8* @memcpy(i8* %new_b, i8* %b, i64 %blen64)
+  %new_nul = getelementptr inbounds i8, i8* %new_data, i32 %total
+  store i8 0, i8* %new_nul
+  %immortal = icmp eq i32 %count, -2147483648
+  br i1 %immortal, label %return_new, label %decrement_old
+decrement_old:
+  %old_next = sub i32 %count, 1
+  store i32 %old_next, i32* %ref32
+  %old_last = icmp eq i32 %old_next, 0
+  br i1 %old_last, label %free_old, label %return_new
+free_old:
+  call void @free(i8* %raw)
+  br label %return_new
+return_new:
+  %new0 = insertvalue { i8*, i32, i32 } undef, i8* %new_data, 0
+  %new1 = insertvalue { i8*, i32, i32 } %new0, i32 0, 1
+  %new2 = insertvalue { i8*, i32, i32 } %new1, i32 %total, 2
+  ret { i8*, i32, i32 } %new2
+}
+
 ; 文字列等価比較 (hike_streq: a == b) (64-bit)
 define internal i1 @hike_streq(i8* %a, i8* %b) #0 {
 entry:
