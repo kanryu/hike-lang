@@ -1,6 +1,9 @@
 package e2e_test
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // //go:build式とGOOS/GOARCH形式のファイル名選択を検証する。
 func TestE2EBuildConstraints(t *testing.T) {
@@ -37,7 +40,12 @@ package main
 func constrainedPlatform() int { return 2 }
 `,
 		},
-		ExpectedOut:  "SELECTED=64,CONSTRAINED=1",
+		ExpectedOut: func() string {
+			if runtime.GOOS == "windows" {
+				return "SELECTED=64,CONSTRAINED=1"
+			}
+			return "SELECTED=99,CONSTRAINED=2"
+		}(),
 		ExpectedExit: 0,
 	})
 }

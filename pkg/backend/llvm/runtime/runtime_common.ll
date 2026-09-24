@@ -371,14 +371,6 @@ calc_diff:
 ; ------------------------------------------------------------------------------
 ; OS Native Threading & Synchronization (Kernel32 / Libc-Free)
 ; ------------------------------------------------------------------------------
-declare i32 @QueueUserWorkItem(i32 (i8*)*, i8*, i32)
-declare i8* @CreateEventA(i8*, i32, i32, i8*)
-declare i32 @SetEvent(i8*)
-declare i32 @WaitForSingleObject(i8*, i32)
-declare i32 @CloseHandle(i8*)
-declare void @Sleep(i32)
-declare i64 @GetTickCount64()
-
 ; ------------------------------------------------------------------------------
 ; Memory Management Types
 ; ------------------------------------------------------------------------------
@@ -391,27 +383,27 @@ declare i64 @GetTickCount64()
 
 define internal void @c_os_sleep_ms(i32 %ms) {
 entry:
-  call void @Sleep(i32 %ms)
+  call void @hike_sleep_ms(i32 %ms)
   ret void
 }
 
 define internal void @os_sleep_ms(i32 %ms) {
 entry:
-  call void @Sleep(i32 %ms)
+  call void @hike_sleep_ms(i32 %ms)
   ret void
 }
 
 define internal i64 @c_os_now_ns() {
 entry:
-  %ms = call i64 @GetTickCount64()
-  %ns = mul i64 %ms, 1000000
+  %ms = call i64 @hike_now_ns()
+  %ns = mul i64 %ms, 1
   ret i64 %ns
 }
 
 define internal i64 @os_now_ns() {
 entry:
-  %ms = call i64 @GetTickCount64()
-  %ns = mul i64 %ms, 1000000
+  %ms = call i64 @hike_now_ns()
+  %ns = mul i64 %ms, 1
   ret i64 %ns
 }
 
@@ -446,7 +438,7 @@ entry:
   %ev_null = icmp eq i8* %ev, null
   br i1 %ev_null, label %exit, label %signal_ev
 signal_ev:
-  call i32 @SetEvent(i8* %ev)
+  call i32 @hike_event_signal(i8* %ev)
   br label %exit
 exit:
   ret i32 0
@@ -484,12 +476,12 @@ set_buf:
   store i32 0, i32* %p_done
 
   ; 同期イベントの生成 (自動リセット)
-  %ev = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %ev = call i8* @hike_event_create()
   %p_ev = getelementptr inbounds %struct.__hike_task, %struct.__hike_task* %task, i32 0, i32 4
   store i8* %ev, i8** %p_ev
 
   ; OS スレッドプールへ投入 (WT_EXECUTEDEFAULT = 0)
-  call i32 @QueueUserWorkItem(i32 (i8*)* @__hike_task_worker_thunk, i8* %raw_task, i32 0)
+  call i32 @hike_thread_spawn(i32 (i8*)* @__hike_task_worker_thunk, i8* %raw_task)
 
   ret %struct.__hike_task* %task
 }
@@ -513,12 +505,12 @@ wait_ev:
   br i1 %has_ev, label %do_wait, label %poll_loop
 do_wait:
   ; INFINITE = 0xFFFFFFFF (-1)
-  call i32 @WaitForSingleObject(i8* %ev, i32 -1)
-  call i32 @CloseHandle(i8* %ev)
+  call i32 @hike_event_wait(i8* %ev, i32 -1)
+  call i32 @hike_event_destroy(i8* %ev)
   store i8* null, i8** %p_ev
   br label %get_res
 poll_loop:
-  call void @Sleep(i32 1)
+  call void @hike_sleep_ms(i32 1)
   %done_poll = load i32, i32* %p_done
   %is_done_poll = icmp ne i32 %done_poll, 0
   br i1 %is_done_poll, label %get_res, label %poll_loop
@@ -544,7 +536,7 @@ spin:
   %is_free = icmp eq i32 %prev, 0
   br i1 %is_free, label %acquired, label %wait
 wait:
-  call void @Sleep(i32 0)
+  call void @hike_sleep_ms(i32 0)
   br label %spin
 acquired:
   ret void
@@ -587,11 +579,11 @@ entry:
   store i32 0, i32* %p_cls
 
   ; 自動リセットイベントの生成 (受信側・送信側)
-  %ev_recv = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %ev_recv = call i8* @hike_event_create()
   %p_ev_r = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 8
   store i8* %ev_recv, i8** %p_ev_r
 
-  %ev_send = call i8* @CreateEventA(i8* null, i32 0, i32 0, i8* null)
+  %ev_send = call i8* @hike_event_create()
   %p_ev_s = getelementptr inbounds %struct.__hike_chan, %struct.__hike_chan* %ch, i32 0, i32 9
   store i8* %ev_send, i8** %p_ev_s
 
@@ -647,7 +639,7 @@ do_send:
 
   ; 受信待ちスレッドを起床
   %ev_r = load i8*, i8** %p_ev_r
-  call i32 @SetEvent(i8* %ev_r)
+  call i32 @hike_event_signal(i8* %ev_r)
 
   call void @__hike_chan_unlock(i32* %p_lock)
   ret void
@@ -655,7 +647,7 @@ do_send:
 full:
   call void @__hike_chan_unlock(i32* %p_lock)
   %ev_s = load i8*, i8** %p_ev_s
-  call i32 @WaitForSingleObject(i8* %ev_s, i32 10)
+  call i32 @hike_event_wait(i8* %ev_s, i32 10)
   br label %try_send
 }
 
@@ -698,7 +690,7 @@ do_recv:
 
   ; 送信待ちスレッドを起床
   %ev_s = load i8*, i8** %p_ev_s
-  call i32 @SetEvent(i8* %ev_s)
+  call i32 @hike_event_signal(i8* %ev_s)
 
   call void @__hike_chan_unlock(i32* %p_lock)
   ret void
@@ -732,7 +724,7 @@ wait_data:
   call void @__hike_chan_unlock(i32* %p_lock)
   ; 空の間は OS イベントでスリープ待機 (CPU 使用率 0%)
   %ev_r = load i8*, i8** %p_ev_r
-  call i32 @WaitForSingleObject(i8* %ev_r, i32 10)
+  call i32 @hike_event_wait(i8* %ev_r, i32 10)
   br label %try_recv
 }
 
@@ -750,10 +742,10 @@ entry:
 
   ; 待機中の全スレッドを起床させて終了状態を検知させる
   %ev_r = load i8*, i8** %p_ev_r
-  call i32 @SetEvent(i8* %ev_r)
+  call i32 @hike_event_signal(i8* %ev_r)
 
   %ev_s = load i8*, i8** %p_ev_s
-  call i32 @SetEvent(i8* %ev_s)
+  call i32 @hike_event_signal(i8* %ev_s)
 
   call void @__hike_chan_unlock(i32* %p_lock)
   ret void

@@ -14,6 +14,9 @@ hikec.exe
 *.ll
 !**/runtime.ll
 !**/runtime_wasm32.ll
+!**/runtime_common.ll
+!**/runtime_windows.ll
+!**/runtime_linux.ll
 *.bc
 *.s
 *.o

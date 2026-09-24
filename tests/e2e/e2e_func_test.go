@@ -180,7 +180,7 @@ func main() int {
     return 0
 }
 `,
-		ExpectedOutRegex: `(?s)^AREA1_PTR=[0-9a-fA-F]+ VALUE=first\nAREA2_PTR=[0-9a-fA-F]+ VALUE=second\nOUT=first,second$`,
+		ExpectedOutRegex: `(?s)^AREA1_PTR=0x[0-9a-fA-F]+ VALUE=first\nAREA2_PTR=0x[0-9a-fA-F]+ VALUE=second\nOUT=first,second$`,
 		ExpectedExit:     0,
 	})
 }

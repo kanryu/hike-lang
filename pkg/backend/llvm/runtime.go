@@ -5,20 +5,20 @@ import (
 	"strings"
 )
 
-// runtime/runtime.ll (Native 64-bit / Windows) の内容をコンパイル時に埋め込む
-//
-//go:embed runtime/runtime.ll
-var builtinRuntimeIR string
+//go:embed runtime/runtime_common.ll
+var builtinRuntimeCommonIR string
 
-// runtime/runtime_wasm32.ll (WASM32 / POSIX 互換) の内容をコンパイル時に埋め込む
-//
+//go:embed runtime/runtime_windows.ll
+var builtinRuntimeWindowsIR string
+
+//go:embed runtime/runtime_linux.ll
+var builtinRuntimeLinuxIR string
+
 //go:embed runtime/runtime_wasm32.ll
 var builtinRuntimeWasm32IR string
 
 // GetBuiltinRuntimeIR はデフォルト (Native 64-bit) のランタイム IR を返します
-func GetBuiltinRuntimeIR() string {
-	return builtinRuntimeIR
-}
+func GetBuiltinRuntimeIR() string { return builtinRuntimeWindowsIR + "\n" + builtinRuntimeCommonIR }
 
 // GetBuiltinRuntimeWasm32IR は wasm32 ターゲット向けのランタイム IR を返します
 func GetBuiltinRuntimeWasm32IR() string {
@@ -31,7 +31,13 @@ func GetRuntimeIR(targetTriple string) string {
 	if strings.Contains(t, "wasm32") || strings.Contains(t, "wasm") {
 		return builtinRuntimeWasm32IR
 	}
-	return builtinRuntimeIR
+	if strings.Contains(t, "windows") || strings.Contains(t, "msvc") {
+		return builtinRuntimeWindowsIR + "\n" + builtinRuntimeCommonIR
+	}
+	if strings.Contains(t, "linux") {
+		return builtinRuntimeLinuxIR + "\n" + builtinRuntimeCommonIR
+	}
+	return builtinRuntimeLinuxIR + "\n" + builtinRuntimeCommonIR
 }
 
 // IsRuntimeSymbol は指定されたシンボル名がランタイム IR 内で定義・宣言済みであるかを判定します

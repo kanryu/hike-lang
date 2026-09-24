@@ -31,7 +31,7 @@ var (
 		Name:   "linux",
 		Triple: "x86_64-unknown-linux-gnu",
 		IsWasm: false,
-		Cflags: "",
+		Cflags: "-pthread -lm",
 	}
 	TargetAarch64Darwin = Target{
 		Name:   "darwin",
