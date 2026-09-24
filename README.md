@@ -83,7 +83,7 @@ including source-level stepping and return-value inspection.
 
 ## Status & Environment
 
-> **Note:** Hike is currently an experimental compiler under active development. Testing and verification have been performed on **Windows and Linux using Clang/LLVM**.
+> **Note:** Hike is under active development. Full native builds and test suites are verified on **Windows and Linux using Clang/LLVM**, alongside browser/Node.js WebAssembly targets.
 
 ### Current project progress
 
@@ -100,8 +100,8 @@ self-hosted prerequisite. Native self-hosting is therefore exercised, while
 running the self-hosted Hike compiler after compiling it to WebAssembly still
 requires validation.
 
-The project remains experimental. Region allocation and area allocation are
-explicit memory models, and complete compiler-wide lifetime inference for every
+The language and memory designs are actively evolving. Region allocation and
+area allocation are explicit memory models, and complete compiler-wide lifetime inference for every
 temporary and shared string buffer is not finished. See the linked design
 documents below for the exact implementation boundaries.
 
