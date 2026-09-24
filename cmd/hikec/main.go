@@ -12,6 +12,7 @@ import (
 	"hikec-go/pkg/backend/wabt"
 	"hikec-go/pkg/codegen"
 	gocode "hikec-go/pkg/codegen/go"
+	"hikec-go/pkg/codegen/symbols"
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
@@ -52,6 +53,7 @@ func printUsage() {
 	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
+	fmt.Println("  --export-symbols <path>  Export source symbols as JSON")
 	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
 }
@@ -151,6 +153,7 @@ func runEmitIR(args []string) {
 	regionMode := false
 	goHikeMode := false
 	debugInfo := false
+	exportSymbolsPath := ""
 	verbose := false
 	var sourceFiles []string
 
@@ -184,6 +187,11 @@ func runEmitIR(args []string) {
 			goHikeMode = true
 		} else if arg == "-g" || arg == "--debug" {
 			debugInfo = true
+		} else if (arg == "--export-symbols" || arg == "-export-symbols") && i+1 < len(args) {
+			exportSymbolsPath = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--export-symbols=") || strings.HasPrefix(arg, "-export-symbols=") {
+			exportSymbolsPath = strings.SplitN(arg, "=", 2)[1]
 		} else if arg == "-cflags" && i+1 < len(args) {
 			i++
 		} else if strings.HasPrefix(arg, "-cflags=") {
@@ -233,6 +241,20 @@ func runEmitIR(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
 		os.Exit(1)
+	}
+	if exportSymbolsPath != "" {
+		file, writeErr := os.Create(exportSymbolsPath)
+		if writeErr == nil {
+			writeErr = symbols.WriteJSON(file, prog, semaCtx)
+			closeErr := file.Close()
+			if writeErr == nil {
+				writeErr = closeErr
+			}
+		}
+		if writeErr != nil {
+			fmt.Fprintf(os.Stderr, "Symbol export error: %v\n", writeErr)
+			os.Exit(1)
+		}
 	}
 
 	srcPath := sourceFiles[0]
@@ -361,6 +383,7 @@ func runBuild(args []string) {
 	targetName := getDefaultTargetName()
 	extraCflags := ""
 	debugInfo := false
+	exportSymbolsPath := ""
 	sourceMapBaseURL := ""
 	embedSourceMap := true
 	verbose := false
@@ -404,6 +427,13 @@ func runBuild(args []string) {
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
+		} else if (arg == "--export-symbols" || arg == "-export-symbols") && i+1 < len(args) {
+			exportSymbolsPath = args[i+1]
+			passThroughArgs = append(passThroughArgs, "--export-symbols", exportSymbolsPath)
+			i++
+		} else if strings.HasPrefix(arg, "--export-symbols=") || strings.HasPrefix(arg, "-export-symbols=") {
+			exportSymbolsPath = strings.SplitN(arg, "=", 2)[1]
+			passThroughArgs = append(passThroughArgs, "--export-symbols", exportSymbolsPath)
 		} else if arg == "--source-map-base" && i+1 < len(args) {
 			sourceMapBaseURL = args[i+1]
 			i++
