@@ -1,7 +1,7 @@
 
 # Hike (`hike-lang`)
 
-> **Minimal syntax. Zero-runtime overhead. Native and WebAssembly builds with zero-config source debugging.**
+> **A lightweight, zero-overhead systems programming language targeting Windows, Linux, and WebAssembly.**
 
 A systems programming language with Go-like syntax that compiles to LLVM IR or
 WebAssembly, generating C-ABI compliant shared libraries, standalone
@@ -83,7 +83,7 @@ including source-level stepping and return-value inspection.
 
 ## Status & Environment
 
-> **Note:** Hike is currently an experimental compiler under active development. Testing and verification have been performed primarily on **Windows using MinGW-w64 (`x86_64-w64-windows-gnu`) and Clang/LLVM**.
+> **Note:** Hike is currently an experimental compiler under active development. Testing and verification have been performed on **Windows and Linux using Clang/LLVM**.
 
 ### Current project progress
 
@@ -125,7 +125,7 @@ documents below for the exact implementation boundaries.
 
 ## Overview
 
-Hike is an experimental systems language combining Go-style syntax and
+Hike is a lightweight systems programming language combining Go-style syntax and
 ergonomics with C-equivalent execution, direct C-ABI compatibility, and no
 garbage collection.
 
@@ -229,6 +229,10 @@ The complete build-constraint and assembly rules are documented in
 * **Python**: 3.8+ (for integration test suites)
 
 * **WABT**: `wat2wasm` in your `PATH` when using `-target wabt`
+
+* **Wasmtime**: Used by the WASM test suites to execute generated WebAssembly modules
+
+* **GDB or LLDB**: Required for debugging native binaries built with DWARF debug information; Wasm DWARF debugging is supported through Chrome DevTools
 
 
 
