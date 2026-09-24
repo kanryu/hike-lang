@@ -250,6 +250,22 @@ go build -o hikec.exe ./cmd/hikec
 
 ```
 
+### Exporting source symbols
+
+Use `--export-symbols` to write a JSON catalogue of the identifiers found in
+the loaded Hike program:
+
+```bash
+hikec emit-ir --export-symbols symbols.json main.hike
+```
+
+The catalogue contains imported modules, free functions, global variables,
+local variables (including parameters), and interface-compatible methods
+grouped under `fixed_receivers` with their receiver type. Built-in interface
+capabilities are included in the same group. Structs and interfaces are
+included with their members and method sets; structs, interfaces, members,
+functions, and fixed receivers use package-qualified names.
+
 ---
 
 ## Language Tour & Syntax Reference
