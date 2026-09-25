@@ -10,6 +10,7 @@ executables, and browser-ready Wasm modules.
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![LLVM/Clang](https://img.shields.io/badge/Backend-LLVM%2FClang-blue?style=flat&logo=llvm)](https://llvm.org)
 [![WebAssembly](https://img.shields.io/badge/Backend-WebAssembly%2FWABT-654ff0?style=flat&logo=webassembly)](https://webassembly.org/)
+[![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-007ACC?style=flat&logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=KATOKanryu.vscode-hike)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ![Chrome DevTools debugging Hike source with Wasm locals and return values](docs/images/wasm-debug.webp)
