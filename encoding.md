@@ -65,11 +65,11 @@ the backing buffer's reference count:
 * Static literals and other non-unique buffers also use the copy-on-write path
   and are never modified in place.
 
-Reference-count increments for aliases and decrements for assignments are
-implemented. Complete compiler-wide lifetime analysis for every temporary and
-shared immutable buffer, including releasing views at all scope exits, remains
-future work. Static literal storage is intentionally retained for the whole
-program lifetime.
+Reference-count increments for aliases, decrements for assignments, and
+compiler-wide lifetime analysis for temporary and shared immutable buffers are
+implemented, including releasing owned views at their lifetime boundaries.
+Static literal storage is intentionally retained for the whole program
+lifetime.
 
 
 

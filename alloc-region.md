@@ -160,9 +160,8 @@ The following limitations are intentional in the current implementation:
   Tofte--Talpin-style constraint solver.
 - Oversized allocations use the heap fallback path.
 - Returned or otherwise escaping allocations are promoted to the heap.
-- Complete lifetime analysis for every temporary and shared immutable string
-  buffer is not yet implemented. In particular, automatic release at every
-  lexical scope exit remains future work.
+- Lifetime analysis for temporary and shared immutable string buffers is
+  integrated with ownership handling and return-value heap promotion.
 - The region statistics are diagnostic counters and are not a general-purpose
   manual region API.
 
