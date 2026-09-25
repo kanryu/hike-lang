@@ -182,6 +182,41 @@ func main() int {
 	})
 }
 
+func TestHTTPFunc_RepeatedStringConcatKeepsSourceIntact(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    source := "unchanged"
+    work := source
+    small := ""
+    edge := ""
+    large := ""
+    for i := 0; i < 255; i = i + 1 {
+        small = small + "x"
+    }
+    for i := 0; i < 256; i = i + 1 {
+        edge = edge + "x"
+    }
+    for i := 0; i < 512; i = i + 1 {
+        large = large + "x"
+        work = work + "y"
+    }
+    printf("SMALL=%d,EDGE=%d,LARGE=%d,SOURCE=%s\n", len(small), len(edge), len(large), source)
+    if len(work) != 521 {
+        return 1
+    }
+    return 0
+}
+`,
+		ExpectedOut:  "SMALL=255,EDGE=256,LARGE=512,SOURCE=unchanged\n",
+		ExpectedExit: 0,
+	})
+}
+
 func TestHTTPFunc_DeepCopySlice(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{
 		Source: `

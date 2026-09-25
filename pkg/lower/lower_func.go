@@ -79,6 +79,10 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 	c.root.escapedVars = make(map[string]bool)
 	if fn.Body != nil {
 		c.root.escapedVars = sema.CollectAllCapturesInBlock(fn.Body)
+		c.root.stringMutationCounts, c.root.stringMutationInLoop = countStringMutations(fn.Body)
+	} else {
+		c.root.stringMutationCounts = make(map[string]int)
+		c.root.stringMutationInLoop = make(map[string]bool)
 	}
 }
 
@@ -606,6 +610,8 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	prevStructuredStack := c.root.structuredStack
 	prevStructuredFrames := c.root.structuredFrames
 	prevEscapedVars := c.root.escapedVars
+	prevStringMutationCounts := c.root.stringMutationCounts
+	prevStringMutationInLoop := c.root.stringMutationInLoop
 	prevRegCount := c.root.regCount
 
 	c.root.curFunc = anonFn
@@ -620,8 +626,11 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.regCount = 0
 	if fl.Body != nil {
 		c.root.escapedVars = sema.CollectAllCapturesInBlock(fl.Body)
+		c.root.stringMutationCounts, c.root.stringMutationInLoop = countStringMutations(fl.Body)
 	} else {
 		c.root.escapedVars = make(map[string]bool)
+		c.root.stringMutationCounts = make(map[string]int)
+		c.root.stringMutationInLoop = make(map[string]bool)
 	}
 
 	var envParamReg *hir.Reg
@@ -707,6 +716,8 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.structuredStack = prevStructuredStack
 	c.root.structuredFrames = prevStructuredFrames
 	c.root.escapedVars = prevEscapedVars
+	c.root.stringMutationCounts = prevStringMutationCounts
+	c.root.stringMutationInLoop = prevStringMutationInLoop
 	c.root.regCount = prevRegCount
 
 	var envVal hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
@@ -736,4 +747,68 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	t2 := c.root.nextReg(fatType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: envVal, Index: 1})
 	return t2
+}
+
+// countStringMutations records source-level writes to each local name. The
+// type is checked at lowering time, after semantic resolution; keeping this
+// pass type-agnostic also lets it cover inferred declarations. Writes nested
+// in a loop are marked separately because even two iterations can justify the
+// append-buffer optimization.
+func countStringMutations(body *ast.BlockStmt) (map[string]int, map[string]bool) {
+	counts := make(map[string]int)
+	inLoop := make(map[string]bool)
+	var walkBlock func(*ast.BlockStmt, bool)
+	var walkStmt func(ast.Statement, bool)
+	walkBlock = func(block *ast.BlockStmt, loop bool) {
+		if block == nil {
+			return
+		}
+		for _, stmt := range block.Statements {
+			walkStmt(stmt, loop)
+		}
+	}
+	walkStmt = func(stmt ast.Statement, loop bool) {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			for _, left := range s.Left {
+				if ident, ok := left.(*ast.Identifier); ok && astIDValue(ident) != "_" {
+					name := astIDValue(ident)
+					counts[name]++
+					if loop {
+						inLoop[name] = true
+					}
+				}
+			}
+		case *ast.BlockStmt:
+			walkBlock(s, loop)
+		case *ast.IfStmt:
+			walkStmt(s.Init, loop)
+			walkBlock(s.Consequence, loop)
+			walkStmt(s.Alternative, loop)
+		case *ast.ForStmt:
+			walkStmt(s.Init, loop)
+			walkStmt(s.Post, true)
+			walkBlock(s.Body, true)
+		case *ast.ForRangeStmt:
+			walkBlock(s.Body, true)
+		case *ast.SwitchStmt:
+			walkStmt(s.Init, loop)
+			for _, clause := range s.Cases {
+				for _, inner := range clause.Body {
+					walkStmt(inner, loop)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			walkStmt(s.Init, loop)
+			for _, clause := range s.Cases {
+				for _, inner := range clause.Body {
+					walkStmt(inner, loop)
+				}
+			}
+		case *ast.AreaStmt:
+			walkBlock(s.Body, loop)
+		}
+	}
+	walkBlock(body, false)
+	return counts, inLoop
 }

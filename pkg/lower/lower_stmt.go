@@ -734,29 +734,30 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				curVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
 				if op == "+=" && s.root.isStringType(elemType) {
-					// Compound assignment bypasses LowerBinaryExpr.  Use the
-					// append runtime so a uniquely owned string can reuse its
-					// 256-byte buffer instead of allocating on every +=.
 					leftPtr, leftOffset, leftLen := s.root.stringViewParts(curVal)
 					rightPtr, rightOffset, rightLen := s.root.stringViewParts(val)
-					if s.root.is32Bit {
+					if s.shouldOptimizeStringAppend(left) {
+						// Repeated local writes use the growth-buffer runtime.
+						if s.root.is32Bit {
+							raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen}})
+							length := s.root.nextReg(sema.TypeInt)
+							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+							val = s.root.makeString(raw, length)
+						} else {
+							raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen}})
+							length := s.root.nextReg(sema.TypeInt)
+							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+							val = s.root.makeString(raw, length)
+						}
+					} else {
+						// Infrequent writes keep the exact-size concatenation path.
 						raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-						s.root.emit(&hir.InstrCallStatic{
-							Dst:        raw,
-							CalleeName: s.root.BuiltinName("__hike_string_append"),
-							Args:       []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen},
-						})
+						s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("hike_strcat_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
 						length := s.root.nextReg(sema.TypeInt)
 						s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
 						val = s.root.makeString(raw, length)
-					} else {
-						appended := s.root.nextReg(sema.TypeString)
-						s.root.emit(&hir.InstrCallStatic{
-							Dst:        appended,
-							CalleeName: s.root.BuiltinName("__hike_string_append"),
-							Args:       []hir.Value{leftPtr, leftOffset, leftLen, rightPtr, rightOffset, rightLen},
-						})
-						val = appended
 					}
 					break
 				}
@@ -780,6 +781,15 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			s.root.emit(&hir.InstrStore{Val: val, Ptr: targetPtr})
 		}
 	}
+}
+
+func (s *StmtLowerer) shouldOptimizeStringAppend(left ast.Expression) bool {
+	ident, ok := left.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	name := astIDValue(ident)
+	return s.root.stringMutationCounts[name] >= 3 || s.root.stringMutationInLoop[name]
 }
 
 // assignmentTargetType returns the type already known for an assignment

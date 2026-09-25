@@ -809,7 +809,7 @@ return_copy:
 }
 
 ; Append to a string variable, reusing a uniquely owned 256-byte buffer.
-define internal { i8*, i32, i32 } @__hike_string_append32(i8* %base, i32 %offset, i32 %len, i8* %b, i32 %blen) #0 {
+define internal i8* @__hike_string_append32(i8* %base, i32 %offset, i32 %len, i8* %b, i32 %blen) #0 {
 entry:
   %total = add i32 %len, %blen
   %raw = getelementptr inbounds i8, i8* %base, i32 -8
@@ -829,13 +829,13 @@ reuse:
   call i8* @memcpy32(i8* %dst_b, i8* %b, i32 %blen)
   %nul = getelementptr inbounds i8, i8* %dst, i32 %total
   store i8 0, i8* %nul
-  %reuse0 = insertvalue { i8*, i32, i32 } undef, i8* %base, 0
-  %reuse1 = insertvalue { i8*, i32, i32 } %reuse0, i32 %offset, 1
-  %reuse2 = insertvalue { i8*, i32, i32 } %reuse1, i32 %total, 2
-  ret { i8*, i32, i32 } %reuse2
+  ret i8* %dst
 copy:
   %large = icmp ugt i32 %total, 256
-  %new_cap = select i1 %large, i32 %total, i32 256
+  %doubled = shl i32 %total, 1
+  %overflow = icmp ult i32 %doubled, %total
+  %growth_cap = select i1 %overflow, i32 %total, i32 %doubled
+  %new_cap = select i1 %large, i32 %growth_cap, i32 256
   %alloc_size = add i32 %new_cap, 9
   %new_raw = call i8* @malloc(i32 %alloc_size)
   %new_cap_ptr = bitcast i8* %new_raw to i32*
@@ -861,10 +861,7 @@ free_old:
   call void @free(i8* %raw)
   br label %return_new
 return_new:
-  %new0 = insertvalue { i8*, i32, i32 } undef, i8* %new_data, 0
-  %new1 = insertvalue { i8*, i32, i32 } %new0, i32 0, 1
-  %new2 = insertvalue { i8*, i32, i32 } %new1, i32 %total, 2
-  ret { i8*, i32, i32 } %new2
+  ret i8* %new_data
 }
 
 ; 文字列等価比較 (hike_streq: a == b) (32-bit)

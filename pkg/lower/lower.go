@@ -37,32 +37,34 @@ type structuredFrame struct {
 
 // LowererはIR変換全体を統括し、共通のコンパイル状態とサブローワーを保持する
 type Lowerer struct {
-	prog             *ast.Program
-	semaCtx          *sema.Context
-	hirProg          *hir.Program
-	curFunc          *hir.Function
-	curBlock         *basicBlock
-	legacyBlocks     []*basicBlock
-	regCount         int
-	blockCount       int
-	anonFuncCount    int
-	stringPool       map[string]*hir.ConstString
-	symbols          map[string]hir.Value
-	symbolTypes      map[string]sema.Type
-	loopStack        []loopContext
-	deferStack       []*ast.CallExpr
-	areaStack        []*hir.Reg
-	structuredRoot   hir.ControlBody
-	structuredStack  []*hir.ControlBody
-	structuredFrames []structuredFrame
-	itabs            map[string]*hir.ItabDef
-	escapedVars      map[string]bool
-	is32Bit          bool // Compilerから伝播される32bitターゲットフラグ
-	recordLocations  bool
-	regionMode       bool
-	sourceFile       string
-	sourceLoc        hir.SourceLocation
-	module           string
+	prog                 *ast.Program
+	semaCtx              *sema.Context
+	hirProg              *hir.Program
+	curFunc              *hir.Function
+	curBlock             *basicBlock
+	legacyBlocks         []*basicBlock
+	regCount             int
+	blockCount           int
+	anonFuncCount        int
+	stringPool           map[string]*hir.ConstString
+	symbols              map[string]hir.Value
+	symbolTypes          map[string]sema.Type
+	loopStack            []loopContext
+	deferStack           []*ast.CallExpr
+	areaStack            []*hir.Reg
+	structuredRoot       hir.ControlBody
+	structuredStack      []*hir.ControlBody
+	structuredFrames     []structuredFrame
+	itabs                map[string]*hir.ItabDef
+	escapedVars          map[string]bool
+	stringMutationCounts map[string]int
+	stringMutationInLoop map[string]bool
+	is32Bit              bool // Compilerから伝播される32bitターゲットフラグ
+	recordLocations      bool
+	regionMode           bool
+	sourceFile           string
+	sourceLoc            hir.SourceLocation
+	module               string
 	// globalInitRemaining is consumed while synthetic global initializer
 	// statements are lowered at the beginning of main.
 	globalInitRemaining int
@@ -120,21 +122,23 @@ func New(prog *ast.Program, semaCtx *sema.Context) *Lowerer {
 		// Go-Hike's wasm32 runtime currently cannot safely hash interface keys.
 		// Keep source locations disabled for the self-hosted path and avoid
 		// allocating the interface-keyed map there.
-		hirProg:          &hir.Program{ModuleName: astProgramPackage(prog)},
-		module:           astProgramPackage(prog),
-		stringPool:       make(map[string]*hir.ConstString),
-		symbols:          make(map[string]hir.Value),
-		symbolTypes:      make(map[string]sema.Type),
-		loopStack:        []loopContext{},
-		deferStack:       []*ast.CallExpr{},
-		areaStack:        []*hir.Reg{},
-		structuredRoot:   hir.ControlBody{},
-		structuredStack:  []*hir.ControlBody{},
-		structuredFrames: []structuredFrame{},
-		itabs:            make(map[string]*hir.ItabDef),
-		escapedVars:      make(map[string]bool),
-		is32Bit:          false,
-		recordLocations:  true,
+		hirProg:              &hir.Program{ModuleName: astProgramPackage(prog)},
+		module:               astProgramPackage(prog),
+		stringPool:           make(map[string]*hir.ConstString),
+		symbols:              make(map[string]hir.Value),
+		symbolTypes:          make(map[string]sema.Type),
+		loopStack:            []loopContext{},
+		deferStack:           []*ast.CallExpr{},
+		areaStack:            []*hir.Reg{},
+		structuredRoot:       hir.ControlBody{},
+		structuredStack:      []*hir.ControlBody{},
+		structuredFrames:     []structuredFrame{},
+		itabs:                make(map[string]*hir.ItabDef),
+		escapedVars:          make(map[string]bool),
+		stringMutationCounts: make(map[string]int),
+		stringMutationInLoop: make(map[string]bool),
+		is32Bit:              false,
+		recordLocations:      true,
 	}
 
 	// 各サブローワーの初期化
