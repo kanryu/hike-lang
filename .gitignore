@@ -1,5 +1,6 @@
 # Binaries & Executables
 *.exe
+!vscode-hike/bin/hike-lsp-windows-amd64.exe
 *.exe~
 *.dll
 *.so
