@@ -1542,7 +1542,13 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
 		leftVal := e.LowerExpr(node.Left)
-		leftType := leftVal.Type()
+		// Prefer the semantic type of the source expression. This matters for
+		// Go-style `&(*slice)[i]` and `&(*array)[i]`, where lowering the
+		// dereference first can lose the named slice/array type information.
+		leftType := e.root.semaCtx.InferExprType(node.Left, e.root.symbolTypes)
+		if leftType == nil || sema.IsBad(leftType) {
+			leftType = leftVal.Type()
+		}
 
 		if slType, ok := leftType.(*sema.SliceType); ok {
 			elemPtrType := &sema.PointerType{Base: slType.Elem}
@@ -1582,7 +1588,8 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			return elemPtr
 		}
 
-		panic(fmt.Sprintf("[Lower Error] cannot index type '%s' as lvalue", semaTypeName(leftType)))
+		panic(fmt.Sprintf("[Lower Error] cannot index type '%s' as lvalue (left=%T at %d:%d)",
+			semaTypeName(leftType), node.Left, node.Token.Line, node.Token.Col))
 
 	default:
 		panic(fmt.Sprintf("[Lower Error] expression is not an lvalue: %T", expr))

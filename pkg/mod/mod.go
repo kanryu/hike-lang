@@ -117,21 +117,30 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 
 	// 2. hike.mod の replace ディレクティブ判定
 	if m.Replaces != nil {
+		// Prefer the most specific replacement. For example, a replacement
+		// for "github.com/acme/project/internal/helpers" must win over the
+		// module-wide replacement for "github.com/acme/project".
+		bestFrom := ""
+		bestTarget := ""
 		for fromMod, targetRel := range m.Replaces {
-			if importPath == fromMod || strings.HasPrefix(importPath, fromMod+"/") {
-				relSub := strings.TrimPrefix(importPath, fromMod)
-				relSub = strings.TrimPrefix(relSub, "/")
-				// A replacement may be absolute, which is common in generated or
-				// self-hosting test modules. Do not prefix it with the module root;
-				// filepath.Join does not discard an earlier root on every platform.
-				basePath := targetRel
-				if !filepath.IsAbs(basePath) {
-					basePath = filepath.Join(m.RootDir, basePath)
-				}
-				targetPath := filepath.Clean(filepath.Join(basePath, relSub))
-				if fi, err := os.Stat(targetPath); err == nil && fi.IsDir() {
-					return targetPath, nil
-				}
+			if (importPath == fromMod || strings.HasPrefix(importPath, fromMod+"/")) && len(fromMod) > len(bestFrom) {
+				bestFrom = fromMod
+				bestTarget = targetRel
+			}
+		}
+		if bestFrom != "" {
+			relSub := strings.TrimPrefix(importPath, bestFrom)
+			relSub = strings.TrimPrefix(relSub, "/")
+			// A replacement may be absolute, which is common in generated or
+			// self-hosting test modules. Do not prefix it with the module root;
+			// filepath.Join does not discard an earlier root on every platform.
+			basePath := bestTarget
+			if !filepath.IsAbs(basePath) {
+				basePath = filepath.Join(m.RootDir, basePath)
+			}
+			targetPath := filepath.Clean(filepath.Join(basePath, relSub))
+			if fi, err := os.Stat(targetPath); err == nil && fi.IsDir() {
+				return targetPath, nil
 			}
 		}
 	}

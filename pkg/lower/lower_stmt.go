@@ -46,6 +46,9 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 	defer restoreLocation()
 
 	switch node := stmt.(type) {
+	case *ast.TypeDecl:
+		// Type declarations affect semantic resolution only. They emit no
+		// runtime instructions when lowering a function body.
 	case *ast.VarDecl:
 		s.LowerVarDecl(node)
 	case *ast.AssignStmt:

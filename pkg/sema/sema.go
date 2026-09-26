@@ -1013,10 +1013,14 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 		return nil, err
 	}
 
-	// Pass 1: 全ての型宣言と関数宣言を登録
+	// Pass 1: 全ての型宣言と関数宣言を登録。Go permits type declarations
+	// inside function bodies, so register those declarations as well.
+	typeDecls := collectTypeDecls(prog)
+	for _, td := range typeDecls {
+		registerTypeDecl(td, prog.Package, ctx)
+	}
 	for _, decl := range prog.Decls {
-		if td, ok := decl.(*ast.TypeDecl); ok {
-			registerTypeDecl(td, prog.Package, ctx)
+		if _, ok := decl.(*ast.TypeDecl); ok {
 			continue
 		}
 		if err := registerFuncDecl(decl, prog.Package, ctx); err != nil {
@@ -1028,7 +1032,7 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	propagateTypeParameters(ctx)
 
 	// Pass 1.5: 具象型のみ先行解決 (名前とフィールドの確実なバインド)
-	resolveConcreteTypes(prog, ctx)
+	resolveConcreteTypes(prog, ctx, typeDecls)
 
 	// Pass 2: 定数、グローバル変数、非ジェネリック関数の確定
 	resolveDeclarationTypes(prog, ctx)
@@ -1040,6 +1044,66 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	insertImplicitCasts(prog, ctx)
 
 	return ctx, nil
+}
+
+func collectTypeDecls(prog *ast.Program) []*ast.TypeDecl {
+	var result []*ast.TypeDecl
+	var collectBlock func(*ast.BlockStmt)
+	var collectStmt func(ast.Statement)
+	collectBlock = func(block *ast.BlockStmt) {
+		if block == nil {
+			return
+		}
+		for _, stmt := range block.Statements {
+			collectStmt(stmt)
+		}
+	}
+	collectStmt = func(stmt ast.Statement) {
+		if stmt == nil {
+			return
+		}
+		switch node := stmt.(type) {
+		case *ast.TypeDecl:
+			result = append(result, node)
+		case *ast.BlockStmt:
+			collectBlock(node)
+		case *ast.IfStmt:
+			collectStmt(node.Init)
+			collectBlock(node.Consequence)
+			collectStmt(node.Alternative)
+		case *ast.ForStmt:
+			collectStmt(node.Init)
+			collectStmt(node.Post)
+			collectBlock(node.Body)
+		case *ast.ForRangeStmt:
+			collectBlock(node.Body)
+		case *ast.SwitchStmt:
+			collectStmt(node.Init)
+			for _, clause := range node.Cases {
+				for _, child := range clause.Body {
+					collectStmt(child)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			collectStmt(node.Init)
+			for _, clause := range node.Cases {
+				for _, child := range clause.Body {
+					collectStmt(child)
+				}
+			}
+		}
+	}
+	for _, decl := range prog.Decls {
+		switch node := decl.(type) {
+		case *ast.TypeDecl:
+			result = append(result, node)
+		case *ast.FuncDecl:
+			collectBlock(node.Body)
+		case *ast.CFuncDecl:
+			collectBlock(node.Body)
+		}
+	}
+	return result
 }
 
 func registerTypeDecl(td *ast.TypeDecl, pkg string, ctx *Context) {
@@ -1125,9 +1189,11 @@ func registerTypeDecl(td *ast.TypeDecl, pkg string, ctx *Context) {
 			ctx.GenericTypes[rawName] = td
 		}
 	default:
-		resolved := ctx.ResolveType(td.Type)
-		ctx.Aliases[qualifiedName] = resolved
-		ctx.Aliases[rawName] = resolved
+		// Resolve aliases after all declarations have been registered. Go
+		// permits forward references such as `type A map[string]B` where B is
+		// declared later in the same package.
+		ctx.Aliases[qualifiedName] = nil
+		ctx.Aliases[rawName] = nil
 	}
 }
 
@@ -1492,12 +1558,8 @@ func registerBuiltinCapabilities(receiverName, methodName string, params, return
 
 // resolveConcreteTypes binds fields, interface methods, and aliases that do
 // not depend on generic specialization.
-func resolveConcreteTypes(prog *ast.Program, ctx *Context) {
-	for _, decl := range prog.Decls {
-		td, ok := decl.(*ast.TypeDecl)
-		if !ok {
-			continue
-		}
+func resolveConcreteTypes(prog *ast.Program, ctx *Context, typeDecls []*ast.TypeDecl) {
+	for _, td := range typeDecls {
 		st, _ := ctx.LookupStruct(td.Name.Value)
 		if st != nil && st.IsGeneric() {
 			continue

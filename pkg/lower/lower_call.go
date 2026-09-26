@@ -1170,9 +1170,20 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_create", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
 		return dst
 	}
+	var resSliceType *sema.SliceType
 	if slNode, okSlice := call.Args[0].(*ast.SliceType); okSlice {
-		elemType := c.root.semaCtx.ResolveType(slNode.Elem)
-		resSliceType := &sema.SliceType{Elem: elemType}
+		resSliceType = &sema.SliceType{Elem: c.root.semaCtx.ResolveType(slNode.Elem)}
+	} else if id, okNamed := call.Args[0].(*ast.Identifier); okNamed {
+		// Go permits make to receive a named slice type, for example
+		// make(charAndCountArray, 64). Resolve the alias before lowering so
+		// the result retains the slice representation.
+		resolved := c.root.semaCtx.ResolveType(&ast.NamedType{Token: id.Token, Name: id})
+		if slice, ok := resolved.(*sema.SliceType); ok {
+			resSliceType = slice
+		}
+	}
+	if resSliceType != nil {
+		elemType := resSliceType.Elem
 		lenVal := c.root.Expr.LowerExpr(call.Args[1])
 		capVal := lenVal
 		if len(call.Args) >= 3 {

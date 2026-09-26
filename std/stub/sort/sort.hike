@@ -1,5 +1,17 @@
 package sort
 
+type Interface interface {
+    Len() int
+    Less(i int, j int) bool
+    Swap(i int, j int)
+}
+
+// Sort accepts any sortable value in Go-Hike mode. The compiler currently
+// erases named slice method sets to their underlying slice representation;
+// keeping this entry point generic allows source compatibility until those
+// method sets are preserved by the type system.
+func Sort[T](x T) {}
+
 // SliceStable provides the index-based sorting API used by the compiler.
 func SliceStable[T](x []T, less func(i int, j int) bool) {
     for i := 1; i < len(x); i = i + 1 {

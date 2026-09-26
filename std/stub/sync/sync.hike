@@ -11,3 +11,25 @@ func (o *Once) Do(f func()) {
     o.done = true
     f()
 }
+
+// Mutex and WaitGroup mirror the Go standard-library surface used by
+// Go-Hike sources. The compiler's lock lowering supplies the synchronization
+// primitive; these methods keep the package-level API source-compatible.
+type Mutex struct {}
+
+func (m *Mutex) Lock() {}
+func (m *Mutex) Unlock() {}
+
+type WaitGroup struct {
+    counter int
+}
+
+func (wg *WaitGroup) Add(delta int) {
+    wg.counter += delta
+}
+
+func (wg *WaitGroup) Done() {
+    wg.Add(-1)
+}
+
+func (wg *WaitGroup) Wait() {}

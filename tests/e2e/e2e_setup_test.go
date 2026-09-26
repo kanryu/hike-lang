@@ -72,6 +72,7 @@ type HikeTestCase struct {
 	Source           string
 	Files            map[string]string
 	Target           string
+	GoHike           bool
 	ExpectedOut      string
 	ExpectedOutRegex string
 	ExpectedExit     int
@@ -126,6 +127,9 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 
 	// 実行
 	commandArgs := []string{"run"}
+	if tc.GoHike {
+		commandArgs = append(commandArgs, "-go-hike=1")
+	}
 	if tc.Target != "" {
 		commandArgs = append(commandArgs, "-target", tc.Target)
 	}

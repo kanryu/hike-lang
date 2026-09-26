@@ -201,18 +201,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			returnTypes := []ast.TypeExpr{}
 			if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 				if p.peekTokenIs(token.LPAREN) {
-					p.nextToken()
-					p.nextToken()
-					for {
-						returnTypes = append(returnTypes, p.parseTypeExpr())
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-							p.nextToken()
-						} else {
-							break
-						}
-					}
-					p.expectPeek(token.RPAREN)
+					returnTypes = p.parseReturnTypeList()
 				} else {
 					p.nextToken()
 					returnTypes = append(returnTypes, p.parseTypeExpr())
@@ -228,6 +217,16 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		}
 		p.expectPeek(token.RBRACE)
 		return it
+	} else if p.curTokenIs(token.STRUCT) {
+		// Anonymous struct types are common in Go's marker patterns, such as
+		// `chan struct{}` and `map[string]struct{}`. Reuse the regular field
+		// parser so named and embedded fields work consistently as well.
+		tok := p.curToken
+		st := &ast.StructType{Token: tok, Fields: []*ast.FieldDecl{}}
+		if p.expectPeek(token.LBRACE) {
+			p.parseStructFields(st)
+		}
+		return st
 	} else if p.curTokenIs(token.IDENT) {
 		ident := p.parseIdentifier()
 
@@ -435,18 +434,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
 			if p.peekTokenIs(token.LPAREN) {
-				p.nextToken()
-				p.nextToken()
-				for {
-					returnTypes = append(returnTypes, p.parseTypeExpr())
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-				p.expectPeek(token.RPAREN)
+				returnTypes = p.parseReturnTypeList()
 			} else {
 				p.nextToken()
 				returnTypes = append(returnTypes, p.parseTypeExpr())

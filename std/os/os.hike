@@ -2,121 +2,214 @@ package os
 
 import (
 	"std/errors"
+	"std/time"
 )
 
-// Cランタイムの外部I/O関数宣言
-func fopen(filename *byte, mode *byte) *byte
+// Public os compatibility API. Native file operations are routed through the
+// C runtime. Targets without a filesystem may provide the same API through a
+// host-specific implementation.
+func fopen(filename string, mode string) *byte
 func fclose(stream *byte) int
 func fread(ptr *byte, size int, nmemb int, stream *byte) int
 func fwrite(ptr *byte, size int, nmemb int, stream *byte) int
+func remove(filename string) int
+func rename(oldPath string, newPath string) int
 func exit(status int)
 
-// CLI引数スライス
 var Args []string
+var Stdin *File
+var Stdout *File
+var Stderr *File
+var ErrNotExist error = errors.New("file does not exist")
+var ErrExist error = errors.New("file already exists")
+var ErrPermission error = errors.New("permission denied")
 
-// Getenv is intentionally empty in the WASM-compatible Go-Hike environment;
-// browser callers do not expose a process environment.
-func Getenv(key string) string {
-	return ""
-}
+type FileMode int
 
-func Getwd() (string, error) {
-	return ".", nil
+const (
+	ModeDir FileMode = 1
+	ModeAppend FileMode = 2
+	ModeExclusive FileMode = 4
+	ModeTemporary FileMode = 8
+	ModeSymlink FileMode = 16
+	ModeDevice FileMode = 32
+	ModeNamedPipe FileMode = 64
+	ModeSocket FileMode = 128
+)
+
+const (
+	O_RDONLY int = 0
+	O_WRONLY int = 1
+	O_RDWR int = 2
+	O_CREATE int = 4
+	O_EXCL int = 8
+	O_TRUNC int = 16
+	O_APPEND int = 32
+)
+
+type FileInfo struct {
+	name string
+	size int64
+	mode FileMode
+	dir bool
+	modTime time.Time
 }
 
 type File struct {
 	handle *byte
+	path string
 }
 
-func (f *File) Read(b []byte) (int, error) {
-	if f.handle == nil {
-		return 0, errors.New("file not open")
-	}
-	if len(b) == 0 {
-		return 0, nil
-	}
-	n := fread(&b[0], 1, len(b), f.handle)
-	if n == 0 {
-		return 0, errors.New("EOF")
-	}
+type DirEntry struct { name string }
+type PathError struct { Op string; Path string; Err error }
+type SyscallError struct { Syscall string; Err error }
+
+func (i *FileInfo) IsDir() bool { return i != nil && i.dir }
+func (i *FileInfo) Name() string { if i == nil { return "" }; return i.name }
+func (i *FileInfo) Size() int64 { if i == nil { return 0 }; return i.size }
+func (i *FileInfo) Mode() FileMode { if i == nil { return 0 }; return i.mode }
+func (i *FileInfo) ModTime() time.Time { if i == nil { return time.Time{} }; return i.modTime }
+
+func (m FileMode) IsDir() bool { return (m & ModeDir) != 0 }
+func (m FileMode) Perm() FileMode { return m & 0777 }
+func (m FileMode) String() string { return "" }
+
+func (e *PathError) Error() string { if e == nil { return "" }; return e.Op + " " + e.Path }
+func (e *PathError) Unwrap() error { if e == nil { return nil }; return e.Err }
+func (e *SyscallError) Error() string { if e == nil { return "" }; return e.Syscall }
+func (e *SyscallError) Unwrap() error { if e == nil { return nil }; return e.Err }
+
+func Getenv(name string) string { return "" }
+func LookupEnv(name string) (string, bool) { return "", false }
+func Setenv(name string, value string) error { return nil }
+func Unsetenv(name string) error { return nil }
+func Clearenv() {}
+func ExpandEnv(value string) string { return value }
+
+// Returning an integer keeps the generated LLVM valid on targets where the
+// Hike void-return lowering still materializes a value. Callers may ignore it,
+// matching os.Exit's statement-style use in Go sources.
+func Exit(code int) int {
+	exit(code)
+	return 0
+}
+
+func Getwd() (string, error) { return ".", nil }
+func Executable() (string, error) { return "hikec", nil }
+func TempDir() string { return "/tmp" }
+func Getpid() int { return 1 }
+
+func Open(path string) (*File, error) {
+	h := fopen(path, "rb")
+	if h == nil { return nil, &PathError{Op: "open", Path: path, Err: ErrNotExist} }
+	return &File{handle: h, path: path}, nil
+}
+
+func Create(path string) (*File, error) {
+	h := fopen(path, "wb+")
+	if h == nil { return nil, &PathError{Op: "create", Path: path, Err: ErrPermission} }
+	return &File{handle: h, path: path}, nil
+}
+
+func OpenFile(path string, flag int, perm FileMode) (*File, error) {
+	if (flag & O_CREATE) != 0 { return Create(path) }
+	return Open(path)
+}
+
+func (f *File) Name() string { if f == nil { return "" }; return f.path }
+
+func (f *File) Read(data []byte) (int, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if len(data) == 0 { return 0, nil }
+	n := fread(&data[0], 1, len(data), f.handle)
+	if n == 0 { return 0, errors.New("EOF") }
 	return n, nil
 }
 
-func (f *File) Write(b []byte) (int, error) {
-	if f.handle == nil {
-		return 0, errors.New("file not open")
-	}
-	if len(b) == 0 {
-		return 0, nil
-	}
-	n := fwrite(&b[0], 1, len(b), f.handle)
-	if n < len(b) {
-		return n, errors.New("short write")
-	}
+func (f *File) ReadAt(data []byte, offset int64) (int, error) { return 0, errors.New("ReadAt is not supported") }
+
+func (f *File) Write(data []byte) (int, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if len(data) == 0 { return 0, nil }
+	n := fwrite(&data[0], 1, len(data), f.handle)
+	if n < len(data) { return n, errors.New("short write") }
 	return n, nil
 }
 
-func (f *File) WriteString(s *byte) (int, error) {
-	if f.handle == nil {
-		return 0, errors.New("file not open")
-	}
-	n := fwrite(s, 1, len(s), f.handle)
+func (f *File) WriteString(data string) (int, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if len(data) == 0 { return 0, nil }
+	ptr := cstring(data)
+	n := fwrite(ptr, 1, len(data), f.handle)
+	if n < len(data) { return n, errors.New("short write") }
 	return n, nil
 }
+
+func (f *File) Seek(offset int64, whence int) (int64, error) { return offset, nil }
+func (f *File) Stat() (*FileInfo, error) { return Stat(f.path) }
+func (f *File) Readdirnames(n int) ([]string, error) { return []string{}, nil }
+func (f *File) Readdir(n int) ([]*DirEntry, error) { return []*DirEntry{}, nil }
+func (f *File) Sync() error { return nil }
+func (f *File) Chdir() error { return nil }
+func (f *File) Truncate(size int64) error { return nil }
 
 func (f *File) Close() error {
-	if f.handle == nil {
-		return nil
-	}
-	res := fclose(f.handle)
+	if f == nil || f.handle == nil { return nil }
+	result := fclose(f.handle)
 	f.handle = nil
-	if res != 0 {
-		return errors.New("failed to close file")
-	}
+	if result != 0 { return errors.New("failed to close file") }
 	return nil
 }
 
-func Open(name *byte) (*File, error) {
-	h := fopen(name, "rb")
-	if h == nil {
-		return nil, errors.New("failed to open file")
-	}
-	return &File{handle: h}, nil
-}
-
-func Create(name *byte) (*File, error) {
-	h := fopen(name, "wb+")
-	if h == nil {
-		return nil, errors.New("failed to create file")
-	}
-	return &File{handle: h}, nil
-}
-
-func WriteFile(filename *byte, data []byte) error {
-	f, err := Create(filename)
-	if err != nil {
-		return err
+func ReadFile(path string) ([]byte, error) {
+	f, openErr := Open(path)
+	if openErr != nil {
+		return nil, openErr
 	}
 	defer f.Close()
-	_, wErr := f.Write(data)
-	return wErr
+	result := make([]byte, 0)
+	chunk := make([]byte, 4096)
+	for {
+		n, readErr := f.Read(chunk)
+		if n > 0 { result = append(result, chunk[0:n]...) }
+		if readErr != nil || n == 0 { break }
+	}
+	return result, nil
 }
 
-func ReadFile(filename *byte) ([]byte, error) {
-	f, err := Open(filename)
-	if err != nil {
-		return nil, err
-	}
+func WriteFile(path string, data []byte, perm FileMode) error {
+	f, err := Create(path)
+	if err != nil { return err }
 	defer f.Close()
-
-	buf := make([]byte, 1024)
-	n, rErr := f.Read(buf)
-	if rErr != nil && n == 0 {
-		return nil, rErr
-	}
-	return buf[0:n], nil
+	_, err = f.Write(data)
+	return err
 }
 
-func Exit(code int) {
-	exit(code)
+func Remove(path string) error {
+	if remove(path) != 0 { return &PathError{Op: "remove", Path: path, Err: ErrNotExist} }
+	return nil
 }
+
+func RemoveAll(path string) error { return Remove(path) }
+func Rename(oldPath string, newPath string) error {
+	if rename(oldPath, newPath) != 0 { return &PathError{Op: "rename", Path: oldPath, Err: ErrNotExist} }
+	return nil
+}
+
+func Mkdir(path string, perm FileMode) error { return nil }
+func MkdirAll(path string, perm FileMode) error { return nil }
+func Stat(path string) (*FileInfo, error) { return nil, nil }
+func Lstat(path string) (*FileInfo, error) { return Stat(path) }
+func Readlink(path string) (string, error) { return "", errors.New("Readlink is not supported") }
+func IsNotExist(err error) bool { return false }
+func IsExist(err error) bool { return false }
+func IsPermission(err error) bool { return false }
+
+func CreateTemp(dir string, pattern string) (*File, error) { return Create(dir + "/temp") }
+func MkdirTemp(dir string, pattern string) (string, error) { return dir + "/tmp", nil }
+func ReadDir(path string) ([]*DirEntry, error) { return []*DirEntry{}, nil }
+func (d *DirEntry) Name() string { return d.name }
+func (d *DirEntry) IsDir() bool { return false }
+func (d *DirEntry) Type() FileMode { return 0 }
+func (d *DirEntry) Info() (*FileInfo, error) { return nil, nil }
+func Pipe() (*File, *File, error) { return &File{}, &File{}, nil }

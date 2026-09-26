@@ -1,18 +1,73 @@
 package os
 
-import "std/strings"
+import (
+	"std/strings"
+	"std/time"
+)
 
-// Browser-hosted compilation has no filesystem.  These are the only os
-// symbols needed by the compiler's logging path.
+// Go-Hike's self-hosting compatibility layer.  The API surface mirrors the
+// subset of os used by esbuild.  Operations are intentionally inert in the
+// browser-hosted compiler; native targets can provide the same API through
+// the C runtime-backed std/os implementation.
 var Args []string
 var Stderr *strings.Builder
+var Stdin *File
+var Stdout *File
 var ErrNotExist error
+var ErrExist error
+var ErrPermission error
 
-type FileInfo struct { dir bool }
+// FileMode intentionally follows the shape of Go's os.FileMode.  The
+// compatibility package only needs the values used by esbuild's filesystem
+// abstraction; native implementations can replace these operations later.
+type FileMode int
+
+const (
+	ModeDir     FileMode = 1
+	ModeAppend  FileMode = 2
+	ModeExclusive FileMode = 4
+	ModeTemporary FileMode = 8
+	ModeSymlink FileMode = 16
+	ModeDevice  FileMode = 32
+	ModeNamedPipe FileMode = 64
+	ModeSocket FileMode = 128
+)
+
+const (
+	O_RDONLY int = 0
+	O_WRONLY int = 1
+	O_RDWR int = 2
+	O_CREATE int = 4
+	O_EXCL int = 8
+	O_TRUNC int = 16
+	O_APPEND int = 32
+)
+
+type FileInfo struct {
+	name string
+	size int64
+	mode FileMode
+	dir bool
+	modTime time.Time
+}
 type File struct { path string }
 type DirEntry struct { name string }
+type PathError struct { Op string; Path string; Err error }
+type SyscallError struct { Syscall string; Err error }
 
 func (i *FileInfo) IsDir() bool { return i != nil && i.dir }
+func (i *FileInfo) Name() string { if i == nil { return "" }; return i.name }
+func (i *FileInfo) Size() int64 { if i == nil { return 0 }; return i.size }
+func (i *FileInfo) Mode() FileMode { if i == nil { return 0 }; return i.mode }
+func (i *FileInfo) ModTime() time.Time { if i == nil { return time.Time{} }; return i.modTime }
+func (m FileMode) IsDir() bool { return (m & ModeDir) != 0 }
+func (m FileMode) Perm() FileMode { return m & 0777 }
+func (m FileMode) String() string { return "" }
+
+func (e *PathError) Error() string { if e == nil { return "" }; return e.Op + " " + e.Path }
+func (e *PathError) Unwrap() error { if e == nil { return nil }; return e.Err }
+func (e *SyscallError) Error() string { if e == nil { return "" }; return e.Syscall }
+func (e *SyscallError) Unwrap() error { if e == nil { return nil }; return e.Err }
 
 func Getenv(name string) string {
 	return ""
@@ -22,9 +77,14 @@ func Setenv(name string, value string) error {
 	return nil
 }
 
+func LookupEnv(name string) (string, bool) { return "", false }
+func Unsetenv(name string) error { return nil }
+func Clearenv() {}
+func ExpandEnv(value string) string { return value }
+
 func Exit(code int) void {}
 
-func WriteFile(path string, data []byte, perm int) error {
+func WriteFile(path string, data []byte, perm FileMode) error {
 	return nil
 }
 
@@ -51,17 +111,39 @@ func ReadFile(path string) ([]byte, error) {
 func IsNotExist(err error) bool {
 	return false
 }
+func IsExist(err error) bool { return false }
+func IsPermission(err error) bool { return false }
 
 func Remove(path string) error { return nil }
 func RemoveAll(path string) error { return nil }
 func Rename(oldPath string, newPath string) error { return nil }
-func MkdirAll(path string, perm int) error { return nil }
+func Mkdir(path string, perm FileMode) error { return nil }
+func MkdirAll(path string, perm FileMode) error { return nil }
 func Stat(path string) (*FileInfo, error) { return nil, nil }
+func Lstat(path string) (*FileInfo, error) { return Stat(path) }
+func Readlink(path string) (string, error) { return "", nil }
 func Open(path string) (*File, error) { return &File{path: path}, nil }
+func OpenFile(path string, flag int, perm FileMode) (*File, error) { return Open(path) }
+func Create(path string) (*File, error) { return Open(path) }
 func CreateTemp(dir string, pattern string) (*File, error) { return &File{path: dir + "/temp"}, nil }
 func MkdirTemp(dir string, pattern string) (string, error) { return dir + "/tmp", nil }
 func (f *File) Name() string { return f.path }
+func (f *File) Read(data []byte) (int, error) { return 0, nil }
+func (f *File) ReadAt(data []byte, offset int64) (int, error) { return 0, nil }
+func (f *File) Write(data []byte) (int, error) { return len(data), nil }
+func (f *File) WriteString(data string) (int, error) { return len(data), nil }
+func (f *File) Seek(offset int64, whence int) (int64, error) { return offset, nil }
+func (f *File) Stat() (*FileInfo, error) { return Stat(f.path) }
+func (f *File) Readdirnames(n int) ([]string, error) { return []string{}, nil }
+func (f *File) Readdir(n int) ([]*DirEntry, error) { return []*DirEntry{}, nil }
+func (f *File) Sync() error { return nil }
+func (f *File) Chdir() error { return nil }
+func (f *File) Truncate(size int64) error { return nil }
 func (f *File) Close() error { return nil }
 func ReadDir(path string) ([]*DirEntry, error) { return []*DirEntry{}, nil }
 func (d *DirEntry) Name() string { return d.name }
 func (d *DirEntry) IsDir() bool { return false }
+func (d *DirEntry) Type() FileMode { return 0 }
+func (d *DirEntry) Info() (*FileInfo, error) { return nil, nil }
+
+func Pipe() (*File, *File, error) { return &File{}, &File{}, nil }

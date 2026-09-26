@@ -1419,7 +1419,17 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 			return TypeCString
 		case "make":
 			if len(e.Args) > 0 {
-				return c.ResolveType(e.Args[0].(ast.TypeExpr))
+				if typeExpr, ok := e.Args[0].(ast.TypeExpr); ok {
+					return c.ResolveType(typeExpr)
+				}
+				// Type expressions such as a named channel or collection may be
+				// represented as an identifier expression after Go-Hike parsing.
+				// Resolve them through the normal expression path instead of
+				// panicking on a failed type assertion.
+				if resolved := c.resolveTypeFromExpr(e.Args[0]); resolved != nil {
+					return resolved
+				}
+				return TypeBad
 			}
 		case "append":
 			if len(e.Args) > 0 {
@@ -2356,10 +2366,15 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			return TypeBool
 		}
 		if e.Operator == "*" {
-			if _, ok := right.(*PointerType); !ok {
+			if ptr, ok := right.(*PointerType); ok {
+				return ptr.Base
+			} else {
 				reporter.Errorf(filename, e.Token.Line, e.Token.Col, "cannot dereference non-pointer type %s", typeNameOf(right))
 				return TypeBad
 			}
+		}
+		if e.Operator == "&" {
+			return &PointerType{Base: right}
 		}
 		return right
 

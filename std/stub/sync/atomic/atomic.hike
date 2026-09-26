@@ -1,0 +1,14 @@
+package atomic
+
+func AddInt32(addr *int32, delta int32) int32 {
+    *addr = *addr + delta
+    return *addr
+}
+
+func LoadInt32(addr *int32) int32 {
+    return *addr
+}
+
+func StoreInt32(addr *int32, value int32) {
+    *addr = value
+}

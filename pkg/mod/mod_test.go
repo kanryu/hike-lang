@@ -31,3 +31,30 @@ func TestParseRequireAndResolveDownloadedDependency(t *testing.T) {
 		t.Fatalf("dependency path = %q, want %q", got, dep)
 	}
 }
+
+func TestResolvePackagePathPrefersSpecificReplacement(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "project")
+	specific := filepath.Join(root, "compat", "helpers")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(specific, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Module{
+		RootDir: root,
+		Replaces: map[string]string{
+			"example/project":                  "project",
+			"example/project/internal/helpers": "compat/helpers",
+		},
+	}
+	got, err := m.ResolvePackagePath(root, "example/project/internal/helpers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != specific {
+		t.Fatalf("specific replacement path = %q, want %q", got, specific)
+	}
+}

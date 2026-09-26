@@ -185,6 +185,7 @@ type TypeDecl struct {
 }
 
 func (td *TypeDecl) declNode()            {}
+func (td *TypeDecl) statementNode()       {}
 func (td *TypeDecl) TokenLiteral() string { return td.Token.Literal }
 
 type FuncDecl struct {

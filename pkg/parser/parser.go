@@ -805,7 +805,10 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	p.nextToken()
 
 	// A leading [] is a slice type, not a type-parameter list.
-	if p.curTokenIs(token.LBRACKET) && !p.peekTokenIs(token.RBRACKET) {
+	// A type parameter list starts with an identifier (`[T any]`). An
+	// integer immediately after `[` is an array length (`[4]uint32`) and
+	// must be left for parseTypeExpr.
+	if p.curTokenIs(token.LBRACKET) && p.peekTokenIs(token.IDENT) {
 		stmt.TypeParams = p.parseTypeParams()
 		p.nextToken()
 	}
@@ -917,9 +920,19 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 
 	if p.curTokenIs(token.LPAREN) {
 		p.nextToken()
-		recvName := p.parseIdentifier()
-		p.nextToken()
-		recvType := p.parseTypeExpr()
+		var recvName *ast.Identifier
+		var recvType ast.TypeExpr
+		if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.RPAREN) {
+			// Go permits an unnamed receiver in method declarations such as
+			// `func (Value) String()`. The type name is sufficient for all
+			// later method and dispatch analysis.
+			recvName = p.parseIdentifier()
+			recvType = &ast.NamedType{Token: recvName.Token, Name: recvName}
+		} else {
+			recvName = p.parseIdentifier()
+			p.nextToken()
+			recvType = p.parseTypeExpr()
+		}
 		p.expectPeek(token.RPAREN)
 		fn.Receiver = &ast.ParamDecl{Token: recvName.Token, Name: recvName, Type: recvType}
 		p.nextToken()
@@ -1075,18 +1088,7 @@ func (p *Parser) parseInterfaceMethods(it *ast.InterfaceType) {
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 			if p.peekTokenIs(token.LPAREN) {
-				p.nextToken()
-				p.nextToken()
-				for {
-					returnTypes = append(returnTypes, p.parseTypeExpr())
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-				p.expectPeek(token.RPAREN)
+				returnTypes = p.parseReturnTypeList()
 			} else {
 				p.nextToken()
 				returnTypes = append(returnTypes, p.parseTypeExpr())
@@ -1117,6 +1119,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		// assignment shape as local variables; semantic analysis can enforce
 		// any const-specific restrictions later.
 		return p.parseVarStmt()
+	case token.TYPE:
+		return p.parseTypeDecl()
 	case token.IF:
 		return p.parseIfStmt()
 	case token.FOR:
@@ -1323,6 +1327,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 
 				if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
 					p.nextToken()
+					assignTok := p.curToken
 					if p.peekTokenIs(token.RANGE) {
 						p.nextToken()
 						p.nextToken()
@@ -1342,7 +1347,7 @@ func (p *Parser) parseForStmt() ast.Statement {
 							p.nextToken()
 							rights = append(rights, p.parseExpression(LOWEST))
 						}
-						firstStmt = &ast.AssignStmt{Token: p.curToken, Left: []ast.Expression{firstIdent, secondIdent}, Right: rights}
+						firstStmt = &ast.AssignStmt{Token: assignTok, Left: []ast.Expression{firstIdent, secondIdent}, Right: rights}
 					}
 				}
 			} else if p.peekTokenIs(token.DEFINE) || p.peekTokenIs(token.ASSIGN) {
