@@ -1,0 +1,11 @@
+package main
+
+func calculate(a int, b int) int {
+    A := a + 10
+    B := b * 2
+    return A + B
+}
+
+func main() int {
+    return calculate(2, 5)
+}

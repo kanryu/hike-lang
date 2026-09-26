@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"hikec-go/pkg/backend/wabt"
 	"hikec-go/pkg/target"
 )
 
@@ -262,6 +263,78 @@ func TestCFuncReturnExpressionKeepsReturnLine(t *testing.T) {
 		}
 	}
 	t.Fatal("cfunc return expression was not mapped to line 4")
+}
+
+func TestWABTDebugInfoTracksUserLocalsAndReturnValue(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "main.hike")
+	source := `package main
+
+func calculate(a int, b int) int {
+    A := a + 10
+    B := b * 2
+    return A + B
+}
+
+func main() int {
+    return calculate(2, 5)
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("wabt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(tgt)
+	c.SetDebugInfo(true)
+	if _, _, _, err := c.CompileToWAT(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	info := c.WABTDebugInfo()
+	if info == nil {
+		t.Fatal("WABT debug info was not collected")
+	}
+
+	for _, fn := range info.Functions {
+		if fn.Name != "calculate" {
+			continue
+		}
+		if fn.Line != 3 {
+			t.Fatalf("calculate source line = %d, want 3", fn.Line)
+		}
+		locals := make(map[string]wabt.DebugLocal)
+		for _, local := range fn.Locals {
+			locals[local.Name] = local
+		}
+		for name, wantLine := range map[string]uint32{"A": 4, "B": 5, "return_of_function": 7} {
+			local, ok := locals[name]
+			if !ok {
+				t.Fatalf("calculate debug locals omit %q: %#v", name, fn.Locals)
+			}
+			if local.Line != wantLine {
+				t.Fatalf("debug local %q line = %d, want %d", name, local.Line, wantLine)
+			}
+			if local.Size != 4 {
+				t.Fatalf("debug local %q size = %d, want 4", name, local.Size)
+			}
+		}
+		for _, wantLine := range []uint32{4, 5, 6, 7} {
+			found := false
+			for _, line := range fn.Lines {
+				if line == wantLine {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("calculate debug line table omits source line %d: %v", wantLine, fn.Lines)
+			}
+		}
+		return
+	}
+	t.Fatal("WABT debug info did not contain calculate")
 }
 
 func TestLLVMEmitterIncludesDebugMetadata(t *testing.T) {

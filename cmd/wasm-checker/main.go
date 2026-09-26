@@ -80,7 +80,7 @@ const (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--mode=normal|concurrent] [--workers=N] [--source=path] [--wat-output=path] [--string|--string-info] [--dump-memory=path]")
+	fmt.Fprintln(os.Stderr, "usage: wasm-checker <module.wasm> <function> [--debug] [--mode=normal|concurrent] [--workers=N] [--source=path] [--wat-output=path] [--string|--string-info] [--dump-memory=path]")
 }
 
 func main() {
@@ -89,6 +89,7 @@ func main() {
 		os.Exit(2)
 	}
 	mode := "normal"
+	debugInfo := false
 	stringResult := false
 	stringInfo := false
 	dumpPath := ""
@@ -97,6 +98,8 @@ func main() {
 	workerCount := 1
 	for _, arg := range os.Args[3:] {
 		switch {
+		case arg == "--debug":
+			debugInfo = true
 		case arg == "--string":
 			stringResult = true
 		case arg == "--string-info":
@@ -157,6 +160,10 @@ func main() {
 
 	config := wasmtime.NewConfig()
 	config.SetWasmThreads(true)
+	// Wasm DWARF sections describe the guest source, but Wasmtime must also
+	// publish DWARF for the JIT-generated native code before LLDB can resolve
+	// guest breakpoints in the checker process.
+	config.SetDebugInfo(debugInfo)
 	// wasmtime-go/v48 exposes wasm threads but not the separate shared-memory
 	// switch. Pass the wrapper's C config pointer to the corresponding Wasmtime
 	// API until the Go binding exposes this knob.

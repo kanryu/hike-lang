@@ -480,6 +480,7 @@ func runBuild(args []string) {
 	// only supplies source-owned JavaScript bindings to runtime.js.
 	var runtimeProgram *ast.Program
 	var wabtCompiler *compiler.Compiler
+	var wabtWAT string
 	if tgt.IsWasm {
 		wabtCompiler = compiler.New(tgt)
 		wabtCompiler.SetVerbose(verbose)
@@ -490,7 +491,7 @@ func runBuild(args []string) {
 		var program *ast.Program
 		var compileErr error
 		if useWabtBackend {
-			_, _, program, compileErr = wabtCompiler.CompileToWAT(sourceFiles...)
+			wabtWAT, _, program, compileErr = wabtCompiler.CompileToWAT(sourceFiles...)
 		} else {
 			_, _, program, compileErr = wabtCompiler.CompileToLLVM(sourceFiles...)
 		}
@@ -514,7 +515,18 @@ func runBuild(args []string) {
 	if regionMode {
 		emitArgs = append(emitArgs, "--alloc=region")
 	}
-	runEmitIR(emitArgs)
+	if useWabtBackend {
+		// Keep the WAT and the debug metadata from the same compiler pass. A
+		// second CompileToWAT pass can change function or marker ordering as the
+		// HIR evolves, which would make the DWARF ranges describe a different
+		// module from the one assembled below.
+		if err := os.WriteFile(tempLL, []byte(wabtWAT), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "WAT write failed: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		runEmitIR(emitArgs)
+	}
 
 	srcBase := strings.TrimSuffix(filepath.Base(sourceFiles[0]), filepath.Ext(sourceFiles[0]))
 	if outputBin == "" {
