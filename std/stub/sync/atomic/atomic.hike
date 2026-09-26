@@ -12,3 +12,16 @@ func LoadInt32(addr *int32) int32 {
 func StoreInt32(addr *int32, value int32) {
     *addr = value
 }
+
+func AddUint32(addr *uint32, delta uint32) uint32 {
+    *addr = *addr + delta
+    return *addr
+}
+
+func LoadUint32(addr *uint32) uint32 {
+    return *addr
+}
+
+func StoreUint32(addr *uint32, value uint32) {
+    *addr = value
+}

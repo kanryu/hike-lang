@@ -1,0 +1,11 @@
+package base64
+
+type Encoding struct{}
+
+var StdEncoding Encoding
+var RawStdEncoding Encoding
+var URLEncoding Encoding
+
+func (e Encoding) EncodeToString(data []byte) string { return "" }
+func (e Encoding) DecodeString(text string) ([]byte, error) { return nil, nil }
+

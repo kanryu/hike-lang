@@ -197,6 +197,7 @@ type FuncDecl struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
+	ReturnNames []string
 	BodyTokens  []token.Token
 	Body        *BlockStmt
 	InternalKey string
@@ -483,6 +484,7 @@ type FuncLit struct {
 	Params      []*ParamDecl
 	IsVariadic  bool
 	ReturnTypes []TypeExpr
+	ReturnNames []string
 	BodyTokens  []token.Token
 	Body        *BlockStmt
 }

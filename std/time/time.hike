@@ -39,6 +39,8 @@ func (t Time) Unix() int64 {
 	return t.nsec / int64(Second)
 }
 
+func (t Time) UnixNano() int64 { return t.nsec }
+
 func (t Time) Add(d Duration) Time {
 	return Time{nsec: t.nsec + int64(d)}
 }

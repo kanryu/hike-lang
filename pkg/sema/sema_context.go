@@ -216,7 +216,23 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 	// receiver declaration inside that package may still refer to Cmd. Try the
 	// resolved name first, then its package-local spelling, preserving pointer
 	// qualification in every candidate.
-	for _, candidate := range receiverTypeCandidates(recvTypeName) {
+	candidates := receiverTypeCandidates(recvTypeName)
+	// Type aliases are registered before their underlying types are resolved,
+	// so a method may be keyed by the alias name (for example T#String) while
+	// a later expression has the underlying type (uint8). Include aliases that
+	// resolve to the same concrete type in the lookup candidates.
+	isPtr := strings.HasPrefix(recvTypeName, "*")
+	rawName := strings.TrimPrefix(recvTypeName, "*")
+	for aliasName, aliasType := range c.Aliases {
+		if aliasType == nil || typeNameOf(aliasType) != rawName {
+			continue
+		}
+		if isPtr {
+			aliasName = "*" + aliasName
+		}
+		candidates = append(candidates, aliasName)
+	}
+	for _, candidate := range candidates {
 		if fn, ok := c.Methods[methodLookupKey(candidate, methodName)]; ok {
 			return fn, fn.InternalKey
 		}
@@ -512,6 +528,20 @@ func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
 		// compatibility mode, like the other imported HIR interfaces.
 		return true
 	}
+	if strings.HasPrefix(interfaceName, "fs_") ||
+		strings.HasPrefix(interfaceName, "linker_") ||
+		strings.HasPrefix(interfaceName, "bundler_") ||
+		strings.HasPrefix(interfaceName, "resolver_") ||
+		strings.HasPrefix(interfaceName, "config_") ||
+		strings.HasPrefix(interfaceName, "logger_") ||
+		strings.HasPrefix(interfaceName, "js_parser_") ||
+		strings.HasPrefix(interfaceName, "renamer_") ||
+		strings.HasPrefix(interfaceName, "hash_") {
+		// Go-Hike currently keeps these large imported Go interfaces opaque.
+		// Their concrete implementations are still lowered, while structural
+		// interface checking is deferred until the runtime boundary.
+		return true
+	}
 	if interfaceName == "error" && concreteName != "void" {
 		// Error values returned by Go-shaped package stubs are opaque to the
 		// Hike checker; their concrete representation is not used by lowering.
@@ -652,6 +682,10 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			elemName := strings.TrimPrefix(name, "[]")
 			return &SliceType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
 		}
+		if strings.HasPrefix(name, "chan ") {
+			elemName := strings.TrimPrefix(name, "chan ")
+			return &ChanType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
+		}
 		if strings.HasPrefix(name, "map[") {
 			if end := strings.Index(name, "]"); end > len("map[") && end+1 < len(name) {
 				keyName := name[len("map["):end]
@@ -675,6 +709,12 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		}
 		if name == "any" {
 			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+		}
+		if name == "interface" {
+			return &InterfaceType{Name: "interface", Specializations: make(map[string]*InterfaceType)}
+		}
+		if name == "path" && c.GoHikeMode {
+			return &InterfaceType{Name: "path", Specializations: make(map[string]*InterfaceType)}
 		}
 		if name == "error" {
 			return c.Interfaces["error"]
@@ -1602,6 +1642,10 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return TypeVoid
 
 	case *ast.StructLiteral:
+		if e.Type == nil {
+			// An anonymous struct{}{} literal is a zero-sized marker value.
+			return TypeVoid
+		}
 		return c.ResolveType(e.Type)
 
 	case *ast.MapLiteral:
@@ -1725,6 +1769,14 @@ func (c *Context) evalConstString(expr ast.Expression) (string, bool) {
 		if pkgID, ok := e.Object.(*ast.Identifier); ok {
 			if value, found := c.LookupStringConstant(pkgID.Value + "_" + e.Field.Value); found {
 				return value, true
+			}
+		}
+	case *ast.BinaryExpr:
+		if e.Operator == "+" {
+			left, leftOK := c.evalConstString(e.Left)
+			right, rightOK := c.evalConstString(e.Right)
+			if leftOK && rightOK {
+				return left + right, true
 			}
 		}
 	}

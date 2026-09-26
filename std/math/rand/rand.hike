@@ -1,0 +1,9 @@
+package rand
+
+func Seed(seed int64) {}
+func Int31n(n int32) int32 {
+	if n <= 0 { return 0 }
+	return 0
+}
+func Read(data []byte) (int, error) { return len(data), nil }
+

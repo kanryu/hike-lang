@@ -201,7 +201,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			returnTypes := []ast.TypeExpr{}
 			if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
 				if p.peekTokenIs(token.LPAREN) {
-					returnTypes = p.parseReturnTypeList()
+					returnTypes, _ = p.parseReturnTypeListWithNames()
 				} else {
 					p.nextToken()
 					returnTypes = append(returnTypes, p.parseTypeExpr())
@@ -299,40 +299,11 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			return nil
 		}
 
-		paramTypes := []ast.TypeExpr{}
-		isVariadic := false
-		if !p.peekTokenIs(token.RPAREN) {
-			p.nextToken()
-			for {
-				if p.curTokenIs(token.ELLIPSIS) {
-					isVariadic = true
-					p.nextToken()
-					elem := p.parseTypeExpr()
-					paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
-					break
-				}
-
-				firstType := p.parseTypeExpr()
-				if p.peekTokenIs(token.IDENT) || p.peekTokenIs(token.ASTERISK) || p.peekTokenIs(token.LBRACKET) || p.peekTokenIs(token.MAP) || p.peekTokenIs(token.FUNC) {
-					p.nextToken()
-					actualType := p.parseTypeExpr()
-					paramTypes = append(paramTypes, actualType)
-				} else {
-					paramTypes = append(paramTypes, firstType)
-				}
-
-				if p.peekTokenIs(token.COMMA) {
-					p.nextToken()
-					if p.peekTokenIs(token.RPAREN) {
-						break
-					}
-					p.nextToken()
-				} else {
-					break
-				}
-			}
+		params, isVariadic := p.parseParameterList(false)
+		paramTypes := make([]ast.TypeExpr, len(params))
+		for i, param := range params {
+			paramTypes[i] = param.Type
 		}
-		p.expectPeek(token.RPAREN)
 
 		returnTypes := []ast.TypeExpr{}
 		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.ASSIGN) && !p.peekTokenIs(token.EOF) {
@@ -402,6 +373,16 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		// for example []Method{{Name: "Error"}}. The surrounding array or
 		// slice supplies the type during semantic analysis.
 		leftExp = &ast.StructLiteral{Token: p.curToken, Fields: p.parseStructLiteralFields()}
+	case token.STRUCT:
+		// Anonymous struct composite literals such as struct{}{} are used as
+		// zero-sized map values throughout Go code.
+		_, ok := p.parseTypeExpr().(*ast.StructType)
+		if !ok || !p.peekTokenIs(token.LBRACE) {
+			leftExp = &ast.StructLiteral{Token: p.curToken}
+			break
+		}
+		p.nextToken()
+		leftExp = &ast.StructLiteral{Token: p.curToken, Fields: p.parseStructLiteralFields()}
 	case token.BANG, token.MINUS, token.ASTERISK, token.AMPERSAND, token.CARET:
 		leftExp = p.parsePrefixExpr()
 
@@ -412,6 +393,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.ReceiveExpr{Token: tok, Expr: right}
 
 	case token.ASYNC:
+		if !p.peekTokenIs(token.LPAREN) {
+			leftExp = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+			break
+		}
 		tok := p.curToken
 		if !p.expectPeek(token.LPAREN) {
 			return nil
@@ -432,9 +417,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		params, isVariadic := p.parseParameterList(false)
 
 		returnTypes := []ast.TypeExpr{}
+		returnNames := []string{}
 		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
 			if p.peekTokenIs(token.LPAREN) {
-				returnTypes = p.parseReturnTypeList()
+				returnTypes, returnNames = p.parseReturnTypeListWithNames()
 			} else {
 				p.nextToken()
 				returnTypes = append(returnTypes, p.parseTypeExpr())
@@ -457,7 +443,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 		p.expectPeek(token.LBRACE)
 		body := p.parseBlockStmt()
-		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, Body: body}
+		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, ReturnNames: returnNames, Body: body}
 
 	case token.MAP:
 		mapType, ok := p.parseTypeExpr().(*ast.MapType)
@@ -750,6 +736,12 @@ func (p *Parser) parseIdentifier() *ast.Identifier {
 func (p *Parser) parseIntegerLiteral() *ast.IntegerLiteral {
 	val, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
 	if err != nil {
+		// Keep unsigned 64-bit constants in their bit representation. The AST
+		// stores integer literals as int64, while later type-directed lowering
+		// can reinterpret the value for uint64 constants.
+		if unsigned, unsignedErr := strconv.ParseUint(p.curToken.Literal, 0, 64); unsignedErr == nil {
+			return &ast.IntegerLiteral{Token: p.curToken, Value: int64(unsigned)}
+		}
 		p.errors = append(p.errors, fmt.Sprintf("could not parse %q as integer", p.curToken.Literal))
 		return nil
 	}
@@ -1041,6 +1033,15 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 			high = p.parseExpression(LOWEST)
 			p.nextToken()
 		}
+		if p.curTokenIs(token.COLON) {
+			// Go's full slice form a[low:high:max]. The AST currently keeps
+			// only low/high, so consume max while preserving the slice bounds.
+			p.nextToken()
+			if !p.curTokenIs(token.RBRACKET) {
+				_ = p.parseExpression(LOWEST)
+				p.nextToken()
+			}
+		}
 		p.expectCurrent(token.RBRACKET)
 		return &ast.SliceExpr{Token: tok, Left: left, Low: nil, High: high}
 	}
@@ -1071,6 +1072,13 @@ func (p *Parser) parseIndexExpr(left ast.Expression) ast.Expression {
 		if !p.curTokenIs(token.RBRACKET) {
 			high = p.parseExpression(LOWEST)
 			p.nextToken()
+		}
+		if p.curTokenIs(token.COLON) {
+			p.nextToken()
+			if !p.curTokenIs(token.RBRACKET) {
+				_ = p.parseExpression(LOWEST)
+				p.nextToken()
+			}
 		}
 		p.expectCurrent(token.RBRACKET)
 		return &ast.SliceExpr{Token: tok, Left: left, Low: indexOrLow, High: high}

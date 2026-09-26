@@ -1,0 +1,10 @@
+// Package hash defines the common interface implemented by hash functions.
+package hash
+
+type Hash interface {
+	Write(p []byte) (int, error)
+	Sum(b []byte) []byte
+	Reset()
+	Size() int
+	BlockSize() int
+}

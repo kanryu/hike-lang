@@ -74,6 +74,25 @@ func (b *Builder) WriteByte(ch byte) {
 	b.buf[b.len] = 0
 }
 
+func (b *Builder) Grow(n int) {
+	needCap := b.len + n + 1
+	if needCap <= b.cap {
+		return
+	}
+	newCap := b.cap * 2
+	for newCap < needCap {
+		newCap = newCap * 2
+	}
+	newBuf := malloc(newCap)
+	if b.len > 0 {
+		memcpy(newBuf, b.buf, b.len)
+	}
+	free(b.buf)
+	b.buf = newBuf
+	b.cap = newCap
+	b.buf[b.len] = 0
+}
+
 func (b *Builder) WriteRune(r int) int {
 	return 0
 }

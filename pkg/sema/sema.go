@@ -1279,7 +1279,11 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 	origRecvName := ""
 	structNameWithPtr := ""
 	if fn.Receiver != nil {
-		collectTypeParamsFromNode(fn.Receiver.Type, tpSet)
+		// The receiver's base name is a declared type, not a type parameter.
+		// In particular, a non-generic Go type named T must not turn every
+		// method on T into a generic function. Only collect parameters used by
+		// explicit receiver type arguments (for example Box[T]).
+		collectReceiverTypeArgs(fn.Receiver.Type, tpSet)
 		origRecvName = getBaseTypeName(fn.Receiver.Type)
 		recvTypeName := origRecvName
 		if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
@@ -1352,6 +1356,17 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 	if len(typeParams) > 0 {
 		ctx.GenericFuncs[fnName] = fn
 		ctx.GenericFuncs[fn.Name.Value] = fn
+	}
+}
+
+func collectReceiverTypeArgs(t ast.TypeExpr, out map[string]bool) {
+	switch node := t.(type) {
+	case *ast.PointerType:
+		collectReceiverTypeArgs(node.Base, out)
+	case *ast.NamedType:
+		for _, arg := range node.TypeArgs {
+			collectTypeParamsFromNode(arg, out)
+		}
 	}
 }
 
@@ -1465,6 +1480,12 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 	}
 
 	fnType := ctx.Functions[fnName]
+	if fnType == nil && decl.Receiver != nil {
+		// Receiver methods can be registered under the source alias before the
+		// alias's underlying type is resolved. Recover that exact method entry
+		// instead of leaving its signature unresolved.
+		fnType, _ = ctx.LookupMethod(origRecvName, decl.Name.Value)
+	}
 	if fnType == nil {
 		fnType = ctx.Functions[decl.Name.Value]
 	}

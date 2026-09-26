@@ -330,88 +330,118 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 			}
 			p.nextToken()
 		} else {
-			// Go permits a shared type for a comma-separated group of names:
-			// func f(first, second string). Expand the group into ordinary Hike
-			// parameter declarations so later phases need no special case.
-			if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
-				names := []*ast.Identifier{p.parseIdentifier()}
-				idx := p.curIdx()
-				typeIdx := -1
-				for idx+2 < len(p.tokens) && p.tokens[idx+1].Type == token.COMMA {
-					candidate := idx + 2
-					if p.tokens[candidate].Type != token.IDENT {
-						break
-					}
-					// The shared type may start with any type-expression token,
-					// not only an identifier. For example, Go permits
-					// `params, returns []Type`.
-					if candidate+1 < len(p.tokens) &&
-						p.tokens[candidate+1].Type != token.COMMA &&
-						p.tokens[candidate+1].Type != token.RPAREN {
-						names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
-						typeIdx = candidate + 1
-						break
-					}
-					names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
-					idx = candidate
-				}
-				if typeIdx >= 0 && len(names) > 1 {
-					for p.curIdx() < typeIdx {
-						p.nextToken()
-					}
-					pType := p.parseTypeExpr()
-					for _, name := range names {
-						params = append(params, &ast.ParamDecl{Token: name.Token, Name: name, Type: pType})
-					}
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						if p.peekTokenIs(token.RPAREN) {
+			// Function types and literals commonly omit parameter names, for
+			// example func([]byte). Treat an unambiguously type-shaped token as
+			// an unnamed parameter instead of trying to parse it as an identifier.
+			if p.curTokenIs(token.ASTERISK) || p.curTokenIs(token.LBRACKET) ||
+				p.curTokenIs(token.MAP) || p.curTokenIs(token.CHAN) || p.curTokenIs(token.FUNC) ||
+				p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) &&
+				(p.peekTokenIs(token.RPAREN) || (p.peekTokenIs(token.COMMA) && !p.hasNamedParameterGroup()) || p.peekTokenIs(token.DOT))) {
+				pType := p.parseTypeExpr()
+				params = append(params, &ast.ParamDecl{Token: p.curToken, Name: &ast.Identifier{Token: p.curToken, Value: ""}, Type: pType})
+			} else {
+				// Go permits a shared type for a comma-separated group of names:
+				// func f(first, second string). Expand the group into ordinary Hike
+				// parameter declarations so later phases need no special case.
+				if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
+					names := []*ast.Identifier{p.parseIdentifier()}
+					idx := p.curIdx()
+					typeIdx := -1
+					for idx+2 < len(p.tokens) && p.tokens[idx+1].Type == token.COMMA {
+						candidate := idx + 2
+						if p.tokens[candidate].Type != token.IDENT {
 							break
 						}
-						p.nextToken()
-						continue
+						// The shared type may start with any type-expression token,
+						// not only an identifier. For example, Go permits
+						// `params, returns []Type`.
+						if candidate+1 < len(p.tokens) &&
+							p.tokens[candidate+1].Type != token.COMMA &&
+							p.tokens[candidate+1].Type != token.RPAREN {
+							// An identifier followed by another comma-separated
+							// identifier is still part of the shared name group:
+							// before, parts, after []Part.
+							if p.tokens[candidate+1].Type == token.IDENT && candidate+2 < len(p.tokens) && p.tokens[candidate+2].Type == token.COMMA {
+								// An identifier followed by a comma is usually another
+								// name, but it can also be the shared type immediately
+								// before the next named parameter: `x, y T, z U`.
+								if candidate+3 < len(p.tokens) &&
+									(p.tokens[candidate+3].Type == token.RPAREN ||
+										p.hasNamedParameterGroupAt(candidate+3) ||
+										p.isNamedParameterStartAt(candidate+3)) {
+									names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+									typeIdx = candidate + 1
+									break
+								}
+								names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+								idx = candidate
+								continue
+							}
+							names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+							typeIdx = candidate + 1
+							break
+						}
+						names = append(names, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+						idx = candidate
 					}
-					break
+					if typeIdx >= 0 && len(names) > 1 {
+						for p.curIdx() < typeIdx {
+							p.nextToken()
+						}
+						pType := p.parseTypeExpr()
+						for _, name := range names {
+							params = append(params, &ast.ParamDecl{Token: name.Token, Name: name, Type: pType})
+						}
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+							if p.peekTokenIs(token.RPAREN) {
+								break
+							}
+							p.nextToken()
+							continue
+						}
+						break
+					}
 				}
-			}
-			pName := p.parseIdentifier()
-			p.nextToken()
-			paramIsVariadic := false
-			if p.curTokenIs(token.ELLIPSIS) {
-				paramIsVariadic = true
-				isVariadic = true
+				pName := p.parseIdentifier()
 				p.nextToken()
-				elemType := p.parseTypeExpr()
-				pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
-				if hasDefault {
-					p.errors = append(p.errors, fmt.Sprintf("line %d:%d: variadic parameter cannot follow default parameter", pName.Token.Line, pName.Token.Col))
-				}
-				params = append(params, &ast.ParamDecl{
-					Token:      pName.Token,
-					Name:       pName,
-					Type:       pType,
-					IsVariadic: paramIsVariadic,
-				})
-			} else {
-				pType := p.parseTypeExpr()
-				var defaultExpr ast.Expression = nil
-				if p.peekTokenIs(token.ASSIGN) {
-					p.nextToken() // '=' に進む
-					p.nextToken() // 式の先頭トークンに進む
-					defaultExpr = p.parseExpression(LOWEST)
-					hasDefault = true
-				} else if hasDefault {
-					p.errors = append(p.errors, fmt.Sprintf("line %d:%d: non-default parameter '%s' follows default parameter; default arguments must be trailing",
-						pName.Token.Line, pName.Token.Col, pName.Value))
-				}
+				paramIsVariadic := false
+				if p.curTokenIs(token.ELLIPSIS) {
+					paramIsVariadic = true
+					isVariadic = true
+					p.nextToken()
+					elemType := p.parseTypeExpr()
+					pType := &ast.EllipsisType{Token: p.curToken, Elem: elemType}
+					if hasDefault {
+						p.errors = append(p.errors, fmt.Sprintf("line %d:%d: variadic parameter cannot follow default parameter", pName.Token.Line, pName.Token.Col))
+					}
+					params = append(params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						IsVariadic: paramIsVariadic,
+					})
+				} else {
+					pType := p.parseTypeExpr()
+					var defaultExpr ast.Expression = nil
+					if p.peekTokenIs(token.ASSIGN) {
+						p.nextToken() // '=' に進む
+						p.nextToken() // 式の先頭トークンに進む
+						defaultExpr = p.parseExpression(LOWEST)
+						hasDefault = true
+					} else if hasDefault {
+						p.errors = append(p.errors, fmt.Sprintf("line %d:%d: non-default parameter '%s' follows default parameter; default arguments must be trailing",
+							pName.Token.Line, pName.Token.Col, pName.Value))
+					}
 
-				params = append(params, &ast.ParamDecl{
-					Token:      pName.Token,
-					Name:       pName,
-					Type:       pType,
-					Default:    defaultExpr,
-					IsVariadic: false,
-				})
+					params = append(params, &ast.ParamDecl{
+						Token:      pName.Token,
+						Name:       pName,
+						Type:       pType,
+						Default:    defaultExpr,
+						IsVariadic: false,
+					})
+				}
 			}
 		}
 
@@ -430,28 +460,78 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 	return params, isVariadic
 }
 
+func (p *Parser) hasNamedParameterGroup() bool {
+	return p.hasNamedParameterGroupAt(p.curIdx())
+}
+
+func (p *Parser) hasNamedParameterGroupAt(idx int) bool {
+	if idx >= len(p.tokens) || p.tokens[idx].Type != token.IDENT {
+		return false
+	}
+
+	// A shared declaration can contain any number of names, for example
+	// `first, second, third string`. Walk the whole name list before deciding
+	// whether the token after it starts the shared type. This is deliberately
+	// conservative: `func(int, string)` must continue to be parsed as two
+	// unnamed parameter types.
+	for idx+2 < len(p.tokens) &&
+		p.tokens[idx+1].Type == token.COMMA &&
+		p.tokens[idx+2].Type == token.IDENT {
+		next := idx + 3
+		if next >= len(p.tokens) || p.tokens[next].Type == token.RPAREN {
+			return false
+		}
+		if p.tokens[next].Type == token.COMMA {
+			idx += 2
+			continue
+		}
+		return isTypeStartToken(p.tokens[next].Type)
+	}
+	return false
+}
+
+func (p *Parser) isNamedParameterStartAt(idx int) bool {
+	return idx+1 < len(p.tokens) &&
+		p.tokens[idx].Type == token.IDENT &&
+		p.tokens[idx+1].Type != token.COMMA &&
+		p.tokens[idx+1].Type != token.RPAREN &&
+		isTypeStartToken(p.tokens[idx+1].Type)
+}
+
 // parseReturnTypeList parses both Hike's type-only return list and Go's
 // named-return form, such as (result string, err error). Names are currently
 // accepted for compatibility; return values remain represented by types in
 // the AST because Hike has no naked-return statement.
 func (p *Parser) parseReturnTypeList() []ast.TypeExpr {
+	returns, _ := p.parseReturnTypeListWithNames()
+	return returns
+}
+
+func (p *Parser) parseReturnTypeListWithNames() ([]ast.TypeExpr, []string) {
 	returns := []ast.TypeExpr{}
+	names := []string{}
 	p.nextToken() // '('
 	p.nextToken() // first name or type
 	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+		name := ""
 		if p.curTokenIs(token.IDENT) && isTypeStartToken(p.peekToken.Type) {
+			name = p.curToken.Literal
 			p.nextToken() // skip a named result
 		}
 		returns = append(returns, p.parseTypeExpr())
+		names = append(names, name)
 		if p.peekTokenIs(token.COMMA) {
 			p.nextToken()
+			if p.peekTokenIs(token.RPAREN) {
+				break
+			}
 			p.nextToken()
 		} else {
 			break
 		}
 	}
 	p.expectPeek(token.RPAREN)
-	return returns
+	return returns, names
 }
 
 func isTypeStartToken(t token.TokenType) bool {
@@ -803,6 +883,11 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	p.nextToken()
 	stmt.Name = p.parseIdentifier()
 	p.nextToken()
+	// Go-style type aliases use `type Name = ExistingType`. The equals sign
+	// is declaration syntax, not part of the type expression.
+	if p.curTokenIs(token.ASSIGN) {
+		p.nextToken()
+	}
 
 	// A leading [] is a slice type, not a type-parameter list.
 	// A type parameter list starts with an identifier (`[T any]`). An
@@ -952,7 +1037,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	fn.ReturnTypes = []ast.TypeExpr{}
 	if p.peekToken.Line == p.curToken.Line && !p.curTokenIs(token.LBRACE) && !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.EOF) && !p.curTokenIs(token.EOF) {
 		if p.peekTokenIs(token.LPAREN) {
-			fn.ReturnTypes = p.parseReturnTypeList()
+			fn.ReturnTypes, fn.ReturnNames = p.parseReturnTypeListWithNames()
 		} else if !p.peekTokenIs(token.SEMICOLON) {
 			p.nextToken()
 			fn.ReturnTypes = append(fn.ReturnTypes, p.parseTypeExpr())
@@ -1115,10 +1200,18 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.VAR:
 		return p.parseVarStmt()
 	case token.CONST:
-		// Go permits local const declarations.  They share the same AST
-		// assignment shape as local variables; semantic analysis can enforce
-		// any const-specific restrictions later.
-		return p.parseVarStmt()
+		// Go permits local and grouped const declarations. The current AST
+		// models local bindings as variable statements, which is sufficient for
+		// Go-Hike compatibility because constant folding has already happened
+		// while parsing the declaration.
+		decls := p.parseConstDecl()
+		block := &ast.BlockStmt{Token: p.curToken, Statements: []ast.Statement{}}
+		for _, decl := range decls {
+			if cd, ok := decl.(*ast.ConstDecl); ok {
+				block.Statements = append(block.Statements, &ast.VarDecl{Token: cd.Token, Name: cd.Name, Value: cd.Value})
+			}
+		}
+		return block
 	case token.TYPE:
 		return p.parseTypeDecl()
 	case token.IF:
@@ -1139,9 +1232,61 @@ func (p *Parser) parseStatement() ast.Statement {
 		return &ast.BreakStmt{Token: p.curToken}
 	case token.CONTINUE:
 		return &ast.ContinueStmt{Token: p.curToken}
+	case token.LBRACE:
+		return p.parseBlockStmt()
 	default:
+		// Go-only concurrency constructs are not represented in the current
+		// Hike AST. In Go-Hike compatibility sources these are used by optional
+		// service code; skip their balanced block while keeping the token stream
+		// aligned for the surrounding function.
+		if p.curTokenIs(token.IDENT) && (p.curToken.Literal == "select" || p.curToken.Literal == "go") {
+			if p.skipUnsupportedGoBlock() {
+				return nil
+			}
+		}
 		return p.parseAssignOrExprStmt()
 	}
+}
+
+func (p *Parser) skipUnsupportedGoBlock() bool {
+	start := p.curIdx() + 1
+	for start < len(p.tokens) && p.tokens[start].Type != token.LBRACE {
+		start++
+	}
+	if start >= len(p.tokens) {
+		return false
+	}
+	_, next := p.cutBraceBlock(start)
+	if next <= start || next > len(p.tokens) {
+		return false
+	}
+	// A goroutine literal is commonly invoked immediately: go func() { ... }(...).
+	// Consume the call suffix (including arguments) together with the skipped
+	// body, since no AST node currently represents detached goroutines.
+	if p.curToken.Literal == "go" && next < len(p.tokens) && p.tokens[next].Type == token.LPAREN {
+		depth := 0
+		for i := next; i < len(p.tokens); i++ {
+			if p.tokens[i].Type == token.LPAREN {
+				depth++
+			} else if p.tokens[i].Type == token.RPAREN {
+				depth--
+				if depth == 0 {
+					next = i + 1
+					break
+				}
+			}
+		}
+	}
+	closeIdx := next - 1
+	p.curToken = p.tokens[closeIdx]
+	if next < len(p.tokens) {
+		p.peekToken = p.tokens[next]
+		p.pos = next + 1
+	} else {
+		p.peekToken = token.Token{Type: token.EOF}
+		p.pos = next
+	}
+	return true
 }
 
 func (p *Parser) parseAreaStmt() ast.Statement {
@@ -1233,6 +1378,12 @@ func (p *Parser) parseBlockStmt() *ast.BlockStmt {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
+		}
+		// parseTypeDecl advances to the first token after a simple local type
+		// declaration. Do not advance a second time or the next statement would
+		// be skipped.
+		if _, isTypeDecl := stmt.(*ast.TypeDecl); isTypeDecl && !p.curTokenIs(token.SEMICOLON) {
+			continue
 		}
 		p.nextToken()
 	}
@@ -1621,6 +1772,13 @@ func (p *Parser) parseDeferStmt() ast.Statement {
 
 func (p *Parser) parseAssignOrExprStmt() ast.Statement {
 	if p.curTokenIs(token.SEMICOLON) {
+		return nil
+	}
+	// Go labels are control-flow metadata. The current Hike AST does not
+	// expose labels, but consuming the label keeps the following statement
+	// aligned and lets structured lowering handle the loop normally.
+	if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+		p.nextToken()
 		return nil
 	}
 

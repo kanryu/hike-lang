@@ -56,6 +56,18 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 	case *ast.SendStmt:
 		s.LowerSendStmt(node)
 	case *ast.ExprStmt:
+		if id, ok := node.Expr.(*ast.Identifier); ok && s.root.semaCtx.GoHikeMode {
+			name := astIDValue(id)
+			_, hasSymbol := s.root.symbols[name]
+			fn, _ := s.root.semaCtx.LookupFunction(name)
+			_, hasString := s.root.semaCtx.LookupStringConstant(name)
+			_, hasInt := s.root.semaCtx.LookupConstant(name)
+			if !hasSymbol && fn == nil && !hasString && !hasInt {
+				// Labels are currently represented by the parser as a bare
+				// identifier statement. They have no runtime instruction here.
+				break
+			}
+		}
 		s.root.Expr.LowerExpr(node.Expr)
 	case *ast.BlockStmt:
 		for _, inner := range node.Statements {

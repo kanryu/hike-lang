@@ -7,9 +7,11 @@ import (
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/sema"
+	"hikec-go/pkg/token"
 )
 
 func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
+	initScope := s.snapshotDefinedSymbols(is.Init)
 	if is.Init != nil {
 		s.LowerStmt(is.Init)
 	}
@@ -41,11 +43,13 @@ func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
 	}
 
 	s.root.setBlock(thenBB)
+	thenScope := s.snapshotDefinedSymbols(is.Consequence)
 	if structuredIf != nil {
 		s.root.pushStructuredFrame(structuredIf.Label)
 		s.root.pushStructuredBody(&structuredIf.Then)
 	}
 	s.LowerStmt(is.Consequence)
+	s.restoreDefinedSymbols(thenScope)
 	if structuredIf != nil {
 		s.root.popStructuredBody()
 		s.root.popStructuredFrame()
@@ -56,11 +60,13 @@ func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
 
 	if is.Alternative != nil {
 		s.root.setBlock(elseBB)
+		elseScope := s.snapshotDefinedSymbols(is.Alternative)
 		if structuredIf != nil {
 			s.root.pushStructuredFrame(structuredIf.Label)
 			s.root.pushStructuredBody(&structuredIf.Else)
 		}
 		s.LowerStmt(is.Alternative)
+		s.restoreDefinedSymbols(elseScope)
 		if structuredIf != nil {
 			s.root.popStructuredBody()
 			s.root.popStructuredFrame()
@@ -71,6 +77,76 @@ func (s *StmtLowerer) LowerIfStmt(is *ast.IfStmt) {
 	}
 
 	s.root.setBlock(endBB)
+	s.restoreDefinedSymbols(initScope)
+}
+
+type symbolSnapshot struct {
+	name     string
+	value    hir.Value
+	typ      sema.Type
+	hasValue bool
+	hasType  bool
+}
+
+func (s *StmtLowerer) snapshotDefinedSymbols(stmt ast.Statement) []symbolSnapshot {
+	names := make(map[string]bool)
+	var walk func(ast.Statement)
+	walk = func(node ast.Statement) {
+		switch n := node.(type) {
+		case *ast.AssignStmt:
+			if n.Token.Type == token.DEFINE {
+				for _, left := range n.Left {
+					if id, ok := left.(*ast.Identifier); ok && id.Value != "_" {
+						names[id.Value] = true
+					}
+				}
+			}
+		case *ast.BlockStmt:
+			for _, child := range n.Statements {
+				walk(child)
+			}
+		case *ast.IfStmt:
+			walk(n.Init)
+			walk(n.Consequence)
+			walk(n.Alternative)
+		case *ast.ForStmt:
+			walk(n.Init)
+			walk(n.Body)
+			walk(n.Post)
+		case *ast.ForRangeStmt:
+			walk(n.Body)
+		case *ast.SwitchStmt:
+			walk(n.Init)
+			for _, clause := range n.Cases {
+				for _, child := range clause.Body {
+					walk(child)
+				}
+			}
+		}
+	}
+	walk(stmt)
+	result := make([]symbolSnapshot, 0, len(names))
+	for name := range names {
+		value, hasValue := s.root.symbols[name]
+		typ, hasType := s.root.symbolTypes[name]
+		result = append(result, symbolSnapshot{name: name, value: value, typ: typ, hasValue: hasValue, hasType: hasType})
+	}
+	return result
+}
+
+func (s *StmtLowerer) restoreDefinedSymbols(snapshot []symbolSnapshot) {
+	for _, old := range snapshot {
+		if old.hasValue {
+			s.root.symbols[old.name] = old.value
+		} else {
+			delete(s.root.symbols, old.name)
+		}
+		if old.hasType {
+			s.root.symbolTypes[old.name] = old.typ
+		} else {
+			delete(s.root.symbolTypes, old.name)
+		}
+	}
 }
 
 func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
@@ -116,7 +192,12 @@ func (s *StmtLowerer) LowerForStmt(fs *ast.ForStmt) {
 		continueTarget:    controlID(structuredLoop),
 	})
 	defer func() {
-		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		// Nested Go-shaped range lowering can transfer control through a
+		// function literal before the normal loop cleanup runs. Keep cleanup
+		// idempotent so an already-restored loop stack cannot panic here.
+		if len(s.root.loopStack) > 0 {
+			s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		}
 		if structuredLoop != nil {
 			s.root.popStructuredBody()
 			s.root.popStructuredFrame()
@@ -371,7 +452,9 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		continueTarget:    controlID(structuredLoop),
 	})
 	defer func() {
-		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if len(s.root.loopStack) > 0 {
+			s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		}
 		if structuredLoop != nil {
 			s.root.popStructuredBody()
 			s.root.popStructuredFrame()

@@ -1,0 +1,40 @@
+package utf8
+
+const RuneError rune = 0xFFFD
+const RuneSelf rune = 0x80
+const RuneStart rune = 0xF0
+const MaxRune rune = 0x10FFFF
+const UTFMax int = 4
+
+func RuneCountInString(s string) int { return len(s) }
+func RuneLen(r rune) int {
+	if r < 0x80 { return 1 }
+	if r < 0x800 { return 2 }
+	if r < 0x10000 { return 3 }
+	return 4
+}
+
+func DecodeRune(p []byte) (rune, int) {
+	if len(p) == 0 { return rune(0), 0 }
+	return rune(p[0]), 1
+}
+
+func DecodeLastRune(p []byte) (rune, int) {
+	if len(p) == 0 { return rune(0), 0 }
+	return rune(p[len(p)-1]), 1
+}
+
+func EncodeRune(p []byte, r rune) int {
+	if len(p) > 0 { p[0] = byte(r) }
+	return 1
+}
+
+func DecodeRuneInString(s string) (rune, int) {
+	if len(s) == 0 { return rune(0), 0 }
+	return rune(s[0]), 1
+}
+
+func DecodeLastRuneInString(s string) (rune, int) {
+	if len(s) == 0 { return rune(0), 0 }
+	return rune(s[len(s)-1]), 1
+}

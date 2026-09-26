@@ -1,0 +1,13 @@
+// Package big provides the small integer surface needed by Go-Hike tools.
+package big
+
+type Int struct {
+	text string
+}
+
+func (i *Int) String() string {
+	if i.text == "" {
+		return "0"
+	}
+	return i.text
+}

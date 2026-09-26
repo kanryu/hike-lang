@@ -1,0 +1,63 @@
+// Package url provides the URL representation used by the compiler tools.
+package url
+
+import (
+	"std/strings"
+)
+
+type URL struct {
+	Scheme string
+	Opaque string
+	User string
+	Host string
+	Path string
+	RawPath string
+	ForceQuery bool
+	RawQuery string
+	Fragment string
+}
+
+func Parse(text string) (*URL, error) {
+	u := &URL{}
+	if i := strings.Index(text, "://"); i >= 0 {
+		u.Scheme = text[:i]
+		text = text[i+3:]
+		if i = strings.Index(text, "/"); i >= 0 {
+			u.Host, text = text[:i], text[i:]
+		} else {
+			u.Host, text = text, ""
+		}
+	}
+	if i := strings.Index(text, "#"); i >= 0 {
+		u.Fragment, text = text[i+1:], text[:i]
+	}
+	if i := strings.Index(text, "?"); i >= 0 {
+		u.RawQuery, text = text[i+1:], text[:i]
+	}
+	u.Path = text
+	return u, nil
+}
+
+func (u *URL) String() string {
+	result := ""
+	if u.Scheme != "" { result += u.Scheme + "://" }
+	result += u.Host + u.Path
+	if u.ForceQuery || u.RawQuery != "" { result += "?" + u.RawQuery }
+	if u.Fragment != "" { result += "#" + u.Fragment }
+	return result
+}
+
+func (u *URL) ResolveReference(ref *URL) *URL {
+	if ref.Scheme != "" { return ref }
+	result := *ref
+	result.Scheme = u.Scheme
+	result.Host = u.Host
+	if !strings.HasPrefix(result.Path, "/") {
+		base := u.Path
+		if i := strings.LastIndex(base, "/"); i >= 0 { base = base[:i+1] } else { base = "" }
+		result.Path = base + result.Path
+	}
+	return &result
+}
+
+func PathUnescape(value string) (string, error) { return value, nil }

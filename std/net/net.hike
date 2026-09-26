@@ -1,0 +1,46 @@
+// Package net provides the network-shaped API surface used by Go-compatible
+// tooling. The compiler currently treats these values as opaque runtime
+// handles; the declarations are sufficient for source analysis and lowering.
+package net
+
+type IP struct{}
+type IPMask struct{}
+
+type Addr interface {
+	Network() string
+	String() string
+}
+
+type Conn interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+}
+
+type Listener interface {
+	Accept() (Conn, error)
+	Close() error
+	Addr() Addr
+}
+
+type IPNet struct {
+	IP IP
+	Mask IPMask
+}
+
+func SplitHostPort(address string) (string, string, error) {
+	return "", "", nil
+}
+
+func JoinHostPort(host string, port string) string { return host + ":" + port }
+
+func ParseIP(address string) IP { return IP{} }
+
+func InterfaceAddrs() ([]Addr, error) { return nil, nil }
+
+func Listen(network string, address string) (Listener, error) { return nil, nil }
+
+func (ip IP) To4() IP { return ip }
+func (ip IP) IsUnspecified() bool { return false }
+func (ip IP) IsLinkLocalUnicast() bool { return false }
+

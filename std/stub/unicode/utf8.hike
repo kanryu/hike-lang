@@ -2,6 +2,9 @@ package utf8
 
 const RuneError rune = 0xFFFD
 const RuneSelf rune = 0x80
+const RuneStart rune = 0xF0
+const MaxRune rune = 0x10FFFF
+const UTFMax int = 4
 
 func DecodeRuneInString(s string) (rune, int) {
 	if len(s) == 0 {

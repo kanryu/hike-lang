@@ -5,7 +5,11 @@ package regexp
 // perform their own conservative fallback parsing when these methods do not
 // match.
 type Regexp struct {
-	pattern string
+    pattern string
+}
+
+func Compile(pattern string) (*Regexp, error) {
+	return &Regexp{pattern: pattern}, nil
 }
 
 func MustCompile(pattern string) *Regexp {

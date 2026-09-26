@@ -43,6 +43,7 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 		c.lowerMainArguments(hirFn)
 	} else {
 		c.lowerFunctionParameters(fn, hirFn, recvType)
+		c.lowerNamedReturns(fn, returnTypes)
 	}
 
 	for _, stmt := range fn.Body.Statements {
@@ -60,6 +61,24 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	}
 	hirFn.StructuredBody = c.root.structuredRoot
 	hir.FlattenTransparentBlocks(hirFn)
+}
+
+// lowerNamedReturns materializes Go-style named result variables as ordinary
+// local slots. The parser keeps their names separately from ReturnTypes, so
+// assignments such as `x = ...` and `return x` use the same symbol table as
+// parameters and local variables.
+func (c *CallLowerer) lowerNamedReturns(fn *ast.FuncDecl, returnTypes []sema.Type) {
+	for i, name := range fn.ReturnNames {
+		if name == "" || i >= len(returnTypes) {
+			continue
+		}
+		resultType := returnTypes[i]
+		ptr := c.root.nextReg(&sema.PointerType{Base: resultType}, name)
+		c.root.emit(&hir.InstrAlloca{Dst: ptr, AllocType: resultType})
+		c.root.emit(&hir.InstrStore{Val: c.root.defaultConstValue(resultType), Ptr: ptr})
+		c.root.symbols[name] = ptr
+		c.root.symbolTypes[name] = resultType
+	}
 }
 
 func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
@@ -678,6 +697,21 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		c.root.emit(&hir.InstrStore{Val: pReg, Ptr: allocaReg})
 		c.root.symbols[p.Name.Value] = allocaReg
 		c.root.symbolTypes[p.Name.Value] = pType
+	}
+
+	// Materialize named results for Go-style function literals as local slots.
+	// They are ordinary locals from the lowering layer's perspective, just like
+	// named results on a function declaration.
+	for i, name := range fl.ReturnNames {
+		if name == "" || i >= len(ft.ReturnTypes) {
+			continue
+		}
+		resultType := ft.ReturnTypes[i]
+		ptr := c.root.nextReg(&sema.PointerType{Base: resultType}, name)
+		c.root.emit(&hir.InstrAlloca{Dst: ptr, AllocType: resultType})
+		c.root.emit(&hir.InstrStore{Val: c.root.defaultConstValue(resultType), Ptr: ptr})
+		c.root.symbols[name] = ptr
+		c.root.symbolTypes[name] = resultType
 	}
 
 	for _, s := range fl.Body.Statements {

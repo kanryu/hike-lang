@@ -64,6 +64,13 @@ func (l *Loader) SetTarget(tgt *target.Target) {
 	if goos == "linux" || goos == "darwin" {
 		tags["unix"] = true
 	}
+	if tgt.IsWasm {
+		// Hike's WebAssembly targets use the same source-selection convention
+		// as Go's browser WebAssembly build. This selects wasm-specific files
+		// such as esbuild's serve_wasm.go instead of native socket code.
+		tags["js"] = true
+		tags["wasm"] = true
+	}
 	if !tgt.IsWasm {
 		tags["cgo"] = true
 	}

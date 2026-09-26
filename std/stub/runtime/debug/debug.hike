@@ -1,3 +1,5 @@
 package debug
 
 func Stack() []byte { return []byte{} }
+
+func SetGCPercent(percent int) int { return percent }

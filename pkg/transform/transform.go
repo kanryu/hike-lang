@@ -118,8 +118,28 @@ func semaTypeToAstType(tok token.Token, typ sema.Type) ast.TypeExpr {
 		return &ast.PointerType{Token: tok, Base: semaTypeToAstType(tok, resolved.Base)}
 	case *sema.SliceType:
 		return &ast.SliceType{Token: tok, Elem: semaTypeToAstType(tok, resolved.Elem)}
+	case *sema.MapType:
+		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value)}
+	case *sema.StructType:
+		if resolved.Name == "" {
+			fields := make([]*ast.FieldDecl, 0, len(resolved.Fields))
+			for _, field := range resolved.Fields {
+				fields = append(fields, &ast.FieldDecl{
+					Token:      tok,
+					Name:       &ast.Identifier{Token: tok, Value: field.Name},
+					Type:       semaTypeToAstType(tok, field.Type),
+					IsEmbedded: field.IsEmbedded,
+				})
+			}
+			return &ast.StructType{Token: tok, Fields: fields}
+		}
+		return &ast.NamedType{Token: tok, Name: &ast.Identifier{Token: tok, Value: resolved.Name}}
 	default:
-		return &ast.NamedType{Token: tok, Name: &ast.Identifier{Token: tok, Value: semaTypeName(typ)}}
+		name := semaTypeName(typ)
+		if name == "" {
+			name = "void"
+		}
+		return &ast.NamedType{Token: tok, Name: &ast.Identifier{Token: tok, Value: name}}
 	}
 }
 
@@ -1147,6 +1167,9 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 		logger.LogVerbose2("[Verbose2] Transform ConstArg substitution: expr=%T (%+v)\n", node.Expr, node.Expr)
 		return &ast.ConstArg{Token: node.Token, Expr: t.substituteAstExpr(node.Expr, typeMap, orderedTypeArgs)}
 	case *ast.NamedType:
+		if node == nil || node.Name == nil {
+			return node
+		}
 		if node.Package == nil && len(node.TypeArgs) == 0 {
 			if rep, ok := typeMap[node.Name.Value]; ok {
 				return rep
@@ -1786,6 +1809,15 @@ func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
 			}
 		}
 	}
+	if strings.HasPrefix(typeName, "map[") {
+		if end := strings.Index(typeName, "]"); end > len("map[") && end+1 < len(typeName) {
+			return &ast.MapType{
+				Token: tok,
+				Key:   parseSimpleTypeExpr(tok, typeName[len("map["):end]),
+				Value: parseSimpleTypeExpr(tok, typeName[end+1:]),
+			}
+		}
+	}
 	idx := strings.Index(typeName, "[")
 	if idx != -1 && strings.HasSuffix(typeName, "]") {
 		base := typeName[:idx]
@@ -1858,7 +1890,7 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 			if st, _ := t.semaCtx.LookupStruct(structName); st != nil {
 				for _, f := range st.Fields {
 					if f.Name == expr.Field.Value {
-						return parseSimpleTypeExpr(expr.Field.Token, semaTypeName(f.Type))
+						return semaTypeToAstType(expr.Field.Token, f.Type)
 					}
 				}
 			}

@@ -14,6 +14,10 @@ func Sort[T](x T) {}
 
 func Stable[T](x T) {}
 
+func Strings(x []string) {}
+func Ints(x []int) {}
+func StringsAreSorted(x []string) bool { return false }
+
 // SliceStable provides the index-based sorting API used by the compiler.
 func SliceStable[T](x []T, less func(i int, j int) bool) {
     for i := 1; i < len(x); i = i + 1 {

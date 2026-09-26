@@ -23,6 +23,7 @@ const Ln10 = 2.30258509299404568402
 const Log10E = 0.43429448190325182765
 const Phi = 1.61803398874989484820
 const MaxFloat64 = 1.7976931348623157e308
+const MaxUint32 uint32 = 4294967295
 const SmallestNonzeroFloat64 = 4.9406564584124654e-324
 const MaxFloat32 = 3.4028234663852886e38
 const SmallestNonzeroFloat32 = 1.401298464324817e-45
@@ -50,6 +51,13 @@ func IsInf(x float64, sign int) bool {
 
 func NaN() float64 {
 	return 0.0 / 0.0
+}
+
+func Inf(sign int) float64 {
+	if sign < 0 {
+		return -MaxFloat64
+	}
+	return MaxFloat64
 }
 
 func Sqrt(x float64) float64 {

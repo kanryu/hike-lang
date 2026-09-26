@@ -88,6 +88,12 @@ func Trim(s string, cutset string) string {
 	return s[start:end]
 }
 
+func TrimRight(s string, cutset string) string {
+	end := len(s)
+	for end > 0 && Index(cutset, s[end-1:end]) >= 0 { end-- }
+	return s[:end]
+}
+
 func LastIndex(s string, substr string) int {
     lenS := len(s)
     lenSub := len(substr)
@@ -107,6 +113,10 @@ func LastIndex(s string, substr string) int {
 
 func Contains(s string, substr string) bool {
 	return Index(s, substr) >= 0
+}
+
+func ContainsAny(s string, chars string) bool {
+	return IndexAny(s, chars) >= 0
 }
 
 func ContainsRune(s string, r rune) bool {
@@ -234,6 +244,11 @@ func ToLower(s string) string {
 		}
 	}
 	return string(buf)
+}
+
+func Title(s string) string {
+	if len(s) == 0 { return s }
+	return ToUpper(s[:1]) + s[1:]
 }
 
 func TrimSpace(s string) string {

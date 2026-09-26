@@ -346,7 +346,19 @@ func (e *ExprLowerer) lowerStructLiteralHeap(node *ast.StructLiteral) hir.Value 
 	if node.Type == nil || isNilNamedType(node.Type) {
 		panic(fmt.Sprintf("[Lower Error] struct literal has no type at %d:%d", node.Token.Line, node.Token.Col))
 	}
-	stType := e.root.semaCtx.ResolveType(node.Type).(*sema.StructType)
+	resolved := e.root.semaCtx.ResolveType(node.Type)
+	if _, ok := resolved.(*sema.ArrayType); ok {
+		elements := make([]ast.Expression, 0, len(node.Fields))
+		for _, field := range node.Fields {
+			if field != nil {
+				elements = append(elements, field.Value)
+			}
+		}
+		ar := resolved.(*sema.ArrayType)
+		arrayType := &ast.ArrayType{Token: node.Type.Token, Len: int64(ar.Len), Elem: semaTypeToTypeExpr(ar.Elem)}
+		return e.lowerArrayLiteralPtr(&ast.ArrayLiteral{Token: node.Token, Type: arrayType, Elements: elements})
+	}
+	stType := resolved.(*sema.StructType)
 	for _, field := range node.Fields {
 		if field == nil || field.Name == nil {
 			continue
@@ -511,6 +523,13 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 
 	case *ast.ArrayLiteral:
 		return e.lowerArrayLiteralPtr(node)
+
+	case *ast.SliceLiteral:
+		value := e.LowerExpr(node)
+		ptr := e.root.nextReg(&sema.PointerType{Base: value.Type()})
+		e.root.emit(&hir.InstrAlloca{Dst: ptr, AllocType: value.Type()})
+		e.root.emit(&hir.InstrStore{Val: value, Ptr: ptr})
+		return ptr
 
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
@@ -1038,7 +1057,7 @@ func (e *ExprLowerer) ResolveFieldPath(st *sema.StructType, sName string, curPtr
 		return nil, nil, "", false
 	}
 	for i, f := range st.Fields {
-		if f.Name == fieldName {
+		if f.Name == fieldName || (f.IsEmbedded && strings.HasSuffix(f.Name, "_"+fieldName)) {
 			fieldPtr := e.root.nextReg(&sema.PointerType{Base: f.Type})
 			e.root.emit(&hir.InstrGetFieldPtr{Dst: fieldPtr, BasePtr: curPtr, FieldIndex: i, FieldName: f.Name})
 			return fieldPtr, f.Type, sName, true
@@ -1048,6 +1067,9 @@ func (e *ExprLowerer) ResolveFieldPath(st *sema.StructType, sName string, curPtr
 		if f.IsEmbedded {
 			embTypeName := strings.TrimPrefix(semaTypeName(f.Type), "*")
 			embSt, embStructName := e.root.findStructByName(embTypeName)
+			if direct, ok := f.Type.(*sema.StructType); ok {
+				embSt, embStructName = direct, direct.Name
+			}
 			if embSt != nil {
 				gepReg := e.root.nextReg(&sema.PointerType{Base: f.Type})
 				e.root.emit(&hir.InstrGetFieldPtr{Dst: gepReg, BasePtr: curPtr, FieldIndex: i, FieldName: f.Name})

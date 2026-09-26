@@ -173,6 +173,11 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 		return e.lowerPrefixExpr(node)
 
 	case *ast.StructLiteral:
+		if node.Type == nil {
+			// struct{}{} is a zero-sized marker value. Its destination (for
+			// example a map[string]struct{} entry) supplies the concrete type.
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeVoid}
+		}
 		allocaReg := e.lowerStructLiteralPtr(node)
 		stType := allocaReg.Type().(*sema.PointerType).Base
 		resReg := e.root.nextReg(stType)
@@ -690,6 +695,12 @@ func (e *ExprLowerer) lowerPrefixExpr(node *ast.PrefixExpr) hir.Value {
 		// 構造体リテラルのポインタ化 (&Struct{}) はヒープ領域 (calloc) に確保
 		if sl, ok := node.Right.(*ast.StructLiteral); ok {
 			return e.lowerStructLiteralHeap(sl)
+		}
+		if al, ok := node.Right.(*ast.ArrayLiteral); ok {
+			return e.lowerArrayLiteralPtr(al)
+		}
+		if sl, ok := node.Right.(*ast.SliceLiteral); ok {
+			return e.LowerLValue(sl)
 		}
 		return e.LowerLValue(node.Right)
 	}
