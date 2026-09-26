@@ -1437,10 +1437,19 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 			Right:    t.substituteAstExpr(node.Right, typeMap, orderedTypeArgs),
 		}
 	case *ast.PrefixExpr:
+		right := t.substituteAstExpr(node.Right, typeMap, orderedTypeArgs)
+		// A generic type conversion such as (*Node[T])(ptr) is parsed as a
+		// PrefixExpr whose operand is a GenericInstExpr. Convert that type
+		// operand to the specialized named type before lowering.
+		if gen, ok := node.Right.(*ast.GenericInstExpr); ok {
+			if concrete := t.concreteGenericTypeExpr(gen, typeMap, orderedTypeArgs); concrete != nil {
+				right = concrete
+			}
+		}
 		return &ast.PrefixExpr{
 			Token:    node.Token,
 			Operator: node.Operator,
-			Right:    t.substituteAstExpr(node.Right, typeMap, orderedTypeArgs),
+			Right:    right,
 		}
 
 	case *ast.ReceiveExpr:
@@ -1581,6 +1590,41 @@ func (t *Transformer) substituteAstExpr(e ast.Expression, typeMap map[string]ast
 		}
 	}
 	return e
+}
+
+func (t *Transformer) concreteGenericTypeExpr(gen *ast.GenericInstExpr, typeMap map[string]ast.TypeExpr, orderedTypeArgs []ast.TypeExpr) ast.Expression {
+	if gen == nil {
+		return nil
+	}
+	var pkg *ast.Identifier
+	var name *ast.Identifier
+	switch left := gen.Left.(type) {
+	case *ast.Identifier:
+		name = left
+	case *ast.MemberExpr:
+		var ok bool
+		pkg, ok = left.Object.(*ast.Identifier)
+		if !ok {
+			return nil
+		}
+		name = left.Field
+	}
+	if name == nil {
+		return nil
+	}
+	args := make([]ast.TypeExpr, len(gen.TypeArgs))
+	for i, arg := range gen.TypeArgs {
+		args[i] = t.substituteAstType(arg, typeMap, orderedTypeArgs)
+	}
+	resolved := t.semaCtx.ResolveType(&ast.NamedType{Token: gen.Token, Package: pkg, Name: name, TypeArgs: args})
+	if resolved == nil || resolved == sema.TypeVoid {
+		return nil
+	}
+	concrete := semaTypeToAstType(gen.Token, resolved)
+	if expr, ok := concrete.(ast.Expression); ok {
+		return expr
+	}
+	return nil
 }
 
 func getBaseTypeName(typ ast.TypeExpr) string {

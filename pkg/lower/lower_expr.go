@@ -115,27 +115,6 @@ func (e *ExprLowerer) resolveTypeFromExpr(expr ast.Expression) sema.Type {
 			})
 		}
 	}
-	// 3. GenericInstExpr によるジェネリクス型指定
-	if gen, ok := expr.(*ast.GenericInstExpr); ok {
-		var pkgId *ast.Identifier
-		var typeId *ast.Identifier
-		if id, okId := gen.Left.(*ast.Identifier); okId {
-			typeId = id
-		} else if mem, okMem := gen.Left.(*ast.MemberExpr); okMem {
-			if p, okP := mem.Object.(*ast.Identifier); okP {
-				pkgId = p
-				typeId = mem.Field
-			}
-		}
-		if typeId != nil {
-			return e.root.semaCtx.ResolveType(&ast.NamedType{
-				Token:    gen.Token,
-				Package:  pkgId,
-				Name:     typeId,
-				TypeArgs: gen.TypeArgs,
-			})
-		}
-	}
 	if pref, ok := expr.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		base := e.resolveTypeFromExpr(pref.Right)
 		if base != nil && base != sema.TypeVoid {
@@ -183,34 +162,6 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 
 	case *ast.ImplicitCastExpr:
 		return e.lowerImplicitCast(node)
-
-	case *ast.GenericInstExpr:
-		var baseName string
-		if id, ok := node.Left.(*ast.Identifier); ok {
-			baseName = astIDValue(id)
-		} else if mem, ok := node.Left.(*ast.MemberExpr); ok {
-			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-				baseName = pkgId.Value + "_" + mem.Field.Value
-			} else {
-				baseName = mem.Field.Value
-			}
-		}
-		if baseName != "" {
-			typeArgs := make([]sema.Type, len(node.TypeArgs))
-			for i, ta := range node.TypeArgs {
-				typeArgs[i] = e.root.semaCtx.ResolveType(ta)
-			}
-			specName, specFn := e.root.Call.getOrSpecializeFunc(baseName, typeArgs)
-			if specFn != nil {
-				fatType := specFn
-				t1 := e.root.nextReg(fatType)
-				e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(fatType), Val: &hir.GlobalVar{Name: specName, Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 0})
-				t2 := e.root.nextReg(fatType)
-				e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
-				return t2
-			}
-		}
-		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
 	case *ast.Identifier:
 		return e.lowerIdentifier(node)

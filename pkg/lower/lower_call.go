@@ -258,25 +258,6 @@ func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 		return c.root.semaCtx.ResolveType(node)
 	case *ast.FuncType:
 		return c.root.semaCtx.ResolveType(node)
-	case *ast.GenericInstExpr:
-		var pkgId *ast.Identifier
-		var typeId *ast.Identifier
-		if id, okId := node.Left.(*ast.Identifier); okId {
-			typeId = id
-		} else if mem, okMem := node.Left.(*ast.MemberExpr); okMem {
-			if p, okP := mem.Object.(*ast.Identifier); okP {
-				pkgId = p
-				typeId = mem.Field
-			}
-		}
-		if typeId != nil {
-			return c.root.semaCtx.ResolveType(&ast.NamedType{
-				Token:    node.Token,
-				Package:  pkgId,
-				Name:     typeId,
-				TypeArgs: node.TypeArgs,
-			})
-		}
 	case *ast.IndexExpr:
 		var pkgId *ast.Identifier
 		var typeId *ast.Identifier
@@ -364,6 +345,29 @@ func (c *CallLowerer) ResolveTypeFromExpr(e ast.Expression) sema.Type {
 		return nil
 	}
 	return nil
+}
+
+// semaTypeToTypeExpr converts a resolved type back into the AST form used by
+// address and slice lowering. Generic specialization itself belongs to the
+// transform phase; this helper only preserves the common type representation.
+func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
+	if t == nil {
+		return nil
+	}
+	switch v := t.(type) {
+	case *sema.ConstValueType:
+		return &ast.ConstArg{Expr: &ast.IntegerLiteral{Value: v.Value}}
+	case *sema.PointerType:
+		return &ast.PointerType{Base: semaTypeToTypeExpr(v.Base)}
+	case *sema.SliceType:
+		return &ast.SliceType{Elem: semaTypeToTypeExpr(v.Elem)}
+	case *sema.ArrayType:
+		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
+	case *sema.MapType:
+		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value)}
+	default:
+		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
+	}
 }
 
 // -------------------------------------------------------------
@@ -663,202 +667,6 @@ func (c *CallLowerer) promoteCVarArg(val hir.Value) hir.Value {
 // -------------------------------------------------------------
 // ジェネリクス関数のオンデマンド特殊化 (Monomorphization)
 // -------------------------------------------------------------
-
-func (c *CallLowerer) getOrSpecializeFunc(baseName string, typeArgs []sema.Type) (string, *sema.FuncType) {
-	// Generic monomorphization belongs to Transform. Lower only resolves the
-	// already materialized function recorded in the semantic context.
-	var typeSuffixes []string
-	for _, t := range typeArgs {
-		cleanName := ""
-		if cv, ok := t.(*sema.ConstValueType); ok {
-			cleanName = fmt.Sprintf("const_%d", cv.Value)
-		} else {
-			cleanName = strings.ReplaceAll(semaTypeName(t), "*", "ptr_")
-		}
-		cleanName = strings.ReplaceAll(cleanName, "[]", "slice_")
-		typeSuffixes = append(typeSuffixes, cleanName)
-	}
-	specName := baseName + "_" + strings.Join(typeSuffixes, "_")
-
-	if fn, canonical := c.root.semaCtx.LookupFunction(specName); fn != nil {
-		if canonical != "" {
-			return canonical, fn
-		}
-		return specName, fn
-	}
-	return "", nil
-}
-
-func (c *CallLowerer) substFuncDecl(tmpl *ast.FuncDecl, newName string, subst map[string]sema.Type) *ast.FuncDecl {
-	newParams := make([]*ast.ParamDecl, len(tmpl.Params))
-	for i, p := range tmpl.Params {
-		newParams[i] = &ast.ParamDecl{
-			Token:      p.Token,
-			Name:       p.Name,
-			Type:       substTypeExpr(p.Type, subst),
-			Default:    p.Default,
-			IsVariadic: p.IsVariadic,
-			IsEscaped:  p.IsEscaped,
-		}
-	}
-
-	newReturns := make([]ast.TypeExpr, len(tmpl.ReturnTypes))
-	for i, rt := range tmpl.ReturnTypes {
-		newReturns[i] = substTypeExpr(rt, subst)
-	}
-
-	newBody := substBlockStmt(tmpl.Body, subst)
-
-	return &ast.FuncDecl{
-		Token:       tmpl.Token,
-		Name:        &ast.Identifier{Token: tmpl.Name.Token, Value: newName},
-		Params:      newParams,
-		IsVariadic:  tmpl.IsVariadic,
-		ReturnTypes: newReturns,
-		Body:        newBody,
-		InternalKey: sema.BuildInternalKey(c.root.prog.Package, newName, ""),
-	}
-}
-
-func substTypeExpr(t ast.TypeExpr, subst map[string]sema.Type) ast.TypeExpr {
-	if t == nil {
-		return nil
-	}
-	switch node := t.(type) {
-	case *ast.NamedType:
-		if node.Package == nil && len(node.TypeArgs) == 0 {
-			if concreteT, ok := subst[node.Name.Value]; ok {
-				return semaTypeToTypeExpr(concreteT)
-			}
-		}
-		newArgs := make([]ast.TypeExpr, len(node.TypeArgs))
-		for i, ta := range node.TypeArgs {
-			newArgs[i] = substTypeExpr(ta, subst)
-		}
-		return &ast.NamedType{
-			Token:    node.Token,
-			Package:  node.Package,
-			Name:     node.Name,
-			TypeArgs: newArgs,
-		}
-	case *ast.PointerType:
-		return &ast.PointerType{Token: node.Token, Base: substTypeExpr(node.Base, subst)}
-	case *ast.SliceType:
-		return &ast.SliceType{Token: node.Token, Elem: substTypeExpr(node.Elem, subst)}
-	case *ast.ArrayType:
-		return &ast.ArrayType{Token: node.Token, Len: node.Len, Elem: substTypeExpr(node.Elem, subst)}
-	case *ast.EllipsisType:
-		return &ast.EllipsisType{Token: node.Token, Elem: substTypeExpr(node.Elem, subst)}
-	case *ast.MapType:
-		return &ast.MapType{Token: node.Token, Key: substTypeExpr(node.Key, subst), Value: substTypeExpr(node.Value, subst)}
-	}
-	return t
-}
-
-func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
-	if t == nil {
-		return nil
-	}
-	switch v := t.(type) {
-	case *sema.ConstValueType:
-		return &ast.ConstArg{Expr: &ast.IntegerLiteral{Value: v.Value}}
-	case *sema.PointerType:
-		return &ast.PointerType{Base: semaTypeToTypeExpr(v.Base)}
-	case *sema.SliceType:
-		return &ast.SliceType{Elem: semaTypeToTypeExpr(v.Elem)}
-	case *sema.ArrayType:
-		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
-	case *sema.MapType:
-		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value)}
-	default:
-		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
-	}
-}
-
-func substBlockStmt(b *ast.BlockStmt, subst map[string]sema.Type) *ast.BlockStmt {
-	if b == nil {
-		return nil
-	}
-	newStmts := make([]ast.Statement, len(b.Statements))
-	for i, s := range b.Statements {
-		newStmts[i] = substStmt(s, subst)
-	}
-	return &ast.BlockStmt{Token: b.Token, Statements: newStmts}
-}
-
-func substStmt(s ast.Statement, subst map[string]sema.Type) ast.Statement {
-	if s == nil {
-		return nil
-	}
-	switch stmt := s.(type) {
-	case *ast.ReturnStmt:
-		newVals := make([]ast.Expression, len(stmt.Values))
-		for i, v := range stmt.Values {
-			newVals[i] = substExpr(v, subst)
-		}
-		return &ast.ReturnStmt{Token: stmt.Token, Values: newVals}
-	case *ast.AssignStmt:
-		newLefts := make([]ast.Expression, len(stmt.Left))
-		for i, l := range stmt.Left {
-			newLefts[i] = substExpr(l, subst)
-		}
-		newRights := make([]ast.Expression, len(stmt.Right))
-		for i, r := range stmt.Right {
-			newRights[i] = substExpr(r, subst)
-		}
-		return &ast.AssignStmt{Token: stmt.Token, Left: newLefts, Right: newRights, Type: substTypeExpr(stmt.Type, subst)}
-	case *ast.VarDecl:
-		return &ast.VarDecl{
-			Token:     stmt.Token,
-			Name:      stmt.Name,
-			Type:      substTypeExpr(stmt.Type, subst),
-			Value:     substExpr(stmt.Value, subst),
-			IsEscaped: stmt.IsEscaped,
-		}
-	case *ast.ExprStmt:
-		return &ast.ExprStmt{Token: stmt.Token, Expr: substExpr(stmt.Expr, subst)}
-	case *ast.BlockStmt:
-		return substBlockStmt(stmt, subst)
-	}
-	return s
-}
-
-func substExpr(e ast.Expression, subst map[string]sema.Type) ast.Expression {
-	if e == nil {
-		return nil
-	}
-	switch expr := e.(type) {
-	case *ast.BinaryExpr:
-		return &ast.BinaryExpr{
-			Token:    expr.Token,
-			Left:     substExpr(expr.Left, subst),
-			Operator: expr.Operator,
-			Right:    substExpr(expr.Right, subst),
-		}
-	case *ast.CallExpr:
-		newArgs := make([]ast.Expression, len(expr.Args))
-		for i, a := range expr.Args {
-			newArgs[i] = substExpr(a, subst)
-		}
-		return &ast.CallExpr{
-			Token:       expr.Token,
-			Function:    substExpr(expr.Function, subst),
-			Args:        newArgs,
-			HasEllipsis: expr.HasEllipsis,
-		}
-	case *ast.GenericInstExpr:
-		newArgs := make([]ast.TypeExpr, len(expr.TypeArgs))
-		for i, ta := range expr.TypeArgs {
-			newArgs[i] = substTypeExpr(ta, subst)
-		}
-		return &ast.GenericInstExpr{
-			Token:    expr.Token,
-			Left:     substExpr(expr.Left, subst),
-			TypeArgs: newArgs,
-		}
-	}
-	return e
-}
 
 // -------------------------------------------------------------
 // 関数・メソッド呼び出し (Call)

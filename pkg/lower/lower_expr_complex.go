@@ -512,13 +512,6 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	case *ast.ArrayLiteral:
 		return e.lowerArrayLiteralPtr(node)
 
-	case *ast.GenericInstExpr:
-		// A specialized generic variable/member may remain wrapped in a
-		// GenericInstExpr after transformation. Its storage is still the
-		// storage of the underlying expression, so resolve that expression
-		// as the lvalue rather than rejecting the wrapper.
-		return e.LowerLValue(node.Left)
-
 	case *ast.IndexExpr:
 		idxVal := e.LowerExpr(node.Index)
 		leftVal := e.LowerExpr(node.Left)

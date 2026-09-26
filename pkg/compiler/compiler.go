@@ -159,6 +159,9 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		if err != nil {
 			return err
 		}
+		if err := transform.ValidateConcreteProgram(p); err != nil {
+			return err
+		}
 		concreteProg = p
 		return nil
 	})
@@ -245,6 +248,9 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	if err != nil {
 		return "", nil, err
 	}
+	if err := transform.ValidateConcreteProgram(concrete); err != nil {
+		return "", nil, err
+	}
 	lw := lower.New(concrete, ctx)
 	lw.Set32Bit(c.target.IsWasm)
 	lw.SetRegionMode(c.regionMode)
@@ -297,6 +303,9 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 		tf := transform.New(prog, semaCtx)
 		p, err := tf.Transform()
 		if err != nil {
+			return err
+		}
+		if err := transform.ValidateConcreteProgram(p); err != nil {
 			return err
 		}
 		concreteProg = p

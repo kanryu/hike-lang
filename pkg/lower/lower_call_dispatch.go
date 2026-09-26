@@ -18,50 +18,6 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		defer restoreLocation()
 	}
 	logger.LogVerbose2("[Verbose2] Lower call input: function=%T (%+v) args=%d\\n", call.Function, call.Function, len(call.Args))
-	// 0. ジェネリクス関数の明示的型引数適用呼び出し (例: Add[float64](a, b))
-	if genInst, ok := call.Function.(*ast.GenericInstExpr); ok {
-		var baseName string
-		if id, okId := genInst.Left.(*ast.Identifier); okId {
-			baseName = astIDValue(id)
-		} else if mem, okMem := genInst.Left.(*ast.MemberExpr); okMem {
-			if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-				baseName = pkgId.Value + "_" + mem.Field.Value
-			} else {
-				baseName = mem.Field.Value
-			}
-		}
-
-		if baseName != "" {
-			logger.LogVerbose2("[Verbose2] Lower generic call: base=%s typeArgs=%v\\n", baseName, genInst.TypeArgs)
-			typeArgs := make([]sema.Type, len(genInst.TypeArgs))
-			for i, ta := range genInst.TypeArgs {
-				typeArgs[i] = c.root.semaCtx.ResolveType(ta)
-			}
-
-			specName, specFn := c.getOrSpecializeFunc(baseName, typeArgs)
-			if specFn != nil {
-				logger.LogVerbose2("[Verbose2] Lower generic call resolved: callee=%s returnTypes=%v\\n", specName, specFn.ReturnTypes)
-				callArgs := c.fillDefaultArgs(call.Args, c.getFuncParams(specFn, specName))
-				isCVarArg := semaFuncCFunc(specFn) || semaFuncExtern(specFn) || (semaFuncIsVariadic(specFn) && semaFuncVariadicElem(specFn) == nil)
-				args := c.lowerArgs(callArgs, specFn.ParamTypes, semaFuncIsVariadic(specFn), isCVarArg, semaFuncVariadicElem(specFn), call.HasEllipsis)
-
-				var retType sema.Type = sema.TypeVoid
-				if len(specFn.ReturnTypes) == 1 {
-					retType = specFn.ReturnTypes[0]
-				} else if len(specFn.ReturnTypes) > 1 {
-					retType = &sema.TupleType{Types: specFn.ReturnTypes}
-				}
-
-				var dst *hir.Reg = nil
-				if retType != sema.TypeVoid {
-					dst = c.root.nextReg(retType)
-				}
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: specName, Args: args})
-				return dst
-			}
-		}
-	}
-
 	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(cs), cstring(s), uint('a'))
 	if len(call.Args) == 1 {
 		targetType := c.ResolveTypeFromExpr(call.Function)
