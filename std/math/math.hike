@@ -34,6 +34,24 @@ func Abs(x float64) float64 {
 	return fabs(x)
 }
 
+func IsNaN(x float64) bool {
+	return x != x
+}
+
+func IsInf(x float64, sign int) bool {
+	if sign > 0 {
+		return x > MaxFloat64
+	}
+	if sign < 0 {
+		return x < -MaxFloat64
+	}
+	return x > MaxFloat64 || x < -MaxFloat64
+}
+
+func NaN() float64 {
+	return 0.0 / 0.0
+}
+
 func Sqrt(x float64) float64 {
 	return sqrt(x)
 }

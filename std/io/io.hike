@@ -6,6 +6,12 @@ import (
 
 var EOF error = errors.New("EOF")
 
+const (
+	SeekStart int = 0
+	SeekCurrent int = 1
+	SeekEnd int = 2
+)
+
 type Reader interface {
 	Read(p []byte) (int, error)
 }

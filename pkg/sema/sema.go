@@ -1559,6 +1559,28 @@ func registerBuiltinCapabilities(receiverName, methodName string, params, return
 // resolveConcreteTypes binds fields, interface methods, and aliases that do
 // not depend on generic specialization.
 func resolveConcreteTypes(prog *ast.Program, ctx *Context, typeDecls []*ast.TypeDecl) {
+	// Declarations from imported packages are merged into the main AST.  A
+	// struct in the main package can therefore refer to an imported alias
+	// before that alias appears in typeDecls. Resolve aliases whose underlying
+	// type is already available first, then let the normal pass handle the
+	// concrete structs and interfaces.
+	for changed := true; changed; {
+		changed = false
+		for _, td := range typeDecls {
+			if _, ok := td.Type.(*ast.StructType); ok {
+				continue
+			}
+			if _, ok := td.Type.(*ast.InterfaceType); ok {
+				continue
+			}
+			if resolved := tryResolveType(ctx, td.Type); resolved != nil {
+				if current, _ := ctx.LookupAlias(td.Name.Value); current == nil {
+					ctx.Aliases[td.Name.Value] = resolved
+					changed = true
+				}
+			}
+		}
+	}
 	for _, td := range typeDecls {
 		st, _ := ctx.LookupStruct(td.Name.Value)
 		if st != nil && st.IsGeneric() {
@@ -1587,8 +1609,22 @@ func resolveConcreteTypes(prog *ast.Program, ctx *Context, typeDecls []*ast.Type
 			}
 			continue
 		}
-		ctx.Aliases[td.Name.Value] = ctx.ResolveType(td.Type)
+		if resolved := tryResolveType(ctx, td.Type); resolved != nil {
+			ctx.Aliases[td.Name.Value] = resolved
+		}
 	}
+}
+
+// tryResolveType lets the fixed-point alias pass defer an alias whose
+// dependency has not been registered yet. ResolveType historically reports
+// that condition by panicking, so keep the recovery narrowly scoped here.
+func tryResolveType(ctx *Context, expr ast.TypeExpr) (resolved Type) {
+	defer func() {
+		if recover() != nil {
+			resolved = nil
+		}
+	}()
+	return ctx.ResolveType(expr)
 }
 
 func resolveInterfaceMethods(it *ast.InterfaceType, typeName, pkg string, ctx *Context) []Method {

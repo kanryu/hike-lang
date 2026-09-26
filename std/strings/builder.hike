@@ -51,6 +51,14 @@ func (b *Builder) WriteString(s *byte) {
 	b.buf[b.len] = 0
 }
 
+// Write appends a byte slice and returns the number of bytes written.
+func (b *Builder) Write(data []byte) int {
+	for i := 0; i < len(data); i = i + 1 {
+		b.WriteByte(data[i])
+	}
+	return len(data)
+}
+
 func (b *Builder) WriteByte(ch byte) {
 	if b.len+2 > b.cap {
 		newCap := b.cap * 2

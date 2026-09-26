@@ -488,7 +488,8 @@ func (c *Context) typesCompatible(t1, t2 Type) bool {
 func goHikeInterfaceCompatible(concrete Type, iface *InterfaceType) bool {
 	concreteName := typeNameOf(concrete)
 	interfaceName := typeNameOf(iface)
-	if strings.HasPrefix(interfaceName, "ast_") {
+	if strings.HasPrefix(interfaceName, "ast_") || strings.HasPrefix(interfaceName, "css_ast_") ||
+		strings.HasPrefix(interfaceName, "css_parser_") || strings.HasPrefix(interfaceName, "js_ast_") {
 		return true
 	}
 	if interfaceName == "hir_Terminator" {

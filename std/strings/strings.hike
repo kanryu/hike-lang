@@ -52,6 +52,20 @@ func LastIndexByte(s string, c byte) int {
 	return -1
 }
 
+func IndexAny(s string, chars string) int {
+	for i := 0; i < len(s); i++ {
+		if IndexByte(chars, s[i]) >= 0 { return i }
+	}
+	return -1
+}
+
+func LastIndexAny(s string, chars string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if IndexByte(chars, s[i]) >= 0 { return i }
+	}
+	return -1
+}
+
 func TrimPrefix(s string, prefix string) string {
 	if HasPrefix(s, prefix) {
 		return s[len(prefix):len(s)]
@@ -97,6 +111,21 @@ func Contains(s string, substr string) bool {
 
 func ContainsRune(s string, r rune) bool {
 	return IndexByte(s, byte(r)) >= 0
+}
+
+// EqualFold compares strings using ASCII case folding. This covers the
+// case-insensitive path and keyword checks used by the esbuild compatibility
+// layer; full Unicode folding can be added when std/unicode is expanded.
+func EqualFold(a string, b string) bool {
+	if len(a) != len(b) { return false }
+	for i := 0; i < len(a); i++ {
+		ca := a[i]
+		cb := b[i]
+		if ca >= 65 && ca <= 90 { ca = ca + 32 }
+		if cb >= 65 && cb <= 90 { cb = cb + 32 }
+		if ca != cb { return false }
+	}
+	return true
 }
 
 func Count(s string, substr string) int {

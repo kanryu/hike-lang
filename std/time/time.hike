@@ -35,6 +35,18 @@ func (t Time) Sub(u Time) Duration {
 	return Duration(t.nsec - u.nsec)
 }
 
+func (t Time) Unix() int64 {
+	return t.nsec / int64(Second)
+}
+
+func (t Time) Add(d Duration) Time {
+	return Time{nsec: t.nsec + int64(d)}
+}
+
+func (t Time) After(u Time) bool {
+	return t.nsec > u.nsec
+}
+
 // Since は指定した時刻からの経過時間を返します
 // メソッドチェーンを経由せず直接ナノ秒差分を計算
 func Since(t Time) Duration {

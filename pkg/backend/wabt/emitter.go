@@ -164,6 +164,11 @@ func (e *Emitter) val(v hir.Value) string {
 	}
 	switch x := v.(type) {
 	case *hir.Reg:
+		// An interface can contain a typed nil register. Treat it like an
+		// absent value instead of dereferencing it in reg(x).
+		if x == nil {
+			return "i32.const 0"
+		}
 		return "(local.get $" + reg(x) + ")"
 	case *hir.GlobalVar:
 		name := globalVarName(x)
@@ -1062,6 +1067,15 @@ func (e *Emitter) emitBoxInterface(x *hir.InstrBoxInterface) {
 }
 
 func (e *Emitter) emitStore(x *hir.InstrStore) {
+	if x.Val == nil || x.Ptr == nil {
+		return
+	}
+	if value, ok := x.Val.(*hir.Reg); ok && value == nil {
+		return
+	}
+	if value, ok := x.Ptr.(*hir.Reg); ok && value == nil {
+		return
+	}
 	if global, ok := x.Ptr.(*hir.GlobalVar); ok {
 		if x.Val.Type() == sema.TypeString || x.Val.Type().TypeName() == "string" {
 			// Global string values must outlive main's temporary stack frame.

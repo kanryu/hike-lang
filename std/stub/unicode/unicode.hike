@@ -1,5 +1,42 @@
 package unicode
 
+type Range16 struct {
+	Lo uint16
+	Hi uint16
+	Stride uint16
+}
+
+type Range32 struct {
+	Lo uint32
+	Hi uint32
+	Stride uint32
+}
+
+type RangeTable struct {
+	R16 []Range16
+	R32 []Range32
+	LatinOffset int
+}
+
+func Is(table *RangeTable, r int) bool {
+	if table == nil {
+		return false
+	}
+	for i := 0; i < len(table.R16); i = i + 1 {
+		entry := table.R16[i]
+		if r >= int(entry.Lo) && r <= int(entry.Hi) && (r-int(entry.Lo))%int(entry.Stride) == 0 {
+			return true
+		}
+	}
+	for i := 0; i < len(table.R32); i = i + 1 {
+		entry := table.R32[i]
+		if r >= int(entry.Lo) && r <= int(entry.Hi) && (r-int(entry.Lo))%int(entry.Stride) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func IsSpace(r int) bool {
     return r == 32 || r == 9 || r == 10 || r == 13
 }

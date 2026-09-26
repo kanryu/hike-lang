@@ -878,7 +878,11 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 		return val
 	}
 	if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
-		panic(fmt.Sprintf("[Lower Error] cannot coerce a nil register to %s", semaTypeName(targetType)))
+		// Some Go-shaped compatibility stubs represent an omitted optional
+		// value as an interface containing a typed nil register. Treat that as
+		// the target type's zero value during lowering instead of propagating a
+		// malformed HIR value into the backend.
+		return l.defaultConstValue(targetType)
 	}
 	if val.Type() == targetType || semaTypeName(val.Type()) == semaTypeName(targetType) {
 		return val

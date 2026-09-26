@@ -1,0 +1,30 @@
+package zip
+
+import (
+	"std/io"
+)
+
+// ReadCloser is the archive/zip surface currently required by esbuild's
+// virtual filesystem. The native implementation can replace these inert
+// operations with a real ZIP reader without changing callers.
+type ReadCloser struct {
+	File []*File
+}
+
+type File struct {
+	Name string
+}
+
+type fileInfo struct { dir bool }
+type readCloser struct {}
+
+func OpenReader(path string) (*ReadCloser, error) {
+	return &ReadCloser{File: []*File{}}, nil
+}
+
+func (r *ReadCloser) Close() error { return nil }
+func (f *File) FileInfo() *fileInfo { return &fileInfo{} }
+func (i *fileInfo) IsDir() bool { return i != nil && i.dir }
+func (f *File) Open() (io.ReadCloser, error) { return &readCloser{}, nil }
+func (r *readCloser) Read(data []byte) (int, error) { return 0, nil }
+func (r *readCloser) Close() error { return nil }

@@ -361,7 +361,11 @@ func (e *ExprLowerer) lowerMemberExpr(node *ast.MemberExpr) hir.Value {
 			e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, Index: 1})
 			return t2
 		}
-		if e.root.semaCtx.GoHikeMode && (pkgId.Value == "token" || pkgId.Value == "runtime") {
+		_, isLocal := e.root.symbols[pkgId.Value]
+		if e.root.semaCtx.GoHikeMode && !isLocal && (pkgId.Value == "token" || pkgId.Value == "runtime") {
+			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+		}
+		if e.root.semaCtx.GoHikeMode && !isLocal && pkgId.Value == "logger" {
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
 		if e.root.semaCtx.GoHikeMode && pkgId.Value == "os" &&
@@ -748,9 +752,15 @@ func (e *ExprLowerer) lowerPrefixExpr(node *ast.PrefixExpr) hir.Value {
 	}
 	val := e.LowerExpr(node.Right)
 	if val == nil {
+		if node.Operator == "!" {
+			return &hir.ConstInt{Val: 1, Typ: sema.TypeBool}
+		}
 		panic(fmt.Sprintf("[Lower Error] unary operator '%s' produced no value for %T", node.Operator, node.Right))
 	}
 	if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
+		if node.Operator == "!" {
+			return &hir.ConstInt{Val: 1, Typ: sema.TypeBool}
+		}
 		panic(fmt.Sprintf("[Lower Error] unary operator '%s' produced a nil register for %T at %d:%d", node.Operator, node.Right, node.Token.Line, node.Token.Col))
 	}
 	if val.Type() == nil {

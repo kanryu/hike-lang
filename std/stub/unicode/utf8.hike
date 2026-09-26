@@ -1,8 +1,18 @@
 package utf8
 
+const RuneError rune = 0xFFFD
+const RuneSelf rune = 0x80
+
 func DecodeRuneInString(s string) (rune, int) {
 	if len(s) == 0 {
 		return rune(0), 0
 	}
 	return rune(s[0]), 1
+}
+
+func DecodeLastRuneInString(s string) (rune, int) {
+	if len(s) == 0 {
+		return rune(0), 0
+	}
+	return rune(s[len(s)-1]), 1
 }

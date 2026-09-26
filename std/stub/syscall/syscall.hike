@@ -1,0 +1,17 @@
+package syscall
+
+// Error values used by esbuild's filesystem abstraction. The numeric values
+// match the common POSIX errno values used by the native targets.
+type Errno int
+
+const (
+	ENOENT Errno = 2
+	EINTR Errno = 4
+	EIO Errno = 5
+	EACCES Errno = 13
+	EEXIST Errno = 17
+	ENOTDIR Errno = 20
+	EINVAL Errno = 22
+)
+
+func (e Errno) Error() string { return "syscall error" }

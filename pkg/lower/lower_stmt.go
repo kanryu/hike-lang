@@ -2772,6 +2772,13 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 	vals := make([]hir.Value, len(rs.Values))
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)
+		if val == nil || (func() bool { r, ok := val.(*hir.Reg); return ok && r == nil })() {
+			if s.root.curFunc != nil && i < len(s.root.curFunc.ReturnTypes) {
+				val = s.root.defaultConstValue(s.root.curFunc.ReturnTypes[i])
+			} else {
+				val = s.root.defaultConstValue(sema.TypeInt)
+			}
+		}
 		// A slice produced by an intermediate expression may still refer to
 		// an area-backed or otherwise temporary buffer.  Return an owned heap
 		// copy; a direct variable return preserves that variable's ownership.
