@@ -449,18 +449,26 @@ func (e *Emitter) set(r *hir.Reg, expr string) {
 // A user-defined function with one of those names gets a private WAT spelling.
 func (e *Emitter) functionSymbol(name string) string {
 	name = normalizeWabtRuntimeName(name)
+	lookupName := name
 	if _, exists := e.functionIndex[name]; !exists {
 		if sep := strings.LastIndex(name, "_"); sep > 0 && sep+1 < len(name) {
 			pointerMethod := name[:sep] + "_ptr_sema_" + name[sep+1:]
 			if _, exists := e.functionIndex[pointerMethod]; exists {
-				name = pointerMethod
+				lookupName = pointerMethod
 			}
 		}
 	}
-	if _, userDefined := e.functionIndex[name]; userDefined && IsWabtRuntimeSymbol(name) {
-		return "$__hike_user_" + name
+	// Go-Hike method receivers can contain slice and array syntax. Keep the
+	// WAT symbol spelling aligned with LLVM, where these type-name markers are
+	// already normalized before emission.
+	symbol := strings.ReplaceAll(lookupName, "[", "_")
+	symbol = strings.ReplaceAll(symbol, "]", "_")
+	symbol = strings.ReplaceAll(symbol, ",", "_")
+	symbol = strings.ReplaceAll(symbol, "*", "ptr")
+	if _, userDefined := e.functionIndex[lookupName]; userDefined && IsWabtRuntimeSymbol(lookupName) {
+		return "$__hike_user_" + symbol
 	}
-	return "$" + name
+	return "$" + symbol
 }
 
 func (e *Emitter) callReturnsValue(name string) bool {
@@ -486,8 +494,10 @@ func (e *Emitter) Emit() string {
 	index := 0
 	for _, fn := range e.p.Functions {
 		if !hirFunctionExtern(fn) {
-			e.functionIndex[fn.Name] = index
-			index++
+			if _, exists := e.functionIndex[fn.Name]; !exists {
+				e.functionIndex[fn.Name] = index
+				index++
+			}
 		}
 	}
 	e.prepareTypes()
@@ -496,10 +506,15 @@ func (e *Emitter) Emit() string {
 		e.b.WriteString("  (import \"env\" \"hike_thread_spawn\" (func $__hike_thread_spawn (param i32) (param i32) (param i32) (param i32)))\n")
 		e.b.WriteString("  (import \"env\" \"hike_thread_pump\" (func $__hike_thread_pump))\n")
 	}
+	imported := make(map[string]bool)
 	for _, fn := range e.p.Functions {
 		if !hirFunctionExtern(fn) {
 			continue
 		}
+		if imported[fn.Name] {
+			continue
+		}
+		imported[fn.Name] = true
 		if isWasmRuntime(fn.Name) {
 			continue
 		}
@@ -550,9 +565,13 @@ func (e *Emitter) Emit() string {
 	}
 	if len(e.functionIndex) > 0 {
 		names := make([]string, 0, len(e.functionIndex))
+		seen := make(map[string]bool)
 		for _, fn := range e.p.Functions {
 			if !hirFunctionExtern(fn) {
-				names = append(names, e.functionSymbol(fn.Name))
+				if !seen[fn.Name] {
+					names = append(names, e.functionSymbol(fn.Name))
+					seen[fn.Name] = true
+				}
 			}
 		}
 		fmt.Fprintf(&e.b, "  (table funcref (elem %s))\n", strings.Join(names, " "))
@@ -564,7 +583,12 @@ func (e *Emitter) Emit() string {
 	if e.Concurrent {
 		e.emitAsyncDispatcher()
 	}
+	emitted := make(map[string]bool)
 	for _, fn := range e.p.Functions {
+		if emitted[fn.Name] {
+			continue
+		}
+		emitted[fn.Name] = true
 		e.function(fn)
 	}
 	if e.Concurrent {

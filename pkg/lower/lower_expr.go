@@ -876,7 +876,23 @@ func (e *ExprLowerer) lowerImplicitCast(node *ast.ImplicitCastExpr) hir.Value {
 		value = elem
 	}
 	if sema.LLVMTypeOf(value.Type()) == sema.LLVMTypeOf(targetType) {
-		return value
+		if !isIntegerType(value.Type()) || !isIntegerType(targetType) {
+			return value
+		}
+		// LLVM uses the same bit width for signed and unsigned integers, but
+		// the HIR type still carries the signedness needed by WABT lowering.
+		// Preserve an explicit conversion such as uint32(1) instead of
+		// returning the original (signed) int value merely because both are
+		// represented as i32 on the current target.
+		if value.Type() == targetType {
+			return value
+		}
+		if constant, ok := value.(*hir.ConstInt); ok {
+			return &hir.ConstInt{Val: constant.Val, Typ: targetType}
+		}
+		dst := e.root.nextReg(targetType)
+		e.root.emit(&hir.InstrCast{Dst: dst, Val: value, ToType: targetType})
+		return dst
 	}
 	if iface, ok := targetType.(*sema.InterfaceType); ok {
 		if isNilValue(value) {

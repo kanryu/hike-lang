@@ -74,7 +74,22 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 
 				if sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(targetType) {
-					return argVal
+					if !isIntegerType(argVal.Type()) || !isIntegerType(targetType) {
+						return argVal
+					}
+					// Signed and unsigned integer conversions have identical LLVM
+					// widths, but their HIR types select different WABT operations.
+					// Preserve the explicit target type for expressions such as
+					// uint32(1) instead of discarding it here.
+					if argVal.Type() == targetType {
+						return argVal
+					}
+					if constant, ok := argVal.(*hir.ConstInt); ok {
+						return &hir.ConstInt{Val: constant.Val, Typ: targetType}
+					}
+					dst := c.root.nextReg(targetType)
+					c.root.emit(&hir.InstrCast{Dst: dst, Val: argVal, ToType: targetType})
+					return dst
 				}
 				if c.root.semaCtx.GoHikeMode {
 					switch argVal.Type().(type) {
