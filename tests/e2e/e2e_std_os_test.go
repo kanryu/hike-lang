@@ -136,6 +136,48 @@ func main() int {
 	})
 }
 
+// Linux/POSIXのディレクトリ作成、列挙、エントリ属性、再帰削除を検証する。
+func TestE2EStdOS_LinuxDirectoryOperations(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux/POSIX directory APIs are only available on Linux")
+	}
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/os"
+
+func printf(format string, ...) int
+
+func main() int {
+    root := "std-os-linux-dir"
+    os.RemoveAll(root)
+    mkdirErr := os.Mkdir(root, 0755)
+    file := root + "/entry.txt"
+    writeErr := os.WriteFile(file, []byte{108, 105, 110, 117, 120}, 0644)
+    entries, readErr := os.ReadDir(root)
+    hasFile := false
+    fileIsDir := false
+    for i := 0; i < len(entries); i++ {
+        if entries[i].Name() == "entry.txt" {
+            hasFile = true
+            fileIsDir = entries[i].IsDir()
+        }
+    }
+    removeErr := os.RemoveAll(root)
+
+    printf("MKDIR=%d,WRITE=%d,READDIR=%d,HAS_FILE=%d,FILE_DIR=%d,REMOVE=%d\n",
+        mkdirErr == nil, writeErr == nil, readErr == nil,
+        hasFile, fileIsDir, removeErr == nil)
+    return 0
+}
+`,
+		ExpectedOut:  "MKDIR=1,WRITE=1,READDIR=1,HAS_FILE=1,FILE_DIR=0,REMOVE=1",
+		ExpectedExit: 0,
+	})
+}
+
 // Windows では FindFirstFileA/FindNextFileA による一階層列挙を実機検証する。
 func TestE2EStdOS_WindowsFindFiles(t *testing.T) {
 	if runtime.GOOS != "windows" {

@@ -52,13 +52,34 @@ func osNativeRename(oldPath string, newPath string) error {
 	return nil
 }
 func osNativeMkdir(path string, perm FileMode) error {
-	if posixMkdir(path, int(perm.Perm())) != 0 { return &PathError{Op: "mkdir", Path: path, Err: ErrPermission} }
+	if posixMkdir(path, int(perm)&0777) != 0 { return &PathError{Op: "mkdir", Path: path, Err: ErrPermission} }
 	return nil
 }
 func osNativeMkdirAll(path string, perm FileMode) error { return osNativeMkdir(path, perm) }
 func osNativeRemoveAll(path string) error {
+	// POSIX rmdir only removes empty directories, so remove children first.
+	handle := posixOpenDir(path)
+	if handle != nil {
+		for {
+			raw := posixReadDir(handle)
+			if raw == nil { break }
+			name := posixDirentName(raw)
+			if name == "." || name == ".." { continue }
+			child := path + "/" + name
+			if posixDirentIsDir(raw) {
+				if err := osNativeRemoveAll(child); err != nil {
+					posixCloseDir(handle)
+					return err
+				}
+			} else if posixUnlink(child) != 0 {
+				posixCloseDir(handle)
+				return &PathError{Op: "remove", Path: child, Err: ErrNotExist}
+			}
+		}
+		posixCloseDir(handle)
+		if posixRmdir(path) == 0 { return nil }
+	}
 	if posixUnlink(path) == 0 { return nil }
-	if posixRmdir(path) == 0 { return nil }
 	return &PathError{Op: "remove", Path: path, Err: ErrNotExist}
 }
 func osNativeReadDir(path string) ([]*DirEntry, error) {
