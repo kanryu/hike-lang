@@ -15,3 +15,16 @@ func SliceStable[T](x []T, less func(i int, j int) bool) {
 		}
 	}
 }
+
+// Slice sorts a slice using the supplied less function.  The implementation
+// intentionally mirrors SliceStable; the compiler only requires the Go
+// standard-library surface while bootstrapping HikeC.
+func Slice[T](x []T, less func(i int, j int) bool) {
+	for i := 1; i < len(x); i = i + 1 {
+		j := i
+		for j > 0 && less(j, j-1) {
+			x[j], x[j-1] = x[j-1], x[j]
+			j = j - 1
+		}
+	}
+}

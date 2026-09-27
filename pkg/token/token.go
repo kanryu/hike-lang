@@ -161,32 +161,40 @@ var keywords = map[string]TokenType{
 }
 
 func LookupIdent(ident string) TokenType {
-	if tok, ok := keywords[ident]; ok {
-		return tok
-	}
-	// Map lookup currently cannot reliably match a dynamically-created string
-	// view in the wasm32 self-hosted runtime. Use byte-wise matching as a
-	// fallback for bootstrap keywords.
-	if keywordBytesEqual(ident, "package") {
-		return PACKAGE
-	}
-	if keywordBytesEqual(ident, "import") {
-		return IMPORT
-	}
-	if keywordBytesEqual(ident, "func") {
-		return FUNC
-	}
-	if keywordBytesEqual(ident, "return") {
-		return RETURN
-	}
-	if keywordBytesEqual(ident, "threadable") {
-		return THREADABLE
-	}
-	if keywordBytesEqual(ident, "concurrent") {
-		return CONCURRENT
-	}
-	if keywordBytesEqual(ident, "lock") {
-		return LOCK
+	// Do not use the keyword map here: the self-hosted runtime must be able to
+	// classify strings that point into a lexer buffer without copying a map key.
+	switch ident {
+	case "package": return PACKAGE
+	case "import": return IMPORT
+	case "func": return FUNC
+	case "cfunc": return CFUNC
+	case "extern": return EXTERN
+	case "jfunc": return JFUNC
+	case "passthrough": return PASSTHROUGH
+	case "var": return VAR
+	case "const": return CONST
+	case "type": return TYPE
+	case "struct": return STRUCT
+	case "interface": return INTERFACE
+	case "map": return MAP
+	case "chan": return CHAN
+	case "Async", "async": return ASYNC
+	case "return": return RETURN
+	case "if": return IF
+	case "else": return ELSE
+	case "for": return FOR
+	case "range": return RANGE
+	case "switch": return SWITCH
+	case "case": return CASE
+	case "default": return DEFAULT
+	case "defer": return DEFER
+	case "lock": return LOCK
+	case "area": return AREA
+	case "threadable": return THREADABLE
+	case "concurrent": return CONCURRENT
+	case "break": return BREAK
+	case "continue": return CONTINUE
+	case "nil": return NIL
 	}
 	return IDENT
 }

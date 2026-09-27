@@ -34,6 +34,14 @@ type Parser struct {
 	queue          []*ParseTask
 }
 
+// newParser keeps construction of the parser type local to this package.
+// This is intentionally separate from NewFromTokens because the Hike
+// compiler can otherwise resolve the unqualified name Parser to a type from
+// an imported package with the same short name while compiling itself.
+func newParser() *Parser {
+	return &Parser{}
+}
+
 func New(l *lexer.Lexer) *Parser {
 	tokens := []token.Token{}
 	for {
@@ -47,14 +55,13 @@ func New(l *lexer.Lexer) *Parser {
 }
 
 func NewFromTokens(tokens []token.Token) *Parser {
-	p := &Parser{
-		tokens:         tokens,
-		pos:            0,
-		errors:         []string{},
-		verbose:        false,
-		allowStructLit: true,
-		queue:          make([]*ParseTask, 0),
-	}
+	p := newParser()
+	p.tokens = tokens
+	p.pos = 0
+	p.errors = []string{}
+	p.verbose = false
+	p.allowStructLit = true
+	p.queue = make([]*ParseTask, 0)
 	p.nextToken()
 	p.nextToken()
 	return p
@@ -79,7 +86,7 @@ func (p *Parser) SetVerbose(v bool) {
 
 func (p *Parser) log(msg string) {
 	if p.verbose {
-		fmt.Printf("[PARSER] %s\n", msg)
+		fmt.Println("[PARSER] " + msg)
 	}
 }
 

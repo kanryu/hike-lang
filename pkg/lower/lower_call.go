@@ -956,6 +956,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 		capVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
 		if len(call.Args) >= 2 {
 			capVal = c.root.Expr.LowerExpr(call.Args[1])
+			capVal = c.root.emitValueCoerce(capVal, sema.TypeInt)
 		}
 		dst := c.root.nextReg(resChanType)
 		c.root.emit(&hir.InstrChanMake{Dst: dst, ElemType: elemType, Cap: capVal})
@@ -973,6 +974,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 		capVal := hir.Value(&hir.ConstInt{Val: 16, Typ: sema.TypeInt})
 		if len(call.Args) >= 2 {
 			capVal = c.root.Expr.LowerExpr(call.Args[1])
+			capVal = c.root.emitValueCoerce(capVal, sema.TypeInt)
 		}
 		dst := c.root.nextReg(resMapType)
 		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_create", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
@@ -993,9 +995,11 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 	if resSliceType != nil {
 		elemType := resSliceType.Elem
 		lenVal := c.root.Expr.LowerExpr(call.Args[1])
+		lenVal = c.root.emitValueCoerce(lenVal, sema.TypeInt)
 		capVal := lenVal
 		if len(call.Args) >= 3 {
 			capVal = c.root.Expr.LowerExpr(call.Args[2])
+			capVal = c.root.emitValueCoerce(capVal, sema.TypeInt)
 		}
 		elemSize := sema.SizeOf(elemType)
 		if elemSize <= 0 {

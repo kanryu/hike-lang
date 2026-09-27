@@ -102,6 +102,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_streq":           true,
 	"hike_streq_len":       true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_writable": true, "__hike_string_append": true,
+	"__hike_sort_strings": true,
 	"hike_substr":         true,
 	"hike_strcat":         true,
 	"hike_strcat_len":     true,

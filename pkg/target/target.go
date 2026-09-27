@@ -3,7 +3,6 @@ package target
 import (
 	"fmt"
 	"runtime"
-	"strings"
 )
 
 type Target struct {
@@ -63,15 +62,12 @@ var (
 
 func DefaultTarget() *Target {
 	switch runtime.GOOS {
-	case "windows":
-		t := TargetX86_64Windows
-		return &t
+	case "", "windows":
+		return &TargetX86_64Windows
 	case "darwin":
-		t := TargetAarch64Darwin
-		return &t
+		return &TargetAarch64Darwin
 	default:
-		t := TargetX86_64Linux
-		return &t
+		return &TargetX86_64Linux
 	}
 }
 
@@ -79,28 +75,23 @@ func ParseTarget(name string) (*Target, error) {
 	if name == "" {
 		return DefaultTarget(), nil
 	}
-	switch strings.ToLower(name) {
+	// CLI target names are normalized by the caller; keeping this lookup
+	// allocation-free is important during self-host bootstrap.
+	switch name {
 	case "windows", "x86_64-windows", "x86_64-windows-gnu", "x86_64-w64-windows-gnu":
-		t := TargetX86_64Windows
-		return &t, nil
+		return &TargetX86_64Windows, nil
 	case "windows-msvc", "x86_64-windows-msvc", "x86_64-pc-windows-msvc":
-		t := TargetX86_64WindowsMSVC
-		return &t, nil
+		return &TargetX86_64WindowsMSVC, nil
 	case "linux", "x86_64-linux", "x86_64-linux-gnu", "x86_64-unknown-linux-gnu":
-		t := TargetX86_64Linux
-		return &t, nil
+		return &TargetX86_64Linux, nil
 	case "darwin", "macos", "arm64-darwin", "aarch64-apple-darwin":
-		t := TargetAarch64Darwin
-		return &t, nil
+		return &TargetAarch64Darwin, nil
 	case "wasm", "wasm32", "wasm32-unknown", "wasm32-unknown-unknown":
-		t := TargetWasm32
-		return &t, nil
+		return &TargetWasm32, nil
 	case "wasm64", "wasm64-unknown", "wasm64-unknown-unknown":
-		t := TargetWasm64
-		return &t, nil
+		return &TargetWasm64, nil
 	case "wabt", "wat", "wasm-text":
-		t := TargetWabt
-		return &t, nil
+		return &TargetWabt, nil
 	default:
 		return nil, fmt.Errorf("unknown target: %s", name)
 	}

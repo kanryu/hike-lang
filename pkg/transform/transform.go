@@ -422,7 +422,7 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 							rawT = pt.Base
 						}
 						if iface, okIface := rawT.(*sema.InterfaceType); okIface {
-							if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
+							if m, _ := sema.InterfaceType_GetMethod(iface, mem.Field.Value); m != nil {
 								retTypes = m.ReturnTypes
 							}
 						} else if fn, _ := t.semaCtx.LookupMethod(semaTypeName(objT), mem.Field.Value); fn != nil {
@@ -1988,7 +1988,7 @@ func (t *Transformer) inferExprTypeExpr(e ast.Expression) ast.TypeExpr {
 					rawT = pt.Base
 				}
 				if iface, okIface := rawT.(*sema.InterfaceType); okIface {
-					if m, _ := iface.GetMethod(mem.Field.Value); m != nil && len(m.ReturnTypes) > 0 {
+					if m, _ := sema.InterfaceType_GetMethod(iface, mem.Field.Value); m != nil && len(m.ReturnTypes) > 0 {
 						return parseSimpleTypeExpr(expr.Token, semaTypeName(m.ReturnTypes[0]))
 					}
 				}

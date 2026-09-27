@@ -220,7 +220,9 @@ func SplitN(s string, sep string, n int) []string {
 
 func ToUpper(s string) string {
 	lenS := len(s)
-	buf := make([]byte, lenS)
+	// Keep one zero byte after the view for runtimes that use C-style
+	// comparisons on strings returned from this helper.
+	buf := make([]byte, lenS + 1)
 	for i := 0; i < lenS; i++ {
 		c := s[i]
 		if c >= 97 && c <= 122 {
@@ -229,12 +231,12 @@ func ToUpper(s string) string {
 			buf[i] = c
 		}
 	}
-	return string(buf)
+	return string(buf[:lenS])
 }
 
 func ToLower(s string) string {
 	lenS := len(s)
-	buf := make([]byte, lenS)
+	buf := make([]byte, lenS + 1)
 	for i := 0; i < lenS; i++ {
 		c := s[i]
 		if c >= 65 && c <= 90 {
@@ -243,7 +245,7 @@ func ToLower(s string) string {
 			buf[i] = c
 		}
 	}
-	return string(buf)
+	return string(buf[:lenS])
 }
 
 func Title(s string) string {

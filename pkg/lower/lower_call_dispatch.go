@@ -14,8 +14,8 @@ import (
 
 func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	if call != nil {
-		restoreLocation := c.root.setTokenLocation(c.root.sourceFile, call.Token)
-		defer restoreLocation()
+		c.root.pushTokenLocation(c.root.sourceFile, call.Token)
+		defer c.root.popTokenLocation()
 	}
 	logger.LogVerbose2("[Verbose2] Lower call input: function=%T (%+v) args=%d\\n", call.Function, call.Function, len(call.Args))
 	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(cs), cstring(s), uint('a'))
@@ -187,6 +187,18 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 				c.root.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: idx})
 				return dst
 			}
+			// Arrays have a fixed length, so len and cap are compile-time
+			// constants.  Without this case len([N]T) falls through to the
+			// ordinary call path and is incorrectly emitted as an indirect
+			// function call with the array value as its argument.
+			if arrayType, isArray := argVal.Type().(*sema.ArrayType); isArray {
+				return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
+			}
+			if ptrType, isPointer := argVal.Type().(*sema.PointerType); isPointer {
+				if arrayType, isArray := ptrType.Base.(*sema.ArrayType); isArray {
+					return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
+				}
+			}
 			if fnId.Value == "len" && (argVal.Type() == sema.TypeString || argVal.Type() == sema.TypeCString) {
 				if argVal.Type() == sema.TypeString {
 					_, length := c.root.stringParts(argVal)
@@ -248,7 +260,7 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 		objType := objPtr.Type().(*sema.PointerType).Base
 
 		// インターフェースメソッド呼び出し (動的ディスパッチ)
-		if iface, isIface := objType.(*sema.InterfaceType); isIface && !iface.IsAny() {
+		if iface, isIface := objType.(*sema.InterfaceType); isIface && !sema.InterfaceType_IsAny(iface) {
 			return c.lowerInterfaceMethodCall(call, mem, objPtr, iface)
 		}
 
@@ -625,6 +637,28 @@ func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, s
 // -------------------------------------------------------------
 
 func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.InterfaceType) *hir.ItabDef {
+	concreteName := semaTypeName(concreteType)
+	if strings.Contains(concreteName, "ASTExpression") || strings.Contains(concreteName, "ControlNode") {
+		return nil
+	}
+	if concreteName == "bool" || concreteName == "byte" || concreteName == "int" || concreteName == "int32" || concreteName == "int64" || concreteName == "uint" || concreteName == "uint32" || concreteName == "uint64" || concreteName == "float32" || concreteName == "float64" || concreteName == "string" {
+		return nil
+	}
+	if _, ok := concreteType.(*sema.BasicType); ok {
+		return nil
+	}
+	// An interface value already contains the dynamic itab.  Creating an
+	// itab whose concrete type is itself an interface is both unnecessary and
+	// invalid for LLVM method lookup.
+	if _, ok := concreteType.(*sema.InterfaceType); ok {
+		return nil
+	}
+	// Keep the same guard for interface values represented through an
+	// interface-typed alias. Their LLVM representation is the two-pointer
+	// interface pair, not a concrete aggregate with callable methods.
+	if sema.LLVMTypeOf(concreteType) == "{ i8*, i8* }" {
+		return nil
+	}
 	sName := strings.TrimPrefix(semaTypeName(concreteType), "*")
 	sName = strings.ReplaceAll(sName, ".", "_")
 	sName = strings.ReplaceAll(sName, "[", "_")
@@ -658,7 +692,12 @@ func (c *CallLowerer) GetOrCreateItab(concreteType sema.Type, iface *sema.Interf
 				targetFnName = semaFuncName(fnMeta)
 			}
 		} else if !found {
-			targetFnName = sema.CanonicalMethodName(sName, m.Name)
+			// Do not manufacture an itab entry for a type that does not
+			// implement the interface method. This commonly appears during
+			// self-hosting when compile-time sema objects are mistaken for
+			// runtime values; the fallback name would produce undefined LLVM
+			// symbols.
+			return nil
 		}
 		methods = append(methods, hir.ItabMethodEntry{
 			MethodName:   m.Name,

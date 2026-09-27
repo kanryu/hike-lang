@@ -377,22 +377,21 @@ func (c *Context) RegisterTypeDecl(td *ast.TypeDecl, pkgName string) {
 			typeParamNames[i] = tp.Name.Value
 		}
 
-		tmplStruct := &StructType{
-			Name:                qualifiedName,
-			TypeParams:          typeParamNames,
-			ConstTypeParams:     constTypeParams(td.TypeParams),
-			TypeArgs:            []Type{},
-			Fields:              []Field{},
-			Template:            td,
-			IsSpecialized:       false,
-			Specializations:     make(map[string]*StructType),
-			BuiltinCapabilities: make(map[string]*FuncType),
-		}
+		tmplStruct := newSemanticStructType()
+		tmplStruct.Name = qualifiedName
+		tmplStruct.TypeParams = typeParamNames
+		tmplStruct.ConstTypeParams = constTypeParams(td.TypeParams)
+		tmplStruct.TypeArgs = []Type{}
+		tmplStruct.Fields = []Field{}
+		tmplStruct.Template = td
+		tmplStruct.IsSpecialized = false
+		tmplStruct.Specializations = make(map[string]*StructType)
+		tmplStruct.BuiltinCapabilities = make(map[string]*FuncType)
 		c.Structs[qualifiedName] = tmplStruct
 		c.Structs[rawName] = tmplStruct
 	} else {
 		if st := c.ResolveType(td.Type); st != nil && st != TypeVoid {
-			if sType, okSt := st.(*StructType); okSt {
+			if sType, okSt := asSemanticStructType(st); okSt {
 				c.Structs[qualifiedName] = sType
 				c.Structs[rawName] = sType
 			}
@@ -409,7 +408,7 @@ func (c *Context) Implements(concrete Type, iface *InterfaceType) bool {
 	if iface == nil {
 		return false
 	}
-	if iface.IsAny() {
+	if InterfaceType_IsAny(iface) {
 		return true
 	}
 	if concrete == nil {
@@ -419,7 +418,7 @@ func (c *Context) Implements(concrete Type, iface *InterfaceType) bool {
 	// 検査元がインターフェースの場合（サブインターフェース判定）
 	if srcIface, ok := concrete.(*InterfaceType); ok {
 		for _, im := range iface.Methods {
-			sm, idx := srcIface.GetMethod(im.Name)
+			sm, idx := InterfaceType_GetMethod(srcIface, im.Name)
 			if idx == -1 || sm == nil {
 				return false
 			}
@@ -629,18 +628,17 @@ func (c *Context) resolveGenericStructType(t *ast.NamedType, name, canonicalName
 		return existingSt
 	}
 
-	newSt := &StructType{
-		Name:                specializedName,
-		InternalKey:         specializedInternalKey,
-		TypeParams:          st.TypeParams,
-		ConstTypeParams:     st.ConstTypeParams,
-		TypeArgs:            resolvedArgs,
-		Fields:              []Field{},
-		Template:            st.Template,
-		IsSpecialized:       true,
-		Specializations:     make(map[string]*StructType),
-		BuiltinCapabilities: make(map[string]*FuncType),
-	}
+	newSt := newSemanticStructType()
+	newSt.Name = specializedName
+	newSt.InternalKey = specializedInternalKey
+	newSt.TypeParams = st.TypeParams
+	newSt.ConstTypeParams = st.ConstTypeParams
+	newSt.TypeArgs = resolvedArgs
+	newSt.Fields = []Field{}
+	newSt.Template = st.Template
+	newSt.IsSpecialized = true
+	newSt.Specializations = make(map[string]*StructType)
+	newSt.BuiltinCapabilities = make(map[string]*FuncType)
 	c.Structs[specializedName] = newSt
 	st.Specializations[specKey] = newSt
 	logGenericTypeResolution(name, newSt)
@@ -767,15 +765,14 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 					return existingIface
 				}
 
-				newIface := &InterfaceType{
-					Name:            specializedName,
-					TypeParams:      iface.TypeParams,
-					TypeArgs:        resolvedArgs,
-					Methods:         []Method{},
-					Template:        iface.Template,
-					IsSpecialized:   true,
-					Specializations: make(map[string]*InterfaceType),
-				}
+				newIface := newSemanticInterfaceType()
+				newIface.Name = specializedName
+				newIface.TypeParams = iface.TypeParams
+				newIface.TypeArgs = resolvedArgs
+				newIface.Methods = []Method{}
+				newIface.Template = iface.Template
+				newIface.IsSpecialized = true
+				newIface.Specializations = make(map[string]*InterfaceType)
 				c.Interfaces[specializedName] = newIface
 				iface.Specializations[specKey] = newIface
 
@@ -898,12 +895,11 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		}
 		return &InterfaceType{Name: "", Methods: methods, Specializations: make(map[string]*InterfaceType)}
 	case *ast.FuncType:
-		fnType := &FuncType{
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			IsVariadic:      t.IsVariadic,
-			Specializations: make(map[string]*FuncType),
-		}
+		fnType := newSemanticFuncType()
+		fnType.ParamTypes = []Type{}
+		fnType.ReturnTypes = []Type{}
+		fnType.IsVariadic = t.IsVariadic
+		fnType.Specializations = make(map[string]*FuncType)
 		for i, pt := range t.ParamTypes {
 			resolved := c.ResolveType(pt)
 			if t.IsVariadic && i == len(t.ParamTypes)-1 {
@@ -1045,16 +1041,15 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 					return existingSt
 				}
 
-				newSt := &StructType{
-					Name:                specializedName,
-					TypeParams:          st.TypeParams,
-					TypeArgs:            resolvedArgs,
-					Fields:              []Field{},
-					Template:            st.Template,
-					IsSpecialized:       true,
-					Specializations:     make(map[string]*StructType),
-					BuiltinCapabilities: make(map[string]*FuncType),
-				}
+				newSt := newSemanticStructType()
+				newSt.Name = specializedName
+				newSt.TypeParams = st.TypeParams
+				newSt.TypeArgs = resolvedArgs
+				newSt.Fields = []Field{}
+				newSt.Template = st.Template
+				newSt.IsSpecialized = true
+				newSt.Specializations = make(map[string]*StructType)
+				newSt.BuiltinCapabilities = make(map[string]*FuncType)
 				c.Structs[specializedName] = newSt
 				st.Specializations[specKey] = newSt
 
@@ -1076,11 +1071,10 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 
 		return c.ResolveType(node)
 	case *ast.StructType:
-		st := &StructType{
-			Fields:              []Field{},
-			Specializations:     make(map[string]*StructType),
-			BuiltinCapabilities: make(map[string]*FuncType),
-		}
+		st := newSemanticStructType()
+		st.Fields = []Field{}
+		st.Specializations = make(map[string]*StructType)
+		st.BuiltinCapabilities = make(map[string]*FuncType)
 		for _, f := range node.Fields {
 			fType := c.ResolveTypeWithSubst(f.Type, subst)
 			name := ""
@@ -1095,12 +1089,11 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 		}
 		return st
 	case *ast.FuncType:
-		fnType := &FuncType{
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			IsVariadic:      node.IsVariadic,
-			Specializations: make(map[string]*FuncType),
-		}
+		fnType := newSemanticFuncType()
+		fnType.ParamTypes = []Type{}
+		fnType.ReturnTypes = []Type{}
+		fnType.IsVariadic = node.IsVariadic
+		fnType.Specializations = make(map[string]*FuncType)
 		for i, pt := range node.ParamTypes {
 			resolved := c.ResolveTypeWithSubst(pt, subst)
 			if node.IsVariadic && i == len(node.ParamTypes)-1 {
@@ -1329,12 +1322,12 @@ func (c *Context) inferGenericInstType(e *ast.GenericInstExpr) Type {
 		for i, p := range tmpl.Params {
 			pts[i] = c.ResolveTypeWithSubst(p.Type, subst)
 		}
-		return &FuncType{
-			Name:          baseName,
-			ParamTypes:    pts,
-			ReturnTypes:   rts,
-			IsSpecialized: true,
-		}
+		fnType := newSemanticFuncType()
+		fnType.Name = baseName
+		fnType.ParamTypes = pts
+		fnType.ReturnTypes = rts
+		fnType.IsSpecialized = true
+		return fnType
 	}
 	if st, _ := c.LookupStruct(baseName); st != nil && st.IsGeneric() {
 		return c.ResolveType(&ast.NamedType{
@@ -1374,16 +1367,16 @@ func (c *Context) inferMemberExprType(e *ast.MemberExpr, locals map[string]Type)
 
 	// インターフェース型レシーバのメソッド解決
 	if iface, ok := rawObjType.(*InterfaceType); ok {
-		if m, _ := iface.GetMethod(e.Field.Value); m != nil {
-			return &FuncType{
-				Name:         m.Name,
-				InternalKey:  m.InternalKey,
-				ParamTypes:   m.ParamTypes,
-				ReturnTypes:  m.ReturnTypes,
-				IsVariadic:   m.IsVariadic,
-				VariadicElem: m.VariadicElem,
-				IsMethod:     true,
-			}
+		if m, _ := InterfaceType_GetMethod(iface, e.Field.Value); m != nil {
+			fnType := newSemanticFuncType()
+			fnType.Name = m.Name
+			fnType.InternalKey = m.InternalKey
+			fnType.ParamTypes = m.ParamTypes
+			fnType.ReturnTypes = m.ReturnTypes
+			fnType.IsVariadic = m.IsVariadic
+			fnType.VariadicElem = m.VariadicElem
+			fnType.IsMethod = true
+			return fnType
 		}
 	}
 
@@ -1391,7 +1384,7 @@ func (c *Context) inferMemberExprType(e *ast.MemberExpr, locals map[string]Type)
 		return fn
 	}
 
-	if st, ok := rawObjType.(*StructType); ok {
+	if st, ok := asSemanticStructType(rawObjType); ok {
 		for _, f := range st.Fields {
 			if f.Name == e.Field.Value {
 				return f.Type
@@ -1434,7 +1427,7 @@ func (c *Context) inferBinaryExprType(e *ast.BinaryExpr, locals map[string]Type)
 func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Type {
 	if len(e.Args) == 1 {
 		if castT := c.resolveTypeFromExpr(e.Function); castT != nil && castT != TypeVoid {
-			if _, isFn := castT.(*FuncType); !isFn {
+			if _, isFn := asSemanticFuncType(castT); !isFn {
 				return castT
 			}
 		}
@@ -1493,16 +1486,16 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 			}
 
 			if iface, okIface := rawObj.(*InterfaceType); okIface {
-				if m, _ := iface.GetMethod(mem.Field.Value); m != nil {
-					c.ResolvedCalls[e] = &FuncType{
-						Name:         m.Name,
-						InternalKey:  m.InternalKey,
-						ParamTypes:   m.ParamTypes,
-						ReturnTypes:  m.ReturnTypes,
-						IsVariadic:   m.IsVariadic,
-						VariadicElem: m.VariadicElem,
-						IsMethod:     true,
-					}
+				if m, _ := InterfaceType_GetMethod(iface, mem.Field.Value); m != nil {
+					fnType := newSemanticFuncType()
+					fnType.Name = m.Name
+					fnType.InternalKey = m.InternalKey
+					fnType.ParamTypes = m.ParamTypes
+					fnType.ReturnTypes = m.ReturnTypes
+					fnType.IsVariadic = m.IsVariadic
+					fnType.VariadicElem = m.VariadicElem
+					fnType.IsMethod = true
+					c.ResolvedCalls[e] = fnType
 				}
 			} else if fn, _ := c.LookupMethod(typeNameOf(objType), mem.Field.Value); fn != nil {
 				c.ResolvedCalls[e] = fn
@@ -1511,7 +1504,7 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 	}
 
 	fnType := c.InferExprType(e.Function, locals)
-	if ft, ok := fnType.(*FuncType); ok {
+	if ft, ok := asSemanticFuncType(fnType); ok {
 		c.ResolvedCalls[e] = ft
 		if len(ft.ReturnTypes) == 1 {
 			return ft.ReturnTypes[0]
@@ -1575,7 +1568,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 
 	case *ast.AsyncExpr:
 		fnType := c.InferExprType(e.Fn, locals)
-		if ft, ok := fnType.(*FuncType); ok {
+		if ft, ok := asSemanticFuncType(fnType); ok {
 			return &FutureType{ReturnTypes: ft.ReturnTypes}
 		}
 		return &FutureType{ReturnTypes: []Type{TypeVoid}}
@@ -1663,12 +1656,11 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		return c.ResolveType(e.Type)
 
 	case *ast.FuncLit:
-		ft := &FuncType{
-			ParamTypes:      make([]Type, len(e.Params)),
-			ReturnTypes:     make([]Type, len(e.ReturnTypes)),
-			IsVariadic:      e.IsVariadic,
-			Specializations: make(map[string]*FuncType),
-		}
+		ft := newSemanticFuncType()
+		ft.ParamTypes = make([]Type, len(e.Params))
+		ft.ReturnTypes = make([]Type, len(e.ReturnTypes))
+		ft.IsVariadic = e.IsVariadic
+		ft.Specializations = make(map[string]*FuncType)
 		var variadicElem Type = nil
 		for i, p := range e.Params {
 			pType := c.ResolveType(p.Type)
@@ -1706,7 +1698,7 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 
 	// インターフェース代入時の充足性検査
 	if iface, ok := targetType.(*InterfaceType); ok {
-		if _, isNil := expr.(*ast.NilLiteral); !isNil && actualType != TypeVoid && !iface.IsAny() && !(c.GoHikeMode && goHikeInterfaceCompatible(actualType, iface)) {
+		if _, isNil := expr.(*ast.NilLiteral); !isNil && actualType != TypeVoid && !InterfaceType_IsAny(iface) && !(c.GoHikeMode && goHikeInterfaceCompatible(actualType, iface)) {
 			if !c.Implements(actualType, iface) {
 				line, col := expressionPosition(expr)
 				panic(fmt.Sprintf("[Sema Error] line %d:%d: type '%s' does not implement interface '%s'",
@@ -2176,9 +2168,9 @@ func (c *Context) CheckAsyncIterable(t Type) (Type, *FuncType, *FuncType) {
 	// Interface values are dispatched dynamically by the lowerer.  They do
 	// not have entries in Context.Methods, so looking them up by receiver name
 	// would incorrectly reject an otherwise valid AsyncIterable interface.
-	if iface, ok := t.(*InterfaceType); ok && !iface.IsAny() {
-		initMethod, _ := iface.GetMethod("InitIterator")
-		nextMethod, _ := iface.GetMethod("NextChannel")
+	if iface, ok := t.(*InterfaceType); ok && !InterfaceType_IsAny(iface) {
+		initMethod, _ := InterfaceType_GetMethod(iface, "InitIterator")
+		nextMethod, _ := InterfaceType_GetMethod(iface, "NextChannel")
 		if initMethod == nil || nextMethod == nil || len(nextMethod.ReturnTypes) == 0 {
 			return nil, nil, nil
 		}
@@ -2186,8 +2178,8 @@ func (c *Context) CheckAsyncIterable(t Type) (Type, *FuncType, *FuncType) {
 			return nil, nil, nil
 		}
 		return nextMethod.ReturnTypes[0].(*ChanType).Elem,
-			&FuncType{Name: initMethod.Name, ParamTypes: initMethod.ParamTypes, ReturnTypes: initMethod.ReturnTypes},
-			&FuncType{Name: nextMethod.Name, ParamTypes: nextMethod.ParamTypes, ReturnTypes: nextMethod.ReturnTypes}
+			newSemanticFuncSignature(initMethod.Name, initMethod.ParamTypes, initMethod.ReturnTypes),
+			newSemanticFuncSignature(nextMethod.Name, nextMethod.ParamTypes, nextMethod.ReturnTypes)
 	}
 	typeName := typeNameOf(t)
 	rawName := strings.TrimPrefix(typeName, "*")
@@ -2389,17 +2381,17 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		case "true", "false":
 			return TypeBool
 		case "len", "cap", "append", "delete", "make", "sizeof":
-			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeInt}}
+			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeInt})
 		case "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte":
-			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeInt}}
+			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeInt})
 		case "string", "cstring":
-			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeString}}
+			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeString})
 		case "deepcopy":
-			return &FuncType{Name: "deepcopy"}
+			return newSemanticFuncSignature("deepcopy", nil, nil)
 		case "bool":
-			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeBool}}
+			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeBool})
 		case "float32", "float64":
-			return &FuncType{Name: astIdentifierValue(e), ReturnTypes: []Type{TypeFloat64}}
+			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeFloat64})
 		}
 
 		// 未定義識別子: エラーを記録して TypeBad を返却
@@ -2455,7 +2447,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 		if IsBad(fnType) {
 			return TypeBad
 		}
-		if ft, ok := fnType.(*FuncType); ok {
+		if ft, ok := asSemanticFuncType(fnType); ok {
 			if len(ft.ReturnTypes) == 0 {
 				return TypeVoid
 			}

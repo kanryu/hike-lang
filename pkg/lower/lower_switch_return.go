@@ -106,17 +106,16 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 			vVal := s.root.Expr.LowerExpr(valExpr)
 			var cmpReg *hir.Reg
 
-			if vVal.Type() == sema.TypeString || vVal.Type() == sema.TypeCString || switchVal.Type() == sema.TypeString || switchVal.Type() == sema.TypeCString {
+			if vVal.Type() == sema.TypeString && switchVal.Type() == sema.TypeString {
 				left := switchVal
 				right := vVal
-				if switchVal.Type() == sema.TypeString {
-					left, _ = s.root.stringParts(switchVal)
-				}
-				if vVal.Type() == sema.TypeString {
-					right, _ = s.root.stringParts(vVal)
-				}
+				leftPtr, leftLen := s.root.stringParts(left)
+				rightPtr, rightLen := s.root.stringParts(right)
 				cmpReg = s.root.nextReg(sema.TypeBool)
-				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{left, right}})
+				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
+			} else if vVal.Type() == sema.TypeCString || switchVal.Type() == sema.TypeCString {
+				cmpReg = s.root.nextReg(sema.TypeBool)
+				s.root.emit(&hir.InstrCallStatic{Dst: cmpReg, CalleeName: s.root.BuiltinName("hike_streq"), Args: []hir.Value{switchVal, vVal}})
 			} else {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: switchVal, R: vVal})
@@ -246,7 +245,7 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 	dataPtrReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	actualTypeIDReg := s.root.nextReg(sema.TypeInt32)
 
-	if it, ok := exprType.(*sema.InterfaceType); ok && !it.IsAny() {
+	if it, ok := exprType.(*sema.InterfaceType); ok && !sema.InterfaceType_IsAny(it) {
 		itabRawReg := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e := s.root
 		e.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})

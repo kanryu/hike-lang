@@ -327,6 +327,12 @@ func controlID(node hir.ControlElement) int {
 }
 
 func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
+	// Keep closure-captured structured-loop state in the function's entry
+	// scope.  The native backend may otherwise place its storage after an
+	// early range-dispatch branch, producing LLVM dominance errors.
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
 	targetExpr := fr.X
 	var isAsyncRecv bool = false
 	if recvExpr, okRecv := fr.X.(*ast.ReceiveExpr); okRecv {
@@ -383,9 +389,6 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 	s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
-	var structuredBlock *hir.BlockNode
-	var structuredLoop *hir.LoopNode
-	var structuredContinuation *hir.BlockNode
 	structuredParentDepth := len(s.root.structuredFrames)
 	var structuredParentBody *hir.ControlBody
 	if len(s.root.structuredStack) > 0 {
@@ -542,6 +545,9 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 }
 
 func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType sema.Type) bool {
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
 	// 3. 組み込み map[K]V の走査
 	if mp, isMap := xType.(*sema.MapType); isMap {
 		entryStructType := &sema.StructType{Name: "__hike_map_entry"}
@@ -622,9 +628,6 @@ func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType 
 		ePostBB := s.root.newBlock("maprange.epost")
 		endBB := s.root.newBlock("maprange.end")
 
-		var structuredBlock *hir.BlockNode
-		var structuredLoop *hir.LoopNode
-		var structuredContinuation *hir.BlockNode
 		var structuredInnerBlock *hir.BlockNode
 		var structuredInnerLoop *hir.LoopNode
 		structuredParentDepth := len(s.root.structuredFrames)
@@ -815,6 +818,9 @@ func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType 
 }
 
 func (s *StmtLowerer) lowerIterableRange(fr *ast.ForRangeStmt, targetExpr ast.Expression, xVal hir.Value, xType sema.Type) bool {
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
 	// 2. ユーザー定義コレクション (Iterable / MapBehavior: InitIterator + Next) の走査
 	objPtr := s.root.Expr.LowerStructPtr(targetExpr)
 	initFnName, nextFnName, nextFn, finalRecv, hasInit, hasNext := s.resolveIterableMethods(xType, objPtr)
@@ -974,9 +980,6 @@ func (s *StmtLowerer) lowerIterableRange(fr *ast.ForRangeStmt, targetExpr ast.Ex
 		s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 		s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
-		var structuredBlock *hir.BlockNode
-		var structuredLoop *hir.LoopNode
-		var structuredContinuation *hir.BlockNode
 		structuredParentDepth := len(s.root.structuredFrames)
 		var structuredParentBody *hir.ControlBody
 		if len(s.root.structuredStack) > 0 {
@@ -1176,6 +1179,9 @@ func (s *StmtLowerer) resolveIterableMethods(xType sema.Type, objPtr hir.Value) 
 }
 
 func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expression, xType sema.Type) bool {
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
 	var hasInit, hasNextChan bool
 	var initFnName, nextChanFnName string
 	var nextChanFn *sema.FuncType
@@ -1185,9 +1191,9 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 	_, isInterface := xType.(*sema.InterfaceType)
 
 	objPtr := s.root.Expr.LowerStructPtr(targetExpr)
-	if iface, ok := xType.(*sema.InterfaceType); ok && !iface.IsAny() {
-		initMethod, initIdx := iface.GetMethod("InitIterator")
-		nextMethod, nextIdx := iface.GetMethod("NextChannel")
+	if iface, ok := xType.(*sema.InterfaceType); ok && !sema.InterfaceType_IsAny(iface) {
+		initMethod, initIdx := sema.InterfaceType_GetMethod(iface, "InitIterator")
+		nextMethod, nextIdx := sema.InterfaceType_GetMethod(iface, "NextChannel")
 		if initMethod != nil && nextMethod != nil {
 			initMethodIndex = initIdx
 			nextChanMethodIndex = nextIdx
@@ -1334,9 +1340,6 @@ func (s *StmtLowerer) lowerAsyncRange(fr *ast.ForRangeStmt, targetExpr ast.Expre
 		s.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 		s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
 
-		var structuredBlock *hir.BlockNode
-		var structuredLoop *hir.LoopNode
-		var structuredContinuation *hir.BlockNode
 		structuredParentDepth := len(s.root.structuredFrames)
 		var structuredParentBody *hir.ControlBody
 		if len(s.root.structuredStack) > 0 {

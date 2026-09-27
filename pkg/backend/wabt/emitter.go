@@ -1001,7 +1001,7 @@ func aggregateField(t sema.Type, index int) (sema.Type, int, bool) {
 		if index < 0 || index >= 2 {
 			return nil, 0, false
 		}
-		if a.IsAny() {
+		if sema.InterfaceType_IsAny(a) {
 			if index == 0 {
 				return sema.TypeInt32, 0, true
 			}
@@ -1062,7 +1062,7 @@ func (e *Emitter) emitBoxInterface(x *hir.InstrBoxInterface) {
 	}
 	base := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", 8+dataSize)
 	typeValue := e.itabOffsets[boxItabName(x)]
-	if x.Iface != nil && x.Iface.IsAny() {
+	if x.Iface != nil && sema.InterfaceType_IsAny(x.Iface) {
 		typeValue = int(x.TypeID)
 		e.b.WriteString(fmt.Sprintf("    (i32.store %s (i32.const %d))\n", base, typeValue))
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) %s)\n", base, data))
@@ -1400,7 +1400,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 		e.set(x.Dst, castExpr(x.Val.Type(), x.ToType, e.val(x.Val)))
 	case *hir.InstrUnboxInterface:
 		dataPtr := e.val(x.IfaceVal)
-		if iface, ok := x.IfaceVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+		if iface, ok := x.IfaceVal.Type().(*sema.InterfaceType); ok && sema.InterfaceType_IsAny(iface) {
 			dataPtr = "(i32.add " + dataPtr + " (i32.const 4))"
 		}
 		data := "(i32.load " + dataPtr + ")"

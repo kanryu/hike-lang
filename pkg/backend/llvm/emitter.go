@@ -324,6 +324,7 @@ func (e *Emitter) emitItabs() {
 
 func (e *Emitter) emitFunctions() {
 	referencedExterns := make(map[string]bool)
+	definedSymbols := make(map[string]bool)
 	for _, fn := range e.prog.Functions {
 		for _, bb := range e.blocksForEmission(fn) {
 			for _, inst := range bb.Instructions {
@@ -380,6 +381,14 @@ func (e *Emitter) emitFunctions() {
 			continue
 		}
 
+		if definedSymbols[fn.Name] {
+			// A malformed or legacy package merge can register the same method
+			// under one IR name more than once. LLVM rejects duplicate definitions;
+			// retain the first definition until receiver-name mangling is fully
+			// canonicalized.
+			continue
+		}
+		definedSymbols[fn.Name] = true
 		e.declaredSymbols[fn.Name] = true
 		e.emitFunction(fn, fnID)
 	}
@@ -1455,13 +1464,23 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s* %s to i8*\n", dataPtr, fromLLVM, allocaTmp))
 	}
 
-	if i.Iface.IsAny() {
+	if sema.InterfaceType_IsAny(i.Iface) {
 		typeID := i.Val.Type().TypeID(e.semaCtx)
 		intLLVM := sema.TypeInt32.LLVMType()
 		anyLLVM := fmt.Sprintf("{ %s, i8* }", intLLVM)
 		t1 := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %d, 0\n", t1, anyLLVM, intLLVM, typeID))
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i8* %s, 1\n", i.Dst, anyLLVM, t1, dataPtr))
+		return
+	}
+	if i.ItabName == "" {
+		// Interface-to-interface conversions preserve the dynamic itab in the
+		// source value.  A missing name can also occur for a bootstrap-only
+		// interface alias; keep the generated value well-formed instead of
+		// emitting an invalid reference to `@`.
+		t1 := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", t1, dataPtr))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* null, 1\n", i.Dst, t1))
 		return
 	}
 

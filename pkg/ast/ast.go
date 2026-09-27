@@ -15,10 +15,15 @@ type Statement interface {
 	statementNode()
 }
 
-type Expression interface {
+type ASTExpression interface {
 	Node
 	expressionNode()
 }
+
+// Expression is retained as a source-compatibility alias.  Internal AST
+// fields use ASTExpression so the self-hosted compiler cannot confuse this
+// interface with an unrelated package-level Expression type.
+type Expression = ASTExpression
 
 type Decl interface {
 	Node
@@ -50,7 +55,7 @@ const (
 // セマンティクス解析で決定された暗黙のキャスト・型変換式
 type ImplicitCastExpr struct {
 	Token      token.Token
-	Expr       Expression
+	Expr       ASTExpression
 	Kind       CastKind
 	TargetType TypeExpr
 }
@@ -92,7 +97,7 @@ func (i *ImportDecl) TokenLiteral() string { return i.Token.Literal }
 type ConstDecl struct {
 	Token token.Token
 	Name  *Identifier
-	Value Expression
+	Value ASTExpression
 }
 
 func (cd *ConstDecl) declNode()            {}
@@ -102,7 +107,7 @@ type VarDecl struct {
 	Token     token.Token
 	Name      *Identifier
 	Type      TypeExpr
-	Value     Expression
+	Value     ASTExpression
 	IsEscaped bool
 }
 
@@ -123,7 +128,7 @@ const (
 type MemoryBlockDecl struct {
 	Token token.Token
 	Kind  MemoryBlockKind
-	Size  Expression
+	Size  ASTExpression
 	Vars  []*VarDecl
 }
 
@@ -164,7 +169,7 @@ type ParamDecl struct {
 	Token      token.Token
 	Name       *Identifier
 	Type       TypeExpr
-	Default    Expression // デフォルト引数式 (nil の場合はデフォルト値なし)
+	Default    ASTExpression // デフォルト引数式 (nil の場合はデフォルト値なし)
 	IsVariadic bool
 	IsEscaped  bool
 }
@@ -314,7 +319,7 @@ func (nl *NilLiteral) TokenLiteral() string { return nl.Token.Literal }
 type PrefixExpr struct {
 	Token    token.Token
 	Operator string
-	Right    Expression
+	Right    ASTExpression
 }
 
 func (pe *PrefixExpr) expressionNode()      {}
@@ -322,7 +327,7 @@ func (pe *PrefixExpr) TokenLiteral() string { return pe.Token.Literal }
 
 type ReceiveExpr struct {
 	Token token.Token
-	Expr  Expression
+	Expr  ASTExpression
 }
 
 func (re *ReceiveExpr) expressionNode()      {}
@@ -330,7 +335,7 @@ func (re *ReceiveExpr) TokenLiteral() string { return re.Token.Literal }
 
 type AsyncExpr struct {
 	Token token.Token
-	Fn    Expression
+	Fn    ASTExpression
 }
 
 func (ae *AsyncExpr) expressionNode()      {}
@@ -338,9 +343,9 @@ func (ae *AsyncExpr) TokenLiteral() string { return ae.Token.Literal }
 
 type BinaryExpr struct {
 	Token    token.Token
-	Left     Expression
+	Left     ASTExpression
 	Operator string
-	Right    Expression
+	Right    ASTExpression
 	// WithCarry requests the optional second result of a shift expression.
 	WithCarry bool
 }
@@ -350,8 +355,8 @@ func (be *BinaryExpr) TokenLiteral() string { return be.Token.Literal }
 
 type IndexExpr struct {
 	Token token.Token
-	Left  Expression
-	Index Expression
+	Left  ASTExpression
+	Index ASTExpression
 }
 
 func (ie *IndexExpr) expressionNode()      {}
@@ -359,7 +364,7 @@ func (ie *IndexExpr) TokenLiteral() string { return ie.Token.Literal }
 
 type GenericInstExpr struct {
 	Token    token.Token
-	Left     Expression
+	Left     ASTExpression
 	TypeArgs []TypeExpr
 }
 
@@ -368,7 +373,7 @@ type GenericInstExpr struct {
 // expressions while still preserving the source expression for diagnostics.
 type ConstArg struct {
 	Token token.Token
-	Expr  Expression
+	Expr  ASTExpression
 }
 
 func (ca *ConstArg) typeExprNode()        {}
@@ -380,7 +385,7 @@ func (ge *GenericInstExpr) TokenLiteral() string { return ge.Token.Literal }
 
 type MemberExpr struct {
 	Token  token.Token
-	Object Expression
+	Object ASTExpression
 	Field  *Identifier
 }
 
@@ -389,8 +394,8 @@ func (me *MemberExpr) TokenLiteral() string { return me.Token.Literal }
 
 type CallExpr struct {
 	Token       token.Token
-	Function    Expression
-	Args        []Expression
+	Function    ASTExpression
+	Args        []ASTExpression
 	HasEllipsis bool
 }
 
@@ -400,7 +405,7 @@ type InlineAsmExpr struct {
 	OutputConstraints  string
 	InputConstraints   string
 	ClobberConstraints string
-	Operands           []Expression
+	Operands           []ASTExpression
 }
 
 func (ie *InlineAsmExpr) expressionNode()      {}
@@ -419,9 +424,9 @@ func (ie *IotaExpr) TokenLiteral() string { return ie.Token.Literal }
 
 type SliceExpr struct {
 	Token token.Token
-	Left  Expression
-	Low   Expression
-	High  Expression
+	Left  ASTExpression
+	Low   ASTExpression
+	High  ASTExpression
 }
 
 func (s *SliceExpr) expressionNode()      {}
@@ -430,7 +435,7 @@ func (s *SliceExpr) TokenLiteral() string { return s.Token.Literal }
 type SliceLiteral struct {
 	Token    token.Token
 	Type     *SliceType
-	Elements []Expression
+	Elements []ASTExpression
 }
 
 func (sl *SliceLiteral) expressionNode()      {}
@@ -438,7 +443,7 @@ func (sl *SliceLiteral) TokenLiteral() string { return sl.Token.Literal }
 
 type StructFieldValue struct {
 	Name  *Identifier
-	Value Expression
+	Value ASTExpression
 }
 
 type StructLiteral struct {
@@ -453,7 +458,7 @@ func (sl *StructLiteral) TokenLiteral() string { return sl.Token.Literal }
 type ArrayLiteral struct {
 	Token    token.Token
 	Type     *ArrayType
-	Elements []Expression
+	Elements []ASTExpression
 }
 
 func (al *ArrayLiteral) expressionNode()      {}
@@ -472,7 +477,7 @@ func (ms *MethodSig) TokenLiteral() string { return ms.Token.Literal }
 
 type TypeAssertExpr struct {
 	Token  token.Token
-	Expr   Expression
+	Expr   ASTExpression
 	Target TypeExpr
 }
 
@@ -575,8 +580,8 @@ func (mt *MapType) expressionNode()      {}
 func (mt *MapType) TokenLiteral() string { return mt.Token.Literal }
 
 type MapEntry struct {
-	Key   Expression
-	Value Expression
+	Key   ASTExpression
+	Value ASTExpression
 }
 
 type MapLiteral struct {
@@ -599,8 +604,8 @@ func (ct *ChanType) TokenLiteral() string { return ct.Token.Literal }
 
 type SendStmt struct {
 	Token token.Token
-	Chan  Expression
-	Value Expression
+	Chan  ASTExpression
+	Value ASTExpression
 }
 
 func (ss *SendStmt) statementNode()       {}
@@ -660,7 +665,7 @@ func (bs *BlockStmt) TokenLiteral() string { return bs.Token.Literal }
 
 type ExprStmt struct {
 	Token token.Token
-	Expr  Expression
+	Expr  ASTExpression
 }
 
 func (es *ExprStmt) statementNode()       {}
@@ -668,8 +673,8 @@ func (es *ExprStmt) TokenLiteral() string { return es.Token.Literal }
 
 type AssignStmt struct {
 	Token token.Token
-	Left  []Expression
-	Right []Expression
+	Left  []ASTExpression
+	Right []ASTExpression
 	Type  TypeExpr
 }
 
@@ -684,7 +689,7 @@ func (as *AssignStmt) TokenLiteral() string {
 
 type ReturnStmt struct {
 	Token  token.Token
-	Values []Expression
+	Values []ASTExpression
 }
 
 func (rs *ReturnStmt) statementNode()       {}
@@ -711,7 +716,7 @@ func (ls *LockStmt) TokenLiteral() string { return ls.Token.Literal }
 // callable value.
 type AreaStmt struct {
 	Token token.Token
-	Size  Expression
+	Size  ASTExpression
 	Body  *BlockStmt
 }
 
@@ -735,7 +740,7 @@ func (cs *ContinueStmt) TokenLiteral() string { return cs.Token.Literal }
 type IfStmt struct {
 	Token       token.Token
 	Init        Statement
-	Condition   Expression
+	Condition   ASTExpression
 	Consequence *BlockStmt
 	Alternative Statement
 }
@@ -746,7 +751,7 @@ func (is *IfStmt) TokenLiteral() string { return is.Token.Literal }
 type ForStmt struct {
 	Token token.Token
 	Init  Statement
-	Cond  Expression
+	Cond  ASTExpression
 	Post  Statement
 	Body  *BlockStmt
 }
@@ -756,9 +761,9 @@ func (fs *ForStmt) TokenLiteral() string { return fs.Token.Literal }
 
 type ForRangeStmt struct {
 	Token token.Token
-	Key   Expression
-	Value Expression
-	X     Expression
+	Key   ASTExpression
+	Value ASTExpression
+	X     ASTExpression
 	Body  *BlockStmt
 }
 
@@ -767,7 +772,7 @@ func (fr *ForRangeStmt) TokenLiteral() string { return fr.Token.Literal }
 
 type CaseClause struct {
 	Token  token.Token
-	Values []Expression
+	Values []ASTExpression
 	Body   []Statement
 }
 
@@ -777,7 +782,7 @@ func (cc *CaseClause) TokenLiteral() string { return cc.Token.Literal }
 type SwitchStmt struct {
 	Token token.Token
 	Init  Statement
-	Value Expression
+	Value ASTExpression
 	Cases []*CaseClause
 }
 
@@ -798,7 +803,7 @@ type TypeSwitchStmt struct {
 	Token    token.Token
 	Init     Statement
 	Variable *Identifier
-	Expr     Expression
+	Expr     ASTExpression
 	Cases    []*TypeCaseClause
 }
 

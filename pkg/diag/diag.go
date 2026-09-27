@@ -3,15 +3,23 @@ package diag
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
 
 var (
-	diagFileRe *regexp.Regexp = regexp.MustCompile(`^(.*?):(\d+):(\d+):\s*(.*)$`)
-	diagLineRe *regexp.Regexp = regexp.MustCompile(`^(?:line\s+)?(\d+):(\d+):\s*(.*)$`)
+	diagFileRe *regexp.Regexp
+	diagLineRe *regexp.Regexp
 )
+
+func ensureDiagnosticRegexps() {
+	if diagFileRe == nil {
+		diagFileRe = regexp.MustCompile(`^(.*?):(\d+):(\d+):\s*(.*)$`)
+	}
+	if diagLineRe == nil {
+		diagLineRe = regexp.MustCompile(`^(?:line\s+)?(\d+):(\d+):\s*(.*)$`)
+	}
+}
 
 // Diagnostic は位置情報を含む単一のコンパイル時エラー・警告
 type Diagnostic struct {
@@ -23,13 +31,13 @@ type Diagnostic struct {
 
 func (d Diagnostic) String() string {
 	if d.Filename != "" && d.Line > 0 && d.Col > 0 {
-		return fmt.Sprintf("%s:%d:%d: %s", d.Filename, d.Line, d.Col, d.Message)
+		return d.Filename + ":" + strconv.Itoa(d.Line) + ":" + strconv.Itoa(d.Col) + ": " + d.Message
 	}
 	if d.Filename != "" && d.Line > 0 {
-		return fmt.Sprintf("%s:%d: %s", d.Filename, d.Line, d.Message)
+		return d.Filename + ":" + strconv.Itoa(d.Line) + ": " + d.Message
 	}
 	if d.Filename != "" {
-		return fmt.Sprintf("%s: %s", d.Filename, d.Message)
+		return d.Filename + ": " + d.Message
 	}
 	return d.Message
 }
@@ -105,22 +113,8 @@ func (r *Reporter) FormatAll() string {
 	if len(r.errors) == 0 {
 		return ""
 	}
-	sorted := make([]Diagnostic, len(r.errors))
-	for i := 0; i < len(r.errors); i++ {
-		sorted[i] = r.errors[i]
-	}
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].Filename != sorted[j].Filename {
-			return sorted[i].Filename < sorted[j].Filename
-		}
-		if sorted[i].Line != sorted[j].Line {
-			return sorted[i].Line < sorted[j].Line
-		}
-		return sorted[i].Col < sorted[j].Col
-	})
-
 	var sb strings.Builder
-	for i, d := range sorted {
+	for i, d := range r.errors {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
@@ -135,6 +129,7 @@ func (r *Reporter) Error() string {
 
 // ParseDiagnostic はエラー文字列からファイル名、行、列、メッセージをパースしてDiagnostic構造体に変換する
 func ParseDiagnostic(defaultFile, raw string) Diagnostic {
+	ensureDiagnosticRegexps()
 	raw = strings.TrimSpace(raw)
 
 	// [Phase Error] 等の余分なプレフィックスを除去

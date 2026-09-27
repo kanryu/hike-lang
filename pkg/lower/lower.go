@@ -64,6 +64,7 @@ type Lowerer struct {
 	regionMode           bool
 	sourceFile           string
 	sourceLoc            hir.SourceLocation
+	locationStack        []hir.SourceLocation
 	module               string
 	// globalInitRemaining is consumed while synthetic global initializer
 	// statements are lowered at the beginning of main.
@@ -735,6 +736,27 @@ func (l *Lowerer) setTokenLocation(filename string, tok token.Token) func() {
 	return l.setSourceLocation(filename, tok.Line, tok.Col)
 }
 
+// pushTokenLocation/popTokenLocation provide the same scoped source-location
+// behavior without returning a closure.  The explicit stack is required by
+// the Go-Hike self-hosting path, which intentionally does not implement
+// function values for compiler-internal bookkeeping callbacks.
+func (l *Lowerer) pushTokenLocation(filename string, tok token.Token) {
+	l.locationStack = append(l.locationStack, l.sourceLoc)
+	if filename == "" {
+		filename = l.sourceLoc.Filename
+	}
+	l.sourceLoc = hir.SourceLocation{Filename: filename, Line: tok.Line, Column: tok.Col}
+}
+
+func (l *Lowerer) popTokenLocation() {
+	last := len(l.locationStack) - 1
+	if last < 0 {
+		return
+	}
+	l.sourceLoc = l.locationStack[last]
+	l.locationStack = l.locationStack[:last]
+}
+
 func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 	if sc, ok := l.stringPool[raw]; ok {
 		return sc
@@ -877,6 +899,12 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	if val == nil || targetType == nil {
 		return val
 	}
+	// struct{} is a zero-sized marker used by set-like maps.  It has no
+	// representable LLVM aggregate value, so keep it as a typed zero until the
+	// map's i64 storage conversion consumes it.
+	if isZeroSizedMarkerType(targetType) {
+		return l.defaultConstValue(targetType)
+	}
 	if reg, isReg := val.(*hir.Reg); isReg && reg == nil {
 		// Some Go-shaped compatibility stubs represent an omitted optional
 		// value as an interface containing a typed nil register. Treat that as
@@ -917,8 +945,8 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 
 		// 1. 既にインターフェース型である値の変換
 		if srcIface, isSrcIface := val.Type().(*sema.InterfaceType); isSrcIface {
-			if iface.IsAny() {
-				if srcIface.IsAny() {
+			if sema.InterfaceType_IsAny(iface) {
+				if sema.InterfaceType_IsAny(srcIface) {
 					return val
 				}
 				// An interface value carries the dynamic data pointer and an itab.
@@ -945,9 +973,11 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 
 		itabName := ""
 		typeID := int64(0)
-		if !iface.IsAny() {
+		if !sema.InterfaceType_IsAny(iface) {
 			itabDef := l.Call.GetOrCreateItab(val.Type(), iface)
-			itabName = itabDef.GlobalName
+			if itabDef != nil {
+				itabName = itabDef.GlobalName
+			}
 		} else {
 			typeID = val.Type().TypeID(l.semaCtx)
 		}
@@ -964,6 +994,13 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 }
 
 func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
+	// Zero-sized marker values such as struct{} have no LLVM payload.  Map
+	// storage still uses an i64 value slot, so represent the marker as zero
+	// instead of trying to emit a cast/select for the invalid anonymous
+	// `%struct.` LLVM spelling.
+	if isZeroSizedMarkerType(fromType) {
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+	}
 	if fromType == sema.TypeString || semaTypeName(fromType) == "string" {
 		ptr, _ := l.stringParts(v)
 		fromType = ptr.Type()
@@ -975,6 +1012,16 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 	dst := l.nextReg(sema.TypeInt)
 	l.emit(&hir.InstrCast{Dst: dst, Val: v, ToType: sema.TypeInt})
 	return dst
+}
+
+func isZeroSizedMarkerType(t sema.Type) bool {
+	if t == nil || sema.SizeOf(t) == 0 {
+		return true
+	}
+	if st, ok := t.(*sema.StructType); ok && len(st.Fields) == 0 {
+		return true
+	}
+	return false
 }
 
 func (l *Lowerer) coerceFromI64(v hir.Value, toType sema.Type) hir.Value {

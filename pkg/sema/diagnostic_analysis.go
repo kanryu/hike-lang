@@ -262,7 +262,11 @@ func areaEscapeType(typ Type) bool {
 	}
 	switch t := typ.(type) {
 	case *BasicType:
-		return t == TypeString || t.Name == "string"
+		// Compare the stable type name only.  In Go-Hike self-hosting, the
+		// global TypeString value is represented through the Type interface and
+		// pointer identity can be lowered as an integer type ID; comparing that
+		// pointer directly would produce an invalid pointer/integer LLVM icmp.
+		return t.Name == "string"
 	case *PointerType, *SliceType:
 		return true
 	case *StructType:

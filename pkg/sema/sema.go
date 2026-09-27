@@ -418,9 +418,11 @@ type StructType struct {
 
 func structSize(t *StructType) int { return t.Size() }
 
-func (t *StructType) TypeName() string { return t.Name }
-func (t *StructType) LLVMType() string { return "%struct." + t.Name }
-func (t *StructType) IsGeneric() bool  { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *StructType) TypeName() string         { return t.Name }
+func (t *StructType) LLVMType() string         { return "%struct." + t.Name }
+func StructType_TypeName(t *StructType) string { return t.Name }
+func StructType_LLVMType(t *StructType) string { return "%struct." + t.Name }
+func (t *StructType) IsGeneric() bool          { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 func (t *StructType) Align() int {
 	maxAlign := 1
@@ -462,7 +464,10 @@ func (t *StructType) Size() int {
 	return (offset + maxAlign - 1) &^ (maxAlign - 1)
 }
 
-func (t *StructType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
+func StructType_Size(t *StructType) int { return t.Size() }
+
+func (t *StructType) TypeID(ctx *Context) int64           { return typeIDOf(ctx, t) }
+func StructType_TypeID(t *StructType, ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type Method struct {
 	Name         string
@@ -507,6 +512,13 @@ func (t *InterfaceType) TypeName() string {
 	return "interface"
 }
 
+func InterfaceType_TypeName(t *InterfaceType) string {
+	if t.Name != "" {
+		return t.Name
+	}
+	return "interface"
+}
+
 func (t *InterfaceType) LLVMType() string {
 	if t.IsAny() {
 		return typeLLVMOf(t)
@@ -514,13 +526,27 @@ func (t *InterfaceType) LLVMType() string {
 	return "{ i8*, i8* }"
 }
 
-func (t *InterfaceType) Size() int                 { return PointerSize * 2 }
-func (t *InterfaceType) IsAny() bool               { return len(t.Methods) == 0 }
-func (t *InterfaceType) IsGeneric() bool           { return len(t.TypeParams) > 0 && !t.IsSpecialized }
-func (t *InterfaceType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
+func InterfaceType_LLVMType(t *InterfaceType) string {
+	if InterfaceType_IsAny(t) {
+		return typeLLVMOf(t)
+	}
+	return "{ i8*, i8* }"
+}
+
+func (t *InterfaceType) Size() int                              { return PointerSize * 2 }
+func InterfaceType_Size(t *InterfaceType) int                   { return PointerSize * 2 }
+func (t *InterfaceType) IsAny() bool                            { return len(t.Methods) == 0 }
+func InterfaceType_IsAny(t *InterfaceType) bool                 { return len(t.Methods) == 0 }
+func (t *InterfaceType) IsGeneric() bool                        { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *InterfaceType) TypeID(ctx *Context) int64              { return typeIDOf(ctx, t) }
+func InterfaceType_TypeID(t *InterfaceType, ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 // GetMethod はメソッド名から定義情報と itab スロット番号（0始まり）を返す
 func (t *InterfaceType) GetMethod(name string) (*Method, int) {
+	return InterfaceType_GetMethod(t, name)
+}
+
+func InterfaceType_GetMethod(t *InterfaceType, name string) (*Method, int) {
 	for i := range t.Methods {
 		if t.Methods[i].Name == name {
 			return &t.Methods[i], i
@@ -531,7 +557,7 @@ func (t *InterfaceType) GetMethod(name string) (*Method, int) {
 
 // HasMethod は指定された名称のメソッドがインターフェースに存在するかを返す
 func (t *InterfaceType) HasMethod(name string) bool {
-	_, idx := t.GetMethod(name)
+	_, idx := InterfaceType_GetMethod(t, name)
 	return idx != -1
 }
 
@@ -1106,6 +1132,36 @@ func collectTypeDecls(prog *ast.Program) []*ast.TypeDecl {
 	return result
 }
 
+func newSemanticInterfaceType() *InterfaceType {
+	return &InterfaceType{}
+}
+
+func newSemanticStructType() *StructType {
+	return &StructType{}
+}
+
+func newSemanticFuncType() *FuncType {
+	return &FuncType{}
+}
+
+func asSemanticStructType(t Type) (*StructType, bool) {
+	st, ok := t.(*StructType)
+	return st, ok
+}
+
+func asSemanticFuncType(t Type) (*FuncType, bool) {
+	ft, ok := t.(*FuncType)
+	return ft, ok
+}
+
+func newSemanticFuncSignature(name string, params, returns []Type) *FuncType {
+	ft := newSemanticFuncType()
+	ft.Name = name
+	ft.ParamTypes = params
+	ft.ReturnTypes = returns
+	return ft
+}
+
 func registerTypeDecl(td *ast.TypeDecl, pkg string, ctx *Context) {
 	tpSet := make(map[string]bool)
 	for _, tp := range td.TypeParams {
@@ -1153,14 +1209,16 @@ func registerTypeDecl(td *ast.TypeDecl, pkg string, ctx *Context) {
 
 	switch td.Type.(type) {
 	case *ast.InterfaceType:
-		iface := &InterfaceType{
-			Name:            qualifiedName,
-			InternalKey:     internalKey,
-			TypeParams:      typeParams,
-			Methods:         []Method{},
-			Template:        td,
-			Specializations: make(map[string]*InterfaceType),
-		}
+		// Allocate through the package-local return type first.  This avoids an
+		// ambiguity in the Go-Hike self-hosting resolver between ast.InterfaceType
+		// and sema.InterfaceType when lowering an unqualified composite literal.
+		iface := newSemanticInterfaceType()
+		iface.Name = qualifiedName
+		iface.InternalKey = internalKey
+		iface.TypeParams = typeParams
+		iface.Methods = []Method{}
+		iface.Template = td
+		iface.Specializations = make(map[string]*InterfaceType)
 		ctx.Interfaces[qualifiedName] = iface
 		ctx.Interfaces[rawName] = iface
 		ctx.Aliases[qualifiedName] = iface
@@ -1170,16 +1228,15 @@ func registerTypeDecl(td *ast.TypeDecl, pkg string, ctx *Context) {
 			ctx.GenericTypes[rawName] = td
 		}
 	case *ast.StructType:
-		structType := &StructType{
-			Name:                qualifiedName,
-			InternalKey:         internalKey,
-			TypeParams:          typeParams,
-			ConstTypeParams:     constTypeParams(td.TypeParams),
-			Fields:              []Field{},
-			Template:            td,
-			Specializations:     make(map[string]*StructType),
-			BuiltinCapabilities: make(map[string]*FuncType),
-		}
+		structType := newSemanticStructType()
+		structType.Name = qualifiedName
+		structType.InternalKey = internalKey
+		structType.TypeParams = typeParams
+		structType.ConstTypeParams = constTypeParams(td.TypeParams)
+		structType.Fields = []Field{}
+		structType.Template = td
+		structType.Specializations = make(map[string]*StructType)
+		structType.BuiltinCapabilities = make(map[string]*FuncType)
 		ctx.Structs[qualifiedName] = structType
 		ctx.Structs[rawName] = structType
 		ctx.Aliases[qualifiedName] = structType
@@ -1214,31 +1271,31 @@ func registerFuncDecl(decl ast.Decl, pkg string, ctx *Context) error {
 		}
 		internalKey := BuildInternalKey("", fn.Name.Value, "")
 		fn.InternalKey = internalKey
-		ctx.Functions[fn.Name.Value] = &FuncType{
-			Name:            fn.Name.Value,
-			InternalKey:     internalKey,
-			IRName:          cName,
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			IsVariadic:      fn.IsVariadic,
-			IsExtern:        true,
-			Specializations: make(map[string]*FuncType),
-		}
+		fnType := newSemanticFuncType()
+		fnType.Name = fn.Name.Value
+		fnType.InternalKey = internalKey
+		fnType.IRName = cName
+		fnType.ParamTypes = []Type{}
+		fnType.ReturnTypes = []Type{}
+		fnType.IsVariadic = fn.IsVariadic
+		fnType.IsExtern = true
+		fnType.Specializations = make(map[string]*FuncType)
+		ctx.Functions[fn.Name.Value] = fnType
 	case *ast.JFuncDecl:
 		if err := validateDefaultParams(fn.Params); err != nil {
 			return err
 		}
 		internalKey := BuildInternalKey("", fn.Name.Value, "")
 		fn.InternalKey = internalKey
-		ctx.Functions[fn.Name.Value] = &FuncType{
-			Name:            fn.Name.Value,
-			InternalKey:     internalKey,
-			IRName:          "__hike_js_" + fn.Name.Value,
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			IsExtern:        true,
-			Specializations: make(map[string]*FuncType),
-		}
+		fnType := newSemanticFuncType()
+		fnType.Name = fn.Name.Value
+		fnType.InternalKey = internalKey
+		fnType.IRName = "__hike_js_" + fn.Name.Value
+		fnType.ParamTypes = []Type{}
+		fnType.ReturnTypes = []Type{}
+		fnType.IsExtern = true
+		fnType.Specializations = make(map[string]*FuncType)
+		ctx.Functions[fn.Name.Value] = fnType
 	case *ast.CFuncDecl:
 		if err := validateDefaultParams(fn.Params); err != nil {
 			return err
@@ -1253,18 +1310,18 @@ func registerFuncDecl(decl ast.Decl, pkg string, ctx *Context) error {
 		if !fn.IsAlias() {
 			irName = "__hike_impl_" + fn.Name.Value
 		}
-		ctx.Functions[fn.Name.Value] = &FuncType{
-			Name:            fn.Name.Value,
-			InternalKey:     internalKey,
-			IRName:          irName,
-			ParamTypes:      []Type{},
-			ReturnTypes:     []Type{},
-			IsVariadic:      fn.IsVariadic,
-			IsCFunc:         true,
-			CFuncTarget:     targetC,
-			CFuncAst:        fn,
-			Specializations: make(map[string]*FuncType),
-		}
+		fnType := newSemanticFuncType()
+		fnType.Name = fn.Name.Value
+		fnType.InternalKey = internalKey
+		fnType.IRName = irName
+		fnType.ParamTypes = []Type{}
+		fnType.ReturnTypes = []Type{}
+		fnType.IsVariadic = fn.IsVariadic
+		fnType.IsCFunc = true
+		fnType.CFuncTarget = targetC
+		fnType.CFuncAst = fn
+		fnType.Specializations = make(map[string]*FuncType)
+		ctx.Functions[fn.Name.Value] = fnType
 	}
 	return nil
 }
@@ -1327,19 +1384,18 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 	if !isMethod && (pkg == "" || pkg == "main") {
 		irName = fn.Name.Value
 	}
-	fnType := &FuncType{
-		Name:            fnName,
-		InternalKey:     internalKey,
-		IRName:          irName,
-		TypeParams:      typeParams,
-		IsMethod:        isMethod,
-		ParamTypes:      []Type{},
-		ReturnTypes:     []Type{},
-		IsVariadic:      fn.IsVariadic,
-		IsExtern:        fn.Body == nil,
-		Template:        fn,
-		Specializations: make(map[string]*FuncType),
-	}
+	fnType := newSemanticFuncType()
+	fnType.Name = fnName
+	fnType.InternalKey = internalKey
+	fnType.IRName = irName
+	fnType.TypeParams = typeParams
+	fnType.IsMethod = isMethod
+	fnType.ParamTypes = []Type{}
+	fnType.ReturnTypes = []Type{}
+	fnType.IsVariadic = fn.IsVariadic
+	fnType.IsExtern = fn.Body == nil
+	fnType.Template = fn
+	fnType.Specializations = make(map[string]*FuncType)
 	ctx.Functions[fnName] = fnType
 	if isMethod {
 		ctx.RegisterMethod(structNameWithPtr, fn.Name.Value, fnType)

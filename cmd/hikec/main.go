@@ -21,7 +21,7 @@ import (
 
 func getDefaultTargetName() string {
 	switch runtime.GOOS {
-	case "windows":
+	case "", "windows":
 		return "x86_64-w64-windows-gnu"
 	case "darwin":
 		return "arm64-apple-darwin"
@@ -58,6 +58,14 @@ func printUsage() {
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
 }
 
+func reportCompilationError(comp *compiler.Compiler, err error) {
+	if comp != nil && comp.Reporter().HasErrors() {
+		fmt.Fprintln(os.Stderr, comp.Reporter().FormatAll())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
+}
+
 func isGoHikeFlag(arg string) bool {
 	return arg == "-go-hike" || arg == "--go-hike" || arg == "-go-hike=1" || arg == "--go-hike=1"
 }
@@ -76,7 +84,13 @@ func main() {
 	}
 
 	cmd := os.Args[1]
-	var cmdArgs []string
+	// Avoid a slice expression here: this is the first argument handoff in
+	// the self-hosted compiler and keeping it as an explicit loop makes the
+	// bootstrap path independent of slice-header lowering.
+	cmdArgs := make([]string, len(os.Args)-2)
+	for i := 2; i < len(os.Args); i++ {
+		cmdArgs[i-2] = os.Args[i]
+	}
 
 	switch cmd {
 	case "go":
@@ -239,7 +253,7 @@ func runEmitIR(args []string) {
 		llvmIR, semaCtx, prog, err = comp.CompileToLLVM(sourceFiles...)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
+		reportCompilationError(comp, err)
 		os.Exit(1)
 	}
 	if exportSymbolsPath != "" {
@@ -360,7 +374,7 @@ func runEmitJS(args []string) {
 	comp.SetGoHikeMode(goHikeMode)
 	_, _, program, err := comp.CompileToLLVM(sourceFiles...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
+		reportCompilationError(comp, err)
 		os.Exit(1)
 	}
 	if output == "" {
@@ -496,7 +510,7 @@ func runBuild(args []string) {
 			_, _, program, compileErr = wabtCompiler.CompileToLLVM(sourceFiles...)
 		}
 		if compileErr != nil {
-			fmt.Fprintf(os.Stderr, "Compilation error: %v\n", compileErr)
+			reportCompilationError(wabtCompiler, compileErr)
 			os.Exit(1)
 		}
 		runtimeProgram = program
@@ -701,12 +715,14 @@ func runRun(args []string) {
 		fmt.Fprintf(os.Stderr, "Target error: %v\n", err)
 		os.Exit(1)
 	}
+	var tempWasm string
+	var runtimeJS string
 
 	// 1. WebAssembly ターゲットの場合は Node.js 上で自動実行
 	if tgt.IsWasm {
-		tempWasm := filepath.Join(os.TempDir(), fmt.Sprintf("hike_run_%d.wasm", os.Getpid()))
+		tempWasm = filepath.Join(os.TempDir(), fmt.Sprintf("hike_run_%d.wasm", os.Getpid()))
 		defer os.Remove(tempWasm)
-		runtimeJS := filepath.Join(os.TempDir(), "runtime.js")
+		runtimeJS = filepath.Join(os.TempDir(), "runtime.js")
 		defer os.Remove(runtimeJS)
 
 		buildArgs := append([]string{"-o", tempWasm}, args...)

@@ -50,6 +50,10 @@ func (l *controlLinks) SetControlLinks(next, breakTarget, continueTarget int) {
 type ControlBody []ControlNode
 
 func (b ControlBody) String() string {
+	return renderControlBody(b)
+}
+
+func renderControlBody(b ControlBody) string {
 	var out strings.Builder
 	for _, node := range b {
 		if node == nil {
@@ -92,6 +96,12 @@ type BlockNode struct {
 func (n *BlockNode) Depth() int                       { return n.ControlDepth }
 func (n *BlockNode) Index() int                       { return n.ID }
 func (n *BlockNode) SetControlPosition(id, depth int) { n.ID, n.ControlDepth = id, depth }
+func (n *BlockNode) Next() int                        { return n.controlLinks.Next() }
+func (n *BlockNode) BreakTarget() int                 { return n.controlLinks.BreakTarget() }
+func (n *BlockNode) ContinueTarget() int              { return n.controlLinks.ContinueTarget() }
+func (n *BlockNode) SetControlLinks(next, breakTarget, continueTarget int) {
+	n.controlLinks.SetControlLinks(next, breakTarget, continueTarget)
+}
 
 func (n *BlockNode) String() string {
 	if n.FunctionExit {
@@ -395,7 +405,7 @@ func copyControlLabels(labels map[string]bool) map[string]bool {
 }
 
 func indentControlBody(body ControlBody) string {
-	text := body.String()
+	text := renderControlBody(body)
 	if text == "" {
 		return "  "
 	}

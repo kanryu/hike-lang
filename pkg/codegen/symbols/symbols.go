@@ -157,10 +157,10 @@ func Collect(program *ast.Program, ctx *sema.Context) Export {
 		}
 	}
 
-	result.Modules = modules.values()
-	result.Functions = functions.values()
-	result.Globals = globals.values()
-	result.Locals = locals.values()
+	result.Modules = stringSet_values(modules)
+	result.Functions = stringSet_values(functions)
+	result.Globals = stringSet_values(globals)
+	result.Locals = stringSet_values(locals)
 	sort.Slice(result.TypeStructs, func(i, j int) bool { return result.TypeStructs[i].Name < result.TypeStructs[j].Name })
 	sort.Slice(result.TypeInterfaces, func(i, j int) bool { return result.TypeInterfaces[i].Name < result.TypeInterfaces[j].Name })
 	for _, method := range methods {
@@ -193,7 +193,16 @@ func (s stringSet) add(value string) {
 	}
 }
 
-func (s stringSet) values() []string {
+func stringSet_add(s stringSet, value string) {
+	if value != "" && value != "_" {
+		s[value] = struct{}{}
+	}
+}
+
+// stringSet_values is intentionally a free function.  Keeping this helper
+// away from the map-like receiver method namespace avoids confusing the
+// Go-compatible Hike lowering path with the built-in map values operation.
+func stringSet_values(s stringSet) []string {
 	values := make([]string, 0, len(s))
 	for value := range s {
 		values = append(values, value)
@@ -528,14 +537,14 @@ func isFixedReceiverMethod(fn *ast.FuncDecl, ctx *sema.Context) bool {
 	receiverType := ctx.ResolveType(fn.Receiver.Type)
 	seenInterfaces := make(map[*sema.InterfaceType]bool)
 	for _, iface := range ctx.Interfaces {
-		if iface == nil || iface.IsAny() || seenInterfaces[iface] {
+		if iface == nil || sema.InterfaceType_IsAny(iface) || seenInterfaces[iface] {
 			continue
 		}
 		seenInterfaces[iface] = true
 		if !ctx.Implements(receiverType, iface) {
 			continue
 		}
-		if _, index := iface.GetMethod(fn.Name.Value); index >= 0 {
+		if _, index := sema.InterfaceType_GetMethod(iface, fn.Name.Value); index >= 0 {
 			return true
 		}
 	}

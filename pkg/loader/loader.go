@@ -42,7 +42,7 @@ func New(rootDir string) *Loader {
 		verbose:      false,
 	}
 	if loader.goHikeMode {
-		loader.loadGoHikeBot()
+		LoadGoHikeBot(loader)
 	}
 	return loader
 }
@@ -56,14 +56,14 @@ func (l *Loader) SetVerbose(v bool) {
 func (l *Loader) SetGoHikeMode(enabled bool) {
 	l.goHikeMode = enabled
 	if enabled {
-		l.loadGoHikeBot()
+		LoadGoHikeBot(l)
 	}
 }
 
 // loadGoHikeBot loads root-level GoReplace directives. The root hike.mod is deliberately
 // consulted only by compatibility-mode loaders, so ordinary Hike builds cannot
 // be affected by self-hosting mappings.
-func (l *Loader) loadGoHikeBot() {
+func LoadGoHikeBot(l *Loader) {
 	if l.module == nil {
 		return
 	}
@@ -91,7 +91,7 @@ func (l *Loader) SetBuildTags(tags map[string]bool) {
 
 func (l *Loader) log(msg string) {
 	if l.verbose {
-		fmt.Printf("[LOADER] %s\n", msg)
+		fmt.Println("[LOADER] " + msg)
 	}
 }
 

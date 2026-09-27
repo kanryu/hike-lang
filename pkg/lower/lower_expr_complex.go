@@ -302,6 +302,30 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 		arrayType := &ast.ArrayType{Token: node.Type.Token, Len: int64(arType.Len), Elem: semaTypeToTypeExpr(arType.Elem)}
 		return e.lowerArrayLiteralPtr(&ast.ArrayLiteral{Token: node.Token, Type: arrayType, Elements: elements})
 	}
+	if mapType, ok := resolvedType.(*sema.MapType); ok {
+		// Named map types use the same AST form as named struct literals
+		// (for example: stringSet{}).  Lower them through the normal map
+		// runtime path and preserve the pointer-shaped result expected by
+		// this helper's caller.
+		entries := make([]*ast.MapEntry, 0, len(node.Fields))
+		for _, field := range node.Fields {
+			if field == nil || field.Name == nil {
+				continue
+			}
+			key := &ast.StringLiteral{Token: field.Name.Token, Value: field.Name.Value}
+			entries = append(entries, &ast.MapEntry{Key: key, Value: field.Value})
+		}
+		mapLiteral := &ast.MapLiteral{
+			Token:   node.Token,
+			Type:    &ast.MapType{Token: node.Type.Token, Key: semaTypeToTypeExpr(mapType.Key), Value: semaTypeToTypeExpr(mapType.Value)},
+			Entries: entries,
+		}
+		mapValue := e.lowerMapLiteral(mapLiteral)
+		mapPtr := e.root.nextReg(&sema.PointerType{Base: mapType})
+		e.root.emit(&hir.InstrAlloca{Dst: mapPtr, AllocType: mapType})
+		e.root.emit(&hir.InstrStore{Val: mapValue, Ptr: mapPtr})
+		return mapPtr
+	}
 	stType, ok := resolvedType.(*sema.StructType)
 	if !ok {
 		panic(fmt.Sprintf("[Lower Error] composite literal is not a struct at %d:%d", node.Token.Line, node.Token.Col))
@@ -679,11 +703,29 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		rightVal = elem0
 	}
 
+	// Go-Hike keeps untyped integer literals as Hike int values until the
+	// surrounding operand supplies their width.  Align those operands before
+	// emitting LLVM; otherwise expressions such as 0-int32Value become an i64
+	// subtraction with an i32 register.
+	if leftVal.Type() == sema.TypeInt && isFixedIntegerType(rightVal.Type()) {
+		leftVal = e.root.emitValueCoerce(leftVal, rightVal.Type())
+	} else if rightVal.Type() == sema.TypeInt && isFixedIntegerType(leftVal.Type()) {
+		rightVal = e.root.emitValueCoerce(rightVal, leftVal.Type())
+	}
+	if isFloatType(leftVal.Type()) && isIntegerType(leftVal.Type()) == false && isIntegerType(rightVal.Type()) {
+		rightVal = e.root.emitValueCoerce(rightVal, leftVal.Type())
+	} else if isFloatType(rightVal.Type()) && isIntegerType(leftVal.Type()) {
+		leftVal = e.root.emitValueCoerce(leftVal, rightVal.Type())
+	}
+	if (node.Operator == "<<" || node.Operator == ">>") && isFixedIntegerType(leftVal.Type()) {
+		rightVal = e.root.emitValueCoerce(rightVal, leftVal.Type())
+	}
+
 	if node.Operator == "==" || node.Operator == "!=" {
 		if _, isIface := leftVal.Type().(*sema.InterfaceType); isIface && isNilValue(rightVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			dataIndex := 0
-			if iface, ok := leftVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+			if iface, ok := leftVal.Type().(*sema.InterfaceType); ok && sema.InterfaceType_IsAny(iface) {
 				dataIndex = 1
 			}
 			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: leftVal, Index: dataIndex})
@@ -698,7 +740,7 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 		if _, isIface := rightVal.Type().(*sema.InterfaceType); isIface && isNilValue(leftVal) {
 			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			dataIndex := 0
-			if iface, ok := rightVal.Type().(*sema.InterfaceType); ok && iface.IsAny() {
+			if iface, ok := rightVal.Type().(*sema.InterfaceType); ok && sema.InterfaceType_IsAny(iface) {
 				dataIndex = 1
 			}
 			e.root.emit(&hir.InstrExtractValue{Dst: dataPtr, Agg: rightVal, Index: dataIndex})
@@ -717,10 +759,10 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 				data2 := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 				leftDataIndex := 0
 				rightDataIndex := 0
-				if leftIface.IsAny() {
+				if sema.InterfaceType_IsAny(leftIface) {
 					leftDataIndex = 1
 				}
-				if rightIface.IsAny() {
+				if sema.InterfaceType_IsAny(rightIface) {
 					rightDataIndex = 1
 				}
 				e.root.emit(&hir.InstrExtractValue{Dst: data1, Agg: leftVal, Index: leftDataIndex})
@@ -730,7 +772,7 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 				e.root.emit(&hir.InstrBinary{Dst: dataEq, Op: hir.OpEq, L: data1, R: data2})
 
 				var metaEq *hir.Reg
-				if leftIface.IsAny() && rightIface.IsAny() {
+				if sema.InterfaceType_IsAny(leftIface) && sema.InterfaceType_IsAny(rightIface) {
 					meta1 := e.root.nextReg(sema.TypeInt32)
 					meta2 := e.root.nextReg(sema.TypeInt32)
 					e.root.emit(&hir.InstrExtractValue{Dst: meta1, Agg: leftVal, Index: 0})
@@ -869,6 +911,28 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 	dst := e.root.nextReg(resType)
 	e.root.emit(&hir.InstrBinary{Dst: dst, Op: op, L: leftVal, R: rightVal})
 	return dst
+}
+
+func isFixedIntegerType(t sema.Type) bool {
+	switch t {
+	case sema.TypeInt8, sema.TypeInt16, sema.TypeInt32, sema.TypeInt64,
+		sema.TypeUint8, sema.TypeUint16, sema.TypeUint32, sema.TypeUint64,
+		sema.TypeByte, sema.TypeUintptr:
+		return true
+	default:
+		return false
+	}
+}
+
+func isIntegerType(t sema.Type) bool {
+	if t == sema.TypeInt || t == sema.TypeUint {
+		return true
+	}
+	return isFixedIntegerType(t)
+}
+
+func isFloatType(t sema.Type) bool {
+	return t == sema.TypeFloat32 || t == sema.TypeFloat64
 }
 
 func (e *ExprLowerer) lowerShiftWithCarry(node *ast.BinaryExpr) hir.Value {
@@ -1010,7 +1074,7 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	dataPtrReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	typeIDReg := e.root.nextReg(sema.TypeInt32)
 
-	if it, ok := ifaceType.(*sema.InterfaceType); ok && !it.IsAny() {
+	if it, ok := ifaceType.(*sema.InterfaceType); ok && !sema.InterfaceType_IsAny(it) {
 		itabRawReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 0})
 		e.root.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: ifaceVal, Index: 1})

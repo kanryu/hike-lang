@@ -756,10 +756,33 @@ func (f *Function) BranchDepth(branch ControlElement, targetID int) (int, bool) 
 		return 0, false
 	}
 	target, ok := f.ControlNodeAt(targetID)
-	if !ok || target.Depth() >= branch.Depth() {
+	if !ok || controlElementDepth(target) >= controlElementDepth(branch) {
 		return 0, false
 	}
-	return branch.Depth() - target.Depth() - 1, true
+	return controlElementDepth(branch) - controlElementDepth(target) - 1, true
+}
+
+// controlElementDepth avoids relying on promoted interface methods while the
+// self-hosted compiler is still lowering embedded control links.
+func controlElementDepth(element ControlElement) int {
+	switch n := element.(type) {
+	case *BlockNode:
+		return n.ControlDepth
+	case *LoopNode:
+		return n.ControlDepth
+	case *IfNode:
+		return n.ControlDepth
+	case *BrNode:
+		return n.ControlDepth
+	case *BrIfNode:
+		return n.ControlDepth
+	case *BrTableNode:
+		return n.ControlDepth
+	case *TableNode:
+		return n.ControlDepth
+	default:
+		return 0
+	}
 }
 
 func (f *Function) String() string {
@@ -798,7 +821,7 @@ func (f *Function) String() string {
 	}
 	sb.WriteString(fmt.Sprintf("%s @%s(%s) %s {\n", prefix, f.Name, strings.Join(params, ", "), retTypeStr))
 	if len(f.StructuredBody) > 0 {
-		sb.WriteString(f.StructuredBody.String())
+		sb.WriteString(renderControlBody(f.StructuredBody))
 	}
 	sb.WriteString("}\n")
 	return sb.String()

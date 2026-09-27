@@ -14,8 +14,8 @@ import (
 // -----------------------------------------------------------------------------
 
 func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
-	restoreLocation := c.root.setTokenLocation(fn.Filename, fn.Token)
-	defer restoreLocation()
+	c.root.pushTokenLocation(fn.Filename, fn.Token)
+	defer c.root.popTokenLocation()
 	c.resetFunctionState(fn)
 	fnName, recvType := c.resolveFunctionIdentity(fn)
 	irName := c.resolveFuncIRName(fnName)
@@ -225,7 +225,7 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	c.root.emit(&hir.InstrCallStatic{
 		Dst:        callocRaw,
 		CalleeName: "calloc",
-		Args:       []hir.Value{argcReg, &hir.ConstInt{Val: int64(sema.PointerSize), Typ: sema.TypeInt}},
+		Args:       []hir.Value{argcReg, &hir.ConstInt{Val: int64(sema.SizeOf(sema.TypeString)), Typ: sema.TypeInt}},
 	})
 	callocRes := c.root.nextReg(&sema.PointerType{Base: sema.TypeString})
 	c.root.emit(&hir.InstrCast{Dst: callocRes, Val: callocRaw, ToType: &sema.PointerType{Base: sema.TypeString}})
@@ -236,6 +236,20 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	idxAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "i.arg")
 	c.root.emit(&hir.InstrAlloca{Dst: idxAlloca, AllocType: sema.TypeInt})
 	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxAlloca})
+	// lowerOSArgs runs before the source body, but functions now use the
+	// structured HIR as their authoritative representation. Mirror this small
+	// bootstrap loop there as well as in the legacy CFG; otherwise the LLVM
+	// backend silently drops the argv loop and the generated compiler receives
+	// only argv[0]. The loop is opened after its induction slot is initialized
+	// so that the initialization remains outside the loop body.
+	structuredBlock := &hir.BlockNode{Label: loopEndBB.Label}
+	structuredLoop := &hir.LoopNode{Label: loopCondBB.Label}
+	structuredLoop.Exit = structuredBlock
+	c.root.appendStructuredNode(structuredBlock)
+	c.root.pushStructuredFrame(structuredBlock.Label)
+	c.root.appendStructuredNodeTo(&structuredBlock.Body, structuredLoop)
+	c.root.pushStructuredFrame(structuredLoop.Label)
+	c.root.pushStructuredBody(&structuredLoop.Body)
 	c.root.terminate(&hir.InstrJump{Target: loopCondBB.Label})
 
 	c.root.setBlock(loopCondBB)
@@ -243,6 +257,13 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	c.root.emit(&hir.InstrLoad{Dst: curI, Ptr: idxAlloca})
 	cmp := c.root.nextReg(sema.TypeBool)
 	c.root.emit(&hir.InstrBinary{Dst: cmp, Op: hir.OpLt, L: curI, R: argcReg})
+	structuredCond := &hir.IfNode{Label: loopBodyBB.Label, Cond: cmp}
+	c.root.appendStructuredNode(structuredCond)
+	c.root.appendStructuredNodeTo(&structuredCond.Else, &hir.BrNode{
+		Target: loopEndBB.Label, TargetID: structuredBlock.Index(),
+	})
+	c.root.pushStructuredFrame(structuredCond.Label)
+	c.root.pushStructuredBody(&structuredCond.Then)
 	c.root.terminate(&hir.InstrBranch{Cond: cmp, ThenTarget: loopBodyBB.Label, ElseTarget: loopEndBB.Label})
 
 	c.root.setBlock(loopBodyBB)
@@ -258,6 +279,11 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	c.root.emit(&hir.InstrBinary{Dst: nextI, Op: hir.OpAdd, L: curI, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
 	c.root.emit(&hir.InstrStore{Val: nextI, Ptr: idxAlloca})
 	c.root.terminate(&hir.InstrJump{Target: loopCondBB.Label})
+	c.root.popStructuredBody()
+	c.root.popStructuredFrame()
+	c.root.popStructuredBody()
+	c.root.popStructuredFrame()
+	c.root.popStructuredFrame()
 
 	c.root.setBlock(loopEndBB)
 	sliceType := &sema.SliceType{Elem: sema.TypeString}

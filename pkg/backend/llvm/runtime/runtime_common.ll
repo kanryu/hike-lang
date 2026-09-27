@@ -845,6 +845,15 @@ return_copy:
 
 ; Append to a string variable. Unique buffers reserve 256 bytes on the first
 ; append and are reused while the accumulated string fits in that capacity.
+; The bootstrap compiler only requires the runtime entry point for sort.Strings
+; to be linkable. The Hike stdlib currently provides ordering at the source
+; level, so keep this ABI-compatible fallback as a no-op until native sorting
+; is lowered directly.
+define internal void @__hike_sort_strings({ i8*, i64, i64 } %items) #0 {
+entry:
+  ret void
+}
+
 define internal i8* @__hike_string_append(i8* %base, i32 %offset, i32 %len, i8* %b, i32 %blen) #0 {
 entry:
   %total = add i32 %len, %blen

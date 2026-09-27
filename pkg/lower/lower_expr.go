@@ -132,8 +132,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	if expr == nil {
 		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 	}
-	restoreLocation := e.root.setTokenLocation(e.root.sourceFile, expressionToken(expr))
-	defer restoreLocation()
+	e.root.pushTokenLocation(e.root.sourceFile, expressionToken(expr))
+	defer e.root.popTokenLocation()
 
 	switch node := expr.(type) {
 	case *ast.IntegerLiteral:
@@ -889,8 +889,12 @@ func (e *ExprLowerer) lowerImplicitCast(node *ast.ImplicitCastExpr) hir.Value {
 		}
 		itabName := ""
 		typeID := int64(0)
-		if !iface.IsAny() {
-			itabName = e.root.Call.GetOrCreateItab(value.Type(), iface).GlobalName
+		if !sema.InterfaceType_IsAny(iface) {
+			// Interface values already carry their dynamic itab. They must not
+			// be treated as concrete values when constructing another itab.
+			if itab := e.root.Call.GetOrCreateItab(value.Type(), iface); itab != nil {
+				itabName = itab.GlobalName
+			}
 		} else {
 			typeID = value.Type().TypeID(e.root.semaCtx)
 		}
@@ -925,13 +929,13 @@ func (e *ExprLowerer) lowerInterfaceConversion(val hir.Value, target *sema.Inter
 	if !ok {
 		return nil
 	}
-	if !target.IsAny() {
+	if !sema.InterfaceType_IsAny(target) {
 		if semaTypeName(source) == semaTypeName(target) {
 			return val
 		}
 		return nil
 	}
-	if source.IsAny() {
+	if sema.InterfaceType_IsAny(source) {
 		return val
 	}
 

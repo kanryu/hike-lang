@@ -42,8 +42,8 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 	if stmt == nil {
 		return
 	}
-	restoreLocation := s.root.setTokenLocation(s.root.sourceFile, statementToken(stmt))
-	defer restoreLocation()
+	s.root.pushTokenLocation(s.root.sourceFile, statementToken(stmt))
+	defer s.root.popTokenLocation()
 
 	switch node := stmt.(type) {
 	case *ast.TypeDecl:

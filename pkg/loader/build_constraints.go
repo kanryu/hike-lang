@@ -29,10 +29,13 @@ func (l *Loader) SetTarget(tgt *target.Target) {
 		l.buildTags = tags
 		return
 	}
-	for k := range tags {
-		delete(tags, k)
-	}
-	triple := strings.ToLower(tgt.Triple)
+	// Replace the default set instead of ranging over and deleting from it.
+	// This also keeps target selection independent of map iteration order.
+	tags = make(map[string]bool)
+	// Target triples produced by pkg/target are canonical lowercase strings.
+	// Keep the value as-is here; this path runs during self-hosting bootstrap,
+	// where allocating a transformed string is unnecessarily fragile.
+	triple := tgt.Triple
 	goos := ""
 	switch {
 	case strings.Contains(triple, "windows"):
@@ -222,7 +225,13 @@ func containsInlineAsmSyntax(content string) bool {
 	return false
 }
 
-type buildToken struct{ kind, value string }
+// Keep the fields explicit.  The self-hosted compiler must preserve the
+// type of both fields; grouped field declarations can otherwise make the
+// first field inherit an unrelated builtin type during bootstrap.
+type buildToken struct {
+	kind  string
+	value string
+}
 
 func evalBuildExpr(expr string, tags map[string]bool) bool {
 	tokens := tokenizeBuildExpr(expr)
