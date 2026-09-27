@@ -91,6 +91,8 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 		c.root.symbolTypes[name] = typ
 	}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.managedParams = nil
+	c.root.managedParamEscapes = make(map[string]bool)
 	c.root.areaStack = []*hir.Reg{}
 	c.root.resetStructuredState()
 	c.root.legacyBlocks = nil
@@ -103,6 +105,123 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 		c.root.stringMutationCounts = make(map[string]int)
 		c.root.stringMutationInLoop = make(map[string]bool)
 	}
+}
+
+// parameterEscapes reports whether a managed parameter is used as an owned
+// value outside the callee's local borrow-only operations.  This deliberately
+// stays conservative: an unknown call, assignment, return, send, or closure
+// capture keeps the retain/release pair; len, cap, indexing, and conditions do
+// not extend the backing storage lifetime by themselves.
+func parameterEscapes(body *ast.BlockStmt, name string) bool {
+	if body == nil || name == "" {
+		return false
+	}
+	var exprEscapes func(ast.Expression) bool
+	var stmtEscapes func(ast.Statement) bool
+	var blockEscapes func(*ast.BlockStmt) bool
+
+	exprEscapes = func(expr ast.Expression) bool {
+		if expr == nil {
+			return false
+		}
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return astIDValue(e) == name
+		case *ast.CallExpr:
+			if id, ok := e.Function.(*ast.Identifier); ok && (astIDValue(id) == "len" || astIDValue(id) == "cap") {
+				return false
+			}
+			for _, arg := range e.Args {
+				if exprEscapes(arg) {
+					return true
+				}
+			}
+			return false
+		case *ast.IndexExpr:
+			// Reading an element borrows the backing storage only for the
+			// expression. The index expression itself cannot retain the slice.
+			return false
+		case *ast.SliceExpr:
+			return exprEscapes(e.Left)
+		case *ast.MemberExpr:
+			return exprEscapes(e.Object)
+		case *ast.BinaryExpr:
+			return exprEscapes(e.Left) || exprEscapes(e.Right)
+		case *ast.PrefixExpr:
+			return exprEscapes(e.Right)
+		case *ast.ReceiveExpr:
+			return exprEscapes(e.Expr)
+		case *ast.AsyncExpr:
+			return exprEscapes(e.Fn)
+		case *ast.FuncLit:
+			for _, captured := range sema.ScanCapturesFromLit(e) {
+				if captured == name {
+					return true
+				}
+			}
+			return blockEscapes(e.Body)
+		case *ast.GenericInstExpr:
+			return exprEscapes(e.Left)
+		}
+		return false
+	}
+
+	stmtEscapes = func(stmt ast.Statement) bool {
+		if stmt == nil {
+			return false
+		}
+		switch s := stmt.(type) {
+		case *ast.BlockStmt:
+			return blockEscapes(s)
+		case *ast.ReturnStmt:
+			for _, value := range s.Values {
+				if exprEscapes(value) {
+					return true
+				}
+			}
+		case *ast.VarDecl:
+			return exprEscapes(s.Value)
+		case *ast.AssignStmt:
+			for _, value := range s.Right {
+				if exprEscapes(value) {
+					return true
+				}
+			}
+		case *ast.ExprStmt:
+			if call, ok := s.Expr.(*ast.CallExpr); ok {
+				return exprEscapes(call)
+			}
+		case *ast.SendStmt:
+			return exprEscapes(s.Value)
+		case *ast.DeferStmt:
+			return exprEscapes(s.Call)
+		case *ast.IfStmt:
+			return stmtEscapes(s.Init) || exprEscapes(s.Condition) || blockEscapes(s.Consequence) || stmtEscapes(s.Alternative)
+		case *ast.ForStmt:
+			return stmtEscapes(s.Init) || exprEscapes(s.Cond) || stmtEscapes(s.Post) || blockEscapes(s.Body)
+		case *ast.ForRangeStmt:
+			return exprEscapes(s.Key) || exprEscapes(s.Value) || exprEscapes(s.X) || blockEscapes(s.Body)
+		case *ast.AreaStmt:
+			return exprEscapes(s.Size) || blockEscapes(s.Body)
+		case *ast.LockStmt:
+			return blockEscapes(s.Body)
+		}
+		return false
+	}
+
+	blockEscapes = func(block *ast.BlockStmt) bool {
+		if block == nil {
+			return false
+		}
+		for _, stmt := range block.Statements {
+			if stmtEscapes(stmt) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return blockEscapes(body)
 }
 
 func (c *CallLowerer) resolveFuncIRName(fnName string) string {
@@ -290,7 +409,7 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	t1 := c.root.nextReg(sliceType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(sliceType), Val: callocRaw, Index: 0})
 	t2 := c.root.nextReg(sliceType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: argcReg, Index: 1})
+	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Index: 1})
 	t3 := c.root.nextReg(sliceType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: argcReg, Index: 2})
 	c.root.emit(&hir.InstrStore{Val: t3, Ptr: &hir.GlobalVar{Name: "os_Args", Typ: &sema.PointerType{Base: sliceType}}})
@@ -298,10 +417,12 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 
 func (c *CallLowerer) lowerFunctionParameters(fn *ast.FuncDecl, hirFn *hir.Function, recvType sema.Type) {
 	if fn.Receiver != nil {
+		c.root.managedParamEscapes[fn.Receiver.Name.Value] = parameterEscapes(fn.Body, fn.Receiver.Name.Value)
 		c.lowerReceiverParameter(fn.Receiver, hirFn, recvType)
 	}
 
 	for _, param := range fn.Params {
+		c.root.managedParamEscapes[param.Name.Value] = parameterEscapes(fn.Body, param.Name.Value)
 		c.lowerParameter(param, hirFn)
 	}
 }
@@ -317,6 +438,10 @@ func (c *CallLowerer) lowerReceiverParameter(receiver *ast.ParamDecl, hirFn *hir
 		c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: recvType})
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
+	if _, ok := recvType.(*sema.SliceType); ok && c.root.managedParamEscapes[receiver.Name.Value] {
+		c.root.retainSlice(paramReg)
+		c.root.managedParams = append(c.root.managedParams, paramReg)
+	}
 	c.root.symbols[receiver.Name.Value] = ptrReg
 	c.root.symbolTypes[receiver.Name.Value] = recvType
 }
@@ -338,6 +463,10 @@ func (c *CallLowerer) lowerParameter(param *ast.ParamDecl, hirFn *hir.Function) 
 		c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: paramType})
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
+	if _, ok := paramType.(*sema.SliceType); ok && c.root.managedParamEscapes[param.Name.Value] {
+		c.root.retainSlice(paramReg)
+		c.root.managedParams = append(c.root.managedParams, paramReg)
+	}
 	c.root.symbols[param.Name.Value] = ptrReg
 	c.root.symbolTypes[param.Name.Value] = paramType
 }

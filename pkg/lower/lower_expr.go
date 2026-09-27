@@ -570,23 +570,32 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	var elemType sema.Type = sema.TypeByte
 	var typedDataPtr hir.Value = nil
 	var capVal hir.Value = nil
+	var ownerPtr *hir.Reg = nil
+	var offsetVal hir.Value = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 
 	if slType, isSlice := baseType.(*sema.SliceType); isSlice {
 		elemType = slType.Elem
-		rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		cVal := e.root.nextReg(sema.TypeInt)
-		e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
-		e.root.emit(&hir.InstrExtractValue{Dst: cVal, Agg: baseVal, Index: 2})
+		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		offsetReg := e.root.nextReg(sema.TypeInt)
+		offsetVal = offsetReg
+		e.root.emit(&hir.InstrExtractValue{Dst: ownerPtr, Agg: baseVal, Index: 0})
+		e.root.emit(&hir.InstrExtractValue{Dst: offsetReg, Agg: baseVal, Index: 1})
+		capVal = e.root.sliceCapacity(ownerPtr)
+		// The slice offset is measured in elements.  The actual pointer is
+		// formed below after the low bound is known.
 		tPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
-		e.root.emit(&hir.InstrCast{Dst: tPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: elemType}})
-		typedDataPtr = tPtr
-		capVal = cVal
+		e.root.emit(&hir.InstrCast{Dst: tPtr, Val: ownerPtr, ToType: &sema.PointerType{Base: elemType}})
+		baseElemPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: tPtr, Index: offsetVal})
+		typedDataPtr = baseElemPtr
 	} else if arType, isArray := baseType.(*sema.ArrayType); isArray {
 		elemType = arType.Elem
 		arrPtr := e.LowerLValue(node.Left)
 		tPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
 		e.root.emit(&hir.InstrCast{Dst: tPtr, Val: arrPtr, ToType: &sema.PointerType{Base: elemType}})
 		typedDataPtr = tPtr
+		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrCast{Dst: ownerPtr, Val: tPtr, ToType: ownerPtr.Type()})
 		capVal = &hir.ConstInt{Val: int64(arType.Len), Typ: sema.TypeInt}
 	} else if baseType == sema.TypeCString {
 		// cstring indexing/slicing operates on its NUL-terminated byte
@@ -597,6 +606,8 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		capVal = lenReg
 	} else if ptrType, isBytePtr := baseType.(*sema.PointerType); isBytePtr && ptrType.Base == sema.TypeByte {
 		typedDataPtr = baseVal
+		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrCast{Dst: ownerPtr, Val: baseVal, ToType: ownerPtr.Type()})
 		lenReg := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 		capVal = lenReg
@@ -632,13 +643,9 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	e.root.emit(&hir.InstrCast{Dst: elemBytePtr, Val: elemPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
 	resSliceType := &sema.SliceType{Elem: elemType}
-	t1 := e.root.nextReg(resSliceType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(resSliceType), Val: elemBytePtr, Index: 0})
-	t2 := e.root.nextReg(resSliceType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: newLen, Index: 1})
-	t3 := e.root.nextReg(resSliceType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: newCap, Index: 2})
-	return t3
+	newOffset := e.root.nextReg(sema.TypeInt)
+	e.root.emit(&hir.InstrBinary{Dst: newOffset, Op: hir.OpAdd, L: offsetVal, R: lowVal})
+	return e.root.makeSliceView(resSliceType, ownerPtr, newOffset, newLen)
 }
 
 func (e *ExprLowerer) lowerStringSliceExpr(node *ast.SliceExpr, baseVal hir.Value, baseType sema.Type) (hir.Value, bool) {
@@ -750,8 +757,7 @@ func (e *ExprLowerer) lowerSliceLiteral(node *ast.SliceLiteral) hir.Value {
 	}
 	totalBytes := count * elemSize
 
-	mallocRaw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	e.root.emit(&hir.InstrHeapAlloc{Dst: mallocRaw, Size: &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt}, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
+	mallocRaw := e.root.allocSliceStorage(&hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt})
 
 	typedBase := e.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	e.root.emit(&hir.InstrCast{Dst: typedBase, Val: mallocRaw, ToType: &sema.PointerType{Base: slType.Elem}})
@@ -764,13 +770,7 @@ func (e *ExprLowerer) lowerSliceLiteral(node *ast.SliceLiteral) hir.Value {
 		e.root.emit(&hir.InstrStore{Val: val, Ptr: elemPtr})
 	}
 
-	t1 := e.root.nextReg(slType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: e.root.defaultConstValue(slType), Val: mallocRaw, Index: 0})
-	t2 := e.root.nextReg(slType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt}, Index: 1})
-	t3 := e.root.nextReg(slType)
-	e.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt}, Index: 2})
-	return t3
+	return e.root.makeSliceView(slType, mallocRaw, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt})
 }
 
 func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {

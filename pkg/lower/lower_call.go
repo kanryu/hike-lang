@@ -492,13 +492,7 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 	}
 	totalBytes := count * elemSize
 
-	mallocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{
-		Dst:              mallocRaw,
-		Size:             &hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt},
-		AllocType:        sema.TypeByte,
-		KeepOnHeapInArea: true,
-	})
+	mallocRaw := c.root.allocSliceStorage(&hir.ConstInt{Val: int64(totalBytes), Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt})
 
 	typedBase := c.root.nextReg(&sema.PointerType{Base: elemType})
 	c.root.emit(&hir.InstrCast{
@@ -519,13 +513,7 @@ func (c *CallLowerer) lowerVariadicSlice(args []ast.Expression, elemType sema.Ty
 		c.root.emit(&hir.InstrStore{Val: val, Ptr: elemPtr})
 	}
 
-	t1 := c.root.nextReg(slType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(slType), Val: mallocRaw, Index: 0})
-	t2 := c.root.nextReg(slType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt}, Index: 1})
-	t3 := c.root.nextReg(slType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt}, Index: 2})
-	return t3
+	return c.root.makeSliceView(slType, mallocRaw, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(count), Typ: sema.TypeInt})
 }
 
 func (c *CallLowerer) lowerArgs(callArgs []ast.Expression, paramTypes []sema.Type, isVariadic bool, isCFunc bool, variadicElem sema.Type, hasEllipsis bool) []hir.Value {
@@ -785,9 +773,14 @@ func (c *CallLowerer) lowerStringBuiltin(call *ast.CallExpr) (hir.Value, bool) {
 	argVal := c.root.Expr.LowerExpr(call.Args[0])
 	if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
 		rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		offset := c.root.nextReg(sema.TypeInt)
 		rawLen := c.root.nextReg(sema.TypeInt)
 		c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
-		c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 1})
+		c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: argVal, Index: 1})
+		c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 2})
+		dataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: rawPtr, Index: offset})
+		rawPtr = dataPtr
 		raw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		c.root.emit(&hir.InstrCallStatic{
 			Dst:        raw,
@@ -823,23 +816,16 @@ func (c *CallLowerer) lowerDeepCopyBuiltin(call *ast.CallExpr) (hir.Value, bool)
 		rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "deepcopy")
 		length := c.root.nextReg(sema.TypeInt, "deepcopy_len")
 		c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: arg, Index: 0})
-		c.root.emit(&hir.InstrExtractValue{Dst: length, Agg: arg, Index: 1})
+		c.root.emit(&hir.InstrExtractValue{Dst: length, Agg: arg, Index: 2})
 		elemSize := sema.SizeOf(sl.Elem)
 		if elemSize <= 0 {
 			elemSize = 1
 		}
 		bytes := c.root.nextReg(sema.TypeInt, "deepcopy_bytes")
 		c.root.emit(&hir.InstrBinary{Dst: bytes, Op: hir.OpMul, L: length, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
-		copyBuf := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "deepcopy")
-		c.root.emit(&hir.InstrHeapAlloc{Dst: copyBuf, Size: bytes, AllocType: sema.TypeByte, KeepOnHeap: true})
+		copyBuf := c.root.allocSliceStorage(bytes, length)
 		c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{copyBuf, rawPtr, bytes}})
-		result := c.root.nextReg(sl)
-		v1 := c.root.nextReg(sl)
-		c.root.emit(&hir.InstrInsertValue{Dst: v1, Agg: c.root.defaultConstValue(sl), Val: copyBuf, Index: 0})
-		v2 := c.root.nextReg(sl)
-		c.root.emit(&hir.InstrInsertValue{Dst: v2, Agg: v1, Val: length, Index: 1})
-		c.root.emit(&hir.InstrInsertValue{Dst: result, Agg: v2, Val: length, Index: 2})
-		return result, true
+		return c.root.makeSliceView(sl, copyBuf, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, length), true
 	}
 	return c.lowerDeepCopyValue(arg, arg.Type(), make(map[sema.Type]bool)), true
 }
@@ -1005,15 +991,16 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 		if elemSize <= 0 {
 			elemSize = 1
 		}
-		callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		c.root.emit(&hir.InstrCallStatic{Dst: callocRaw, CalleeName: "calloc", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}}})
+		bytes := c.root.nextReg(sema.TypeInt)
+		c.root.emit(&hir.InstrBinary{Dst: bytes, Op: hir.OpMul, L: capVal, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+		callocRaw := c.root.allocSliceStorage(bytes, capVal)
 
 		t1 := c.root.nextReg(resSliceType)
 		c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(resSliceType), Val: callocRaw, Index: 0})
 		t2 := c.root.nextReg(resSliceType)
-		c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: lenVal, Index: 1})
+		c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Index: 1})
 		t3 := c.root.nextReg(resSliceType)
-		c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: capVal, Index: 2})
+		c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: lenVal, Index: 2})
 		return t3
 	}
 	return nil

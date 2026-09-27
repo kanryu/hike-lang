@@ -382,7 +382,10 @@ type SliceType struct {
 
 func (t *SliceType) TypeName() string { return typeNameOf(t) }
 func (t *SliceType) LLVMType() string {
-	return typeLLVMOf(t)
+	// A slice is an owner pointer plus an element offset and length. Capacity
+	// belongs to the backing allocation, 16 bytes before the owner pointer,
+	// rather than being copied into every view.
+	return fmt.Sprintf("{ i8*, %s, %s }", TypeInt.LLVMType(), TypeInt.LLVMType())
 }
 func (t *SliceType) Size() int                 { return PointerSize + SizeOf(TypeInt)*2 }
 func (t *SliceType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }

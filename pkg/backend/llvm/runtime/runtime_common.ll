@@ -9,6 +9,75 @@ declare noalias i8* @malloc(i64)
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)
 
+; Slice backing storage. The returned pointer addresses the first payload byte;
+; capacity is stored as i32 at owner-16. calloc keeps make([]T,n) zeroed while
+; giving all slice allocation paths one header layout.
+define internal i8* @__hike_slice_alloc(i64 %size, i64 %capacity) #0 {
+entry:
+  %total = add i64 %size, 16
+  %raw = call i8* @calloc(i64 1, i64 %total)
+  %cap_ptr = bitcast i8* %raw to i32*
+  %cap32 = trunc i64 %capacity to i32
+  store i32 %cap32, i32* %cap_ptr
+  %ref_raw = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref_ptr = bitcast i8* %ref_raw to i32*
+  store i32 1, i32* %ref_ptr
+  %owner = getelementptr inbounds i8, i8* %raw, i64 16
+  ret i8* %owner
+}
+
+define internal i64 @__hike_slice_cap(i8* %owner) #0 {
+entry:
+  %raw = getelementptr inbounds i8, i8* %owner, i64 -16
+  %cap_ptr = bitcast i8* %raw to i32*
+  %cap32 = load i32, i32* %cap_ptr
+  %cap = zext i32 %cap32 to i64
+  ret i64 %cap
+}
+
+define internal void @__hike_slice_retain(i8* %owner) #0 {
+entry:
+  %is_null = icmp eq i8* %owner, null
+  br i1 %is_null, label %done, label %load
+load:
+  %raw = getelementptr inbounds i8, i8* %owner, i64 -12
+  %ref_ptr = bitcast i8* %raw to i32*
+  %old = load i32, i32* %ref_ptr
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %increment
+increment:
+  %next = add i32 %old, 1
+  store i32 %next, i32* %ref_ptr
+  br label %done
+done:
+  ret void
+}
+
+define internal void @__hike_slice_release(i8* %owner) #0 {
+entry:
+  %is_null = icmp eq i8* %owner, null
+  br i1 %is_null, label %done, label %load
+load:
+  %raw = getelementptr inbounds i8, i8* %owner, i64 -12
+  %ref_ptr = bitcast i8* %raw to i32*
+  %old = load i32, i32* %ref_ptr
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %check_free
+check_free:
+  %last = icmp eq i32 %old, 1
+  br i1 %last, label %free_buffer, label %decrement
+decrement:
+  %next = sub i32 %old, 1
+  store i32 %next, i32* %ref_ptr
+  br label %done
+free_buffer:
+  %allocation = getelementptr inbounds i8, i8* %owner, i64 -16
+  call void @free(i8* %allocation)
+  br label %done
+done:
+  ret void
+}
+
 @__hike_region_active_stat = internal global i64 0
 @__hike_region_begin_count_stat = internal global i64 0
 @__hike_region_end_count_stat = internal global i64 0

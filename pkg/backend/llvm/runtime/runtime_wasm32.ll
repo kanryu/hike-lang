@@ -7,6 +7,70 @@ declare noalias i8* @malloc(i32)
 declare noalias i8* @calloc(i32, i32)
 declare void @free(i8*)
 
+define internal i8* @__hike_slice_alloc32(i32 %size, i32 %capacity) #0 {
+entry:
+  %total = add i32 %size, 16
+  %raw = call i8* @calloc(i32 1, i32 %total)
+  %cap_ptr = bitcast i8* %raw to i32*
+  store i32 %capacity, i32* %cap_ptr
+  %ref_raw = getelementptr inbounds i8, i8* %raw, i32 4
+  %ref_ptr = bitcast i8* %ref_raw to i32*
+  store i32 1, i32* %ref_ptr
+  %owner = getelementptr inbounds i8, i8* %raw, i32 16
+  ret i8* %owner
+}
+
+define internal i32 @__hike_slice_cap32(i8* %owner) #0 {
+entry:
+  %raw = getelementptr inbounds i8, i8* %owner, i32 -16
+  %cap_ptr = bitcast i8* %raw to i32*
+  %cap = load i32, i32* %cap_ptr
+  ret i32 %cap
+}
+
+define internal void @__hike_slice_retain32(i8* %owner) #0 {
+entry:
+  %is_null = icmp eq i8* %owner, null
+  br i1 %is_null, label %done, label %load
+load:
+  %raw = getelementptr inbounds i8, i8* %owner, i32 -12
+  %ref_ptr = bitcast i8* %raw to i32*
+  %old = load i32, i32* %ref_ptr
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %increment
+increment:
+  %next = add i32 %old, 1
+  store i32 %next, i32* %ref_ptr
+  br label %done
+done:
+  ret void
+}
+
+define internal void @__hike_slice_release32(i8* %owner) #0 {
+entry:
+  %is_null = icmp eq i8* %owner, null
+  br i1 %is_null, label %done, label %load
+load:
+  %raw = getelementptr inbounds i8, i8* %owner, i32 -12
+  %ref_ptr = bitcast i8* %raw to i32*
+  %old = load i32, i32* %ref_ptr
+  %immortal = icmp eq i32 %old, -2147483648
+  br i1 %immortal, label %done, label %check_free
+check_free:
+  %last = icmp eq i32 %old, 1
+  br i1 %last, label %free_buffer, label %decrement
+decrement:
+  %next = sub i32 %old, 1
+  store i32 %next, i32* %ref_ptr
+  br label %done
+free_buffer:
+  %allocation = getelementptr inbounds i8, i8* %owner, i32 -16
+  call void @free(i8* %allocation)
+  br label %done
+done:
+  ret void
+}
+
 @__hike_region_active_stat = internal global i64 0
 @__hike_region_begin_count_stat = internal global i64 0
 @__hike_region_end_count_stat = internal global i64 0

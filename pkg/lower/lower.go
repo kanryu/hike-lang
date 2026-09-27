@@ -70,6 +70,10 @@ type Lowerer struct {
 	// statements are lowered at the beginning of main.
 	globalInitRemaining int
 	loweringGlobalInit  bool
+	// managedParams are string/slice parameters retained for the duration of
+	// the current Hike function. They are released on every return path.
+	managedParams []hir.Value
+	managedParamEscapes map[string]bool
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -457,6 +461,18 @@ func (l *Lowerer) isAreaHeapValue(t sema.Type) bool {
 }
 
 func (l *Lowerer) terminate(term hir.Terminator) {
+	if _, isReturn := term.(*hir.InstrReturn); isReturn {
+		// A returned managed value must acquire its caller-owned reference
+		// before the callee releases its parameter references.
+		if len(l.managedParams) > 0 {
+			for _, value := range term.(*hir.InstrReturn).Vals {
+				l.retainManagedValue(value)
+			}
+		}
+		for _, param := range l.managedParams {
+			l.releaseManagedValue(param)
+		}
+	}
 	if (isAreaExitTerminator(term)) && len(l.areaStack) > 0 {
 		for i := len(l.areaStack) - 1; i >= 0; i-- {
 			l.emit(&hir.InstrAreaEnd{Area: l.areaStack[i]})
@@ -842,6 +858,70 @@ func (l *Lowerer) retainString(value hir.Value) {
 func (l *Lowerer) releaseString(value hir.Value) {
 	base := l.stringBase(value)
 	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base}})
+}
+
+// sliceCapacity reads the capacity stored in the 16-byte allocation header
+// immediately before a slice's owner pointer. Slice values themselves carry
+// only {owner, offset, length}; keeping capacity in the backing allocation
+// makes all slice views share one authoritative value.
+func (l *Lowerer) sliceCapacity(owner hir.Value) hir.Value {
+	capVal := l.nextReg(sema.TypeInt)
+	l.emit(&hir.InstrCallStatic{Dst: capVal, CalleeName: l.BuiltinName("__hike_slice_cap"), Args: []hir.Value{owner}})
+	return capVal
+}
+
+func (l *Lowerer) retainSlice(value hir.Value) {
+	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_retain"), Args: []hir.Value{owner}})
+}
+
+func (l *Lowerer) releaseSlice(value hir.Value) {
+	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_release"), Args: []hir.Value{owner}})
+}
+
+func (l *Lowerer) retainManagedValue(value hir.Value) {
+	if value == nil || value.Type() == nil {
+		return
+	}
+	if l.isStringType(value.Type()) {
+		l.retainString(value)
+		return
+	}
+	if _, ok := value.Type().(*sema.SliceType); ok {
+		l.retainSlice(value)
+	}
+}
+
+func (l *Lowerer) releaseManagedValue(value hir.Value) {
+	if value == nil || value.Type() == nil {
+		return
+	}
+	if l.isStringType(value.Type()) {
+		l.releaseString(value)
+		return
+	}
+	if _, ok := value.Type().(*sema.SliceType); ok {
+		l.releaseSlice(value)
+	}
+}
+
+func (l *Lowerer) makeSliceView(typ *sema.SliceType, owner, offset, length hir.Value) hir.Value {
+	t1 := l.nextReg(typ)
+	l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(typ), Val: owner, Index: 0})
+	t2 := l.nextReg(typ)
+	l.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: offset, Index: 1})
+	t3 := l.nextReg(typ)
+	l.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: length, Index: 2})
+	return t3
+}
+
+func (l *Lowerer) allocSliceStorage(size, capacity hir.Value) hir.Value {
+	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrCallStatic{Dst: owner, CalleeName: l.BuiltinName("__hike_slice_alloc"), Args: []hir.Value{size, capacity}})
+	return owner
 }
 
 func (l *Lowerer) isStringType(t sema.Type) bool {

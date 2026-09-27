@@ -37,6 +37,7 @@ func main() int {
     printf("ARGC_GE_1=%d,HAS_PROG=%d\n", hasArgs, hasProg)
     return 0
 }
+
 `,
 		ExpectedOut:  "ARGC_GE_1=1,HAS_PROG=1",
 		ExpectedExit: 0,
@@ -591,6 +592,7 @@ func main() int {
     printf("INT=%d,ST=(%d,%d),SL_LEN=%d\n", zInt, zState.code, zState.ok, len(zSlice))
     return 0
 }
+
 `,
 		ExpectedOut:  "INT=0,ST=(0,0),SL_LEN=0",
 		ExpectedExit: 0,

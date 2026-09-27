@@ -60,11 +60,15 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	if sl, isSlice := baseType.(*sema.SliceType); isSlice {
 		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
 		rawBytePtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		offsetVal := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: baseVal, Index: 0})
+		e.root.emit(&hir.InstrExtractValue{Dst: offsetVal, Agg: baseVal, Index: 1})
 		typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
 		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: typedPtr.Type()})
+		baseElemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: typedPtr, Index: offsetVal})
 		elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedPtr, Index: idxVal})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseElemPtr, Index: idxVal})
 		elemVal := e.root.nextReg(sl.Elem)
 		e.root.emit(&hir.InstrLoad{Dst: elemVal, Ptr: elemPtr})
 		return elemVal
