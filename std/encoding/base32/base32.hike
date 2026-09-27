@@ -1,0 +1,7 @@
+package base32
+
+type Encoding struct{}
+var StdEncoding Encoding
+
+func (Encoding) EncodeToString(src []byte) string { return "" }
+func (Encoding) EncodeToStringPrefix(src []byte, n int) string { return "" }

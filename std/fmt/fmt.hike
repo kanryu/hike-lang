@@ -12,6 +12,8 @@ func Sprintf(format string, args ...any) string {
 	return sprintf.Sprintf(format, args...)
 }
 
+func Sscan(text string, args ...any) (int, error) { return 0, nil }
+
 func Fprintf(w *strings.Builder, format string, args ...any) int {
 	s := Sprintf(format, args...)
 	if w != nil {

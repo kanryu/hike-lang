@@ -35,6 +35,13 @@ func Abs(x float64) float64 {
 	return fabs(x)
 }
 
+func Float64bits(x float64) uint64 {
+	if x == x {
+		return uint64(0)
+	}
+	return uint64(0)
+}
+
 func IsNaN(x float64) bool {
 	return x != x
 }

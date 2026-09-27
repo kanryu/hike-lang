@@ -292,6 +292,16 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 		e.root.emit(&hir.InstrStore{Val: sliceValue, Ptr: slicePtr})
 		return slicePtr
 	}
+	if arType, ok := resolvedType.(*sema.ArrayType); ok {
+		elements := make([]ast.Expression, 0, len(node.Fields))
+		for _, field := range node.Fields {
+			if field != nil {
+				elements = append(elements, field.Value)
+			}
+		}
+		arrayType := &ast.ArrayType{Token: node.Type.Token, Len: int64(arType.Len), Elem: semaTypeToTypeExpr(arType.Elem)}
+		return e.lowerArrayLiteralPtr(&ast.ArrayLiteral{Token: node.Token, Type: arrayType, Elements: elements})
+	}
 	stType, ok := resolvedType.(*sema.StructType)
 	if !ok {
 		panic(fmt.Sprintf("[Lower Error] composite literal is not a struct at %d:%d", node.Token.Line, node.Token.Col))

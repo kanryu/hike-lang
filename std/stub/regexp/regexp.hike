@@ -1,5 +1,17 @@
 package regexp
 
+func QuoteMeta(s string) string {
+	result := ""
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' || c == '.' || c == '+' || c == '*' || c == '?' || c == '(' || c == ')' || c == '|' || c == '[' || c == ']' || c == '{' || c == '}' || c == '^' || c == '$' {
+			result = result + "\\"
+		}
+		result = result + string(c)
+	}
+	return result
+}
+
 // Regexp is the small API surface used by the compiler diagnostics package.
 // The browser compiler does not need the full Go regexp engine; diagnostics
 // perform their own conservative fallback parsing when these methods do not
@@ -18,6 +30,11 @@ func MustCompile(pattern string) *Regexp {
 
 func (r *Regexp) MatchString(s string) bool {
 	return false
+}
+
+func (r *Regexp) String() string {
+	if r == nil { return "" }
+	return r.pattern
 }
 
 func (r *Regexp) FindStringSubmatch(s string) []string {

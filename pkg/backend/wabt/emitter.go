@@ -185,6 +185,10 @@ func (e *Emitter) val(v hir.Value) string {
 		return "(i32.const 0)"
 	case *hir.ConstFloat:
 		return fmt.Sprintf("(%s.const %s)", watType(x.Typ), strconv.FormatFloat(x.Val, 'g', -1, 64))
+	case *hir.ConstZero:
+		return fmt.Sprintf("(%s.const 0)", watType(x.Typ))
+	case *hir.ConstNil:
+		return fmt.Sprintf("(%s.const 0)", watType(x.Typ))
 	case *hir.ConstString:
 		return fmt.Sprintf("(i32.const %d)", e.stringOffsets[constStringLabel(x)])
 	default:
@@ -792,13 +796,15 @@ func (e *Emitter) debugMarker() {
 
 func (e *Emitter) defaultReturn(fn *hir.Function) {
 	e.b.WriteString("          (global.set $__sp (local.get $frame_sp))\n")
-	if fn.Name == "main" {
+	if len(fn.ReturnTypes) == 1 {
+		// Keep the fallthrough value aligned with the declared result type.
+		// This is important for integer widths such as uint64 (i64).
+		e.b.WriteString(fmt.Sprintf("          (return (%s.const 0))\n", watType(fn.ReturnTypes[0])))
+	} else if fn.Name == "main" {
 		e.b.WriteString("          (return (i32.const 0))\n")
 	} else if len(fn.ReturnTypes) > 1 {
 		// Multi-value HIR returns are represented by a packed pointer in WAT.
 		e.b.WriteString("          (return (i32.const 0))\n")
-	} else if len(fn.ReturnTypes) == 1 {
-		e.b.WriteString(fmt.Sprintf("          (return (%s.const 0))\n", watType(fn.ReturnTypes[0])))
 	} else {
 		e.b.WriteString("          (return)\n")
 	}
@@ -886,7 +892,7 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*st
 						continue
 					}
 				}
-				values[i] = e.val(v)
+				values[i] = e.valAs(v, fn.ReturnTypes[i])
 			}
 			fmt.Fprintf(&e.b, "          (return %s)\n", strings.Join(values, " "))
 		}

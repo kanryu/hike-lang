@@ -1,0 +1,7 @@
+package bits
+
+func RotateLeft64(x uint64, k int) uint64 {
+	k = k & 63
+	if k == 0 { return x }
+	return (x << uint(k)) | (x >> uint(64-k))
+}

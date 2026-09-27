@@ -102,6 +102,22 @@ func FormatInt(val int, base int) string {
 	return string(buf[start:69])
 }
 
+func FormatUint(val uint64, base int) string {
+	if base < 2 || base > 36 { return "" }
+	if val == 0 { return "0" }
+	digits := "0123456789abcdefghijklmnopqrstuvwxyz"
+	buf := make([]byte, 70)
+	pos := 68
+	buf[69] = byte(0)
+	for val > 0 {
+		rem := int(val % uint64(base))
+		buf[pos] = digits[rem]
+		pos--
+		val = val / uint64(base)
+	}
+	return string(buf[pos+1:69])
+}
+
 // FormatFloat is a minimal wasm self-hosting fallback. The compiler uses it
 // only while spelling WAT constants; integer-oriented compiler paths do not
 // require the full Go floating-point formatter.

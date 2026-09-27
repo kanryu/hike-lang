@@ -9,6 +9,7 @@ const (
 	EINTR Errno = 4
 	EIO Errno = 5
 	EACCES Errno = 13
+	EPERM Errno = 1
 	EEXIST Errno = 17
 	ENOTDIR Errno = 20
 	EINVAL Errno = 22

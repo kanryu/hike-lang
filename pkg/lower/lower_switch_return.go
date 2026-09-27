@@ -69,7 +69,9 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 		breakTarget:    controlID(structuredContinuation),
 	})
 	defer func() {
-		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if len(s.root.loopStack) > 0 {
+			s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		}
 		if structuredBlock != nil {
 			s.root.popStructuredBody()
 			s.root.popStructuredFrame()
@@ -232,7 +234,9 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		breakTarget:    controlID(structuredContinuation),
 	})
 	defer func() {
-		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if len(s.root.loopStack) > 0 {
+			s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		}
 		if structuredBlock != nil {
 			s.root.popStructuredBody()
 			s.root.popStructuredFrame()
