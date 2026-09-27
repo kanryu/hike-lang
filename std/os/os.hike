@@ -12,9 +12,14 @@ func fopen(filename string, mode string) *byte
 func fclose(stream *byte) int
 func fread(ptr *byte, size int, nmemb int, stream *byte) int
 func fwrite(ptr *byte, size int, nmemb int, stream *byte) int
+func fseek(stream *byte, offset int, whence int) int
+func ftell(stream *byte) int
 func remove(filename string) int
 func rename(oldPath string, newPath string) int
 func exit(status int)
+func getenv(name string) *byte
+func getcwd(buffer *byte, size int) *byte
+func getpid() int
 
 var Args []string
 var Stdin *File
@@ -60,7 +65,11 @@ type File struct {
 	path string
 }
 
-type DirEntry struct { name string }
+type DirEntry struct {
+	name string
+	size int64
+	dir bool
+}
 type PathError struct { Op string; Path string; Err error }
 type SyscallError struct { Syscall string; Err error }
 
@@ -79,12 +88,16 @@ func (e *PathError) Unwrap() error { if e == nil { return nil }; return e.Err }
 func (e *SyscallError) Error() string { if e == nil { return "" }; return e.Syscall }
 func (e *SyscallError) Unwrap() error { if e == nil { return nil }; return e.Err }
 
-func Getenv(name string) string { return "" }
-func LookupEnv(name string) (string, bool) { return "", false }
-func Setenv(name string, value string) error { return nil }
-func Unsetenv(name string) error { return nil }
-func Clearenv() {}
-func ExpandEnv(value string) string { return value }
+func Getenv(name string) string {
+	value, ok := osNativeGetenv(name)
+	if !ok { return "" }
+	return value
+}
+func LookupEnv(name string) (string, bool) { return osNativeGetenv(name) }
+func Setenv(name string, value string) error { return osNativeSetenv(name, value) }
+func Unsetenv(name string) error { return osNativeUnsetenv(name) }
+func Clearenv() { osNativeClearenv() }
+func ExpandEnv(value string) string { return osNativeExpandEnv(value) }
 
 // Returning an integer keeps the generated LLVM valid on targets where the
 // Hike void-return lowering still materializes a value. Callers may ignore it,
@@ -94,10 +107,10 @@ func Exit(code int) int {
 	return 0
 }
 
-func Getwd() (string, error) { return ".", nil }
-func Executable() (string, error) { return "hikec", nil }
-func TempDir() string { return "/tmp" }
-func Getpid() int { return 1 }
+func Getwd() (string, error) { return osNativeGetwd() }
+func Executable() (string, error) { return osNativeExecutable() }
+func TempDir() string { return osNativeTempDir() }
+func Getpid() int { return osNativeGetpid() }
 
 func Open(path string) (*File, error) {
 	h := fopen(path, "rb")
@@ -126,7 +139,20 @@ func (f *File) Read(data []byte) (int, error) {
 	return n, nil
 }
 
-func (f *File) ReadAt(data []byte, offset int64) (int, error) { return 0, errors.New("ReadAt is not supported") }
+func (f *File) ReadAt(data []byte, offset int64) (int, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if len(data) == 0 { return 0, nil }
+	current := ftell(f.handle)
+	if current < 0 || fseek(f.handle, int(offset), 0) != 0 {
+		return 0, errors.New("seek failed")
+	}
+	n := fread(&data[0], 1, len(data), f.handle)
+	// Restore the caller's position even when the read reaches EOF.
+	fseek(f.handle, current, 0)
+	if n == 0 { return 0, errors.New("EOF") }
+	if n < len(data) { return n, errors.New("EOF") }
+	return n, nil
+}
 
 func (f *File) Write(data []byte) (int, error) {
 	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
@@ -145,7 +171,13 @@ func (f *File) WriteString(data string) (int, error) {
 	return n, nil
 }
 
-func (f *File) Seek(offset int64, whence int) (int64, error) { return offset, nil }
+func (f *File) Seek(offset int64, whence int) (int64, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if fseek(f.handle, offset, whence) != 0 { return 0, errors.New("seek failed") }
+	position := ftell(f.handle)
+	if position < 0 { return 0, errors.New("tell failed") }
+	return int64(position), nil
+}
 func (f *File) Stat() (*FileInfo, error) { return Stat(f.path) }
 func (f *File) Readdirnames(n int) ([]string, error) { return []string{}, nil }
 func (f *File) Readdir(n int) ([]*DirEntry, error) { return []*DirEntry{}, nil }
@@ -190,15 +222,22 @@ func Remove(path string) error {
 	return nil
 }
 
-func RemoveAll(path string) error { return Remove(path) }
+func RemoveAll(path string) error { return osNativeRemoveAll(path) }
 func Rename(oldPath string, newPath string) error {
-	if rename(oldPath, newPath) != 0 { return &PathError{Op: "rename", Path: oldPath, Err: ErrNotExist} }
-	return nil
+	return osNativeRename(oldPath, newPath)
 }
 
-func Mkdir(path string, perm FileMode) error { return nil }
-func MkdirAll(path string, perm FileMode) error { return nil }
-func Stat(path string) (*FileInfo, error) { return nil, nil }
+func Mkdir(path string, perm FileMode) error { return osNativeMkdir(path, perm) }
+func MkdirAll(path string, perm FileMode) error { return osNativeMkdirAll(path, perm) }
+func Stat(path string) (*FileInfo, error) {
+	f, err := Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	if fseek(f.handle, 0, 2) != 0 { return nil, errors.New("stat seek failed") }
+	size := ftell(f.handle)
+	if size < 0 { return nil, errors.New("stat tell failed") }
+	return &FileInfo{name: path, size: int64(size), mode: 0, dir: false}, nil
+}
 func Lstat(path string) (*FileInfo, error) { return Stat(path) }
 func Readlink(path string) (string, error) { return "", errors.New("Readlink is not supported") }
 func IsNotExist(err error) bool { return false }
@@ -207,9 +246,12 @@ func IsPermission(err error) bool { return false }
 
 func CreateTemp(dir string, pattern string) (*File, error) { return Create(dir + "/temp") }
 func MkdirTemp(dir string, pattern string) (string, error) { return dir + "/tmp", nil }
-func ReadDir(path string) ([]*DirEntry, error) { return []*DirEntry{}, nil }
+func ReadDir(path string) ([]*DirEntry, error) { return osNativeReadDir(path) }
 func (d *DirEntry) Name() string { return d.name }
-func (d *DirEntry) IsDir() bool { return false }
+func (d *DirEntry) IsDir() bool { return d != nil && d.dir }
 func (d *DirEntry) Type() FileMode { return 0 }
-func (d *DirEntry) Info() (*FileInfo, error) { return nil, nil }
+func (d *DirEntry) Info() (*FileInfo, error) {
+	if d == nil { return nil, errors.New("nil directory entry") }
+	return &FileInfo{name: d.name, size: d.size, mode: 0, dir: d.dir}, nil
+}
 func Pipe() (*File, *File, error) { return &File{}, &File{}, nil }

@@ -1,0 +1,7 @@
+//hike:build linux
+
+package os
+
+// Linux struct dirent の d_name は ino(8)+off(8)+reclen(2)+type(1) の後ろにある。
+func posixDirentName(entry *byte) string { return string(entry + 19) }
+func posixDirentIsDir(entry *byte) bool { return entry[18] == 4 }

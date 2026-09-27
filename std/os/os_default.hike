@@ -1,0 +1,19 @@
+//hike:build !windows && !linux && !darwin && !wasip1
+
+package os
+
+// OS固有APIがないターゲット向けの安全なフォールバック実装。
+func osNativeGetenv(name string) (string, bool) { return "", false }
+func osNativeSetenv(name string, value string) error { return errors.New("environment is not supported") }
+func osNativeUnsetenv(name string) error { return errors.New("environment is not supported") }
+func osNativeClearenv() {}
+func osNativeExpandEnv(value string) string { return value }
+func osNativeGetwd() (string, error) { return ".", nil }
+func osNativeExecutable() (string, error) { return "hikec", nil }
+func osNativeTempDir() string { return "." }
+func osNativeGetpid() int { return 0 }
+func osNativeRemoveAll(path string) error { return errors.New("filesystem is not supported") }
+func osNativeRename(oldPath string, newPath string) error { return errors.New("filesystem is not supported") }
+func osNativeMkdir(path string, perm FileMode) error { return errors.New("filesystem is not supported") }
+func osNativeMkdirAll(path string, perm FileMode) error { return errors.New("filesystem is not supported") }
+func osNativeReadDir(path string) ([]*DirEntry, error) { return nil, errors.New("filesystem is not supported") }

@@ -1,0 +1,7 @@
+//hike:build darwin
+
+package os
+
+// Darwin struct dirent は d_name が21バイト目から始まる。
+func posixDirentName(entry *byte) string { return string(entry + 21) }
+func posixDirentIsDir(entry *byte) bool { return entry[20] == 4 }
