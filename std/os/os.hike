@@ -8,16 +8,16 @@ import (
 // Public os compatibility API. Native file operations are routed through the
 // C runtime. Targets without a filesystem may provide the same API through a
 // host-specific implementation.
-func fopen(filename string, mode string) *byte
+func fopen(filename cstring, mode cstring) *byte
 func fclose(stream *byte) int
 func fread(ptr *byte, size int, nmemb int, stream *byte) int
 func fwrite(ptr *byte, size int, nmemb int, stream *byte) int
 func fseek(stream *byte, offset int, whence int) int
 func ftell(stream *byte) int
-func remove(filename string) int
-func rename(oldPath string, newPath string) int
+func remove(filename cstring) int
+func rename(oldPath cstring, newPath cstring) int
 func exit(status int)
-func getenv(name string) *byte
+func getenv(name cstring) cstring
 func getcwd(buffer *byte, size int) *byte
 func getpid() int
 
@@ -113,13 +113,13 @@ func TempDir() string { return osNativeTempDir() }
 func Getpid() int { return osNativeGetpid() }
 
 func Open(path string) (*File, error) {
-	h := fopen(path, "rb")
+	h := fopen(cstring(path), cstring("rb"))
 	if h == nil { return nil, &PathError{Op: "open", Path: path, Err: ErrNotExist} }
 	return &File{handle: h, path: path}, nil
 }
 
 func Create(path string) (*File, error) {
-	h := fopen(path, "wb+")
+	h := fopen(cstring(path), cstring("wb+"))
 	if h == nil { return nil, &PathError{Op: "create", Path: path, Err: ErrPermission} }
 	return &File{handle: h, path: path}, nil
 }
@@ -218,7 +218,7 @@ func WriteFile(path string, data []byte, perm FileMode) error {
 }
 
 func Remove(path string) error {
-	if remove(path) != 0 { return &PathError{Op: "remove", Path: path, Err: ErrNotExist} }
+	if remove(cstring(path)) != 0 { return &PathError{Op: "remove", Path: path, Err: ErrNotExist} }
 	return nil
 }
 
@@ -229,15 +229,7 @@ func Rename(oldPath string, newPath string) error {
 
 func Mkdir(path string, perm FileMode) error { return osNativeMkdir(path, perm) }
 func MkdirAll(path string, perm FileMode) error { return osNativeMkdirAll(path, perm) }
-func Stat(path string) (*FileInfo, error) {
-	f, err := Open(path)
-	if err != nil { return nil, err }
-	defer f.Close()
-	if fseek(f.handle, 0, 2) != 0 { return nil, errors.New("stat seek failed") }
-	size := ftell(f.handle)
-	if size < 0 { return nil, errors.New("stat tell failed") }
-	return &FileInfo{name: path, size: int64(size), mode: 0, dir: false}, nil
-}
+func Stat(path string) (*FileInfo, error) { return osNativeStat(path) }
 func Lstat(path string) (*FileInfo, error) { return Stat(path) }
 func Readlink(path string) (string, error) { return "", errors.New("Readlink is not supported") }
 func IsNotExist(err error) bool { return false }

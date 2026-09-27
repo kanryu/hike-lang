@@ -4,23 +4,23 @@ package os
 
 // Windows のファイル列挙は Win32 の ANSI API を使う。WIN32_FIND_DATAA は
 // Hike の構造体ABIに直接依存させず、固定レイアウトのバイト列として受ける。
-extern func FindFirstFileA(pattern string, data *byte) *byte
+extern func FindFirstFileA(pattern cstring, data *byte) *byte
 extern func FindNextFileA(handle *byte, data *byte) int
 extern func FindClose(handle *byte) int
 extern func GetLastError() int
 extern func FormatMessageA(flags int, source *byte, messageID int, languageID int, buffer *byte, size int, args *byte) int
-extern func CreateDirectoryA(path string, security *byte) int
-extern func RemoveDirectoryA(path string) int
-extern func SetCurrentDirectoryA(path string) int
+extern func CreateDirectoryA(path cstring, security *byte) int
+extern func RemoveDirectoryA(path cstring) int
+extern func SetCurrentDirectoryA(path cstring) int
 extern func GetCurrentDirectoryA(size int, buffer *byte) int
 extern func GetTempPathA(size int, buffer *byte) int
 extern func GetModuleFileNameA(module *byte, buffer *byte, size int) int
-extern func DeleteFileA(path string) int
-extern func MoveFileExA(oldPath string, newPath string, flags int) int
-extern func GetFileAttributesA(path string) int
-extern func GetEnvironmentVariableA(name string, buffer *byte, size int) int
-extern func SetEnvironmentVariableA(name string, value string) int
-extern func ExpandEnvironmentStringsA(value string, buffer *byte, size int) int
+extern func DeleteFileA(path cstring) int
+extern func MoveFileExA(oldPath cstring, newPath cstring, flags int) int
+extern func GetFileAttributesA(path cstring) int
+extern func GetEnvironmentVariableA(name cstring, buffer *byte, size int) int
+extern func SetEnvironmentVariableA(name cstring, value cstring) int
+extern func ExpandEnvironmentStringsA(value cstring, buffer *byte, size int) int
 
 const (
 	winFindDataSize int = 320
@@ -66,7 +66,7 @@ func ReadDirWindows(path string) ([]*DirEntry, error) {
 	pattern = pattern + "*"
 
 	data := make([]byte, winFindDataSize)
-	handle := FindFirstFileA(pattern, &data[0])
+	handle := FindFirstFileA(cstring(pattern), &data[0])
 	if handle == nil {
 		return nil, &PathError{Op: "readdir", Path: path, Err: ErrNotExist}
 	}
@@ -86,15 +86,15 @@ func ReadDirWindows(path string) ([]*DirEntry, error) {
 	return entries, nil
 }
 
-func winBufferString(raw *byte, size int) (string, error) {
-	if raw == nil || size <= 0 { return "", errors.New("Windows buffer operation failed") }
-	return string(raw), nil
+func winBufferString(buffer []byte, size int) (string, error) {
+	if size <= 0 || size > len(buffer) { return "", errors.New("Windows buffer operation failed") }
+	return string(buffer[:size]), nil
 }
 
 // MkdirWindows はWin32のCreateDirectoryAで一階層のディレクトリを作成する。
 func MkdirWindows(path string, perm FileMode) error {
-	if CreateDirectoryA(path, nil) != 0 { return nil }
-	if GetFileAttributesA(path) != winInvalidFileAttributes {
+	if CreateDirectoryA(cstring(path), nil) != 0 { return nil }
+	if GetFileAttributesA(cstring(path)) != winInvalidFileAttributes {
 		return nil
 	}
 	return &PathError{Op: "mkdir", Path: path, Err: &SyscallError{Syscall: "CreateDirectoryA", Err: ErrPermission}}
@@ -115,17 +115,17 @@ func MkdirAllWindows(path string, perm FileMode) error {
 }
 
 func RemoveDirWindows(path string) error {
-	if RemoveDirectoryA(path) != 0 { return nil }
+	if RemoveDirectoryA(cstring(path)) != 0 { return nil }
 	return &PathError{Op: "removedir", Path: path, Err: ErrNotExist}
 }
 
 func RemoveWindows(path string) error {
-	if DeleteFileA(path) != 0 { return nil }
+	if DeleteFileA(cstring(path)) != 0 { return nil }
 	return RemoveDirWindows(path)
 }
 
 func RenameWindows(oldPath string, newPath string) error {
-	if MoveFileExA(oldPath, newPath, moveFileReplaceExisting) != 0 { return nil }
+	if MoveFileExA(cstring(oldPath), cstring(newPath), moveFileReplaceExisting) != 0 { return nil }
 	return &PathError{Op: "rename", Path: oldPath, Err: ErrNotExist}
 }
 
@@ -144,21 +144,21 @@ func RemoveAllWindows(path string) error {
 }
 
 func ChdirWindows(path string) error {
-	if SetCurrentDirectoryA(path) != 0 { return nil }
+	if SetCurrentDirectoryA(cstring(path)) != 0 { return nil }
 	return &PathError{Op: "chdir", Path: path, Err: ErrNotExist}
 }
 
 func GetwdWindows() (string, error) {
 	buffer := make([]byte, 32768)
 	n := GetCurrentDirectoryA(len(buffer), &buffer[0])
-	return winBufferString(&buffer[0], n)
+	return winBufferString(buffer, n)
 }
 
 func TempDirWindows() string {
 	buffer := make([]byte, 32768)
 	n := GetTempPathA(len(buffer), &buffer[0])
 	if n <= 0 { return "" }
-	value, err := winBufferString(&buffer[0], n)
+	value, err := winBufferString(buffer, n)
 	if err != nil { return "" }
 	return value
 }
@@ -166,33 +166,33 @@ func TempDirWindows() string {
 func ExecutableWindows() (string, error) {
 	buffer := make([]byte, 32768)
 	n := GetModuleFileNameA(nil, &buffer[0], len(buffer))
-	return winBufferString(&buffer[0], n)
+	return winBufferString(buffer, n)
 }
 
 func GetenvWindows(name string) (string, bool) {
 	buffer := make([]byte, 32768)
-	n := GetEnvironmentVariableA(name, &buffer[0], len(buffer))
+	n := GetEnvironmentVariableA(cstring(name), &buffer[0], len(buffer))
 	if n <= 0 { return "", false }
-	value, err := winBufferString(&buffer[0], n)
+	value, err := winBufferString(buffer, n)
 	if err != nil { return "", false }
 	return value, true
 }
 
 func SetenvWindows(name string, value string) error {
-	if SetEnvironmentVariableA(name, value) != 0 { return nil }
+	if SetEnvironmentVariableA(cstring(name), cstring(value)) != 0 { return nil }
 	return &SyscallError{Syscall: "SetEnvironmentVariableA", Err: ErrPermission}
 }
 
 func UnsetenvWindows(name string) error {
-	if SetEnvironmentVariableA(name, "") != 0 { return nil }
+	if SetEnvironmentVariableA(cstring(name), cstring("")) != 0 { return nil }
 	return &SyscallError{Syscall: "SetEnvironmentVariableA", Err: ErrPermission}
 }
 
 func ExpandEnvWindows(value string) string {
 	buffer := make([]byte, 32768)
-	n := ExpandEnvironmentStringsA(value, &buffer[0], len(buffer))
+	n := ExpandEnvironmentStringsA(cstring(value), &buffer[0], len(buffer))
 	if n <= 0 { return value }
-	result, err := winBufferString(&buffer[0], n)
+	result, err := winBufferString(buffer, n)
 	if err != nil { return value }
 	return result
 }
@@ -207,7 +207,7 @@ func LastErrorMessage(code int) string {
 	flags := formatMessageFromSystem | formatMessageIgnoreInsert
 	n := FormatMessageA(flags, nil, code, 0, &buffer[0], len(buffer), nil)
 	if n == 0 { return "Windows error" }
-	return string(&buffer[0])
+	return string(buffer[:n])
 }
 
 // 共通 std/os API から呼ばれるWindows実装。
@@ -225,3 +225,18 @@ func osNativeRename(oldPath string, newPath string) error { return RenameWindows
 func osNativeMkdir(path string, perm FileMode) error { return MkdirWindows(path, perm) }
 func osNativeMkdirAll(path string, perm FileMode) error { return MkdirAllWindows(path, perm) }
 func osNativeReadDir(path string) ([]*DirEntry, error) { return ReadDirWindows(path) }
+func osNativeStat(path string) (*FileInfo, error) {
+	attrs := GetFileAttributesA(cstring(path))
+	if attrs == winInvalidFileAttributes {
+		return nil, &PathError{Op: "stat", Path: path, Err: ErrNotExist}
+	}
+	isDir := (attrs & winFileAttributesDirectory) != 0
+	if isDir { return &FileInfo{name: path, mode: 0, dir: true}, nil }
+	f, err := Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	if fseek(f.handle, 0, 2) != 0 { return nil, errors.New("stat seek failed") }
+	size := ftell(f.handle)
+	if size < 0 { return nil, errors.New("stat tell failed") }
+	return &FileInfo{name: path, size: int64(size), mode: 0, dir: false}, nil
+}

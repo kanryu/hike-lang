@@ -4,32 +4,32 @@ package os
 
 // POSIX専用のネイティブ層。
 // 公開APIは os.hike に置き、ここでは各OS実装から利用する内部ヘルパーだけを定義する。
-cfunc posixMkdir(path string, mode int) int = mkdir
-cfunc posixRmdir(path string) int = rmdir
-cfunc posixChdir(path string) int = chdir
-cfunc posixGetcwd(buffer *byte, size int) *byte = getcwd
-cfunc posixUnlink(path string) int = unlink
-cfunc posixRename(oldPath string, newPath string) int = rename
+cfunc posixMkdir(path cstring, mode int) int = mkdir
+cfunc posixRmdir(path cstring) int = rmdir
+cfunc posixChdir(path cstring) int = chdir
+cfunc posixGetcwd(buffer *byte, size int) cstring = getcwd
+cfunc posixUnlink(path cstring) int = unlink
+cfunc posixRename(oldPath cstring, newPath cstring) int = rename
 cfunc posixGetpid() int = getpid
-cfunc posixGetenv(name string) *byte = getenv
-cfunc posixSetenv(name string, value string, overwrite int) int = setenv
-cfunc posixUnsetenv(name string) int = unsetenv
-cfunc posixRealpath(path string, resolved *byte) *byte = realpath
-cfunc posixOpenDir(path string) *byte = opendir
+cfunc posixGetenv(name cstring) cstring = getenv
+cfunc posixSetenv(name cstring, value cstring, overwrite int) int = setenv
+cfunc posixUnsetenv(name cstring) int = unsetenv
+cfunc posixRealpath(path cstring, resolved *byte) cstring = realpath
+cfunc posixOpenDir(path cstring) *byte = opendir
 cfunc posixReadDir(handle *byte) *byte = readdir
 cfunc posixCloseDir(handle *byte) int = closedir
 
 func osNativeGetenv(name string) (string, bool) {
-	raw := posixGetenv(name)
+	raw := posixGetenv(cstring(name))
 	if raw == nil { return "", false }
 	return string(raw), true
 }
 func osNativeSetenv(name string, value string) error {
-	if posixSetenv(name, value, 1) != 0 { return errors.New("setenv failed") }
+	if posixSetenv(cstring(name), cstring(value), 1) != 0 { return errors.New("setenv failed") }
 	return nil
 }
 func osNativeUnsetenv(name string) error {
-	if posixUnsetenv(name) != 0 { return errors.New("unsetenv failed") }
+	if posixUnsetenv(cstring(name)) != 0 { return errors.New("unsetenv failed") }
 	return nil
 }
 func osNativeClearenv() {}
@@ -48,17 +48,17 @@ func osNativeTempDir() string {
 }
 func osNativeGetpid() int { return posixGetpid() }
 func osNativeRename(oldPath string, newPath string) error {
-	if posixRename(oldPath, newPath) != 0 { return &PathError{Op: "rename", Path: oldPath, Err: ErrNotExist} }
+	if posixRename(cstring(oldPath), cstring(newPath)) != 0 { return &PathError{Op: "rename", Path: oldPath, Err: ErrNotExist} }
 	return nil
 }
 func osNativeMkdir(path string, perm FileMode) error {
-	if posixMkdir(path, int(perm)&0777) != 0 { return &PathError{Op: "mkdir", Path: path, Err: ErrPermission} }
+	if posixMkdir(cstring(path), int(perm)&0777) != 0 { return &PathError{Op: "mkdir", Path: path, Err: ErrPermission} }
 	return nil
 }
 func osNativeMkdirAll(path string, perm FileMode) error { return osNativeMkdir(path, perm) }
 func osNativeRemoveAll(path string) error {
 	// POSIX rmdir only removes empty directories, so remove children first.
-	handle := posixOpenDir(path)
+	handle := posixOpenDir(cstring(path))
 	if handle != nil {
 		for {
 			raw := posixReadDir(handle)
@@ -71,19 +71,19 @@ func osNativeRemoveAll(path string) error {
 					posixCloseDir(handle)
 					return err
 				}
-			} else if posixUnlink(child) != 0 {
+			} else if posixUnlink(cstring(child)) != 0 {
 				posixCloseDir(handle)
 				return &PathError{Op: "remove", Path: child, Err: ErrNotExist}
 			}
 		}
 		posixCloseDir(handle)
-		if posixRmdir(path) == 0 { return nil }
+		if posixRmdir(cstring(path)) == 0 { return nil }
 	}
-	if posixUnlink(path) == 0 { return nil }
+	if posixUnlink(cstring(path)) == 0 { return nil }
 	return &PathError{Op: "remove", Path: path, Err: ErrNotExist}
 }
 func osNativeReadDir(path string) ([]*DirEntry, error) {
-	handle := posixOpenDir(path)
+	handle := posixOpenDir(cstring(path))
 	if handle == nil { return nil, &PathError{Op: "readdir", Path: path, Err: ErrNotExist} }
 	entries := make([]*DirEntry, 0)
 	for {
@@ -96,4 +96,18 @@ func osNativeReadDir(path string) ([]*DirEntry, error) {
 	}
 	posixCloseDir(handle)
 	return entries, nil
+}
+
+func osNativeStat(path string) (*FileInfo, error) {
+	// The bootstrap compiler only needs existence and directory information
+	// while resolving modules.  Reuse directory enumeration to avoid adding a
+	// platform-specific stat ABI to the minimal POSIX compatibility layer.
+	if handle := posixOpenDir(cstring(path)); handle != nil {
+		posixCloseDir(handle)
+		return &FileInfo{name: path, mode: 0, dir: true}, nil
+	}
+	f, err := Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	return &FileInfo{name: path, mode: 0, dir: false}, nil
 }

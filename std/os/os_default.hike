@@ -17,3 +17,4 @@ func osNativeRename(oldPath string, newPath string) error { return errors.New("f
 func osNativeMkdir(path string, perm FileMode) error { return errors.New("filesystem is not supported") }
 func osNativeMkdirAll(path string, perm FileMode) error { return errors.New("filesystem is not supported") }
 func osNativeReadDir(path string) ([]*DirEntry, error) { return nil, errors.New("filesystem is not supported") }
+func osNativeStat(path string) (*FileInfo, error) { return nil, &PathError{Op: "stat", Path: path, Err: ErrNotExist} }

@@ -111,11 +111,11 @@ func ParseUint(s string, base int, bitSize int) (uint64, error) {
 		c := s[i]
 		digit := -1
 		if c >= byte(48) && c <= byte(57) {
-			digit = int(c - byte(48))
+			digit = int(c) - 48
 		} else if c >= byte(97) && c <= byte(122) {
-			digit = int(c-byte(97)) + 10
+			digit = int(c) - 97 + 10
 		} else if c >= byte(65) && c <= byte(90) {
-			digit = int(c-byte(65)) + 10
+			digit = int(c) - 65 + 10
 		}
 		if digit < 0 || digit >= base {
 			return 0, errors.New("invalid syntax")

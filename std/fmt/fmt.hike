@@ -5,8 +5,8 @@ import "std/errors"
 import "std/strings"
 
 // 画面出力用のC標準関数宣言 (ネイティブ環境用)
-extern func printf(format string, ...) int
-extern func puts(s *byte) int
+extern func printf(format cstring, ...) int
+extern func puts(s cstring) int
 
 // Sprintf は std/fmt/sprintf に定義された純粋実装を委譲呼び出しします
 func Sprintf(format string, args ...any) string {
@@ -56,7 +56,7 @@ func Errorf(format string, args ...any) error {
 // Printf は Sprintf で文字列を組み立てた後に標準出力へ出力します
 func Printf(format string, args ...any) int {
 	s := Sprintf(format, args...)
-	printf("%s", s)
+	printf(cstring("%s"), cstring(s))
 	return len(s)
 }
 
@@ -66,16 +66,16 @@ func Println(s string) {
 }
 
 // PrintStr はバイトポインタ文字列を出力します
-func PrintStr(s *byte) {
+func PrintStr(s cstring) {
 	if s == nil {
 		return
 	}
-	printf("%s", s)
+	printf(cstring("%s"), s)
 }
 
 // PrintInt は整数を出力します
 func PrintInt(v int) {
-	printf("%d", v)
+	printf(cstring("%d"), v)
 }
 
 // PrintFloat は浮動小数点数を出力します
@@ -87,15 +87,15 @@ func PrintFloat(f float64) {
 }
 
 // PrintLn は改行付きでバイトポインタ文字列を出力します
-func PrintLn(s *byte) {
+func PrintLn(s cstring) {
 	if s == nil {
-		printf("\n")
+	printf(cstring("\n"))
 		return
 	}
-	printf("%s\n", s)
+	printf(cstring("%s\n"), s)
 }
 
 // ErrorLn はエラープレフィックス付きで出力します
-func ErrorLn(msg *byte) {
-	printf("[ERROR] %s\n", msg)
+func ErrorLn(msg cstring) {
+	printf(cstring("[ERROR] %s\n"), cstring(msg))
 }

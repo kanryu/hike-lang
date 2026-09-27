@@ -25,7 +25,7 @@ func (e *Encoder) Encode(v any) error {
 }
 
 // C-ABI 標準ライブラリ宣言
-func fopen(filename string, mode string) *byte
+func fopen(filename cstring, mode cstring) *byte
 func fclose(fp *byte) int
 func fseek(fp *byte, offset int, whence int) int
 func ftell(fp *byte) int
@@ -33,10 +33,10 @@ func fread(buffer *byte, size int, count int, fp *byte) int
 func fwrite(buffer *byte, size int, count int, fp *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
-func strlen(s string) int
-extern func sprintf(buf *byte, format string, ...) int
-func atoi(s string) int
-func atof(s string) float64
+func strlen(s cstring) int
+extern func sprintf(buf *byte, format cstring, ...) int
+func atoi(s cstring) int
+func atof(s cstring) float64
 
 // JSON 型定義定数
 const (
@@ -217,7 +217,7 @@ func (p *Parser) parseNumber() *JSONValue {
         }
     }
     numStr := p.src[start:p.pos]
-    val := atof(numStr)
+    val := atof(cstring(numStr))
     return NewNumber(val)
 }
 
@@ -343,9 +343,9 @@ func Stringify(v *JSONValue) string {
     if v.Type == TypeNumber {
         buf := malloc(64)
         if v.NumVal == float64(int(v.NumVal)) {
-            sprintf(buf, "%d", int(v.NumVal))
+            sprintf(buf, cstring("%d"), int(v.NumVal))
         } else {
-            sprintf(buf, "%f", v.NumVal)
+            sprintf(buf, cstring("%f"), v.NumVal)
         }
         return string(buf)
     }
@@ -380,7 +380,7 @@ func Stringify(v *JSONValue) string {
 // -------------------------------------------------------------
 
 func ReadFile(filename string) string {
-    fp := fopen(filename, "rb")
+    fp := fopen(cstring(filename), cstring("rb"))
     if fp == nil {
         return ""
     }
@@ -397,7 +397,7 @@ func ReadFile(filename string) string {
 }
 
 func WriteFile(filename string, content string) bool {
-    fp := fopen(filename, "wb")
+    fp := fopen(cstring(filename), cstring("wb"))
     if fp == nil {
         return false
     }

@@ -3,7 +3,7 @@ package strings
 func malloc(size int) *byte
 func free(ptr *byte)
 func memcpy(dst *byte, src *byte, n int) *byte
-func strlen(s *byte) int
+func strlen(s cstring) int
 
 type Builder struct {
 	buf *byte
@@ -23,7 +23,7 @@ func NewBuilder(initCap int) *Builder {
 	return b
 }
 
-func (b *Builder) WriteString(s *byte) {
+func (b *Builder) WriteString(s cstring) {
 	if s == nil {
 		return
 	}
@@ -97,7 +97,7 @@ func (b *Builder) WriteRune(r int) int {
 	return 0
 }
 
-func (b *Builder) String() *byte {
+func (b *Builder) String() cstring {
 	return b.buf
 }
 

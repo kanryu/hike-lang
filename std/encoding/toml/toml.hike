@@ -1,7 +1,7 @@
 package toml
 
 // C-ABI 標準ライブラリ宣言
-func fopen(filename string, mode string) *byte
+func fopen(filename cstring, mode cstring) *byte
 func fclose(fp *byte) int
 func fseek(fp *byte, offset int, whence int) int
 func ftell(fp *byte) int
@@ -9,10 +9,10 @@ func fread(buffer *byte, size int, count int, fp *byte) int
 func fwrite(buffer *byte, size int, count int, fp *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
-func strlen(s string) int
-extern func sprintf(buf *byte, format string, ...) int
-func atoi(s string) int
-func atof(s string) float64
+func strlen(s cstring) int
+extern func sprintf(buf *byte, format cstring, ...) int
+func atoi(s cstring) int
+func atof(s cstring) float64
 
 // TOML データ型定数
 const (
@@ -258,9 +258,9 @@ func (p *Parser) parseNumber() *Value {
     }
     raw := p.src[start:p.pos]
     if isFloat {
-        return NewFloat(atof(raw))
+        return NewFloat(atof(cstring(raw)))
     }
-    return NewInt(atoi(raw))
+    return NewInt(atoi(cstring(raw)))
 }
 
 func (p *Parser) parseArray() *Value {
@@ -386,12 +386,12 @@ func formatValue(v *Value) string {
     }
     if v.Type == TypeInt {
         buf := malloc(32)
-        sprintf(buf, "%d", v.IntVal)
+        sprintf(buf, cstring("%d"), v.IntVal)
         return string(buf)
     }
     if v.Type == TypeFloat {
         buf := malloc(32)
-        sprintf(buf, "%f", v.FloatVal)
+        sprintf(buf, cstring("%f"), v.FloatVal)
         return string(buf)
     }
     if v.Type == TypeBool {
@@ -450,7 +450,7 @@ func Stringify(root *Value) string {
 // -------------------------------------------------------------
 
 func ReadFile(filename string) string {
-    fp := fopen(filename, "rb")
+    fp := fopen(cstring(filename), cstring("rb"))
     if fp == nil {
         return ""
     }
@@ -467,7 +467,7 @@ func ReadFile(filename string) string {
 }
 
 func WriteFile(filename string, content string) bool {
-    fp := fopen(filename, "wb")
+    fp := fopen(cstring(filename), cstring("wb"))
     if fp == nil {
         return false
     }
