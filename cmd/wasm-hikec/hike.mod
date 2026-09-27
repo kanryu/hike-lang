@@ -8,22 +8,22 @@ GoReplace hikec-go/pkg => ../../pkg
 GoReplace std => ../../std
 GoReplace encoding/json => ../../std/encoding/json
 GoReplace bytes => ../../std/bytes
-GoReplace bufio => ../../std/stub/bufio
-GoReplace embed => ../../std/stub/embed
+GoReplace bufio => ../../std/bufio
+GoReplace embed => ../../std/embed
 GoReplace fmt => ../../std/fmt
 GoReplace os => ../../std/stub/os
-GoReplace os/exec => ../../std/stub/os/exec
-GoReplace path => ../../std/stub/path
-GoReplace path/filepath => ../../std/stub/path/filepath
-GoReplace regexp => ../../std/stub/regexp
-GoReplace runtime => ../../std/stub/runtime
-GoReplace runtime/debug => ../../std/stub/runtime/debug
-GoReplace sort => ../../std/stub/sort
+GoReplace os/exec => ../../std/os/exec
+GoReplace path => ../../std/path
+GoReplace path/filepath => ../../std/path/filepath
+GoReplace regexp => ../../std/regexp
+GoReplace runtime => ../../std/runtime
+GoReplace runtime/debug => ../../std/runtime/debug
+GoReplace sort => ../../std/sort
 GoReplace strconv => ../../std/strconv
 GoReplace strings => ../../std/strings
-GoReplace sync => ../../std/stub/sync
-GoReplace unicode => ../../std/stub/unicode
-GoReplace unicode/utf8 => ../../std/stub/unicode
+GoReplace sync => ../../std/sync
+GoReplace unicode => ../../std/unicode
+GoReplace unicode/utf8 => ../../std/unicode/utf8
 
 # The replacement targets above deliberately point back to the repository
 # packages while keeping the project-wide hike.mod out of this command's

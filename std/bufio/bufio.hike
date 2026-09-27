@@ -1,0 +1,15 @@
+package bufio
+
+type Scanner struct { input string; pos int; text string; done bool }
+func NewScanner(input *byte) *Scanner { return &Scanner{input: string(input)} }
+func (s *Scanner) Scan() bool {
+	if s == nil || s.done { return false }
+	if s.pos >= len(s.input) { s.done = true; return false }
+	start := s.pos
+	for s.pos < len(s.input) && s.input[s.pos] != 10 { s.pos++ }
+	s.text = s.input[start:s.pos]
+	if s.pos < len(s.input) { s.pos++ }
+	return true
+}
+func (s *Scanner) Text() string { if s == nil { return "" }; return s.text }
+func (s *Scanner) Err() error { return nil }

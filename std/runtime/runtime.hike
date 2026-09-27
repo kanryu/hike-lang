@@ -1,0 +1,4 @@
+package runtime
+
+const GOOS = "unknown"
+const GOARCH = "unknown"

@@ -1,0 +1,11 @@
+package sync
+
+type Mutex struct { locked bool }
+func (m *Mutex) Lock() { if m != nil { m.locked = true } }
+func (m *Mutex) Unlock() { if m != nil { m.locked = false } }
+type Once struct { done bool }
+func (o *Once) Do(fn func()) { if o != nil && !o.done { o.done = true; fn() } }
+type WaitGroup struct { count int }
+func (w *WaitGroup) Add(delta int) { if w != nil { w.count += delta } }
+func (w *WaitGroup) Done() { if w != nil && w.count > 0 { w.count-- } }
+func (w *WaitGroup) Wait() {}

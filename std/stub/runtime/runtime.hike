@@ -1,5 +1,0 @@
-package runtime
-
-// Target constants used by compiler self-hosting code.
-const GOOS = "unknown"
-const GOARCH = "unknown"

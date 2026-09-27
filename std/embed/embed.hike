@@ -1,0 +1,4 @@
+package embed
+
+// FSはビルド時埋め込み機能の互換型。実際の埋め込みはコンパイラーが処理する。
+type FS struct{}

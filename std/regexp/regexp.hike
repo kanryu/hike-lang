@@ -176,7 +176,7 @@ func (re *Regexp) parseAtom(pattern string, pos int) int {
 	return pos
 }
 
-func Compile(pattern string) *Regexp {
+func Compile(pattern string) (*Regexp, error) {
 	re := &Regexp{
 		pattern:       pattern,
 		prog:          make([]*Inst, 0),
@@ -215,11 +215,29 @@ func Compile(pattern string) *Regexp {
 	re.emit(&Inst{op: OP_SAVE, x: 1})
 	re.emit(&Inst{op: OP_MATCH})
 
-	return re
+	return re, nil
+}
+
+func QuoteMeta(s string) string {
+	result := ""
+	for i := 0; i < len(s); i = i + 1 {
+		c := s[i]
+		if c == '\\' || c == '.' || c == '+' || c == '*' || c == '?' || c == '(' || c == ')' || c == '|' || c == '[' || c == ']' || c == '{' || c == '}' || c == '^' || c == '$' {
+			result = result + "\\"
+		}
+		result = result + string(c)
+	}
+	return result
 }
 
 func MustCompile(pattern string) *Regexp {
-	return Compile(pattern)
+	re, _ := Compile(pattern)
+	return re
+}
+
+func (re *Regexp) String() string {
+	if re == nil { return "" }
+	return re.pattern
 }
 
 func (re *Regexp) exec(pc int, s string, pos int, saved []int) bool {

@@ -1,0 +1,3 @@
+package debug
+
+func SetGCPercent(percent int) int { return percent }
