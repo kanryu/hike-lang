@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var testRoot string
@@ -37,15 +39,23 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		os.Exit(1)
 	}
-	hikecBin = filepath.Join(base, "hikec")
+	fallback := filepath.Join(base, "hikec")
 	if runtime.GOOS == "windows" {
-		hikecBin += ".exe"
+		fallback += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(root, "cmd", "hikec"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "hikec build failed: %v\n%s", err, out)
+	hikecBin, err = testutil.SelectBinary(root, "hikec", fallback)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		_ = os.RemoveAll(base)
 		os.Exit(1)
+	}
+	if !testutil.UseNativeBinaries() {
+		cmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(root, "cmd", "hikec"))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "hikec build failed: %v\n%s", err, out)
+			_ = os.RemoveAll(base)
+			os.Exit(1)
+		}
 	}
 	status := m.Run()
 	// os.Exit does not run deferred calls, so remove the temporary module

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var (
@@ -49,12 +51,18 @@ func TestMain(m *testing.M) {
 	if runtime.GOOS == "windows" {
 		binName = "hikec.exe"
 	}
-	hikecBin = filepath.Join(testCaseDir, binName)
-
-	buildCmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(projectRoot, "cmd", "hikec"))
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "hikec のビルドに失敗しました: %v\n%s\n", err, string(out))
+	fallback := filepath.Join(testCaseDir, binName)
+	hikecBin, err = testutil.SelectBinary(projectRoot, "hikec", fallback)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if !testutil.UseNativeBinaries() {
+		buildCmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(projectRoot, "cmd", "hikec"))
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "hikec のビルドに失敗しました: %v\n%s\n", err, string(out))
+			os.Exit(1)
+		}
 	}
 
 	code := m.Run()

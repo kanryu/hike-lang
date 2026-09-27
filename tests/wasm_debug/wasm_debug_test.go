@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"runtime"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var hikecPath string
@@ -26,13 +28,20 @@ func TestMain(m *testing.M) {
 	}
 	defer os.RemoveAll(tmp)
 
-	hikecPath = filepath.Join(tmp, "hikec")
-	if os.PathSeparator == '\\' {
-		hikecPath += ".exe"
+	fallback := filepath.Join(tmp, "hikec")
+	if runtime.GOOS == "windows" {
+		fallback += ".exe"
 	}
-	if output, err := buildHikec(root, hikecPath); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to build hikec: %v\n%s", err, output)
+	hikecPath, err = testutil.SelectBinary(root, "hikec", fallback)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if !testutil.UseNativeBinaries() {
+		if output, err := buildHikec(root, hikecPath); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to build hikec: %v\n%s", err, output)
+			os.Exit(1)
+		}
 	}
 	os.Exit(m.Run())
 }

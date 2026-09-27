@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"sort"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var (
@@ -43,14 +45,20 @@ func TestMain(m *testing.M) {
 	if runtime.GOOS == "windows" {
 		binName += ".exe"
 	}
-	hikeHikeBin = filepath.Join(base, binName)
-
-	build := exec.Command("go", "build", "-o", hikeHikeBin, filepath.Join(root, "cmd", "hike-hike"))
-	build.Dir = root
-	build.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
-	if output, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "hike-hike build failed: %v\n%s\n", err, output)
+	fallback := filepath.Join(base, binName)
+	hikeHikeBin, err = testutil.SelectBinary(root, "hike-hike", fallback)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if !testutil.UseNativeBinaries() {
+		build := exec.Command("go", "build", "-o", hikeHikeBin, filepath.Join(root, "cmd", "hike-hike"))
+		build.Dir = root
+		build.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
+		if output, err := build.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "hike-hike build failed: %v\n%s\n", err, output)
+			os.Exit(1)
+		}
 	}
 
 	wasmtimeBin = os.Getenv("WASM_CHECKER_PATH")
@@ -59,25 +67,36 @@ func TestMain(m *testing.M) {
 		wasmtimeBin = os.Getenv("WASMTIME_HIKE_PATH")
 	}
 	if wasmtimeBin == "" {
-		wasmtimeBin = filepath.Join(root, "bin", "wasm-checker.exe")
-		if runtime.GOOS != "windows" {
-			wasmtimeBin = filepath.Join(root, "bin", "wasm-checker")
+		fallback := filepath.Join(root, "bin", "wasm-checker")
+		if runtime.GOOS == "windows" {
+			fallback += ".exe"
 		}
-		if _, err := os.Stat(wasmtimeBin); os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(wasmtimeBin), 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "wasm-checker directory creation failed: %v\n", err)
+		if testutil.UseNativeBinaries() {
+			wasmtimeBin, err = testutil.SelectBinary(root, "wasm-checker", fallback)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			build := exec.Command("go", "build", "-o", wasmtimeBin, filepath.Join(root, "cmd", "wasm-checker"))
-			build.Dir = root
-			build.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
-			if output, err := build.CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "wasm-checker build failed: %v\n%s\n", err, output)
+		} else {
+			wasmtimeBin = fallback
+		}
+		if !testutil.UseNativeBinaries() {
+			if _, err := os.Stat(wasmtimeBin); os.IsNotExist(err) {
+				if err := os.MkdirAll(filepath.Dir(wasmtimeBin), 0755); err != nil {
+					fmt.Fprintf(os.Stderr, "wasm-checker directory creation failed: %v\n", err)
+					os.Exit(1)
+				}
+				build := exec.Command("go", "build", "-o", wasmtimeBin, filepath.Join(root, "cmd", "wasm-checker"))
+				build.Dir = root
+				build.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
+				if output, err := build.CombinedOutput(); err != nil {
+					fmt.Fprintf(os.Stderr, "wasm-checker build failed: %v\n%s\n", err, output)
+					os.Exit(1)
+				}
+			} else if err != nil {
+				fmt.Fprintf(os.Stderr, "wasm-checker stat failed: %v\n", err)
 				os.Exit(1)
 			}
-		} else if err != nil {
-			fmt.Fprintf(os.Stderr, "wasm-checker stat failed: %v\n", err)
-			os.Exit(1)
 		}
 	}
 

@@ -13,10 +13,33 @@ import (
 )
 
 var (
-	hikecBin     string
-	projectRoot  string
-	testCaseBase string
+	hikecBin       string
+	projectRoot    string
+	testCaseBase   string
+	nativeBinDir   string
+	useNativeBins  bool
 )
+
+func envEnabled(name string) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func executableName(name string) string {
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return name + ".exe"
+	}
+	return name
+}
+
+// NativeCommandPath returns a command from bin/ when native E2E mode is enabled.
+// It is shared by E2E tests that need to invoke a command other than hikec.
+func NativeCommandPath(name string) string {
+	if useNativeBins {
+		return filepath.Join(nativeBinDir, executableName(name))
+	}
+	return executableName(name)
+}
 
 func findProjectRoot() string {
 	dir, err := os.Getwd()
@@ -47,18 +70,32 @@ func TestMain(m *testing.M) {
 	}
 	testCaseBase = filepath.Join(wd, ".test_case")
 	_ = os.MkdirAll(testCaseBase, 0755)
+	useNativeBins = envEnabled("HIKE_E2E_USE_NATIVE_BIN")
+	nativeBinDir = os.Getenv("HIKE_E2E_BIN_DIR")
+	if nativeBinDir == "" {
+		nativeBinDir = filepath.Join(projectRoot, "bin")
+	}
 
 	binName := "hikec"
 	if runtime.GOOS == "windows" {
 		binName = "hikec.exe"
 	}
-	hikecBin = filepath.Join(testCaseBase, binName)
+	if useNativeBins {
+		hikecBin = filepath.Join(nativeBinDir, binName)
+		if _, err := os.Stat(hikecBin); err != nil {
+			fmt.Fprintf(os.Stderr, "native E2E mode requires %s: %v\n", hikecBin, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "E2E native command mode: %s\n", nativeBinDir)
+	} else {
+		hikecBin = filepath.Join(testCaseBase, binName)
 
-	// テスト対象となる hikec 自体を 1 度だけビルド
-	buildCmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(projectRoot, "cmd", "hikec"))
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "hikec のビルドに失敗しました: %v\n%s\n", err, string(out))
-		os.Exit(1)
+		// テスト対象となる hikec 自体を 1 度だけビルド
+		buildCmd := exec.Command("go", "build", "-o", hikecBin, filepath.Join(projectRoot, "cmd", "hikec"))
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "hikec のビルドに失敗しました: %v\n%s\n", err, string(out))
+			os.Exit(1)
+		}
 	}
 
 	code := m.Run()

@@ -33,14 +33,22 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		os.Exit(1)
 	}
-	hikecBin = filepath.Join(base, "hikec")
+	fallback := filepath.Join(base, "hikec")
 	if runtime.GOOS == "windows" {
-		hikecBin += ".exe"
+		fallback += ".exe"
 	}
-	if output, err := testutil.BuildHikec(root, hikecBin); err != nil {
-		fmt.Fprintf(os.Stderr, "hikec build failed: %v\n%s", err, output)
+	hikecBin, err = testutil.SelectBinary(root, "hikec", fallback)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		_ = os.RemoveAll(base)
 		os.Exit(1)
+	}
+	if !testutil.UseNativeBinaries() {
+		if output, err := testutil.BuildHikec(root, hikecBin); err != nil {
+			fmt.Fprintf(os.Stderr, "hikec build failed: %v\n%s", err, output)
+			_ = os.RemoveAll(base)
+			os.Exit(1)
+		}
 	}
 
 	status := m.Run()
