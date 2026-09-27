@@ -71,6 +71,58 @@ implemented, including releasing owned views at their lifetime boundaries.
 Static literal storage is intentionally retained for the whole program
 lifetime.
 
+### 1.3 Slice buffers and ownership
+
+The representation of a Hike slice is separate from the representation of a
+`cstring`. A `cstring` is an external C ABI value: a pointer to a
+null-terminated byte sequence, with no Hike reference-counting obligations.
+Hike strings continue to use the string representation described above. A
+Hike slice uses an owner pointer and a view into the owner's element buffer:
+
+```text
+64-bit target:  { owner_ptr: i8*, offset: int, len: int }  // 24 bytes
+wasm32 target:  { owner_ptr: i8*, offset: int, len: int }  // 12 bytes
+```
+
+`owner_ptr` points to the first element of the backing buffer. `offset` is an
+element offset from that pointer and `len` is the number of visible elements.
+Capacity is deliberately not repeated in each fat pointer. All slice views
+of one backing buffer therefore share the same capacity and reference count.
+
+The slice allocation reserves a 16-byte header immediately before the owner
+pointer:
+
+```text
+owner_ptr - 16                 owner_ptr
+┌────────────────┬────────────────┬──────────────────────────────┐
+│ capacity: i32  │ refcount: i32  │ reserved: 8 bytes │ elements ... │
+│ offset 0       │ offset 4       │ offset 8          │ offset 16    │
+└────────────────┴────────────────┴──────────────────────────────┘
+```
+
+Slice storage starts with a reference count of `1`. Creating another view or
+passing an escaping slice retains the owner; releasing a view decrements the
+shared count and frees the allocation when it reaches zero. Null owners are
+ignored by retain and release. The runtime also reserves the immortal marker
+`INT32_MIN` for static or otherwise non-owning storage; such storage is never
+freed.
+
+The compiler distinguishes borrowed and escaping uses conservatively. Length
+queries, capacity queries, indexing, slicing, and conditions borrow the
+backing buffer for the duration of the expression. Returning a slice,
+assigning it to an escaping location, capturing it in a closure, or passing
+it to an unknown operation keeps the buffer alive with a retain/release pair.
+Function returns release managed parameters after retaining values that are
+returned to the caller.
+
+The negative address immediately before `owner_ptr` is metadata space, not a
+payload offset: the capacity and reference count are read using
+`owner_ptr - 16` and `owner_ptr - 12`. A negative value in the fat pointer's
+`offset` field is reserved for future metadata or immortal-buffer sentinels;
+normal slice offsets are non-negative element offsets, and any future
+sentinel must be decoded before pointer arithmetic. The current runtime does
+not use a negative fat-pointer offset as a payload offset.
+
 
 
 ---
