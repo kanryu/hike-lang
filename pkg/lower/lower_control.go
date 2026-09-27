@@ -366,10 +366,10 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		s.root.emit(&hir.InstrExtractValue{Dst: rawBytePtr, Agg: xVal, Index: 0})
 		typedPtr := s.root.nextReg(&sema.PointerType{Base: elemType})
 		s.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: &sema.PointerType{Base: elemType}})
-		lenReg := s.root.nextReg(sema.TypeInt)
+		lenReg := s.root.nextReg(sema.TypeInt32)
 		s.root.emit(&hir.InstrExtractValue{Dst: lenReg, Agg: xVal, Index: 2})
 		dataPtr = typedPtr
-		lenVal = lenReg
+		lenVal = s.root.asInt(lenReg)
 	} else if ar, isArr := xType.(*sema.ArrayType); isArr {
 		elemType = ar.Elem
 		lenVal = &hir.ConstInt{Val: int64(ar.Len), Typ: sema.TypeInt}

@@ -88,7 +88,7 @@ func SizeOf(typ Type) int {
 	case *FuncType:
 		return PointerSize * 2
 	case *SliceType:
-		return PointerSize + SizeOf(TypeInt)*2
+		return PointerSize + SizeOf(TypeInt32)*2
 	case *ArrayType:
 		return t.Len * SizeOf(t.Elem)
 	case *StructType:
@@ -155,7 +155,7 @@ func typeLLVMOf(typ Type) string {
 	case *PointerType:
 		return typeLLVMOf(t.Base) + "*"
 	case *SliceType:
-		return fmt.Sprintf("{ i8*, %s, %s }", typeLLVMOf(TypeInt), typeLLVMOf(TypeInt))
+		return fmt.Sprintf("{ i8*, %s, %s }", typeLLVMOf(TypeInt32), typeLLVMOf(TypeInt32))
 	case *ArrayType:
 		return fmt.Sprintf("[%d x %s]", t.Len, typeLLVMOf(t.Elem))
 	case *StructType:
@@ -382,12 +382,12 @@ type SliceType struct {
 
 func (t *SliceType) TypeName() string { return typeNameOf(t) }
 func (t *SliceType) LLVMType() string {
-	// A slice is an owner pointer plus an element offset and length. Capacity
-	// belongs to the backing allocation, 16 bytes before the owner pointer,
-	// rather than being copied into every view.
-	return fmt.Sprintf("{ i8*, %s, %s }", TypeInt.LLVMType(), TypeInt.LLVMType())
+	// A slice is an owner pointer plus an int32 element offset and int32
+	// length. Capacity belongs to the backing allocation, 16 bytes before the
+	// owner pointer, rather than being copied into every view.
+	return fmt.Sprintf("{ i8*, %s, %s }", TypeInt32.LLVMType(), TypeInt32.LLVMType())
 }
-func (t *SliceType) Size() int                 { return PointerSize + SizeOf(TypeInt)*2 }
+func (t *SliceType) Size() int                 { return PointerSize + SizeOf(TypeInt32)*2 }
 func (t *SliceType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type ArrayType struct {

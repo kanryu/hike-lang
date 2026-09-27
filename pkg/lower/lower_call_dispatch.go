@@ -55,13 +55,13 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
 					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					offset := c.root.nextReg(sema.TypeInt)
-					rawLen := c.root.nextReg(sema.TypeInt)
+					offset := c.root.nextReg(sema.TypeInt32)
+					rawLen := c.root.nextReg(sema.TypeInt32)
 					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
 					c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: argVal, Index: 1})
 					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 2})
 					dataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-					c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: rawPtr, Index: offset})
+					c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: rawPtr, Index: c.root.asInt(offset)})
 					rawPtr = dataPtr
 					// A Hike string is a pointer/offset/length view.  The slice
 					// backing store already has the exact pointer and length needed
@@ -73,7 +73,7 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return c.root.makeString(rawPtr, rawLen)
 				}
 
-				if sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(targetType) && argVal.Type() == targetType {
+				if sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(targetType) {
 					return argVal
 				}
 				if c.root.semaCtx.GoHikeMode {
@@ -189,9 +189,9 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 				if fnId.Value == "cap" {
 					return c.root.sliceCapacity(owner)
 				}
-				dst := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrExtractValue{Dst: dst, Agg: argVal, Index: 2})
-				return dst
+				length32 := c.root.nextReg(sema.TypeInt32)
+				c.root.emit(&hir.InstrExtractValue{Dst: length32, Agg: argVal, Index: 2})
+				return c.root.asInt(length32)
 			}
 			// Arrays have a fixed length, so len and cap are compile-time
 			// constants.  Without this case len([N]T) falls through to the
@@ -489,18 +489,20 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	}
 
 	oldRawBytePtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	oldOffset := c.root.nextReg(sema.TypeInt)
-	oldLen := c.root.nextReg(sema.TypeInt)
+	oldOffset := c.root.nextReg(sema.TypeInt32)
+	oldLen := c.root.nextReg(sema.TypeInt32)
 	var oldCap hir.Value
 	c.root.emit(&hir.InstrExtractValue{Dst: oldRawBytePtr, Agg: sliceVal, Index: 0})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldOffset, Agg: sliceVal, Index: 1})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldLen, Agg: sliceVal, Index: 2})
+	oldOffsetInt := c.root.asInt(oldOffset)
+	oldLenInt := c.root.asInt(oldLen)
 	oldCap = c.root.sliceCapacity(oldRawBytePtr)
 	oldOwner := oldRawBytePtr
 	dataPtr := c.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	ownerTypedPtr := c.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	c.root.emit(&hir.InstrCast{Dst: ownerTypedPtr, Val: oldRawBytePtr, ToType: ownerTypedPtr.Type()})
-	c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: ownerTypedPtr, Index: oldOffset})
+	c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: ownerTypedPtr, Index: oldOffsetInt})
 	actualRawBytePtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrCast{Dst: actualRawBytePtr, Val: dataPtr, ToType: actualRawBytePtr.Type()})
 	oldRawBytePtr = actualRawBytePtr
@@ -510,7 +512,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 
 	numElems := len(call.Args) - 1
 	reqCap := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: reqCap, Op: hir.OpAdd, L: oldLen, R: &hir.ConstInt{Val: int64(numElems), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: reqCap, Op: hir.OpAdd, L: oldLenInt, R: &hir.ConstInt{Val: int64(numElems), Typ: sema.TypeInt}})
 
 	growCond := c.root.nextReg(sema.TypeBool)
 	c.root.emit(&hir.InstrBinary{Dst: growCond, Op: hir.OpGt, L: reqCap, R: oldCap})
@@ -522,11 +524,11 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	finalPtrAlloca := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: slType.Elem}}, "finalPtr")
 	finalCapAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "finalCap")
 	finalOwnerAlloca := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}, "finalOwner")
-	finalOffsetAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "finalOffset")
+	finalOffsetAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt32}, "finalOffset")
 	c.root.emit(&hir.InstrAlloca{Dst: finalPtrAlloca, AllocType: &sema.PointerType{Base: slType.Elem}})
 	c.root.emit(&hir.InstrAlloca{Dst: finalCapAlloca, AllocType: sema.TypeInt})
 	c.root.emit(&hir.InstrAlloca{Dst: finalOwnerAlloca, AllocType: &sema.PointerType{Base: sema.TypeByte}})
-	c.root.emit(&hir.InstrAlloca{Dst: finalOffsetAlloca, AllocType: sema.TypeInt})
+	c.root.emit(&hir.InstrAlloca{Dst: finalOffsetAlloca, AllocType: sema.TypeInt32})
 	var structuredAppend *hir.IfNode
 	if len(c.root.structuredStack) > 0 {
 		structuredAppend = &hir.IfNode{Label: growBB.Label, Cond: growCond}
@@ -568,7 +570,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrCast{Dst: newTypedPtr, Val: newRawPtr, ToType: &sema.PointerType{Base: slType.Elem}})
 
 	oldBytes := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLenInt, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 
 	memcpyTmp := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrCallStatic{Dst: memcpyTmp, CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{newRawPtr, oldRawBytePtr, oldBytes}})
@@ -576,7 +578,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrStore{Val: newTypedPtr, Ptr: finalPtrAlloca})
 	c.root.emit(&hir.InstrStore{Val: newCap, Ptr: finalCapAlloca})
 	c.root.emit(&hir.InstrStore{Val: newRawPtr, Ptr: finalOwnerAlloca})
-	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: finalOffsetAlloca})
+	c.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}, Ptr: finalOffsetAlloca})
 	if structuredAppend != nil {
 		c.root.popStructuredBody()
 		c.root.popStructuredFrame()
@@ -587,7 +589,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	resPtr := c.root.nextReg(&sema.PointerType{Base: slType.Elem})
 	resCap := c.root.nextReg(sema.TypeInt)
 	resOwner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	resOffset := c.root.nextReg(sema.TypeInt)
+	resOffset := c.root.nextReg(sema.TypeInt32)
 	c.root.emit(&hir.InstrLoad{Dst: resPtr, Ptr: finalPtrAlloca})
 	c.root.emit(&hir.InstrLoad{Dst: resCap, Ptr: finalCapAlloca})
 	c.root.emit(&hir.InstrLoad{Dst: resOwner, Ptr: finalOwnerAlloca})
@@ -597,7 +599,7 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 		elVal := c.root.Expr.LowerExpr(call.Args[1+i])
 		elVal = c.root.emitValueCoerce(elVal, slType.Elem)
 		offsetIdx := c.root.nextReg(sema.TypeInt)
-		c.root.emit(&hir.InstrBinary{Dst: offsetIdx, Op: hir.OpAdd, L: oldLen, R: &hir.ConstInt{Val: int64(i), Typ: sema.TypeInt}})
+		c.root.emit(&hir.InstrBinary{Dst: offsetIdx, Op: hir.OpAdd, L: oldLenInt, R: &hir.ConstInt{Val: int64(i), Typ: sema.TypeInt}})
 		destPtr := c.root.nextReg(&sema.PointerType{Base: slType.Elem})
 		c.root.emit(&hir.InstrGetElemPtr{Dst: destPtr, BasePtr: resPtr, Index: offsetIdx})
 		c.root.emit(&hir.InstrStore{Val: elVal, Ptr: destPtr})
@@ -621,36 +623,37 @@ func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, s
 		elemSize = 1
 	}
 	oldPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	oldOffset := c.root.nextReg(sema.TypeInt)
-	oldLen := c.root.nextReg(sema.TypeInt)
+	oldOffset := c.root.nextReg(sema.TypeInt32)
+	oldLen := c.root.nextReg(sema.TypeInt32)
 	srcPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	srcOffset := c.root.nextReg(sema.TypeInt)
-	srcLen := c.root.nextReg(sema.TypeInt)
+	srcOffset := c.root.nextReg(sema.TypeInt32)
+	srcLen := c.root.nextReg(sema.TypeInt32)
 	c.root.emit(&hir.InstrExtractValue{Dst: oldPtr, Agg: dst, Index: 0})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldOffset, Agg: dst, Index: 1})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldLen, Agg: dst, Index: 2})
 	c.root.emit(&hir.InstrExtractValue{Dst: srcPtr, Agg: src, Index: 0})
 	c.root.emit(&hir.InstrExtractValue{Dst: srcOffset, Agg: src, Index: 1})
 	c.root.emit(&hir.InstrExtractValue{Dst: srcLen, Agg: src, Index: 2})
+	oldLenInt := c.root.asInt(oldLen)
 	oldByteOffset := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: oldByteOffset, Op: hir.OpMul, L: oldOffset, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: oldByteOffset, Op: hir.OpMul, L: c.root.asInt(oldOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	oldDataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrGetElemPtr{Dst: oldDataPtr, BasePtr: oldPtr, Index: oldByteOffset})
 	oldPtr = oldDataPtr
 	srcByteOffset := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: srcByteOffset, Op: hir.OpMul, L: srcOffset, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: srcByteOffset, Op: hir.OpMul, L: c.root.asInt(srcOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	srcDataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrGetElemPtr{Dst: srcDataPtr, BasePtr: srcPtr, Index: srcByteOffset})
 	srcPtr = srcDataPtr
 	totalLen := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: totalLen, Op: hir.OpAdd, L: oldLen, R: srcLen})
+	c.root.emit(&hir.InstrBinary{Dst: totalLen, Op: hir.OpAdd, L: oldLenInt, R: c.root.asInt(srcLen)})
 	totalBytes := c.root.nextReg(sema.TypeInt)
 	c.root.emit(&hir.InstrBinary{Dst: totalBytes, Op: hir.OpMul, L: totalLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	raw := c.root.allocSliceStorage(totalBytes, totalLen)
 	oldBytes := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: oldBytes, Op: hir.OpMul, L: oldLenInt, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	srcBytes := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: srcBytes, Op: hir.OpMul, L: srcLen, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: srcBytes, Op: hir.OpMul, L: c.root.asInt(srcLen), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	copyDst := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrCallStatic{Dst: copyDst, CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{raw, oldPtr, oldBytes}})
 	appendPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})

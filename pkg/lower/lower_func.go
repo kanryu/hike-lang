@@ -409,9 +409,9 @@ func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
 	t1 := c.root.nextReg(sliceType)
 	c.root.emit(&hir.InstrInsertValue{Dst: t1, Agg: c.root.defaultConstValue(sliceType), Val: callocRaw, Index: 0})
 	t2 := c.root.nextReg(sliceType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Index: 1})
+	c.root.emit(&hir.InstrInsertValue{Dst: t2, Agg: t1, Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}, Index: 1})
 	t3 := c.root.nextReg(sliceType)
-	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: argcReg, Index: 2})
+	c.root.emit(&hir.InstrInsertValue{Dst: t3, Agg: t2, Val: c.root.asInt32(argcReg), Index: 2})
 	c.root.emit(&hir.InstrStore{Val: t3, Ptr: &hir.GlobalVar{Name: "os_Args", Typ: &sema.PointerType{Base: sliceType}}})
 }
 

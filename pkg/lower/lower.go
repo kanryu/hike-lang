@@ -72,7 +72,7 @@ type Lowerer struct {
 	loweringGlobalInit  bool
 	// managedParams are string/slice parameters retained for the duration of
 	// the current Hike function. They are released on every return path.
-	managedParams []hir.Value
+	managedParams       []hir.Value
 	managedParamEscapes map[string]bool
 
 	// 分割されたサブローワー
@@ -814,7 +814,96 @@ func (l *Lowerer) stringViewParts(value hir.Value) (hir.Value, hir.Value, hir.Va
 	l.emit(&hir.InstrExtractValue{Dst: base, Agg: value, Index: 0})
 	l.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
 	l.emit(&hir.InstrExtractValue{Dst: length, Agg: value, Index: 2})
+	return base, l.decodeViewOffset(offset), length
+}
+
+// stringViewRawParts returns the encoded offset. Most consumers should use
+// stringViewParts, which decodes literal sentinels before pointer arithmetic.
+func (l *Lowerer) stringViewRawParts(value hir.Value) (hir.Value, hir.Value, hir.Value) {
+	base := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	offset := l.nextReg(sema.TypeInt32)
+	length := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrExtractValue{Dst: base, Agg: value, Index: 0})
+	l.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+	l.emit(&hir.InstrExtractValue{Dst: length, Agg: value, Index: 2})
 	return base, offset, length
+}
+
+// decodeViewOffset maps the reserved literal encoding back to a normal
+// non-negative offset. Ordinary offsets are unchanged. For an encoded value
+// ^n, arithmetic right shift produces -1 and XOR recovers n.
+func (l *Lowerer) decodeViewOffset(encoded hir.Value) hir.Value {
+	if encoded == nil {
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}
+	}
+	if sema.LLVMTypeOf(encoded.Type()) != sema.LLVMTypeOf(sema.TypeInt32) {
+		converted := l.nextReg(sema.TypeInt32)
+		l.emit(&hir.InstrCast{Dst: converted, Val: encoded, ToType: sema.TypeInt32})
+		encoded = converted
+	}
+	if constant, ok := encoded.(*hir.ConstInt); ok {
+		if constant.Val < 0 {
+			return &hir.ConstInt{Val: int64(^uint32(constant.Val)), Typ: sema.TypeInt32}
+		}
+		return encoded
+	}
+	sign := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrBinary{Dst: sign, Op: hir.OpShr, L: encoded, R: &hir.ConstInt{Val: 31, Typ: sema.TypeInt32}})
+	decoded := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrBinary{Dst: decoded, Op: hir.OpXor, L: encoded, R: sign})
+	return decoded
+}
+
+// encodeViewOffset preserves the literal state of encodedBase while rebasing
+// the view by delta. Normal offsets retain their normal representation.
+func (l *Lowerer) encodeViewOffset(encodedBase, delta hir.Value) hir.Value {
+	encodedBase = l.asInt32(encodedBase)
+	delta = l.asInt32(delta)
+	if base, ok := encodedBase.(*hir.ConstInt); ok {
+		if d, ok := delta.(*hir.ConstInt); ok {
+			logical := base.Val
+			if base.Val < 0 {
+				logical = int64(^uint32(base.Val))
+			}
+			logical += d.Val
+			if base.Val < 0 {
+				return &hir.ConstInt{Val: int64(^uint32(logical)), Typ: sema.TypeInt32}
+			}
+			return &hir.ConstInt{Val: logical, Typ: sema.TypeInt32}
+		}
+	}
+	sign := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrBinary{Dst: sign, Op: hir.OpShr, L: encodedBase, R: &hir.ConstInt{Val: 31, Typ: sema.TypeInt32}})
+	logical := l.decodeViewOffset(encodedBase)
+	logicalNext := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrBinary{Dst: logicalNext, Op: hir.OpAdd, L: logical, R: delta})
+	encoded := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrBinary{Dst: encoded, Op: hir.OpXor, L: logicalNext, R: sign})
+	return encoded
+}
+
+func (l *Lowerer) asInt32(value hir.Value) hir.Value {
+	if value == nil {
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}
+	}
+	if sema.LLVMTypeOf(value.Type()) == sema.LLVMTypeOf(sema.TypeInt32) {
+		return value
+	}
+	converted := l.nextReg(sema.TypeInt32)
+	l.emit(&hir.InstrCast{Dst: converted, Val: value, ToType: sema.TypeInt32})
+	return converted
+}
+
+func (l *Lowerer) asInt(value hir.Value) hir.Value {
+	if value == nil {
+		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+	}
+	if sema.LLVMTypeOf(value.Type()) == sema.LLVMTypeOf(sema.TypeInt) {
+		return value
+	}
+	converted := l.nextReg(sema.TypeInt)
+	l.emit(&hir.InstrCast{Dst: converted, Val: value, ToType: sema.TypeInt})
+	return converted
 }
 
 func (l *Lowerer) makeString(ptr, length hir.Value) hir.Value {
@@ -909,6 +998,8 @@ func (l *Lowerer) releaseManagedValue(value hir.Value) {
 }
 
 func (l *Lowerer) makeSliceView(typ *sema.SliceType, owner, offset, length hir.Value) hir.Value {
+	offset = l.asInt32(offset)
+	length = l.asInt32(length)
 	t1 := l.nextReg(typ)
 	l.emit(&hir.InstrInsertValue{Dst: t1, Agg: l.defaultConstValue(typ), Val: owner, Index: 0})
 	t2 := l.nextReg(typ)

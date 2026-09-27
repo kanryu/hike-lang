@@ -571,12 +571,12 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	var typedDataPtr hir.Value = nil
 	var capVal hir.Value = nil
 	var ownerPtr *hir.Reg = nil
-	var offsetVal hir.Value = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+	var offsetVal hir.Value = &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}
 
 	if slType, isSlice := baseType.(*sema.SliceType); isSlice {
 		elemType = slType.Elem
 		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-		offsetReg := e.root.nextReg(sema.TypeInt)
+		offsetReg := e.root.nextReg(sema.TypeInt32)
 		offsetVal = offsetReg
 		e.root.emit(&hir.InstrExtractValue{Dst: ownerPtr, Agg: baseVal, Index: 0})
 		e.root.emit(&hir.InstrExtractValue{Dst: offsetReg, Agg: baseVal, Index: 1})
@@ -586,7 +586,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		tPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
 		e.root.emit(&hir.InstrCast{Dst: tPtr, Val: ownerPtr, ToType: &sema.PointerType{Base: elemType}})
 		baseElemPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: tPtr, Index: offsetVal})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: tPtr, Index: e.root.asInt(offsetVal)})
 		typedDataPtr = baseElemPtr
 	} else if arType, isArray := baseType.(*sema.ArrayType); isArray {
 		elemType = arType.Elem
@@ -626,10 +626,10 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 
 	elemPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
 	e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: typedDataPtr, Index: lowVal})
-	newLen := e.root.nextReg(sema.TypeInt)
-	e.root.emit(&hir.InstrBinary{Dst: newLen, Op: hir.OpSub, L: highVal, R: lowVal})
-	newCap := e.root.nextReg(sema.TypeInt)
-	e.root.emit(&hir.InstrBinary{Dst: newCap, Op: hir.OpSub, L: capVal, R: lowVal})
+	newLen := e.root.nextReg(sema.TypeInt32)
+	e.root.emit(&hir.InstrBinary{Dst: newLen, Op: hir.OpSub, L: e.root.asInt32(highVal), R: e.root.asInt32(lowVal)})
+	newCap := e.root.nextReg(sema.TypeInt32)
+	e.root.emit(&hir.InstrBinary{Dst: newCap, Op: hir.OpSub, L: e.root.asInt32(capVal), R: e.root.asInt32(lowVal)})
 
 	if baseType == sema.TypeCString || semaTypeName(baseType) == "cstring" {
 		// A string view stores the original payload pointer and a byte
@@ -643,8 +643,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	e.root.emit(&hir.InstrCast{Dst: elemBytePtr, Val: elemPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
 	resSliceType := &sema.SliceType{Elem: elemType}
-	newOffset := e.root.nextReg(sema.TypeInt)
-	e.root.emit(&hir.InstrBinary{Dst: newOffset, Op: hir.OpAdd, L: offsetVal, R: lowVal})
+	newOffset := e.root.encodeViewOffset(offsetVal, lowVal)
 	return e.root.makeSliceView(resSliceType, ownerPtr, newOffset, newLen)
 }
 
@@ -653,7 +652,7 @@ func (e *ExprLowerer) lowerStringSliceExpr(node *ast.SliceExpr, baseVal hir.Valu
 		return nil, false
 	}
 	if baseType == sema.TypeString || semaTypeName(baseType) == "string" {
-		basePtr, baseOffset, baseLen32 := e.root.stringViewParts(baseVal)
+		basePtr, baseOffset, baseLen32 := e.root.stringViewRawParts(baseVal)
 		baseLen := hir.Value(baseLen32)
 		if sema.LLVMTypeOf(sema.TypeInt) != sema.LLVMTypeOf(sema.TypeInt32) {
 			baseLen64 := e.root.nextReg(sema.TypeInt)
@@ -668,11 +667,10 @@ func (e *ExprLowerer) lowerStringSliceExpr(node *ast.SliceExpr, baseVal hir.Valu
 		if node.High != nil {
 			highVal = e.LowerExpr(node.High)
 		}
-		newOffset := e.root.nextReg(sema.TypeInt32)
 		low32 := e.root.emitValueCoerce(lowVal, sema.TypeInt32)
-		e.root.emit(&hir.InstrBinary{Dst: newOffset, Op: hir.OpAdd, L: baseOffset, R: low32})
-		length := e.root.nextReg(sema.TypeInt)
-		e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: highVal, R: lowVal})
+		newOffset := e.root.encodeViewOffset(baseOffset, low32)
+		length := e.root.nextReg(sema.TypeInt32)
+		e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: e.root.asInt32(highVal), R: low32})
 		view := e.root.makeStringView(basePtr, newOffset, length)
 		e.root.retainString(view)
 		return view, true

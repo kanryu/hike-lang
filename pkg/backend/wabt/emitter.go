@@ -843,7 +843,7 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*st
 							e.b.WriteString(fmt.Sprintf("          (i32.store %s (call $malloc (i32.const 12)))\n", ptr))
 							view := fmt.Sprintf("(i32.load %s)", ptr)
 							e.b.WriteString(fmt.Sprintf("          (i32.store %s %s)\n", view, e.val(s)))
-							e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", view))
+							e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", view))
 							e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", view, len(s.Raw)))
 						} else {
 							e.b.WriteString(fmt.Sprintf("          (i32.store %s %s)\n", ptr, e.valAs(value, typ)))
@@ -879,7 +879,7 @@ func (e *Emitter) cfgTerminator(t hir.Terminator, fn *hir.Function, blocks []*st
 						// the view in the frame before returning it to the host.
 						base := e.val(s)
 						e.b.WriteString("          (i32.store (local.get $frame_sp) " + base + ")\n")
-						e.b.WriteString("          (i32.store (i32.add (local.get $frame_sp) (i32.const 4)) (i32.const 0))\n")
+						e.b.WriteString("          (i32.store (i32.add (local.get $frame_sp) (i32.const 4)) (i32.const -1))\n")
 						e.b.WriteString(fmt.Sprintf("          (i32.store (i32.add (local.get $frame_sp) (i32.const 8)) (i32.const %d))\n", len(s.Raw)))
 						values[i] = "(local.get $frame_sp)"
 						continue
@@ -1038,7 +1038,7 @@ func (e *Emitter) emitBoxInterface(x *hir.InstrBoxInterface) {
 		e.advanceSP(dataSize)
 		data = fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", dataSize)
 		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", data, e.val(s)))
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", data))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", data))
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", data, len(s.Raw)))
 	} else if x.Val.Type() == sema.TypeString || x.Val.Type().TypeName() == "string" {
 		// LLVM boxes an aggregate string by storing the complete string
@@ -1091,7 +1091,7 @@ func (e *Emitter) emitStore(x *hir.InstrStore) {
 			e.b.WriteString(fmt.Sprintf("    (global.set $%s (call $malloc (i32.const 12)))\n", globalVarName(global)))
 			if s, isConst := x.Val.(*hir.ConstString); isConst {
 				e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", stable, e.val(s)))
-				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", stable))
+				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", stable))
 				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", stable, len(s.Raw)))
 			} else {
 				e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const 12))\n", stable, e.val(x.Val)))
@@ -1106,7 +1106,7 @@ func (e *Emitter) emitStore(x *hir.InstrStore) {
 		if s, ok := x.Val.(*hir.ConstString); ok {
 			base := e.val(x.Ptr)
 			e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", base, e.val(s)))
-			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", base))
+			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", base))
 			e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", base, len(s.Raw)))
 			return
 		}
@@ -1467,7 +1467,7 @@ func (e *Emitter) instruction(in hir.Instruction) {
 			case 0:
 				e.set(x.Dst, e.val(s))
 			case 1:
-				e.set(x.Dst, "(i32.const 0)")
+				e.set(x.Dst, "(i32.const -1)")
 			case 2:
 				e.set(x.Dst, fmt.Sprintf("(i32.const %d)", len(s.Raw)))
 			default:
@@ -1555,7 +1555,7 @@ func (e *Emitter) callArg(v hir.Value) string {
 		remaining := e.callArgTotal - e.callArgUsed + size
 		argBase := fmt.Sprintf("(i32.sub (global.get $__sp) (i32.const %d))", remaining)
 		e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", storeBase, e.val(s)))
-		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const 0))\n", storeBase))
+		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", storeBase))
 		e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", storeBase, len(s.Raw)))
 		return argBase
 	}

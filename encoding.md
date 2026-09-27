@@ -123,8 +123,6 @@ normal slice offsets are non-negative element offsets, and any future
 sentinel must be decoded before pointer arithmetic. The current runtime does
 not use a negative fat-pointer offset as a payload offset.
 
-
-
 ---
 
 ## 2. Discouraged Operations: Direct Indexing and Slicing

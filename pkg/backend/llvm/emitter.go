@@ -1969,7 +1969,7 @@ func (e *Emitter) formatVal(v hir.Value) string {
 			t1, t2, t3 := e.nextTmp(), e.nextTmp(), e.nextTmp()
 			llvmType := val.Typ.LLVMType()
 			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, i8* %s, 0\n", t1, llvmType, ptr))
-			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 0, 1\n", t2, llvmType, t1))
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 -1, 1\n", t2, llvmType, t1))
 			e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i32 %d, 2\n", t3, llvmType, t2, val.Length-1))
 			return t3
 		}
