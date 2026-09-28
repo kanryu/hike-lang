@@ -56,6 +56,30 @@ func consumeSlice(label string, value []int) int {
     return middle[0] + len(middle)
 }
 
+func consumeCString(raw cstring) int {
+    value := string(raw)
+    part := value[1:len(value)-1]
+    printf("C=%s\n", part)
+    return len(part)
+}
+
+func consumeRaw(ptr *byte, length int) int {
+    var view []byte
+    if ptr != nil {
+        view = ptr[1:length]
+    }
+    return view[0] + len(view)
+}
+
+cfunc IRFromCString(ptr *byte, length int) cstring {
+    raw := cstring(ptr, length)
+    value := string(raw)
+    if len(value) > 2 {
+        value = value[1:len(value)-1]
+    }
+    return cstring(value + "!")
+}
+
 func main() int {
     literal := "literal"
     dynamic := string([]byte{'d', 'y', 'n', 'a', 'm', 'i', 'c'})
@@ -68,6 +92,9 @@ func main() int {
     _ = consumeString("SD", dynamic)
     _ = consumeSlice("VL", literalSlice)
     _ = consumeSlice("VD", dynamicSlice)
+    _ = consumeCString(cstring("headered"))
+    _ = consumeRaw(&dynamicSlice[0], 3)
+    _ = IRFromCString(&dynamicSlice[0], 3)
     return 0
 }
 `
@@ -91,8 +118,10 @@ func main() int {
 		{"offset-aware string release", `call void @__hike_string_release\(i8\* [^,]+, i32 [^)]+\)`},
 		{"offset-aware string retain", `call void @__hike_string_retain\(i8\* [^,]+, i32 [^)]+\)`},
 		{"slice allocation header", `call i8\* @__hike_slice_alloc\(i64 [^,]+, i64 [^)]+\)`},
+		{"cstring conversion uses headered runtime allocation", `call i8\* @__hike_slice_to_str\(i8\* [^,]+, i64 [^)]+\)`},
 		{"slice capacity header", `getelementptr inbounds i8, i8\* %owner, i64 -16`},
 		{"literal retain guard", `%literal = icmp slt i32 %offset, 0`},
+		{"raw byte pointer view sentinel", `insertvalue \{ i8\*, i32, i32 \} .*i32 -1`},
 	}
 	for _, check := range checks {
 		if !regexp.MustCompile(check.want).MatchString(ir) {
@@ -159,6 +188,39 @@ func main() int {
 	}
 	if !strings.Contains(ir, "call void @__hike_slice_retain") || !strings.Contains(ir, "call void @__hike_slice_release") {
 		t.Fatal("derived slice view was not retained and released")
+	}
+	rawStart := strings.Index(ir, "@consumeRaw")
+	if rawStart < 0 {
+		t.Fatal("consumeRaw function body was not emitted")
+	}
+	rawEnd := strings.Index(ir[rawStart:], "\ndefine ")
+	if rawEnd < 0 {
+		rawEnd = len(ir) - rawStart
+	}
+	rawIR := ir[rawStart : rawStart+rawEnd]
+	if !strings.Contains(rawIR, "i32 -1") {
+		t.Fatal("raw byte pointer slice does not use offset -1")
+	}
+	if strings.Contains(rawIR, "@__hike_slice_retain") || strings.Contains(rawIR, "@__hike_slice_release") {
+		t.Fatal("raw byte pointer view was treated as an owning slice")
+	}
+	if strings.Contains(rawIR, "@strlen") {
+		t.Fatal("explicit byte-pointer length unexpectedly used strlen")
+	}
+	cfuncStart := strings.Index(ir, "IRFromCString")
+	if cfuncStart < 0 {
+		t.Fatal("IRFromCString cfunc was not emitted")
+	}
+	cfuncEnd := strings.Index(ir[cfuncStart:], "\ndefine ")
+	if cfuncEnd < 0 {
+		cfuncEnd = len(ir) - cfuncStart
+	}
+	cfuncIR := ir[cfuncStart : cfuncStart+cfuncEnd]
+	if !strings.Contains(cfuncIR, "@__hike_slice_to_str") {
+		t.Fatal("C string conversion did not allocate through __hike_slice_to_str")
+	}
+	if !strings.Contains(cfuncIR, "@__hike_string_release") {
+		t.Fatal("C string-derived Hike string was not released")
 	}
 }
 

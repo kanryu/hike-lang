@@ -66,7 +66,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		typedPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
 		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: rawBytePtr, ToType: typedPtr.Type()})
 		baseElemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: typedPtr, Index: e.root.asInt(offsetVal)})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: typedPtr, Index: e.root.asInt(e.root.decodeViewOffset(offsetVal))})
 		elemPtr := e.root.nextReg(&sema.PointerType{Base: sl.Elem})
 		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: baseElemPtr, Index: idxVal})
 		elemVal := e.root.nextReg(sl.Elem)

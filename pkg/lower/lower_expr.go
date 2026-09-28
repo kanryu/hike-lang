@@ -572,6 +572,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	var capVal hir.Value = nil
 	var ownerPtr *hir.Reg = nil
 	var offsetVal hir.Value = &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}
+	rawBytePtr := false
 
 	if slType, isSlice := baseType.(*sema.SliceType); isSlice {
 		elemType = slType.Elem
@@ -586,7 +587,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		tPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
 		e.root.emit(&hir.InstrCast{Dst: tPtr, Val: ownerPtr, ToType: &sema.PointerType{Base: elemType}})
 		baseElemPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
-		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: tPtr, Index: e.root.asInt(offsetVal)})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: baseElemPtr, BasePtr: tPtr, Index: e.root.asInt(e.root.decodeViewOffset(offsetVal))})
 		typedDataPtr = baseElemPtr
 	} else if arType, isArray := baseType.(*sema.ArrayType); isArray {
 		elemType = arType.Elem
@@ -605,12 +606,23 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 		capVal = lenReg
 	} else if ptrType, isBytePtr := baseType.(*sema.PointerType); isBytePtr && ptrType.Base == sema.TypeByte {
+		// A byte pointer has no Hike slice allocation header. Represent its
+		// view as borrowed storage: -1 marks a non-owning pointer-backed view.
+		rawBytePtr = true
+		offsetVal = &hir.ConstInt{Val: -1, Typ: sema.TypeInt32}
 		typedDataPtr = baseVal
 		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrCast{Dst: ownerPtr, Val: baseVal, ToType: ownerPtr.Type()})
-		lenReg := e.root.nextReg(sema.TypeInt)
-		e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
-		capVal = lenReg
+		if node.High != nil {
+			// A pointer slice with an explicit high bound is the
+			// pointer+length form. It is not required to be NUL-terminated.
+			// Lower the bound after the low bound below, preserving normal
+			// expression evaluation order.
+		} else {
+			lenReg := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
+			capVal = lenReg
+		}
 	} else {
 		panic(fmt.Sprintf("[Lower Error] cannot slice type %s", semaTypeName(baseType)))
 	}
@@ -619,9 +631,16 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	if node.Low != nil {
 		lowVal = e.LowerExpr(node.Low)
 	}
+	if rawBytePtr && node.High != nil {
+		capVal = e.LowerExpr(node.High)
+	}
 	highVal := hir.Value(capVal)
 	if node.High != nil {
-		highVal = e.LowerExpr(node.High)
+		if rawBytePtr {
+			highVal = capVal
+		} else {
+			highVal = e.LowerExpr(node.High)
+		}
 	}
 
 	elemPtr := e.root.nextReg(&sema.PointerType{Base: elemType})
@@ -643,7 +662,15 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	e.root.emit(&hir.InstrCast{Dst: elemBytePtr, Val: elemPtr, ToType: &sema.PointerType{Base: sema.TypeByte}})
 
 	resSliceType := &sema.SliceType{Elem: elemType}
+	if rawBytePtr {
+		// Rebase the owner to the visible start. The sentinel then decodes as
+		// logical offset zero for indexing and further slicing.
+		ownerPtr = elemBytePtr
+	}
 	newOffset := e.root.encodeViewOffset(offsetVal, lowVal)
+	if rawBytePtr {
+		newOffset = &hir.ConstInt{Val: -1, Typ: sema.TypeInt32}
+	}
 	return e.root.makeSliceView(resSliceType, ownerPtr, newOffset, newLen)
 }
 

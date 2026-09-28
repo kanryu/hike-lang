@@ -143,11 +143,13 @@ offset `2`. A negative offset must be decoded before address arithmetic and
 must never be treated as a normal payload offset. Derived views preserve the
 negative encoding while they remain backed by the literal.
 
-Dynamic slice allocations currently use non-negative element offsets. Their
-literal or static-storage encoding remains reserved until static slice data
-can be emitted without changing the element initialization rules. Borrowed
-slice lifetime is controlled by compiler escape analysis and retain/release
-placement rather than by a negative offset marker.
+Managed dynamic slice allocations use non-negative element offsets. A slice
+constructed from a raw `*byte` and an explicit length is different: its owner
+pointer is rebased to the first visible byte and its offset is `-1`. This
+sentinel identifies a borrowed, non-owning view with no Hike allocation
+header; it must not be passed to slice retain/release or capacity-header
+loads. Further indexing and slicing decode the sentinel as logical offset
+zero.
 
 ## 5. Benefits
 

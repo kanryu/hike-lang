@@ -105,7 +105,9 @@ passing an escaping slice retains the owner; releasing a view decrements the
 shared count and frees the allocation when it reaches zero. Null owners are
 ignored by retain and release. The runtime also reserves the immortal marker
 `INT32_MIN` for static or otherwise non-owning storage; such storage is never
-freed.
+freed. Raw `*byte` plus explicit-length views use the fat-pointer offset
+sentinel `-1` and are borrowed; the compiler must not perform slice-header
+loads or retain/release operations for them.
 
 The compiler distinguishes borrowed and escaping uses conservatively. Length
 queries, capacity queries, indexing, slicing, and conditions borrow the
@@ -117,11 +119,9 @@ returned to the caller.
 
 The negative address immediately before `owner_ptr` is metadata space, not a
 payload offset: the capacity and reference count are read using
-`owner_ptr - 16` and `owner_ptr - 12`. A negative value in the fat pointer's
-`offset` field is reserved for future metadata or immortal-buffer sentinels;
-normal slice offsets are non-negative element offsets, and any future
-sentinel must be decoded before pointer arithmetic. The current runtime does
-not use a negative fat-pointer offset as a payload offset.
+`owner_ptr - 16` and `owner_ptr - 12`. A raw pointer-backed view uses `-1` in
+the fat-pointer offset field and rebases `owner_ptr` to the visible start;
+indexing and further slicing decode that sentinel as logical offset zero.
 
 ---
 

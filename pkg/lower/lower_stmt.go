@@ -59,6 +59,9 @@ func (s *StmtLowerer) isManagedViewExpr(expr ast.Expression) bool {
 			if _, isArray := t.(*sema.ArrayType); isArray {
 				return false
 			}
+			if ptr, isPtr := t.(*sema.PointerType); isPtr && ptr.Base == sema.TypeByte {
+				return false
+			}
 		}
 	}
 	return true

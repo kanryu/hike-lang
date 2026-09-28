@@ -217,18 +217,17 @@ func (c *CallLowerer) lowerCStringToString(cstrVal hir.Value) hir.Value {
 		CalleeName: c.root.BuiltinName("strlen"),
 		Args:       []hir.Value{cstrVal},
 	})
-	oneVal := &hir.ConstInt{Val: 1, Typ: sema.TypeInt}
-	sizeReg := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: sizeReg, Op: hir.OpAdd, L: lenReg, R: oneVal})
-
+	// String views require the string allocation header immediately before the
+	// payload.  Do not construct a view over a raw malloc buffer: retain/release
+	// would then read and free memory that is not a string allocation.  The
+	// runtime conversion allocates the header and copies the NUL-terminated
+	// source into a refcounted string buffer.
 	bufReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	c.root.emit(&hir.InstrHeapAlloc{Dst: bufReg, Size: sizeReg, AllocType: sema.TypeByte, KeepOnHeapInArea: true})
-
 	c.root.emit(&hir.InstrCallStatic{
-		CalleeName: c.root.BuiltinName("memcpy"),
-		Args:       []hir.Value{bufReg, cstrVal, sizeReg},
+		Dst:        bufReg,
+		CalleeName: c.root.BuiltinName("__hike_slice_to_str"),
+		Args:       []hir.Value{cstrVal, lenReg},
 	})
-
 	return c.root.makeString(bufReg, lenReg)
 }
 
