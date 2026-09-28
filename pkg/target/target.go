@@ -58,6 +58,16 @@ var (
 		IsWasm: true,
 		Cflags: "",
 	}
+	// TargetCortexM0 targets bare-metal ARMv6-M (e.g. RP2040), which has no
+	// OS/libc. Callers are expected to use emit-ir and link the resulting
+	// object with an external toolchain (e.g. pico-sdk's CMake build), not
+	// hikec's own native "build" link step.
+	TargetCortexM0 = Target{
+		Name:   "cortex-m0",
+		Triple: "thumbv6m-none-eabi",
+		IsWasm: false,
+		Cflags: "-mcpu=cortex-m0plus -mthumb",
+	}
 )
 
 func DefaultTarget() *Target {
@@ -92,6 +102,8 @@ func ParseTarget(name string) (*Target, error) {
 		return &TargetWasm64, nil
 	case "wabt", "wat", "wasm-text":
 		return &TargetWabt, nil
+	case "cortex-m0", "rp2040", "thumbv6m", "thumbv6m-none-eabi":
+		return &TargetCortexM0, nil
 	default:
 		return nil, fmt.Errorf("unknown target: %s", name)
 	}
