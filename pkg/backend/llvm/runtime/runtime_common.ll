@@ -826,8 +826,11 @@ entry:
 
 ; Reference-count operations receive the payload pointer. The allocation
 ; header is stored immediately before it: capacity at -8 and refcount at -4.
-define internal void @__hike_string_retain(i8* %data) #0 {
+define internal void @__hike_string_retain(i8* %data, i32 %offset) #0 {
 entry:
+  %literal = icmp slt i32 %offset, 0
+  br i1 %literal, label %done, label %load
+load:
   %raw = getelementptr inbounds i8, i8* %data, i64 -8
   %ref = getelementptr inbounds i8, i8* %raw, i64 4
   %ref32 = bitcast i8* %ref to i32*
@@ -842,10 +845,12 @@ done:
   ret void
 }
 
-define internal void @__hike_string_release(i8* %data) #0 {
+define internal void @__hike_string_release(i8* %data, i32 %offset) #0 {
 entry:
   %is_null = icmp eq i8* %data, null
-  br i1 %is_null, label %done, label %decrement
+  %literal = icmp slt i32 %offset, 0
+  %skip = or i1 %is_null, %literal
+  br i1 %skip, label %done, label %decrement
 decrement:
   %raw = getelementptr inbounds i8, i8* %data, i64 -8
   %ref = getelementptr inbounds i8, i8* %raw, i64 4
@@ -869,12 +874,32 @@ done:
 ; shared or static storage is copied and the old reference is released.
 define internal { i8*, i32, i32 } @__hike_string_writable(i8* %base, i32 %offset, i32 %len) #0 {
 entry:
+  %literal = icmp slt i32 %offset, 0
+  br i1 %literal, label %copy_literal, label %load_header
+load_header:
   %raw = getelementptr inbounds i8, i8* %base, i64 -8
   %ref = getelementptr inbounds i8, i8* %raw, i64 4
   %ref32 = bitcast i8* %ref to i32*
   %count = load i32, i32* %ref32
   %unique = icmp eq i32 %count, 1
   br i1 %unique, label %reuse, label %copy
+copy_literal:
+  %literal_size64 = zext i32 %len to i64
+  %literal_alloc_size = add i64 %literal_size64, 9
+  %literal_raw = call i8* @malloc(i64 %literal_alloc_size)
+  %literal_cap_ptr = bitcast i8* %literal_raw to i32*
+  store i32 %len, i32* %literal_cap_ptr
+  %literal_ref = getelementptr inbounds i8, i8* %literal_raw, i64 4
+  %literal_ref32 = bitcast i8* %literal_ref to i32*
+  store i32 1, i32* %literal_ref32
+  %literal_data = getelementptr inbounds i8, i8* %literal_raw, i64 8
+  call i8* @memcpy(i8* %literal_data, i8* %base, i64 %literal_size64)
+  %literal_nul = getelementptr inbounds i8, i8* %literal_data, i64 %literal_size64
+  store i8 0, i8* %literal_nul
+  %literal_copy0 = insertvalue { i8*, i32, i32 } undef, i8* %literal_data, 0
+  %literal_copy1 = insertvalue { i8*, i32, i32 } %literal_copy0, i32 0, 1
+  %literal_copy2 = insertvalue { i8*, i32, i32 } %literal_copy1, i32 %len, 2
+  ret { i8*, i32, i32 } %literal_copy2
 reuse:
   %reuse0 = insertvalue { i8*, i32, i32 } undef, i8* %base, 0
   %reuse1 = insertvalue { i8*, i32, i32 } %reuse0, i32 %offset, 1
@@ -928,6 +953,9 @@ entry:
   %total = add i32 %len, %blen
   %len64 = zext i32 %len to i64
   %blen64 = zext i32 %blen to i64
+  %literal = icmp slt i32 %offset, 0
+  br i1 %literal, label %copy_literal, label %load_header
+load_header:
   %raw = getelementptr inbounds i8, i8* %base, i64 -8
   %cap_ptr = bitcast i8* %raw to i32*
   %cap = load i32, i32* %cap_ptr
@@ -939,6 +967,9 @@ entry:
   %unique = icmp eq i32 %count, 1
   %reuse_ok = and i1 %unique, %fits
   br i1 %reuse_ok, label %reuse, label %copy
+copy_literal:
+  %literal_new_data = call i8* @hike_strcat_len(i8* %base, i64 %len64, i8* %b, i64 %blen64)
+  ret i8* %literal_new_data
 reuse:
   %dst = getelementptr inbounds i8, i8* %base, i32 %offset
   %dst_b = getelementptr inbounds i8, i8* %dst, i32 %len
@@ -949,7 +980,7 @@ reuse:
 copy:
   %src = getelementptr inbounds i8, i8* %base, i32 %offset
   %new_data = call i8* @hike_strcat_len(i8* %src, i64 %len64, i8* %b, i64 %blen64)
-  call void @__hike_string_release(i8* %base)
+  call void @__hike_string_release(i8* %base, i32 %offset)
   ret i8* %new_data
 }
 

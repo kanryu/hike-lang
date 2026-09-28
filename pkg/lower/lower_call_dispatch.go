@@ -60,17 +60,15 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					c.root.emit(&hir.InstrExtractValue{Dst: rawPtr, Agg: argVal, Index: 0})
 					c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: argVal, Index: 1})
 					c.root.emit(&hir.InstrExtractValue{Dst: rawLen, Agg: argVal, Index: 2})
+					// Slice storage has a 16-byte slice header, whereas string
+					// storage has its own 8-byte header immediately before the
+					// payload.  Copy the slice into a real string allocation before
+					// applying string retain/release operations.
 					dataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: rawPtr, Index: c.root.asInt(offset)})
-					rawPtr = dataPtr
-					// A Hike string is a pointer/offset/length view.  The slice
-					// backing store already has the exact pointer and length needed
-					// for that view; copying through __hike_slice_to_str here used
-					// the C-string allocation path and could leave the generated
-					// native image with an invalid backing pointer.  C-string
-					// consumers still receive a terminated copy in
-					// lowerStringToCString.
-					return c.root.makeString(rawPtr, rawLen)
+					converted := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+					c.root.emit(&hir.InstrCallStatic{Dst: converted, CalleeName: c.root.BuiltinName("__hike_slice_to_str"), Args: []hir.Value{dataPtr, c.root.asInt(rawLen)}})
+					return c.root.makeString(converted, rawLen)
 				}
 
 				if sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(targetType) {

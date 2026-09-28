@@ -1,6 +1,7 @@
 package json
 
 import "std/io"
+import "std/strconv"
 
 // Encoder is the minimal streaming JSON surface required by compiler tools.
 // The native self-hosting path can replace the body with the full encoder
@@ -34,7 +35,6 @@ func fwrite(buffer *byte, size int, count int, fp *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
 func strlen(s cstring) int
-extern func sprintf(buf *byte, format cstring, ...) int
 func atoi(s cstring) int
 func atof(s cstring) float64
 
@@ -341,13 +341,10 @@ func Stringify(v *JSONValue) string {
         return "false"
     }
     if v.Type == TypeNumber {
-        buf := malloc(64)
         if v.NumVal == float64(int(v.NumVal)) {
-            sprintf(buf, cstring("%d"), int(v.NumVal))
-        } else {
-            sprintf(buf, cstring("%f"), v.NumVal)
+            return strconv.Itoa(int(v.NumVal))
         }
-        return string(buf)
+        return strconv.FormatFloat(v.NumVal, byte(102), -1, 64)
     }
     if v.Type == TypeString {
         return "\"" + v.StrVal + "\""

@@ -34,6 +34,36 @@ func (s *StmtLowerer) isStringAliasExpr(expr ast.Expression) bool {
 	}
 }
 
+func (s *StmtLowerer) isManagedAliasExpr(expr ast.Expression) bool {
+	if id, ok := expr.(*ast.Identifier); ok {
+		name := astIDValue(id)
+		t := s.root.symbolTypes[name]
+		if t == nil {
+			t = s.root.semaCtx.Globals[name]
+		}
+		return s.root.isStringType(t)
+	}
+	return false
+}
+
+func (s *StmtLowerer) isManagedViewExpr(expr ast.Expression) bool {
+	view, ok := expr.(*ast.SliceExpr)
+	if !ok {
+		return false
+	}
+	// Array subslices currently borrow the array's stack storage.  They are
+	// useful as transient views, but their owner is not a refcounted slice
+	// allocation and must not be retained/released as one.
+	if id, ok := view.Left.(*ast.Identifier); ok {
+		if t := s.root.symbolTypes[astIDValue(id)]; t != nil {
+			if _, isArray := t.(*sema.ArrayType); isArray {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // -----------------------------------------------------------------------------
 // 文 (Statement) のディスパッチ
 // -----------------------------------------------------------------------------
@@ -70,8 +100,12 @@ func (s *StmtLowerer) LowerStmt(stmt ast.Statement) {
 		}
 		s.root.Expr.LowerExpr(node.Expr)
 	case *ast.BlockStmt:
+		s.root.pushManagedScope()
 		for _, inner := range node.Statements {
 			s.LowerStmt(inner)
+		}
+		if s.root.curBlock == nil || s.root.curBlock.Terminator == nil {
+			s.root.popManagedScope()
 		}
 	case *ast.IfStmt:
 		s.LowerIfStmt(node)
@@ -433,7 +467,17 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 	s.root.symbols[vd.Name.Value] = ptrReg
 	s.root.symbolTypes[vd.Name.Value] = targetType
 	s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
-	if s.root.isStringType(targetType) && vd.Value != nil && s.isStringAliasExpr(vd.Value) {
+	if vd.Value != nil && s.isManagedAliasExpr(vd.Value) && s.root.isStringType(targetType) {
+		s.root.trackManagedLocal(ptrReg)
+	}
+	if vd.Value != nil && s.isManagedViewExpr(vd.Value) && isSliceType(targetType) {
+		s.root.retainSlice(val)
+		s.root.trackManagedLocal(ptrReg)
+	}
+	if vd.Value != nil && s.isManagedViewExpr(vd.Value) && s.root.isStringType(targetType) {
+		s.root.trackManagedLocal(ptrReg)
+	}
+	if s.root.isStringType(targetType) && vd.Value != nil && s.isManagedAliasExpr(vd.Value) {
 		s.root.retainString(val)
 	}
 }
@@ -537,8 +581,15 @@ func (s *StmtLowerer) lowerDefineAssignment(stmt *ast.AssignStmt, rhsVals []hir.
 
 		if val != nil {
 			s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
-			if s.root.isStringType(targetType) && i < len(stmt.Right) && s.isStringAliasExpr(stmt.Right[i]) {
+			if s.root.isStringType(targetType) && i < len(stmt.Right) && s.isManagedAliasExpr(stmt.Right[i]) {
 				s.root.retainString(val)
+			}
+			if i < len(stmt.Right) && s.isManagedViewExpr(stmt.Right[i]) && isSliceType(targetType) {
+				s.root.retainSlice(val)
+				s.root.trackManagedLocal(ptrReg)
+			}
+			if i < len(stmt.Right) && s.isManagedViewExpr(stmt.Right[i]) && s.root.isStringType(targetType) {
+				s.root.trackManagedLocal(ptrReg)
 			}
 		}
 	}
@@ -739,7 +790,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				oldVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: oldVal, Ptr: targetPtr})
 				s.root.releaseString(oldVal)
-				if i < len(stmt.Right) && s.isStringAliasExpr(stmt.Right[i]) {
+				if i < len(stmt.Right) && s.isManagedAliasExpr(stmt.Right[i]) {
 					s.root.retainString(val)
 				}
 			}

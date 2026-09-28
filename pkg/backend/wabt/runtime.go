@@ -453,8 +453,8 @@ var wasmRuntime = map[string]runtimeFunc{
       (local.set $prev (local.get $entry))
       (local.set $entry (local.get $next))
       (br $scan))))`},
-	"__hike_string_retain":  runtimeFunc{body: `(func $__hike_string_retain (param $s i32))`},
-	"__hike_string_release": runtimeFunc{body: `(func $__hike_string_release (param $s i32))`},
+	"__hike_string_retain":  runtimeFunc{body: `(func $__hike_string_retain (param $s i32) (param $offset i32))`},
+	"__hike_string_release": runtimeFunc{body: `(func $__hike_string_release (param $s i32) (param $offset i32))`},
 	"llvm.trap":             runtimeFunc{body: `(func $llvm.trap (unreachable))`},
 }
 

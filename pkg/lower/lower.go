@@ -74,6 +74,7 @@ type Lowerer struct {
 	// the current Hike function. They are released on every return path.
 	managedParams       []hir.Value
 	managedParamEscapes map[string]bool
+	managedScopes       []managedScope
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -472,6 +473,7 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		for _, param := range l.managedParams {
 			l.releaseManagedValue(param)
 		}
+		l.cleanupManagedScopes()
 	}
 	if (isAreaExitTerminator(term)) && len(l.areaStack) > 0 {
 		for i := len(l.areaStack) - 1; i >= 0; i-- {
@@ -492,6 +494,65 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		case *hir.InstrPanic:
 			*current = append(*current, &hir.PanicNode{Value: t.Value, Cause: t.Cause, SiteID: t.SiteID})
 		}
+	}
+}
+
+type managedScope struct {
+	block *basicBlock
+	slots []*hir.Reg
+}
+
+func (l *Lowerer) pushManagedScope() {
+	l.managedScopes = append(l.managedScopes, managedScope{block: l.curBlock})
+}
+
+func (l *Lowerer) popManagedScope() {
+	if len(l.managedScopes) == 0 {
+		return
+	}
+	scope := l.managedScopes[len(l.managedScopes)-1]
+	l.managedScopes = l.managedScopes[:len(l.managedScopes)-1]
+	l.releaseManagedSlots(scope)
+}
+
+func (l *Lowerer) cleanupManagedScopes() {
+	for len(l.managedScopes) > 0 {
+		l.popManagedScope()
+	}
+}
+
+func (l *Lowerer) trackManagedLocal(slot *hir.Reg) {
+	if slot == nil || len(l.managedScopes) == 0 {
+		return
+	}
+	scope := &l.managedScopes[len(l.managedScopes)-1]
+	if scope.block == nil {
+		scope.block = l.curBlock
+	}
+	scope.slots = append(scope.slots, slot)
+}
+
+func (l *Lowerer) releaseManagedSlots(scope managedScope) {
+	// A lexical scope can contain a control statement.  By the time the
+	// statement returns, curBlock may be its merge block, while a managed slot
+	// was allocated in only one predecessor.  Loading that slot in the merge
+	// block is invalid LLVM (the alloca does not dominate the merge).  Release
+	// only values whose defining block is the current block; entry-block slots
+	// dominate every later block and remain safe to release here.
+	if scope.block != nil && scope.block != l.curBlock && scope.block.Label != "entry" {
+		return
+	}
+	for _, slot := range scope.slots {
+		if slot == nil {
+			continue
+		}
+		ptrType, ok := slot.Typ.(*sema.PointerType)
+		if !ok || ptrType.Base == nil {
+			continue
+		}
+		value := l.nextReg(ptrType.Base)
+		l.emit(&hir.InstrLoad{Dst: value, Ptr: slot})
+		l.releaseManagedValue(value)
 	}
 }
 
@@ -940,13 +1001,13 @@ func (l *Lowerer) stringBase(value hir.Value) hir.Value {
 }
 
 func (l *Lowerer) retainString(value hir.Value) {
-	base := l.stringBase(value)
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base}})
+	base, encodedOffset, _ := l.stringViewRawParts(value)
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}})
 }
 
 func (l *Lowerer) releaseString(value hir.Value) {
-	base := l.stringBase(value)
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base}})
+	base, encodedOffset, _ := l.stringViewRawParts(value)
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base, encodedOffset}})
 }
 
 // sliceCapacity reads the capacity stored in the 16-byte allocation header

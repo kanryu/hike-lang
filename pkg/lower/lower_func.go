@@ -93,6 +93,8 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 	c.root.deferStack = []*ast.CallExpr{}
 	c.root.managedParams = nil
 	c.root.managedParamEscapes = make(map[string]bool)
+	c.root.managedScopes = nil
+	c.root.pushManagedScope()
 	c.root.areaStack = []*hir.Reg{}
 	c.root.resetStructuredState()
 	c.root.legacyBlocks = nil
@@ -112,6 +114,11 @@ func (c *CallLowerer) resetFunctionState(fn *ast.FuncDecl) {
 // stays conservative: an unknown call, assignment, return, send, or closure
 // capture keeps the retain/release pair; len, cap, indexing, and conditions do
 // not extend the backing storage lifetime by themselves.
+func isSliceType(t sema.Type) bool {
+	_, ok := t.(*sema.SliceType)
+	return ok
+}
+
 func parameterEscapes(body *ast.BlockStmt, name string) bool {
 	if body == nil || name == "" {
 		return false
@@ -340,11 +347,22 @@ func (c *CallLowerer) lowerMainArguments(hirFn *hir.Function) {
 }
 
 func (c *CallLowerer) lowerOSArgs(argvReg *hir.Reg, argcReg *hir.Reg) {
+	// os.Args is a regular Hike slice. Allocate it through the slice runtime so
+	// the owner pointer is preceded by the shared capacity/refcount header.
+	// A direct calloc leaves no header for cap/retain/release in self-hosted
+	// compiler executions.
+	argBytes := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{
+		Dst: argBytes,
+		Op:  hir.OpMul,
+		L:   argcReg,
+		R:   &hir.ConstInt{Val: int64(sema.SizeOf(sema.TypeString)), Typ: sema.TypeInt},
+	})
 	callocRaw := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrCallStatic{
 		Dst:        callocRaw,
-		CalleeName: "calloc",
-		Args:       []hir.Value{argcReg, &hir.ConstInt{Val: int64(sema.SizeOf(sema.TypeString)), Typ: sema.TypeInt}},
+		CalleeName: c.root.BuiltinName("__hike_slice_alloc"),
+		Args:       []hir.Value{argBytes, argcReg},
 	})
 	callocRes := c.root.nextReg(&sema.PointerType{Base: sema.TypeString})
 	c.root.emit(&hir.InstrCast{Dst: callocRes, Val: callocRaw, ToType: &sema.PointerType{Base: sema.TypeString}})
@@ -438,7 +456,7 @@ func (c *CallLowerer) lowerReceiverParameter(receiver *ast.ParamDecl, hirFn *hir
 		c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: recvType})
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
-	if _, ok := recvType.(*sema.SliceType); ok && c.root.managedParamEscapes[receiver.Name.Value] {
+	if isSliceType(recvType) && c.root.managedParamEscapes[receiver.Name.Value] {
 		c.root.retainSlice(paramReg)
 		c.root.managedParams = append(c.root.managedParams, paramReg)
 	}
@@ -463,7 +481,7 @@ func (c *CallLowerer) lowerParameter(param *ast.ParamDecl, hirFn *hir.Function) 
 		c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: paramType})
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
-	if _, ok := paramType.(*sema.SliceType); ok && c.root.managedParamEscapes[param.Name.Value] {
+	if isSliceType(paramType) && c.root.managedParamEscapes[param.Name.Value] {
 		c.root.retainSlice(paramReg)
 		c.root.managedParams = append(c.root.managedParams, paramReg)
 	}
@@ -779,6 +797,9 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	prevTypes := c.root.symbolTypes
 	prevLoopStack := c.root.loopStack
 	prevDeferStack := c.root.deferStack
+	prevManagedParams := c.root.managedParams
+	prevManagedParamEscapes := c.root.managedParamEscapes
+	prevManagedScopes := c.root.managedScopes
 	prevAreaStack := c.root.areaStack
 	prevStructuredRoot := c.root.structuredRoot
 	prevStructuredStack := c.root.structuredStack
@@ -794,6 +815,10 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.legacyBlocks = nil
 	c.root.loopStack = []loopContext{}
 	c.root.deferStack = []*ast.CallExpr{}
+	c.root.managedParams = nil
+	c.root.managedParamEscapes = make(map[string]bool)
+	c.root.managedScopes = nil
+	c.root.pushManagedScope()
 	c.root.areaStack = []*hir.Reg{}
 	c.root.resetStructuredState()
 	c.root.initFunctionControl(anonFn)
@@ -900,6 +925,9 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 	c.root.symbolTypes = prevTypes
 	c.root.loopStack = prevLoopStack
 	c.root.deferStack = prevDeferStack
+	c.root.managedParams = prevManagedParams
+	c.root.managedParamEscapes = prevManagedParamEscapes
+	c.root.managedScopes = prevManagedScopes
 	c.root.areaStack = prevAreaStack
 	c.root.structuredRoot = prevStructuredRoot
 	c.root.structuredStack = prevStructuredStack

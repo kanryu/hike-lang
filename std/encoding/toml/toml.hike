@@ -1,5 +1,7 @@
 package toml
 
+import "std/strconv"
+
 // C-ABI 標準ライブラリ宣言
 func fopen(filename cstring, mode cstring) *byte
 func fclose(fp *byte) int
@@ -10,7 +12,6 @@ func fwrite(buffer *byte, size int, count int, fp *byte) int
 func malloc(size int) *byte
 func free(ptr *byte)
 func strlen(s cstring) int
-extern func sprintf(buf *byte, format cstring, ...) int
 func atoi(s cstring) int
 func atof(s cstring) float64
 
@@ -385,14 +386,10 @@ func formatValue(v *Value) string {
         return "\"" + v.StrVal + "\""
     }
     if v.Type == TypeInt {
-        buf := malloc(32)
-        sprintf(buf, cstring("%d"), v.IntVal)
-        return string(buf)
+        return strconv.Itoa(v.IntVal)
     }
     if v.Type == TypeFloat {
-        buf := malloc(32)
-        sprintf(buf, cstring("%f"), v.FloatVal)
-        return string(buf)
+        return strconv.FormatFloat(v.FloatVal, byte(102), -1, 64)
     }
     if v.Type == TypeBool {
         if v.BoolVal {
