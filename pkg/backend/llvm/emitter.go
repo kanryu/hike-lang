@@ -2,6 +2,7 @@ package llvm
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 
@@ -31,6 +32,7 @@ type Emitter struct {
 	panicTermID     int
 	currentIsMain   bool
 	renderedTypes   map[string]string
+	sourceLines     map[string][]string
 }
 
 // panicLabel returns an emitter-owned label for a function's defer chain.
@@ -76,6 +78,7 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath stri
 		declaredSymbols: make(map[string]bool),
 		userSymbols:     make(map[string]string),
 		renderedTypes:   make(map[string]string),
+		sourceLines:     make(map[string][]string),
 		debugMgr:        debug.NewDebugManager(sourcePath, debugEnabled),
 	}
 
@@ -779,6 +782,24 @@ func (e *Emitter) emitAsync(i *hir.InstrAsync, intLLVM string) {
 }
 
 func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
+	if logger.IsVerbose2() && i.OwnershipTarget != "" && strings.Contains(i.CalleeName, "__hike_") && (strings.Contains(i.CalleeName, "_retain") || strings.Contains(i.CalleeName, "_release")) {
+		locText := ""
+		sourceText := ""
+		if e.prog != nil {
+			if loc, ok := e.prog.InstructionLocations[hir.InstructionKey(i)]; ok && loc.Filename != "" {
+				locText = fmt.Sprintf(" at %s:%d:%d", loc.Filename, loc.Line, loc.Column)
+				sourceText = e.sourceLine(loc)
+			}
+		}
+		if sourceText != "" {
+			sourceText = " source: " + sourceText
+		}
+		variable := i.OwnershipVariable
+		if variable == "" {
+			variable = "<tmp>"
+		}
+		e.b.WriteString(fmt.Sprintf("; ownership: %s var=%s target=%s%s%s\n", strings.TrimPrefix(i.CalleeName, "__hike_"), variable, i.OwnershipTarget, locText, sourceText))
+	}
 	calleeName := i.CalleeName
 	if intrinsic := llvmIntrinsicName(calleeName); intrinsic != "" {
 		calleeName = intrinsic
@@ -817,6 +838,26 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
 		}
 	}
+}
+
+func (e *Emitter) sourceLine(loc hir.SourceLocation) string {
+	if loc.Filename == "" || loc.Line <= 0 {
+		return ""
+	}
+	lines, ok := e.sourceLines[loc.Filename]
+	if !ok {
+		data, err := os.ReadFile(loc.Filename)
+		if err != nil {
+			e.sourceLines[loc.Filename] = nil
+			return ""
+		}
+		lines = strings.Split(string(data), "\n")
+		e.sourceLines[loc.Filename] = lines
+	}
+	if loc.Line > len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimSuffix(lines[loc.Line-1], "\r"))
 }
 
 func (e *Emitter) emitGetElemPtr(i *hir.InstrGetElemPtr, intLLVM string) {

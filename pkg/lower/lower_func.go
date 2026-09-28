@@ -457,7 +457,7 @@ func (c *CallLowerer) lowerReceiverParameter(receiver *ast.ParamDecl, hirFn *hir
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
 	if isSliceType(recvType) && c.root.managedParamEscapes[receiver.Name.Value] {
-		c.root.retainSlice(paramReg)
+		c.root.retainSliceNamed(paramReg, receiver.Name.Value)
 		c.root.managedParams = append(c.root.managedParams, paramReg)
 	}
 	c.root.symbols[receiver.Name.Value] = ptrReg
@@ -482,7 +482,7 @@ func (c *CallLowerer) lowerParameter(param *ast.ParamDecl, hirFn *hir.Function) 
 	}
 	c.root.emit(&hir.InstrStore{Val: paramReg, Ptr: ptrReg})
 	if isSliceType(paramType) && c.root.managedParamEscapes[param.Name.Value] {
-		c.root.retainSlice(paramReg)
+		c.root.retainSliceNamed(paramReg, param.Name.Value)
 		c.root.managedParams = append(c.root.managedParams, paramReg)
 	}
 	c.root.symbols[param.Name.Value] = ptrReg

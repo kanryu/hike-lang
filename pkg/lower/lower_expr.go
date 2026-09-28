@@ -570,6 +570,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	var elemType sema.Type = sema.TypeByte
 	var typedDataPtr hir.Value = nil
 	var capVal hir.Value = nil
+	var lenVal hir.Value = nil
 	var ownerPtr *hir.Reg = nil
 	var offsetVal hir.Value = &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}
 	rawBytePtr := false
@@ -581,6 +582,9 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		offsetVal = offsetReg
 		e.root.emit(&hir.InstrExtractValue{Dst: ownerPtr, Agg: baseVal, Index: 0})
 		e.root.emit(&hir.InstrExtractValue{Dst: offsetReg, Agg: baseVal, Index: 1})
+		lengthReg := e.root.nextReg(sema.TypeInt32)
+		e.root.emit(&hir.InstrExtractValue{Dst: lengthReg, Agg: baseVal, Index: 2})
+		lenVal = lengthReg
 		capVal = e.root.sliceCapacity(ownerPtr)
 		// The slice offset is measured in elements.  The actual pointer is
 		// formed below after the low bound is known.
@@ -598,6 +602,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		ownerPtr = e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrCast{Dst: ownerPtr, Val: tPtr, ToType: ownerPtr.Type()})
 		capVal = &hir.ConstInt{Val: int64(arType.Len), Typ: sema.TypeInt}
+		lenVal = capVal
 	} else if baseType == sema.TypeCString {
 		// cstring indexing/slicing operates on its NUL-terminated byte
 		// buffer, with strlen providing the implicit capacity.
@@ -605,6 +610,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		lenReg := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 		capVal = lenReg
+		lenVal = lenReg
 	} else if ptrType, isBytePtr := baseType.(*sema.PointerType); isBytePtr && ptrType.Base == sema.TypeByte {
 		// A byte pointer has no Hike slice allocation header. Represent its
 		// view as borrowed storage: -1 marks a non-owning pointer-backed view.
@@ -622,6 +628,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 			lenReg := e.root.nextReg(sema.TypeInt)
 			e.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 			capVal = lenReg
+			lenVal = lenReg
 		}
 	} else {
 		panic(fmt.Sprintf("[Lower Error] cannot slice type %s", semaTypeName(baseType)))
@@ -634,7 +641,7 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	if rawBytePtr && node.High != nil {
 		capVal = e.LowerExpr(node.High)
 	}
-	highVal := hir.Value(capVal)
+	highVal := hir.Value(lenVal)
 	if node.High != nil {
 		if rawBytePtr {
 			highVal = capVal

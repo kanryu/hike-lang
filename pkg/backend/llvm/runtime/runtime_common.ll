@@ -40,10 +40,12 @@ load:
   ret i64 %cap
 }
 
-define internal void @__hike_slice_retain(i8* %owner) #0 {
+define internal void @__hike_slice_retain(i8* %owner, i32 %offset) #0 {
 entry:
   %is_null = icmp eq i8* %owner, null
-  br i1 %is_null, label %done, label %load
+  %literal = icmp slt i32 %offset, 0
+  %skip = or i1 %is_null, %literal
+  br i1 %skip, label %done, label %load
 load:
   %raw = getelementptr inbounds i8, i8* %owner, i64 -12
   %ref_ptr = bitcast i8* %raw to i32*
@@ -58,10 +60,12 @@ done:
   ret void
 }
 
-define internal void @__hike_slice_release(i8* %owner) #0 {
+define internal void @__hike_slice_release(i8* %owner, i32 %offset) #0 {
 entry:
   %is_null = icmp eq i8* %owner, null
-  br i1 %is_null, label %done, label %load
+  %literal = icmp slt i32 %offset, 0
+  %skip = or i1 %is_null, %literal
+  br i1 %skip, label %done, label %load
 load:
   %raw = getelementptr inbounds i8, i8* %owner, i64 -12
   %ref_ptr = bitcast i8* %raw to i32*
@@ -985,6 +989,7 @@ reuse:
 copy:
   %src = getelementptr inbounds i8, i8* %base, i32 %offset
   %new_data = call i8* @hike_strcat_len(i8* %src, i64 %len64, i8* %b, i64 %blen64)
+  ; ownership: string_release var=base target=%base at runtime_common.ll:992:3
   call void @__hike_string_release(i8* %base, i32 %offset)
   ret i8* %new_data
 }

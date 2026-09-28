@@ -474,14 +474,14 @@ func (s *StmtLowerer) LowerVarDecl(vd *ast.VarDecl) {
 		s.root.trackManagedLocal(ptrReg)
 	}
 	if vd.Value != nil && s.isManagedViewExpr(vd.Value) && isSliceType(targetType) {
-		s.root.retainSlice(val)
+		s.root.retainSliceNamed(val, vd.Name.Value)
 		s.root.trackManagedLocal(ptrReg)
 	}
 	if vd.Value != nil && s.isManagedViewExpr(vd.Value) && s.root.isStringType(targetType) {
 		s.root.trackManagedLocal(ptrReg)
 	}
 	if s.root.isStringType(targetType) && vd.Value != nil && s.isManagedAliasExpr(vd.Value) {
-		s.root.retainString(val)
+		s.root.retainStringNamed(val, vd.Name.Value)
 	}
 }
 
@@ -585,10 +585,10 @@ func (s *StmtLowerer) lowerDefineAssignment(stmt *ast.AssignStmt, rhsVals []hir.
 		if val != nil {
 			s.root.emit(&hir.InstrStore{Val: val, Ptr: ptrReg})
 			if s.root.isStringType(targetType) && i < len(stmt.Right) && s.isManagedAliasExpr(stmt.Right[i]) {
-				s.root.retainString(val)
+				s.root.retainStringNamed(val, astIDValue(ident))
 			}
 			if i < len(stmt.Right) && s.isManagedViewExpr(stmt.Right[i]) && isSliceType(targetType) {
-				s.root.retainSlice(val)
+				s.root.retainSliceNamed(val, astIDValue(ident))
 				s.root.trackManagedLocal(ptrReg)
 			}
 			if i < len(stmt.Right) && s.isManagedViewExpr(stmt.Right[i]) && s.root.isStringType(targetType) {
@@ -628,6 +628,12 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 	for i, left := range stmt.Left {
 		if ident, ok := left.(*ast.Identifier); ok && astIDValue(ident) == "_" {
 			continue
+		}
+		targetVariable := ""
+		if ident, ok := left.(*ast.Identifier); ok {
+			targetVariable = astIDValue(ident)
+		} else if member, ok := left.(*ast.MemberExpr); ok && member.Field != nil {
+			targetVariable = member.Field.Value
 		}
 
 		// マップおよびコレクション構造体への添字代入 m[k] = v の判定
@@ -792,9 +798,9 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			if s.root.isStringType(elemType) && op != "+=" {
 				oldVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: oldVal, Ptr: targetPtr})
-				s.root.releaseString(oldVal)
+				s.root.releaseStringNamed(oldVal, targetVariable)
 				if i < len(stmt.Right) && s.isManagedAliasExpr(stmt.Right[i]) {
-					s.root.retainString(val)
+					s.root.retainStringNamed(val, targetVariable)
 				}
 			}
 

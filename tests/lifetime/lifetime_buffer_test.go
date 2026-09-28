@@ -31,7 +31,8 @@ func consumeCString(raw cstring) int { value := string(raw); part := value[1:len
 
 cfunc fromCString(input *byte, length int) cstring { raw := cstring(input, length); value := string(raw); if len(value) > 2 { value = value[1:len(value)-1] }; return cstring(value + "!") }
 
-func rawPointerSlice() int { data := make([]byte, 4); data[0] = 10; data[1] = 20; data[2] = 30; data[3] = 40; ptr := &data[0]; var view []byte; if ptr != nil { view = ptr[1:3] }; printf("CASE=raw:%d,%d,%d\n", view[0], view[1], len(view)); return view[0] }
+func passthroughRaw(view []byte) []byte { return view }
+func rawPointerSlice() int { data := make([]byte, 4); data[0] = 10; data[1] = 20; data[2] = 30; data[3] = 40; ptr := &data[0]; var view []byte; if ptr != nil { view = ptr[1:3] }; view = passthroughRaw(view); printf("CASE=raw:%d,%d,%d\n", view[0], view[1], len(view)); return view[0] }
 func joinPath(a string, b string) string { return a + "/" + b }
 func appendNil() []int { var values []int; values = append(values, 1, 2); return values }
 func appendGrow(values []int) []int { values = append(values, 30, 40); values = append(values, 50, 60, 70); return values }
@@ -54,4 +55,87 @@ func main() int {
     return 0
 }
 `, ExpectedOut: "CASE=string-branch:li\nCASE=string-loop:l\nCASE=string-branch:dy\nCASE=string-loop:d\nCASE=slice-branch:10\nCASE=slice-loop:10\nCASE=slice-branch:40\nCASE=slice-loop:40\nCASE=args:5,5,22,53\nCASE=if-string:lit,3\nCASE=if-string:nam,3\nCASE=if-slice:10,2\nCASE=if-slice:60,2\nCASE=loops:6,31\nCASE=cstring:eadere,6\nCASE=cfunc:bc!,3\nCASE=raw:20,30,2\nCASE=return-string:13,13\nCASE=append:1,2,20,9\n", ExpectedExit: 0})
+}
+
+// This is the minimal source pattern extracted from the self-hosting IR:
+// Parser and an imported package both define Parser, while &Parser{} is
+// followed by zero-length slice initialization.
+func TestBufferLifetime_SameNamedImportedStruct(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{Source: `
+package main
+
+import "std/encoding/json"
+
+func printf(format string, ...) int
+
+type ParseTask struct { Parent *json.Parser; Tokens []int }
+type Parser struct {
+    tokens []int
+    pos int
+    curToken json.Parser
+    peekToken json.Parser
+    errors []string
+    verbose bool
+    allowStructLit bool
+    queue []*ParseTask
+}
+
+func newParser() *Parser {
+    p := &Parser{}
+    p.tokens = []int{}
+    p.errors = []string{}
+    p.queue = make([]*ParseTask, 0)
+    return p
+}
+func main() int {
+    p := newParser()
+    if p != nil { printf("PARSER=OK\n"); return 0 }
+    return 1
+}
+`, ExpectedOut: "PARSER=OK\n", ExpectedExit: 0})
+}
+
+// TestBufferLifetime_SliceQueuePopUsesLength reproduces the self-hosting
+// parser crash caused by lowering s[1:] with the backing capacity instead of
+// the current slice length. After two appends, the first pop leaves a view
+// with offset 1, length 1, and backing capacity 2. The second pop must make
+// the queue empty; using capacity-1 leaves a phantom nil task in the queue.
+func TestBufferLifetime_SliceQueuePopUsesLength(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{Source: `
+package main
+
+func printf(format string, ...) int
+
+type Task struct { value int }
+
+func main() int {
+    queue := make([]*Task, 0)
+    queue = append(queue, &Task{value: 7})
+    queue = append(queue, &Task{value: 9})
+    for len(queue) > 0 {
+        task := queue[0]
+        queue = queue[1:]
+        printf("TASK=%d\n", task.value)
+    }
+    return 0
+}
+
+`, ExpectedOut: "TASK=7\nTASK=9\n", ExpectedExit: 0})
+}
+
+func TestBufferLifetime_ZeroValueStringBuilder(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{Source: `
+package main
+
+import "std/strings"
+
+func printf(format string, ...) int
+
+func main() int {
+    var builder strings.Builder
+    builder.WriteString("zero-value")
+    printf("BUILDER=%d\n", builder.Len())
+    return 0
+}
+`, ExpectedOut: "BUILDER=10\n", ExpectedExit: 0})
 }

@@ -483,7 +483,7 @@ func (s *StmtLowerer) releaseReturnedStringOperands(expr *ast.BinaryExpr) {
 			// operates on the string value stored in that slot.
 			value := s.root.nextReg(s.root.symbolTypes[name])
 			s.root.emit(&hir.InstrLoad{Dst: value, Ptr: s.root.symbols[name]})
-			s.root.releaseString(value)
+			s.root.releaseStringNamed(value, name)
 		case *ast.BinaryExpr:
 			visit(n.Left)
 			visit(n.Right)

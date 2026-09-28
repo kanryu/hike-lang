@@ -412,9 +412,11 @@ func (i *InstrGetElemPtr) String() string {
 }
 
 type InstrCallStatic struct {
-	Dst        *Reg
-	CalleeName string
-	Args       []Value
+	Dst               *Reg
+	CalleeName        string
+	Args              []Value
+	OwnershipTarget   string
+	OwnershipVariable string
 }
 
 func (i *InstrCallStatic) Result() *Reg { return i.Dst }

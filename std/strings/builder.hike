@@ -34,6 +34,9 @@ func (b *Builder) WriteString(s cstring) {
 	needCap := b.len + addLen + 1
 	if needCap > b.cap {
 		newCap := b.cap * 2
+		if newCap <= 0 {
+			newCap = 32
+		}
 		for newCap < needCap {
 			newCap = newCap * 2
 		}
@@ -80,6 +83,9 @@ func (b *Builder) Grow(n int) {
 		return
 	}
 	newCap := b.cap * 2
+	if newCap <= 0 {
+		newCap = 32
+	}
 	for newCap < needCap {
 		newCap = newCap * 2
 	}

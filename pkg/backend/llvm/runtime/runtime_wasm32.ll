@@ -33,10 +33,12 @@ load:
   ret i32 %cap
 }
 
-define internal void @__hike_slice_retain32(i8* %owner) #0 {
+define internal void @__hike_slice_retain32(i8* %owner, i32 %offset) #0 {
 entry:
   %is_null = icmp eq i8* %owner, null
-  br i1 %is_null, label %done, label %load
+  %literal = icmp slt i32 %offset, 0
+  %skip = or i1 %is_null, %literal
+  br i1 %skip, label %done, label %load
 load:
   %raw = getelementptr inbounds i8, i8* %owner, i32 -12
   %ref_ptr = bitcast i8* %raw to i32*
@@ -51,10 +53,12 @@ done:
   ret void
 }
 
-define internal void @__hike_slice_release32(i8* %owner) #0 {
+define internal void @__hike_slice_release32(i8* %owner, i32 %offset) #0 {
 entry:
   %is_null = icmp eq i8* %owner, null
-  br i1 %is_null, label %done, label %load
+  %literal = icmp slt i32 %offset, 0
+  %skip = or i1 %is_null, %literal
+  br i1 %skip, label %done, label %load
 load:
   %raw = getelementptr inbounds i8, i8* %owner, i32 -12
   %ref_ptr = bitcast i8* %raw to i32*

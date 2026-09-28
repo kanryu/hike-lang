@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var lifetimeHikec string
@@ -50,6 +52,18 @@ func TestMain(m *testing.M) {
 		name += ".exe"
 	}
 	lifetimeHikec = filepath.Join(tmp, name)
+	if native := os.Getenv("HIKE_NATIVE_HIKEC"); native != "" {
+		lifetimeHikec = native
+		os.Exit(m.Run())
+	}
+	if testutil.UseNativeBinaries() {
+		lifetimeHikec, err = testutil.SelectBinary(root, "hikec", lifetimeHikec)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(m.Run())
+	}
 	build := exec.Command("go", "build", "-o", lifetimeHikec, filepath.Join(root, "cmd", "hikec"))
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		fmt.Fprintf(os.Stderr, "lifetime HikeC build failed: %v\n%s\n", buildErr, output)

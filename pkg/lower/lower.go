@@ -467,11 +467,11 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 		// before the callee releases its parameter references.
 		if len(l.managedParams) > 0 {
 			for _, value := range term.(*hir.InstrReturn).Vals {
-				l.retainManagedValue(value)
+				l.retainManagedValueNamed(value, "<return>")
 			}
 		}
 		for _, param := range l.managedParams {
-			l.releaseManagedValue(param)
+			l.releaseManagedValueNamed(param, ownershipTargetName(param))
 		}
 		l.cleanupManagedScopes()
 	}
@@ -552,7 +552,7 @@ func (l *Lowerer) releaseManagedSlots(scope managedScope) {
 		}
 		value := l.nextReg(ptrType.Base)
 		l.emit(&hir.InstrLoad{Dst: value, Ptr: slot})
-		l.releaseManagedValue(value)
+		l.releaseManagedValueNamed(value, ownershipTargetName(slot))
 	}
 }
 
@@ -1001,13 +1001,21 @@ func (l *Lowerer) stringBase(value hir.Value) hir.Value {
 }
 
 func (l *Lowerer) retainString(value hir.Value) {
+	l.retainStringNamed(value, "")
+}
+
+func (l *Lowerer) retainStringNamed(value hir.Value, variable string) {
 	base, encodedOffset, _ := l.stringViewRawParts(value)
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
 
 func (l *Lowerer) releaseString(value hir.Value) {
+	l.releaseStringNamed(value, "")
+}
+
+func (l *Lowerer) releaseStringNamed(value hir.Value, variable string) {
 	base, encodedOffset, _ := l.stringViewRawParts(value)
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base, encodedOffset}})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
 
 // sliceCapacity reads the capacity stored in the 16-byte allocation header
@@ -1021,40 +1029,96 @@ func (l *Lowerer) sliceCapacity(owner hir.Value) hir.Value {
 }
 
 func (l *Lowerer) retainSlice(value hir.Value) {
+	l.retainSliceNamed(value, "")
+}
+
+func (l *Lowerer) retainSliceNamed(value hir.Value, variable string) {
 	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	offset := l.nextReg(sema.TypeInt32)
 	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_retain"), Args: []hir.Value{owner}})
+	l.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_retain"), Args: []hir.Value{owner, offset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
 
 func (l *Lowerer) releaseSlice(value hir.Value) {
+	l.releaseSliceNamed(value, "")
+}
+
+func (l *Lowerer) releaseSliceNamed(value hir.Value, variable string) {
 	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	offset := l.nextReg(sema.TypeInt32)
 	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
-	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_release"), Args: []hir.Value{owner}})
+	l.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_slice_release"), Args: []hir.Value{owner, offset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
+}
+
+func ownershipVariableName(value hir.Value, variable string) string {
+	if variable != "" {
+		return variable
+	}
+	if reg, ok := value.(*hir.Reg); ok && strings.Contains(reg.Name, "_arg.") {
+		return ownershipTargetName(value)
+	}
+	return "<tmp>"
+}
+
+func ownershipTargetName(value hir.Value) string {
+	if reg, ok := value.(*hir.Reg); ok && reg.Name != "" {
+		name := reg.Name
+		if i := strings.Index(name, "_arg."); i >= 0 {
+			name = name[:i]
+		}
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			allDigits := i+1 < len(name)
+			for _, r := range name[i+1:] {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				name = name[:i]
+			}
+		}
+		return name
+	}
+	if value == nil {
+		return "<nil>"
+	}
+	return value.String()
 }
 
 func (l *Lowerer) retainManagedValue(value hir.Value) {
+	l.retainManagedValueNamed(value, "")
+}
+
+func (l *Lowerer) retainManagedValueNamed(value hir.Value, variable string) {
 	if value == nil || value.Type() == nil {
 		return
 	}
 	if l.isStringType(value.Type()) {
-		l.retainString(value)
+		l.retainStringNamed(value, variable)
 		return
 	}
 	if _, ok := value.Type().(*sema.SliceType); ok {
-		l.retainSlice(value)
+		l.retainSliceNamed(value, variable)
 	}
 }
 
 func (l *Lowerer) releaseManagedValue(value hir.Value) {
+	l.releaseManagedValueNamed(value, "")
+}
+
+func (l *Lowerer) releaseManagedValueNamed(value hir.Value, variable string) {
 	if value == nil || value.Type() == nil {
 		return
 	}
 	if l.isStringType(value.Type()) {
-		l.releaseString(value)
+		l.releaseStringNamed(value, variable)
 		return
 	}
 	if _, ok := value.Type().(*sema.SliceType); ok {
-		l.releaseSlice(value)
+		l.releaseSliceNamed(value, variable)
 	}
 }
 

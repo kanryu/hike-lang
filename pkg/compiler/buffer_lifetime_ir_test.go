@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/target"
 )
 
@@ -15,6 +16,9 @@ import (
 // refcount header, while ordinary string/slice values must retain the offset
 // needed to find their backing allocation.
 func TestBufferLifetimeIRChecks(t *testing.T) {
+	logger.SetLevel(2)
+	defer logger.SetLevel(0)
+
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +126,8 @@ func main() int {
 		{"slice capacity header", `getelementptr inbounds i8, i8\* %owner, i64 -16`},
 		{"literal retain guard", `%literal = icmp slt i32 %offset, 0`},
 		{"raw byte pointer view sentinel", `insertvalue \{ i8\*, i32, i32 \} .*i32 -1`},
+		{"verbose ownership source line", `; ownership: (string|slice)_(retain|release) var=.* target=.* source: `},
+		{"verbose ownership source text", `; ownership: .* source: .+`},
 	}
 	for _, check := range checks {
 		if !regexp.MustCompile(check.want).MatchString(ir) {
@@ -181,8 +187,8 @@ func main() int {
 	if stringRetains < 1 {
 		t.Errorf("function string ownership is under-instrumented: retains=%d releases=%d", stringRetains, stringReleases)
 	}
-	sliceRetains := len(regexp.MustCompile(`call void @__hike_slice_retain\(i8\* [^)]+\)`).FindAllString(ir, -1))
-	sliceReleases := len(regexp.MustCompile(`call void @__hike_slice_release\(i8\* [^)]+\)`).FindAllString(ir, -1))
+	sliceRetains := len(regexp.MustCompile(`call void @__hike_slice_retain\(i8\* [^,]+, i32 [^)]+\)`).FindAllString(ir, -1))
+	sliceReleases := len(regexp.MustCompile(`call void @__hike_slice_release\(i8\* [^,]+, i32 [^)]+\)`).FindAllString(ir, -1))
 	if sliceRetains < 2 || sliceReleases < 2 {
 		t.Errorf("function slice ownership is under-instrumented: retains=%d releases=%d", sliceRetains, sliceReleases)
 	}
@@ -259,6 +265,12 @@ func TestBufferLifetimeRuntimeLayout(t *testing.T) {
 		t.Error("WASM string retain does not guard literal offsets")
 	}
 	for name, ir := range map[string]string{"llvm64": string(common), "wasm32": string(wasm)} {
+		if !regexp.MustCompile(`(?s)__hike_slice_retain(?:32)?\(i8\* %owner, i32 %offset\).*?icmp slt i32 %offset, 0`).MatchString(ir) {
+			t.Errorf("%s slice retain does not guard negative offsets", name)
+		}
+		if !regexp.MustCompile(`(?s)__hike_slice_release(?:32)?\(i8\* %owner, i32 %offset\).*?icmp slt i32 %offset, 0`).MatchString(ir) {
+			t.Errorf("%s slice release does not guard negative offsets", name)
+		}
 		if !regexp.MustCompile(`(?s)__hike_string_writable(?:32)?\([^)]*%offset, i32 %len\).*?icmp slt i32 %offset, 0`).MatchString(ir) {
 			t.Errorf("%s writable-string path does not guard literal offsets", name)
 		}
