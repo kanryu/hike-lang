@@ -28,6 +28,11 @@ entry:
 
 define internal i64 @__hike_slice_cap(i8* %owner) #0 {
 entry:
+  %is_null = icmp eq i8* %owner, null
+  br i1 %is_null, label %zero, label %load
+zero:
+  ret i64 0
+load:
   %raw = getelementptr inbounds i8, i8* %owner, i64 -16
   %cap_ptr = bitcast i8* %raw to i32*
   %cap32 = load i32, i32* %cap_ptr

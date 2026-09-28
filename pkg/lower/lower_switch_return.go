@@ -463,6 +463,13 @@ func (s *StmtLowerer) releaseReturnedStringOperands(expr *ast.BinaryExpr) {
 			if name == "" || seen[name] || s.root.symbols[name] == nil {
 				return
 			}
+			// Parameters are borrowed by the callee.  Releasing one here would
+			// decrement the caller's reference, and the caller may release the
+			// same string again after the call.  Only locally owned symbols may
+			// be consumed by this return-expression cleanup.
+			if s.isCurrentFunctionParameter(name) {
+				return
+			}
 			// Global variables are borrowed references and must not be released
 			// as if they were local ownerships.
 			if _, global := s.root.symbols[name].(*hir.GlobalVar); global {
@@ -484,6 +491,21 @@ func (s *StmtLowerer) releaseReturnedStringOperands(expr *ast.BinaryExpr) {
 	}
 	visit(expr.Left)
 	visit(expr.Right)
+}
+
+func (s *StmtLowerer) isCurrentFunctionParameter(name string) bool {
+	if s.root.curFunc == nil {
+		return false
+	}
+	for _, param := range s.root.curFunc.Params {
+		if param == nil {
+			continue
+		}
+		if param.Name == name || strings.HasPrefix(param.Name, name+"_arg.") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *StmtLowerer) lowerTupleReturn(rs *ast.ReturnStmt) bool {

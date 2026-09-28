@@ -1294,9 +1294,17 @@ func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
 		return
 	}
 	text := e.b.String()
+	// Attach the location only to an emitted LLVM instruction.  Some HIR
+	// instructions expand to no text in a particular CFG block; in that case
+	// the last line in the buffer can be a block label (for example
+	// call.cont.N:).  Appending !dbg to that label produces invalid LLVM IR.
 	end := len(text)
-	if end > 0 && text[end-1] == '\n' {
+	for end > start && text[end-1] == '\n' {
 		end--
+	}
+	lineStart := strings.LastIndexByte(text[:end], '\n') + 1
+	if lineStart < start || lineStart >= end || !strings.HasPrefix(text[lineStart:end], "  ") {
+		return
 	}
 	e.b.Reset()
 	e.b.WriteString(text[:end])

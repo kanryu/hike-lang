@@ -266,4 +266,61 @@ func TestBufferLifetimeRuntimeLayout(t *testing.T) {
 			t.Errorf("%s string-append path does not guard literal offsets", name)
 		}
 	}
+	if !regexp.MustCompile(`(?s)@__hike_slice_cap\(i8\* %owner\).*?icmp eq i8\* %owner, null.*?ret i64 0`).MatchString(string(common)) {
+		t.Error("LLVM slice capacity path does not return zero for a nil owner")
+	}
+	if !regexp.MustCompile(`(?s)__hike_slice_cap32\(i8\* %owner\).*?icmp eq i8\* %owner, null.*?ret i32 0`).MatchString(string(wasm)) {
+		t.Error("WASM slice capacity path does not return zero for a nil owner")
+	}
+}
+
+// TestBufferLifetimeIR_BorrowedStringParameters ensures that a returned
+// concatenation does not release borrowed function parameters. The caller owns
+// those references; releasing them in the callee causes a later double free.
+func TestBufferLifetimeIR_BorrowedStringParameters(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	mod := "module borrowed-string-ir\nhike 0.1.0\nreplace std => " + filepath.ToSlash(filepath.Join(root, "std")) + "\n"
+	if err := os.WriteFile(filepath.Join(tmp, "hike.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	source := `package main
+
+func join(a string, b string) string { return a + "/" + b }
+func main() int { return len(join("a", "b")) }
+`
+	entry := filepath.Join(tmp, "main.hike")
+	if err := os.WriteFile(entry, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt := target.TargetX86_64Windows
+	c := New(&tgt)
+	ir, _, _, err := c.CompileToLLVM(entry)
+	if err != nil {
+		t.Fatalf("borrowed string IR compilation failed: %v\n%s", err, c.Reporter().FormatAll())
+	}
+	start := strings.Index(ir, "define ")
+	for start >= 0 {
+		at := strings.Index(ir[start:], "@join(")
+		if at < 0 {
+			break
+		}
+		at += start
+		end := strings.Index(ir[at:], "\ndefine ")
+		if end < 0 {
+			end = len(ir) - at
+		}
+		body := ir[at : at+end]
+		if !strings.Contains(body, "@hike_strcat_len") {
+			t.Fatal("join does not lower string concatenation through hike_strcat_len")
+		}
+		if strings.Contains(body, "@__hike_string_release") {
+			t.Fatal("join releases borrowed string parameters")
+		}
+		return
+	}
+	t.Fatal("join function body was not emitted")
 }
