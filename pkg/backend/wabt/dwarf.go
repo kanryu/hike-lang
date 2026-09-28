@@ -45,6 +45,7 @@ type DebugInfo struct {
 	// browser. It prevents DevTools from synthesizing a wasm:// URL.
 	SourceURL        string
 	RuntimeFunctions int
+	LineTablesOnly   bool
 	Functions        []DebugFunction
 }
 
@@ -64,7 +65,7 @@ type codeRange struct {
 func (d *DebugInfo) Empty() bool { return d == nil || len(d.Functions) == 0 }
 
 func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
-	info := &DebugInfo{SourcePath: sourcePath, RuntimeFunctions: e.runtimeFunctions}
+	info := &DebugInfo{SourcePath: sourcePath, RuntimeFunctions: e.runtimeFunctions, LineTablesOnly: e.lineTablesOnly}
 	if e == nil || e.p == nil {
 		return info
 	}
@@ -93,6 +94,9 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 		// Function parameters remain live Wasm locals. Describe them as
 		// values, rather than as addresses that need to be dereferenced.
 		for index, param := range fn.Params {
+			if e.lineTablesOnly {
+				break
+			}
 			if param == nil {
 				continue
 			}
@@ -121,7 +125,7 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 					instrLine = line
 				}
 				debugFn.Lines = append(debugFn.Lines, instrLine)
-				if result == nil {
+				if result == nil || e.lineTablesOnly {
 					continue
 				}
 				resultLocals[result] = nextLocal
@@ -159,6 +163,9 @@ func (e *Emitter) DebugInfo(sourcePath string) *DebugInfo {
 		// as a synthetic `return` variable using the actual Wasm local that holds
 		// the expression result.
 		for _, bb := range e.blocksForEmission(fn) {
+			if e.lineTablesOnly {
+				break
+			}
 			ret, ok := bb.Terminator.(*hir.InstrReturn)
 			if !ok || len(ret.Vals) != 1 || seenNames["return_of_function"] {
 				continue
@@ -220,7 +227,7 @@ func AppendDWARF(wasm []byte, info *DebugInfo) ([]byte, error) {
 	}
 	str, offsets := dwarfStrings(info)
 	ranges := debugCodeRanges(wasm, info, true)
-	abbrev := dwarfAbbrev()
+	abbrev := dwarfAbbrev(info.LineTablesOnly)
 	die := dwarfInfo(info, offsets, ranges)
 	line := dwarfLine(info, ranges, offsets)
 	result := append([]byte{}, wasm...)
@@ -370,7 +377,9 @@ func dwarfStrings(info *DebugInfo) ([]byte, map[string]uint32) {
 		data = append(data, 0)
 	}
 	add(debugSourceName(info))
-	add("i32")
+	if !info.LineTablesOnly {
+		add("i32")
+	}
 	for _, fn := range info.Functions {
 		add(fn.Name)
 		for _, local := range fn.Locals {
@@ -380,12 +389,16 @@ func dwarfStrings(info *DebugInfo) ([]byte, map[string]uint32) {
 	return data, offsets
 }
 
-func dwarfAbbrev() []byte {
+func dwarfAbbrev(lineTablesOnly bool) []byte {
 	// Abbrev 1: compile unit. Abbrev 2: subprogram. Abbrev 3: variable.
 	// Abbrev 4: the i32 base type used by the current Wasm ABI.
+	hasChildren := byte(1)
+	if lineTablesOnly {
+		hasChildren = 0
+	}
 	return []byte{
 		1, 0x11, 1, 0x03, 0x0e, 0x10, 0x06, 0x13, 0x05, 0, 0,
-		2, 0x2e, 1, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x11, 0x01, 0x12, 0x01, 0, 0,
+		2, 0x2e, hasChildren, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x11, 0x01, 0x12, 0x01, 0, 0,
 		3, 0x34, 0, 0x03, 0x0e, 0x3a, 0x0b, 0x3b, 0x0b, 0x49, 0x13, 0x02, 0x0a, 0, 0,
 		4, 0x24, 0, 0x03, 0x0e, 0x0b, 0x0b, 0x3e, 0x0b, 0, 0,
 		0,
@@ -398,11 +411,13 @@ func dwarfInfo(info *DebugInfo, offsets map[string]uint32, ranges []codeRange) [
 	putU32(&body, offsets[debugSourceName(info)])
 	putU32(&body, 0)      // DW_AT_stmt_list: the line table starts at zero.
 	putU16(&body, 0x0002) // DW_LANG_C is the closest standard language tag.
-	// The type DIE is first, so its CU-relative offset is the fixed unit
-	// header size: 4-byte length, version, abbrev offset, and address size.
-	body = append(body, 4)
-	putU32(&body, offsets["i32"])
-	body = append(body, 4, 0x05) // 4-byte signed integer.
+	if !info.LineTablesOnly {
+		// The type DIE is first, so its CU-relative offset is the fixed unit
+		// header size: 4-byte length, version, abbrev offset, and address size.
+		body = append(body, 4)
+		putU32(&body, offsets["i32"])
+		body = append(body, 4, 0x05) // 4-byte signed integer.
+	}
 	for i, fn := range info.Functions {
 		body = append(body, 2)
 		putU32(&body, offsets[fn.Name])
@@ -416,6 +431,9 @@ func dwarfInfo(info *DebugInfo, offsets map[string]uint32, ranges []codeRange) [
 			putU32(&body, 0)
 		}
 		for _, local := range fn.Locals {
+			if info.LineTablesOnly {
+				break
+			}
 			body = append(body, 3)
 			putU32(&body, offsets[local.Name])
 			body = append(body, 1, byte(clampLine(local.Line)))
@@ -432,7 +450,9 @@ func dwarfInfo(info *DebugInfo, offsets map[string]uint32, ranges []codeRange) [
 			body = append(body, byte(len(expr)))
 			body = append(body, expr...)
 		}
-		body = append(body, 0) // end subprogram children
+		if !info.LineTablesOnly {
+			body = append(body, 0) // end subprogram children
+		}
 	}
 	body = append(body, 0) // end children
 

@@ -85,6 +85,14 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath stri
 	return e
 }
 
+// SetLineTablesOnly retains DILocation metadata but suppresses local-variable
+// and type metadata, matching LLVM's -gline-tables-only mode.
+func (e *Emitter) SetLineTablesOnly(enabled bool) {
+	if e != nil && e.debugMgr != nil {
+		e.debugMgr.SetLineTablesOnly(enabled)
+	}
+}
+
 func (e *Emitter) functionSymbol(name string) string {
 	if symbol, ok := e.userSymbols[name]; ok {
 		return symbol
@@ -139,7 +147,7 @@ func (e *Emitter) emitPrologue() {
 	e.b.WriteString(fmt.Sprintf("; ModuleID = '%s'\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("source_filename = \"%s.hike\"\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", e.targetTriple))
-	if e.debugMgr.Enabled() {
+	if e.debugMgr.Enabled() && !e.debugMgr.LineTablesOnly() {
 		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 	}
 	// ターゲットトリプルに応じた適切なランタイムIRを出力

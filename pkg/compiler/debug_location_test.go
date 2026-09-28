@@ -376,7 +376,6 @@ func main() int {
 	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
 		t.Fatal(err)
 	}
-
 	tgt, err := target.ParseTarget("linux")
 	if err != nil {
 		t.Fatal(err)
@@ -390,6 +389,79 @@ func main() int {
 	for _, marker := range []string{"!DICompositeType(tag: DW_TAG_structure_type, name: \"Point\"", "!DIDerivedType(tag: DW_TAG_member, name: \"x\"", "!DIDerivedType(tag: DW_TAG_member, name: \"y\"", "!DILocalVariable(name: \"point\"", "@llvm.dbg.declare"} {
 		if !strings.Contains(ir, marker) {
 			t.Fatalf("debug LLVM IR does not contain struct marker %q", marker)
+		}
+	}
+}
+
+func TestLLVMEmitterLineTablesOnlySuppressesVariablesAndTypes(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "line_tables.hike")
+	source := `package main
+
+type Point struct { x int, y int }
+
+func main() int {
+    point := Point{x: 1, y: 2}
+    value := point.x + point.y
+    return value
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(tgt)
+	c.SetDebugLineTablesOnly(true)
+	ir, _, _, err := c.CompileToLLVM(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"emissionKind: LineTablesOnly", "!DILocation", "!DISubprogram", "!dbg !"} {
+		if !strings.Contains(ir, marker) {
+			t.Fatalf("line-tables-only LLVM IR does not contain %q", marker)
+		}
+	}
+	for _, marker := range []string{"!DILocalVariable", "!DICompositeType", "!DIDerivedType", "@llvm.dbg.declare"} {
+		if strings.Contains(ir, marker) {
+			t.Fatalf("line-tables-only LLVM IR unexpectedly contains %q", marker)
+		}
+	}
+}
+
+func TestWABTLineTablesOnlySuppressesLocals(t *testing.T) {
+	tmp := t.TempDir()
+	sourcePath := filepath.Join(tmp, "line_tables.hike")
+	source := `package main
+func main() int {
+    value := 41
+    return value + 1
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := target.ParseTarget("wabt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(tgt)
+	c.SetDebugLineTablesOnly(true)
+	if _, _, _, err := c.CompileToWAT(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	info := c.WABTDebugInfo()
+	if info == nil || len(info.Functions) == 0 {
+		t.Fatal("line-tables-only WABT debug info was not collected")
+	}
+	for _, fn := range info.Functions {
+		if len(fn.Locals) != 0 {
+			t.Fatalf("line-tables-only WABT debug info contains locals: %#v", fn.Locals)
+		}
+		if len(fn.Lines) == 0 {
+			t.Fatalf("line-tables-only WABT debug info omitted line entries for %s", fn.Name)
 		}
 	}
 }

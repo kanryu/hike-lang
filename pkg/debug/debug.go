@@ -27,23 +27,24 @@ type LocalVarMeta struct {
 }
 
 type DebugManager struct {
-	enabled      bool
-	sourcePath   string
-	filename     string
-	directory    string
-	cuID         int
-	dwarfVerID   int
-	debugVerID   int
-	fileID       int
-	currentSP    int
-	subprograms  []*SubprogramMeta
-	localVars    []*LocalVarMeta
-	locMap       map[string]int
-	typeMap      map[string]int
-	compositeMap map[string]int
-	typeMetaList []string
-	metadataList []string
-	nextID       int
+	enabled        bool
+	lineTablesOnly bool
+	sourcePath     string
+	filename       string
+	directory      string
+	cuID           int
+	dwarfVerID     int
+	debugVerID     int
+	fileID         int
+	currentSP      int
+	subprograms    []*SubprogramMeta
+	localVars      []*LocalVarMeta
+	locMap         map[string]int
+	typeMap        map[string]int
+	compositeMap   map[string]int
+	typeMetaList   []string
+	metadataList   []string
+	nextID         int
 }
 
 func NewDebugManager(sourcePath string, enabled bool) *DebugManager {
@@ -84,6 +85,18 @@ func (dm *DebugManager) Enabled() bool {
 	return dm != nil && dm.enabled
 }
 
+// SetLineTablesOnly keeps source locations while suppressing local-variable
+// and type metadata. This is the LLVM -gline-tables-only equivalent.
+func (dm *DebugManager) SetLineTablesOnly(enabled bool) {
+	if dm != nil {
+		dm.lineTablesOnly = enabled
+	}
+}
+
+func (dm *DebugManager) LineTablesOnly() bool {
+	return dm != nil && dm.lineTablesOnly
+}
+
 func (dm *DebugManager) allocID() int {
 	id := dm.nextID
 	dm.nextID++
@@ -114,7 +127,7 @@ func (dm *DebugManager) StartFunction(funcName string, line int) int {
 }
 
 func (dm *DebugManager) GetTypeID(t sema.Type) int {
-	if !dm.enabled {
+	if !dm.enabled || dm.lineTablesOnly {
 		return 0
 	}
 
@@ -217,7 +230,7 @@ func debugTypeSize(t sema.Type) int {
 }
 
 func (dm *DebugManager) RegisterLocalVariable(name string, line, col int, t sema.Type, isParam bool, argIdx int) (int, int) {
-	if !dm.enabled || dm.currentSP == 0 {
+	if !dm.enabled || dm.lineTablesOnly || dm.currentSP == 0 {
 		return 0, 0
 	}
 	if line <= 0 {
@@ -283,14 +296,20 @@ func (dm *DebugManager) EmitMetadata() string {
 	b.WriteString(fmt.Sprintf("!llvm.dbg.cu = !{!%d}\n", dm.cuID))
 	b.WriteString(fmt.Sprintf("!llvm.module.flags = !{!%d, !%d}\n\n", dm.dwarfVerID, dm.debugVerID))
 
-	b.WriteString(fmt.Sprintf("!%d = distinct !DICompileUnit(language: DW_LANG_C, file: !%d, producer: \"hikec\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)\n", dm.cuID, dm.fileID))
+	emissionKind := "FullDebug"
+	if dm.lineTablesOnly {
+		emissionKind = "LineTablesOnly"
+	}
+	b.WriteString(fmt.Sprintf("!%d = distinct !DICompileUnit(language: DW_LANG_C, file: !%d, producer: \"hikec\", isOptimized: false, runtimeVersion: 0, emissionKind: %s)\n", dm.cuID, dm.fileID, emissionKind))
 	b.WriteString(fmt.Sprintf("!%d = !{i32 2, !\"Dwarf Version\", i32 4}\n", dm.dwarfVerID))
 	b.WriteString(fmt.Sprintf("!%d = !{i32 2, !\"Debug Info Version\", i32 3}\n", dm.debugVerID))
 	b.WriteString(fmt.Sprintf("!%d = !DIFile(filename: \"%s\", directory: \"%s\")\n\n", dm.fileID, dm.filename, dm.directory))
 
-	// 型メタデータの出力
-	for _, tMeta := range dm.typeMetaList {
-		b.WriteString(tMeta + "\n")
+	// 型メタデータは line-tables-only では出力しない。
+	if !dm.lineTablesOnly {
+		for _, tMeta := range dm.typeMetaList {
+			b.WriteString(tMeta + "\n")
+		}
 	}
 	b.WriteString("\n")
 
@@ -303,7 +322,7 @@ func (dm *DebugManager) EmitMetadata() string {
 	}
 	b.WriteString("\n")
 
-	// ローカル変数メタデータの出力
+	// ローカル変数メタデータは line-tables-only では出力しない。
 	for _, lv := range dm.localVars {
 		if lv.IsParam {
 			b.WriteString(fmt.Sprintf("!%d = !DILocalVariable(name: \"%s\", arg: %d, scope: !%d, file: !%d, line: %d, type: !%d)\n",

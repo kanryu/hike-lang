@@ -22,14 +22,15 @@ import (
 )
 
 type Compiler struct {
-	target     *target.Target
-	verbose    bool
-	wasmMode   string
-	regionMode bool
-	goHikeMode bool
-	debugInfo  bool
-	wabtDebug  *wabt.DebugInfo
-	reporter   *diag.Reporter
+	target         *target.Target
+	verbose        bool
+	wasmMode       string
+	regionMode     bool
+	goHikeMode     bool
+	debugInfo      bool
+	lineTablesOnly bool
+	wabtDebug      *wabt.DebugInfo
+	reporter       *diag.Reporter
 }
 
 func New(tgt *target.Target) *Compiler {
@@ -64,6 +65,15 @@ func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
 
 // SetDebugInfo enables source-level debug metadata emission for LLVM and WABT.
 func (c *Compiler) SetDebugInfo(enabled bool) { c.debugInfo = enabled }
+
+// SetDebugLineTablesOnly enables debug locations without emitting local
+// variable or type metadata.
+func (c *Compiler) SetDebugLineTablesOnly(enabled bool) {
+	c.lineTablesOnly = enabled
+	if enabled {
+		c.debugInfo = true
+	}
+}
 
 // WABTDebugInfo returns the source table collected by the WABT emitter during
 // the most recent WAT compilation.  The command driver uses it after WABT has
@@ -199,6 +209,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	var llvmIR string
 	_ = c.safeExecute(primaryFile, func() error {
 		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
+		emitter.SetLineTablesOnly(c.lineTablesOnly)
 		llvmIR = emitter.Emit()
 		return nil
 	})
@@ -219,6 +230,7 @@ func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *a
 	emitter := wabt.New(hirProg, semaCtx)
 	emitter.SetConcurrent(c.wasmMode == "concurrent")
 	emitter.SetDebugInfo(c.debugInfo)
+	emitter.SetLineTablesOnly(c.lineTablesOnly)
 	wat := emitter.Emit()
 	if c.debugInfo {
 		c.wabtDebug = emitter.DebugInfo(entryPaths[0])
@@ -258,6 +270,7 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	emitter := wabt.New(program, ctx)
 	emitter.SetConcurrent(c.wasmMode == "concurrent")
 	emitter.SetDebugInfo(c.debugInfo)
+	emitter.SetLineTablesOnly(c.lineTablesOnly)
 	wasmText := emitter.Emit()
 	if c.debugInfo {
 		c.wabtDebug = emitter.DebugInfo(filename)

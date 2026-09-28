@@ -53,6 +53,7 @@ func printUsage() {
 	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
+	fmt.Println("  -gline-tables-only  Emit only source line tables (suppress locals and types)")
 	fmt.Println("  --export-symbols <path>  Export source symbols as JSON")
 	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
@@ -167,6 +168,7 @@ func runEmitIR(args []string) {
 	regionMode := false
 	goHikeMode := false
 	debugInfo := false
+	lineTablesOnly := false
 	exportSymbolsPath := ""
 	verbose := false
 	var sourceFiles []string
@@ -201,6 +203,9 @@ func runEmitIR(args []string) {
 			goHikeMode = true
 		} else if arg == "-g" || arg == "--debug" {
 			debugInfo = true
+		} else if arg == "-gline-tables-only" || arg == "--gline-tables-only" {
+			debugInfo = true
+			lineTablesOnly = true
 		} else if (arg == "--export-symbols" || arg == "-export-symbols") && i+1 < len(args) {
 			exportSymbolsPath = args[i+1]
 			i++
@@ -241,6 +246,7 @@ func runEmitIR(args []string) {
 	comp.SetRegionMode(regionMode)
 	comp.SetGoHikeMode(goHikeMode)
 	comp.SetDebugInfo(debugInfo)
+	comp.SetDebugLineTablesOnly(lineTablesOnly)
 
 	var llvmIR string
 	var semaCtx *sema.Context
@@ -397,6 +403,7 @@ func runBuild(args []string) {
 	targetName := getDefaultTargetName()
 	extraCflags := ""
 	debugInfo := false
+	lineTablesOnly := false
 	exportSymbolsPath := ""
 	sourceMapBaseURL := ""
 	embedSourceMap := true
@@ -441,6 +448,10 @@ func runBuild(args []string) {
 		} else if arg == "-g" {
 			debugInfo = true
 			passThroughArgs = append(passThroughArgs, "-g")
+		} else if arg == "-gline-tables-only" || arg == "--gline-tables-only" {
+			debugInfo = true
+			lineTablesOnly = true
+			passThroughArgs = append(passThroughArgs, "-gline-tables-only")
 		} else if (arg == "--export-symbols" || arg == "-export-symbols") && i+1 < len(args) {
 			exportSymbolsPath = args[i+1]
 			passThroughArgs = append(passThroughArgs, "--export-symbols", exportSymbolsPath)
@@ -502,6 +513,7 @@ func runBuild(args []string) {
 		wabtCompiler.SetRegionMode(regionMode)
 		wabtCompiler.SetGoHikeMode(goHikeMode)
 		wabtCompiler.SetDebugInfo(debugInfo)
+		wabtCompiler.SetDebugLineTablesOnly(lineTablesOnly)
 		var program *ast.Program
 		var compileErr error
 		if useWabtBackend {
@@ -622,7 +634,11 @@ func runBuild(args []string) {
 			opt := "-O2"
 			if debugInfo {
 				opt = "-O0"
-				clangArgs = append(clangArgs, "-g")
+				if lineTablesOnly {
+					clangArgs = append(clangArgs, "-gline-tables-only")
+				} else {
+					clangArgs = append(clangArgs, "-g")
+				}
 			}
 			clangArgs = append(clangArgs, "--target="+tgt.Triple, opt, tempLL, "-o", outputBin)
 		}

@@ -33,6 +33,7 @@ type Emitter struct {
 	asyncSigs        []taskCallSignature
 	Concurrent       bool
 	debugInfo        bool
+	lineTablesOnly   bool
 	runtimeFunctions int
 }
 
@@ -53,6 +54,10 @@ func (e *Emitter) SetConcurrent(enabled bool) { e.Concurrent = enabled }
 // after wat2wasm has assembled the module. The markers are harmless blocks and
 // are omitted entirely from normal builds.
 func (e *Emitter) SetDebugInfo(enabled bool) { e.debugInfo = enabled }
+
+// SetLineTablesOnly keeps source line markers while omitting local-variable
+// entries from the generated DWARF.
+func (e *Emitter) SetLineTablesOnly(enabled bool) { e.lineTablesOnly = enabled }
 
 func watType(t sema.Type) string {
 	if t == nil {
