@@ -1,9 +1,59 @@
 package exec
 
+import "std/errors"
+import "std/strings"
+
+func system(command cstring) int
+func popen(command cstring, mode cstring) *byte
+func pclose(stream *byte) int
+func fread(ptr *byte, size int, count int, stream *byte) int
+
 type Cmd struct { Path string; Args []string; Dir string; Stdin *byte; Stdout *byte; Stderr *byte }
 type ExitError struct { Code int }
 func (e *ExitError) ExitCode() int { if e == nil { return -1 }; return e.Code }
 func Command(name string, args ...string) *Cmd { return &Cmd{Path: name, Args: args} }
-func LookPath(name string) (string, error) { return name, nil }
-func (c *Cmd) Run() error { return nil }
-func (c *Cmd) CombinedOutput() ([]byte, error) { return []byte{}, nil }
+
+func quoteArg(value string) string {
+	// The command is passed through the platform shell. Double-quoting keeps
+	// spaces in paths and arguments intact; embedded quotes are escaped for the
+	// Windows and POSIX shells supported by the native backend.
+	return "\"" + strings.ReplaceAll(value, "\"", "\\\"") + "\""
+}
+
+func (c *Cmd) commandLine() string {
+	if c == nil { return "" }
+	parts := make([]string, 0, len(c.Args)+1)
+	parts = append(parts, quoteArg(c.Path))
+	for i := 0; i < len(c.Args); i = i + 1 { parts = append(parts, quoteArg(c.Args[i])) }
+	command := strings.Join(parts, " ")
+	if c.Dir != "" { command = "cd /d " + quoteArg(c.Dir) + " && " + command }
+	return command
+}
+
+func LookPath(name string) (string, error) {
+	if name == "" { return "", errors.New("exec: empty command") }
+	return name, nil
+}
+
+func (c *Cmd) Run() error {
+	if c == nil || c.Path == "" { return errors.New("exec: nil command") }
+	status := system(cstring(c.commandLine()))
+	if status != 0 { return &ExitError{Code: status} }
+	return nil
+}
+
+func (c *Cmd) CombinedOutput() ([]byte, error) {
+	if c == nil || c.Path == "" { return []byte{}, errors.New("exec: nil command") }
+	stream := popen(cstring(c.commandLine()), cstring("r"))
+	if stream == nil { return []byte{}, errors.New("exec: unable to start command") }
+	result := make([]byte, 0)
+	buffer := make([]byte, 4096)
+	for {
+		n := fread((*byte)(buffer), 1, len(buffer), stream)
+		if n <= 0 { break }
+		for i := 0; i < n; i = i + 1 { result = append(result, buffer[i]) }
+	}
+	status := pclose(stream)
+	if status != 0 { return result, &ExitError{Code: status} }
+	return result, nil
+}

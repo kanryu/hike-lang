@@ -2,6 +2,7 @@
 package url
 
 import (
+	"std/errors"
 	"std/strings"
 )
 
@@ -60,4 +61,29 @@ func (u *URL) ResolveReference(ref *URL) *URL {
 	return &result
 }
 
-func PathUnescape(value string) (string, error) { return value, nil }
+func hexValue(ch byte) int {
+    if ch >= byte(48) && ch <= byte(57) { return int(ch - byte(48)) }
+    if ch >= byte(65) && ch <= byte(70) { return int(ch - byte(65) + byte(10)) }
+    if ch >= byte(97) && ch <= byte(102) { return int(ch - byte(97) + byte(10)) }
+    return -1
+}
+
+func PathUnescape(value string) (string, error) {
+    result := ""
+    var noErr error = nil
+    for i := 0; i < len(value); i = i + 1 {
+        if value[i] == byte(37) {
+            if i+2 >= len(value) { return "", errors.New("invalid URL escape") }
+            hi := hexValue(value[i+1])
+            lo := hexValue(value[i+2])
+            if hi < 0 || lo < 0 { return "", errors.New("invalid URL escape") }
+            result = result + string([]byte{byte((hi<<4)|lo)})
+            i += 2
+        } else if value[i] == byte(43) {
+            result = result + " "
+        } else {
+            result = result + value[i:i+1]
+        }
+    }
+    return result, noErr
+}

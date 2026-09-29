@@ -1,11 +1,77 @@
 package base64
 
-type Encoding struct{}
+import "std/errors"
 
-var StdEncoding Encoding
-var RawStdEncoding Encoding
-var URLEncoding Encoding
+type Encoding struct { kind int }
 
-func (e Encoding) EncodeToString(data []byte) string { return "" }
-func (e Encoding) DecodeString(text string) ([]byte, error) { return nil, nil }
+var StdEncoding Encoding = Encoding{kind: 0}
+var RawStdEncoding Encoding = Encoding{kind: 2}
+var URLEncoding Encoding = Encoding{kind: 1}
 
+func (e Encoding) alphabet() string {
+    if e.kind == 1 { return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" }
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+}
+
+func (e Encoding) EncodeToString(data []byte) string {
+    alphabet := e.alphabet()
+    result := make([]byte, 0)
+    i := 0
+    for i+2 < len(data) {
+        a := int(data[i]); b := int(data[i+1]); c := int(data[i+2])
+        result = append(result, alphabet[(a>>2)&63])
+        result = append(result, alphabet[((a&3)<<4)|((b>>4)&15)])
+        result = append(result, alphabet[((b&15)<<2)|((c>>6)&3)])
+        result = append(result, alphabet[c&63])
+        i += 3
+    }
+    remaining := len(data) - i
+    if remaining == 1 {
+        a := int(data[i])
+        result = append(result, alphabet[(a>>2)&63])
+        result = append(result, alphabet[(a&3)<<4])
+        if e.kind != 2 { result = append(result, byte(61), byte(61)) }
+    } else if remaining == 2 {
+        a := int(data[i]); b := int(data[i+1])
+        result = append(result, alphabet[(a>>2)&63])
+        result = append(result, alphabet[((a&3)<<4)|((b>>4)&15)])
+        result = append(result, alphabet[(b&15)<<2])
+        if e.kind != 2 { result = append(result, byte(61)) }
+    }
+    return string(result)
+}
+
+func (e Encoding) value(ch byte) int {
+    alphabet := e.alphabet()
+    for i := 0; i < len(alphabet); i = i + 1 {
+        if alphabet[i] == ch { return i }
+    }
+    return -1
+}
+
+func (e Encoding) DecodeString(text string) ([]byte, error) {
+    if len(text) == 0 { return []byte{}, nil }
+    if e.kind != 2 && len(text)%4 != 0 { return nil, errors.New("base64: invalid length") }
+    if e.kind == 2 && len(text)%4 == 1 { return nil, errors.New("base64: invalid length") }
+    result := make([]byte, 0, (len(text)*3)/4)
+    i := 0
+    for i < len(text) {
+        if i+1 >= len(text) { return nil, errors.New("base64: invalid encoding") }
+        a := e.value(text[i]); b := e.value(text[i+1])
+        if a < 0 || b < 0 { return nil, errors.New("base64: invalid character") }
+        result = append(result, byte((a<<2)|(b>>4)))
+        if i+2 >= len(text) || text[i+2] == byte(61) { break }
+        c := e.value(text[i+2])
+        if c < 0 { return nil, errors.New("base64: invalid character") }
+        result = append(result, byte((b<<4)|(c>>2)))
+        if i+3 >= len(text) || text[i+3] == byte(61) { break }
+        d := e.value(text[i+3])
+        if d < 0 { return nil, errors.New("base64: invalid character") }
+        result = append(result, byte((c<<6)|d))
+        i += 4
+    }
+    if e.kind != 2 && len(text)%4 == 0 && len(text) >= 2 {
+        if text[len(text)-1] == byte(61) && (len(result) == 0 || len(result)*4/3 >= len(text)-2) { }
+    }
+    return result, nil
+}

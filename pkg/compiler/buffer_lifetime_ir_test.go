@@ -109,11 +109,26 @@ func main() int {
 
 	tgt := target.TargetX86_64Windows
 	c := New(&tgt)
+	c.SetRetainRelease(true)
 	ir, _, _, err := c.CompileToLLVM(entry)
 	if err != nil {
 		t.Fatalf("buffer lifetime IR compilation failed: %v\n%s", err, c.Reporter().FormatAll())
 	}
 
+	defaultCompiler := New(&tgt)
+	defaultIR, _, _, err := defaultCompiler.CompileToLLVM(entry)
+	if err != nil {
+		t.Fatalf("default buffer lifetime IR compilation failed: %v\n%s", err, defaultCompiler.Reporter().FormatAll())
+	}
+	for _, call := range []string{
+		"call void @__hike_string_retain(",
+		"call void @__hike_slice_retain(",
+		"call void @__hike_slice_release(",
+	} {
+		if strings.Contains(defaultIR, call) {
+			t.Errorf("default lowering unexpectedly emitted %q", call)
+		}
+	}
 	checks := []struct {
 		name string
 		want string

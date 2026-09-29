@@ -1,46 +1,199 @@
-// Package net provides the network-shaped API surface used by Go-compatible
-// tooling. The compiler currently treats these values as opaque runtime
-// handles; the declarations are sufficient for source analysis and lowering.
 package net
 
-type IP struct{}
-type IPMask struct{}
+import "std/errors"
+import "std/syscall"
+
+type IP struct { data []byte }
+type IPMask []byte
 
 type Addr interface {
-	Network() string
-	String() string
+    Network() string
+    String() string
 }
 
 type Conn interface {
-	Read([]byte) (int, error)
-	Write([]byte) (int, error)
-	Close() error
+    Read([]byte) (int, error)
+    Write([]byte) (int, error)
+    Close() error
 }
 
 type Listener interface {
-	Accept() (Conn, error)
-	Close() error
-	Addr() Addr
+    Accept() (Conn, error)
+    Close() error
+    Addr() Addr
 }
 
 type IPNet struct {
-	IP IP
-	Mask IPMask
+    IP IP
+    Mask IPMask
+}
+
+func decimalPart(text string, start int, end int) (int, bool) {
+    if start >= end { return 0, false }
+    value := 0
+    for i := start; i < end; i = i + 1 {
+        if text[i] < byte(48) || text[i] > byte(57) { return 0, false }
+        value = value*10 + int(text[i]-byte(48))
+        if value > 255 { return 0, false }
+    }
+    return value, true
+}
+
+func parseIPv4(text string) []byte {
+    result := make([]byte, 4)
+    start := 0
+    for part := 0; part < 4; part = part + 1 {
+        end := start
+        for end < len(text) && text[end] != byte(46) { end = end + 1 }
+        value, ok := decimalPart(text, start, end)
+        if !ok { return nil }
+        result[part] = byte(value)
+        if part < 3 {
+            if end >= len(text) { return nil }
+            start = end + 1
+        } else if end != len(text) {
+            return nil
+        }
+    }
+    return result
+}
+
+func hexPart(text string, start int, end int) (int, bool) {
+    if start >= end || end-start > 4 { return 0, false }
+    value := 0
+    for i := start; i < end; i = i + 1 {
+        ch := text[i]
+        digit := -1
+        if ch >= byte(48) && ch <= byte(57) { digit = int(ch-byte(48)) }
+        if ch >= byte(65) && ch <= byte(70) { digit = int(ch-byte(65)) + 10 }
+        if ch >= byte(97) && ch <= byte(102) { digit = int(ch-byte(97)) + 10 }
+        if digit < 0 { return 0, false }
+        value = value*16 + digit
+    }
+    return value, true
+}
+
+func parseIPv6(text string) []byte {
+    if len(text) == 0 { return nil }
+    result := make([]byte, 16)
+    words := make([]int, 8)
+    wordCount := 0
+    gap := -1
+    i := 0
+    for i < len(text) {
+        if text[i] == byte(58) {
+            if i+1 >= len(text) || text[i+1] != byte(58) || gap >= 0 { return nil }
+            gap = wordCount
+            i += 2
+            if i == len(text) { break }
+            continue
+        }
+        start := i
+        for i < len(text) && text[i] != byte(58) { i = i + 1 }
+        part := text[start:i]
+        if stringsHasDot(part) {
+            v4 := parseIPv4(part)
+            if v4 == nil || wordCount > 6 { return nil }
+            words[wordCount] = int(v4[0])<<8 | int(v4[1]); wordCount++
+            words[wordCount] = int(v4[2])<<8 | int(v4[3]); wordCount++
+        } else {
+            value, ok := hexPart(text, start, i)
+            if !ok || wordCount >= 8 { return nil }
+            words[wordCount] = value
+            wordCount++
+        }
+        if i < len(text) {
+            if text[i] != byte(58) { return nil }
+            if i+1 < len(text) && text[i+1] == byte(58) {
+                if gap >= 0 { return nil }
+                gap = wordCount
+                i += 2
+                if i == len(text) { break }
+            } else {
+                i = i + 1
+            }
+        }
+    }
+    if gap < 0 && wordCount != 8 { return nil }
+    if gap >= 0 {
+        missing := 8 - wordCount
+        for j := wordCount - 1; j >= gap; j = j - 1 { words[j+missing] = words[j] }
+        for j := gap; j < gap+missing; j = j + 1 { words[j] = 0 }
+    }
+    for j := 0; j < 8; j = j + 1 {
+        result[j*2] = byte(words[j] >> 8)
+        result[j*2+1] = byte(words[j])
+    }
+    return result
+}
+
+func stringsHasDot(text string) bool {
+    for i := 0; i < len(text); i = i + 1 { if text[i] == byte(46) { return true } }
+    return false
 }
 
 func SplitHostPort(address string) (string, string, error) {
-	return "", "", nil
+    if len(address) == 0 { return "", "", errors.New("missing address") }
+    if address[0] == byte(91) {
+        close := -1
+        for i := 1; i < len(address); i = i + 1 { if address[i] == byte(93) { close = i; break } }
+        if close < 0 || close+1 >= len(address) || address[close+1] != byte(58) {
+            return "", "", errors.New("missing port in address")
+        }
+        return address[1:close], address[close+2:], nil
+    }
+    colon := -1
+    for i := 0; i < len(address); i = i + 1 { if address[i] == byte(58) { colon = i } }
+    if colon < 0 { return "", "", errors.New("missing port in address") }
+    if colon == 0 || colon+1 >= len(address) { return "", "", errors.New("missing host or port") }
+    for i := 0; i < colon; i = i + 1 { if address[i] == byte(58) { return "", "", errors.New("too many colons in address") } }
+    return address[:colon], address[colon+1:], nil
 }
 
-func JoinHostPort(host string, port string) string { return host + ":" + port }
+func JoinHostPort(host string, port string) string {
+    if stringsHasColon(host) { return "[" + host + "]:" + port }
+    return host + ":" + port
+}
 
-func ParseIP(address string) IP { return IP{} }
+func stringsHasColon(text string) bool {
+    for i := 0; i < len(text); i = i + 1 { if text[i] == byte(58) { return true } }
+    return false
+}
 
-func InterfaceAddrs() ([]Addr, error) { return nil, nil }
+func ParseIP(address string) IP {
+    var data []byte
+    if stringsHasColon(address) { data = parseIPv6(address) } else { data = parseIPv4(address) }
+    if data == nil { return IP{} }
+    return IP{data: data}
+}
 
-func Listen(network string, address string) (Listener, error) { return nil, nil }
+func InterfaceAddrs() ([]Addr, error) { return nil, syscall.ENOSYS }
+func Listen(network string, address string) (Listener, error) { return nil, syscall.ENOSYS }
 
-func (ip IP) To4() IP { return ip }
-func (ip IP) IsUnspecified() bool { return false }
-func (ip IP) IsLinkLocalUnicast() bool { return false }
+func (ip IP) To4() IP {
+    if len(ip.data) == 4 { return ip }
+    if len(ip.data) != 16 { return IP{} }
+    for i := 0; i < 10; i = i + 1 { if ip.data[i] != 0 { return IP{} } }
+    if ip.data[10] != byte(255) || ip.data[11] != byte(255) { return IP{} }
+    return IP{data: ip.data[12:16]}
+}
 
+func (ip IP) IsUnspecified() bool {
+    if len(ip.data) != 4 && len(ip.data) != 16 { return false }
+    for i := 0; i < len(ip.data); i = i + 1 { if ip.data[i] != 0 { return false } }
+    return true
+}
+
+func (ip IP) IsLinkLocalUnicast() bool {
+    if len(ip.data) == 4 { return ip.data[0] == 169 && ip.data[1] == 254 }
+    return len(ip.data) == 16 && ip.data[0] == 0xfe && (ip.data[1]&byte(0xc0)) == byte(0x80)
+}
+
+func (ip IP) IsLoopback() bool {
+    if len(ip.data) == 4 { return ip.data[0] == 127 }
+    if len(ip.data) == 16 {
+        for i := 0; i < 15; i = i + 1 { if ip.data[i] != 0 { return false } }
+        return ip.data[15] == 1
+    }
+    return false
+}

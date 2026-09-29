@@ -1,5 +1,5 @@
 package syscall
 
 type Errno int
-const ( ENOENT Errno = 2; EINTR Errno = 4; EIO Errno = 5; EACCES Errno = 13; EPERM Errno = 1; EEXIST Errno = 17; ENOTDIR Errno = 20; EINVAL Errno = 22 )
+const ( ENOENT Errno = 2; EINTR Errno = 4; EIO Errno = 5; EACCES Errno = 13; EPERM Errno = 1; EEXIST Errno = 17; ENOTDIR Errno = 20; EINVAL Errno = 22; ENOSYS Errno = 38 )
 func (e Errno) Error() string { return "syscall error" }

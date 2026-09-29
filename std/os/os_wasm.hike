@@ -2,8 +2,18 @@
 
 package os
 
-// WasmホストにOS APIがない場合のデフォルト実装。
-func osNativeGetenv(name string) (string, bool) { return "", false }
+// Browser/WABT hosts may provide this hook through the generated JS runtime.
+jfunc os_wasm_getenv(name string) string {
+    if (globalThis.__hikeWasmOS && globalThis.__hikeWasmOS.getenv) {
+        return runtime.writeString(globalThis.__hikeWasmOS.getenv(runtime.readString(name)) || "")
+    }
+    return runtime.writeString("")
+}
+
+func osNativeGetenv(name string) (string, bool) {
+    value := os_wasm_getenv(name)
+    return value, value != ""
+}
 func osNativeSetenv(name string, value string) error { return errors.New("environment is not supported") }
 func osNativeUnsetenv(name string) error { return errors.New("environment is not supported") }
 func osNativeClearenv() {}

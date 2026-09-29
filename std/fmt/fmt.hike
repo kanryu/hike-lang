@@ -3,6 +3,7 @@ package fmt
 import "std/fmt/sprintf"
 import "std/errors"
 import "std/strings"
+import "std/strconv"
 
 // 画面出力用のC標準関数宣言 (ネイティブ環境用)
 extern func printf(format cstring, ...) int
@@ -80,10 +81,8 @@ func PrintInt(v int) {
 
 // PrintFloat は浮動小数点数を出力します
 func PrintFloat(f float64) {
-	// The browser WABT bootstrap exposes printf with a pointer-only ABI.
-	// Keep this helper available to Go-Hike sources without generating an
-	// incompatible float variadic call in the bootstrap module.
-	_ = f
+	s := strconv.FormatFloat(f, byte(103), -1, 64)
+	printf(cstring("%s"), cstring(s))
 }
 
 // PrintLn は改行付きでバイトポインタ文字列を出力します

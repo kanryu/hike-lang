@@ -1,9 +1,23 @@
 package rand
 
-func Seed(seed int64) {}
-func Int31n(n int32) int32 {
-	if n <= 0 { return 0 }
-	return 0
+var state uint64 = 88172645463393265
+
+func Seed(seed int64) {
+    state = uint64(seed)
+    if state == 0 { state = 88172645463393265 }
 }
-func Read(data []byte) (int, error) { return len(data), nil }
+
+func Int31n(n int32) int32 {
+    if n <= 0 { return 0 }
+    state = state*6364136223846793005 + 1442695040888963407
+    return int32((state >> 33) % uint64(n))
+}
+
+func Read(data []byte) (int, error) {
+    for i := 0; i < len(data); i = i + 1 {
+        state = state*6364136223846793005 + 1442695040888963407
+        data[i] = byte(state >> 24)
+    }
+    return len(data), nil
+}
 

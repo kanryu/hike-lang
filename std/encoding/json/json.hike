@@ -2,6 +2,7 @@ package json
 
 import "std/io"
 import "std/strconv"
+import "std/errors"
 
 // Encoder is the minimal streaming JSON surface required by compiler tools.
 // The native self-hosting path can replace the body with the full encoder
@@ -22,7 +23,12 @@ func (e *Encoder) SetIndent(prefix string, indent string) {
 }
 
 func (e *Encoder) Encode(v any) error {
-	return nil
+	if e == nil || e.w == nil { return errors.New("json: nil encoder") }
+	value, ok := v.(*JSONValue)
+	if !ok { return errors.New("json: unsupported value") }
+	text := Stringify(value) + "\n"
+	_, err := e.w.Write([]byte(text))
+	return err
 }
 
 // C-ABI 標準ライブラリ宣言
@@ -109,18 +115,46 @@ func NewObject() *JSONValue {
 // オブジェクト / 配列 操作メソッド
 // -------------------------------------------------------------
 
-func (v JSONValue) Set(key string, val *JSONValue) {
-    return
+func replaceValue(dst *JSONValue, src *JSONValue) {
+    if dst == nil || src == nil { return }
+    dst.Type = src.Type
+    dst.BoolVal = src.BoolVal
+    dst.NumVal = src.NumVal
+    dst.StrVal = src.StrVal
+    dst.ArrVal = src.ArrVal
+    dst.ObjKeys = src.ObjKeys
+    dst.ObjVals = src.ObjVals
+}
+
+func (v *JSONValue) Set(key string, val *JSONValue) {
+    if v == nil || v.Type != TypeObject { return }
+    for i := 0; i < len(v.ObjKeys); i = i + 1 {
+        if v.ObjKeys[i] == key {
+            if v.ObjVals[i] == nil { v.ObjVals[i] = val } else { replaceValue(v.ObjVals[i], val) }
+            return
+        }
+    }
+    v.ObjKeys = append(v.ObjKeys, key)
+    v.ObjVals = append(v.ObjVals, val)
 }
 
 // JSONValue_Set is a compatibility entry point for the bootstrap compiler's
 // method lowering when a JSON value is represented as a slice-shaped value.
 func JSONValue_Set(v []JSONValue, key string, val *JSONValue) {
-    return
+    if len(v) == 0 { return }
+    v[0].Set(key, val)
 }
 
 func SetValue(v *JSONValue, key string, val *JSONValue) {
-    return
+    if v == nil || v.Type != TypeObject { return }
+    for i := 0; i < len(v.ObjKeys); i = i + 1 {
+        if v.ObjKeys[i] == key {
+            if v.ObjVals[i] == nil { v.ObjVals[i] = val } else { replaceValue(v.ObjVals[i], val) }
+            return
+        }
+    }
+    v.ObjKeys = append(v.ObjKeys, key)
+    v.ObjVals = append(v.ObjVals, val)
 }
 
 func (v *JSONValue) Get(key string) *JSONValue {
@@ -405,5 +439,7 @@ func WriteFile(filename string, content string) bool {
 }
 
 func MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
-	return []byte{}, nil
+	value, ok := v.(*JSONValue)
+	if !ok { return nil, errors.New("json: unsupported value") }
+	return []byte(prefix + Stringify(value)), nil
 }

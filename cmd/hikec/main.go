@@ -50,6 +50,7 @@ func printUsage() {
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wasm64, wabt)")
 	fmt.Println("  -wasm-mode <mode> WebAssembly runtime mode: normal or concurrent")
 	fmt.Println("  --alloc=<mode> Allocation mode: heap (default) or region")
+	fmt.Println("  -retain          Enable experimental automatic string/slice retain/release")
 	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
@@ -166,6 +167,7 @@ func runEmitIR(args []string) {
 	targetName := getDefaultTargetName()
 	wasmMode := "normal"
 	regionMode := false
+	retainRelease := false
 	goHikeMode := false
 	debugInfo := false
 	lineTablesOnly := false
@@ -199,6 +201,8 @@ func runEmitIR(args []string) {
 			wasmMode = strings.SplitN(arg, "=", 2)[1]
 		} else if arg == "--alloc=region" || arg == "-alloc=region" {
 			regionMode = true
+		} else if arg == "-retain" || arg == "--retain" {
+			retainRelease = true
 		} else if isGoHikeFlag(arg) {
 			goHikeMode = true
 		} else if arg == "-g" || arg == "--debug" {
@@ -244,6 +248,7 @@ func runEmitIR(args []string) {
 	comp.SetVerbose(verbose)
 	comp.SetWasmMode(wasmMode)
 	comp.SetRegionMode(regionMode)
+	comp.SetRetainRelease(retainRelease)
 	comp.SetGoHikeMode(goHikeMode)
 	comp.SetDebugInfo(debugInfo)
 	comp.SetDebugLineTablesOnly(lineTablesOnly)
@@ -410,6 +415,7 @@ func runBuild(args []string) {
 	verbose := false
 	wasmMode := "normal"
 	regionMode := false
+	retainRelease := false
 	goHikeMode := false
 	var passThroughArgs []string
 	var sourceFiles []string
@@ -437,6 +443,9 @@ func runBuild(args []string) {
 			passThroughArgs = append(passThroughArgs, "-wasm-mode", wasmMode)
 		} else if arg == "--alloc=region" || arg == "-alloc=region" {
 			regionMode = true
+		} else if arg == "-retain" || arg == "--retain" {
+			retainRelease = true
+			passThroughArgs = append(passThroughArgs, "-retain")
 		} else if isGoHikeFlag(arg) {
 			goHikeMode = true
 			passThroughArgs = append(passThroughArgs, "-go-hike=1")
@@ -511,6 +520,7 @@ func runBuild(args []string) {
 		wabtCompiler.SetVerbose(verbose)
 		wabtCompiler.SetWasmMode(wasmMode)
 		wabtCompiler.SetRegionMode(regionMode)
+		wabtCompiler.SetRetainRelease(retainRelease)
 		wabtCompiler.SetGoHikeMode(goHikeMode)
 		wabtCompiler.SetDebugInfo(debugInfo)
 		wabtCompiler.SetDebugLineTablesOnly(lineTablesOnly)

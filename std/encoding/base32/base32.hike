@@ -1,7 +1,29 @@
 package base32
 
-type Encoding struct{}
-var StdEncoding Encoding
+type Encoding struct { kind int }
+var StdEncoding Encoding = Encoding{kind: 0}
 
-func (Encoding) EncodeToString(src []byte) string { return "" }
-func (Encoding) EncodeToStringPrefix(src []byte, n int) string { return "" }
+func (e Encoding) EncodeToString(src []byte) string {
+    alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    result := make([]byte, 0)
+    buffer := 0
+    bits := 0
+    for i := 0; i < len(src); i = i + 1 {
+        buffer = (buffer << 8) | int(src[i])
+        bits += 8
+        for bits >= 5 {
+            bits -= 5
+            result = append(result, alphabet[(buffer>>bits)&31])
+        }
+    }
+    if bits > 0 { result = append(result, alphabet[(buffer<<(5-bits))&31]) }
+    for len(result)%8 != 0 { result = append(result, byte(61)) }
+    return string(result)
+}
+
+func (e Encoding) EncodeToStringPrefix(src []byte, n int) string {
+    result := e.EncodeToString(src)
+    if n < 0 { return "" }
+    if n < len(result) { return result[:n] }
+    return result
+}

@@ -162,12 +162,33 @@ func FormatUint(val uint64, base int) string {
 	return string(buf[pos+1:69])
 }
 
-// FormatFloat is a minimal wasm self-hosting fallback. The compiler uses it
-// only while spelling WAT constants; integer-oriented compiler paths do not
-// require the full Go floating-point formatter.
 func FormatFloat(val float64, format byte, precision int, bitSize int) string {
+	if val != val { return "NaN" }
 	if val == 0.0 { return "0" }
-	return "0"
+	negative := val < 0.0
+	if negative { val = -val }
+	whole := int(val)
+	result := Itoa(whole)
+	if negative { result = "-" + result }
+	if precision == 0 { return result }
+	digits := 6
+	if precision > 0 { digits = precision }
+	scale := 1.0
+	for i := 0; i < digits; i = i + 1 { scale = scale * 10.0 }
+	fraction := int((val - float64(whole))*scale + 0.5)
+	if fraction >= int(scale) {
+		whole = whole + 1
+		fraction = 0
+		result = Itoa(whole)
+		if negative { result = "-" + result }
+	}
+	if fraction == 0 { return result }
+	fractionText := Itoa(fraction)
+	for len(fractionText) < digits { fractionText = "0" + fractionText }
+	for len(fractionText) > 0 && fractionText[len(fractionText)-1] == byte(48) {
+		fractionText = fractionText[:len(fractionText)-1]
+	}
+	return result + "." + fractionText
 }
 
 func ParseInt(s string, base int, bitSize int) (int, error) {

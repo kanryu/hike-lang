@@ -1,11 +1,34 @@
 package sort
 
 type Interface interface { Len() int; Less(i int, j int) bool; Swap(i int, j int) }
-func Sort[T](x T) {}
-func Stable[T](x T) {}
-func Strings(x []string) {}
-func Ints(x []int) {}
-func StringsAreSorted(x []string) bool { return false }
+func Sort(x Interface) {
+	for i := 1; i < x.Len(); i = i + 1 {
+		j := i
+		for j > 0 && x.Less(j, j-1) { x.Swap(j, j-1); j = j - 1 }
+	}
+}
+func Stable(x Interface) {
+	for i := 1; i < x.Len(); i = i + 1 {
+		j := i
+		for j > 0 && x.Less(j, j-1) { x.Swap(j, j-1); j = j - 1 }
+	}
+}
+func Strings(x []string) {
+	for i := 1; i < len(x); i = i + 1 {
+		j := i
+		for j > 0 && x[j] < x[j-1] { x[j], x[j-1] = x[j-1], x[j]; j = j - 1 }
+	}
+}
+func Ints(x []int) {
+	for i := 1; i < len(x); i = i + 1 {
+		j := i
+		for j > 0 && x[j] < x[j-1] { x[j], x[j-1] = x[j-1], x[j]; j = j - 1 }
+	}
+}
+func StringsAreSorted(x []string) bool {
+	for i := 1; i < len(x); i = i + 1 { if x[i] < x[i-1] { return false } }
+	return true
+}
 func SliceStable[T](x []T, less func(i int, j int) bool) {
 	for i := 1; i < len(x); i = i + 1 {
 		j := i

@@ -2,6 +2,7 @@ package filepath
 
 import "std/strings"
 import "std/os"
+import "std/errors"
 
 func Abs(p string) (string, error) {
 	if IsAbs(p) {
@@ -16,8 +17,48 @@ func Abs(p string) (string, error) {
 func IsAbs(p string) bool { return len(p) > 0 && (p[0] == '/' || p[0] == '\\') }
 func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 func FromSlash(p string) string { return p }
-func Rel(base string, target string) (string, error) { return target, nil }
-func Clean(p string) string { return p }
+func Rel(base string, target string) (string, error) {
+	base = Clean(base)
+	target = Clean(target)
+	baseAbs := IsAbs(base)
+	if baseAbs != IsAbs(target) { return "", errors.New("Rel: mismatched path types") }
+	baseParts := strings.Split(strings.TrimPrefix(base, "/"), "/")
+	targetParts := strings.Split(strings.TrimPrefix(target, "/"), "/")
+	i := 0
+	for i < len(baseParts) && i < len(targetParts) && baseParts[i] == targetParts[i] {
+		i = i + 1
+	}
+	parts := make([]string, 0, len(baseParts)+len(targetParts))
+	for j := i; j < len(baseParts); j = j + 1 {
+		if baseParts[j] != "" && baseParts[j] != "." { parts = append(parts, "..") }
+	}
+	for j := i; j < len(targetParts); j = j + 1 {
+		if targetParts[j] != "" && targetParts[j] != "." { parts = append(parts, targetParts[j]) }
+	}
+	if len(parts) == 0 { return ".", nil }
+	return strings.Join(parts, "/"), nil
+}
+func Clean(p string) string {
+	if p == "" { return "." }
+	abs := IsAbs(p)
+	parts := strings.Split(ToSlash(p), "/")
+	stack := make([]string, 0, len(parts))
+	for i := 0; i < len(parts); i = i + 1 {
+		part := parts[i]
+		if part == "" || part == "." { continue }
+		if part == ".." {
+			if len(stack) > 0 && stack[len(stack)-1] != ".." {
+				stack = stack[:len(stack)-1]
+			} else if !abs { stack = append(stack, part) }
+			continue
+		}
+		stack = append(stack, part)
+	}
+	result := strings.Join(stack, "/")
+	if abs { result = "/" + result }
+	if result == "" { if abs { return "/" }; return "." }
+	return result
+}
 func Base(p string) string {
 	parts := strings.Split(ToSlash(p), "/")
 	if len(parts) == 0 { return "" }

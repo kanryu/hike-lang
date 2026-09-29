@@ -26,6 +26,7 @@ type Compiler struct {
 	verbose        bool
 	wasmMode       string
 	regionMode     bool
+	retainRelease  bool
 	goHikeMode     bool
 	debugInfo      bool
 	lineTablesOnly bool
@@ -71,6 +72,10 @@ func (c *Compiler) SetVerbose(v bool) {
 
 // SetRegionMode enables the optional --alloc=region arena allocator.
 func (c *Compiler) SetRegionMode(enabled bool) { c.regionMode = enabled }
+
+// SetRetainRelease enables the experimental automatic retain/release
+// lowering for string and slice values. The default is disabled.
+func (c *Compiler) SetRetainRelease(enabled bool) { c.retainRelease = enabled }
 
 // SetGoHikeMode enables compilation of Go-compatible self-hosting sources.
 func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
@@ -208,6 +213,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
 		lw.SetRegionMode(c.regionMode)
+		lw.SetRetainRelease(c.retainRelease)
 		hirProg = lw.Lower()
 		return nil
 	})

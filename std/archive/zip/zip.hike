@@ -1,16 +1,88 @@
 package zip
 
+import "std/errors"
 import "std/io"
+import "std/os"
 
-type ReadCloser struct { File []*File }
-type File struct { Name string }
+// ZIP central-directory reader. Stored entries (method 0) are supported;
+// compressed entries report an explicit error from File.Open.
+type ReadCloser struct { File []*File; closed bool }
+type File struct { Name string; data []byte; method int }
 type fileInfo struct { dir bool }
-type readCloser struct {}
+type readCloser struct { data []byte; pos int; closed bool }
 
-func OpenReader(path string) (*ReadCloser, error) { return &ReadCloser{File: []*File{}}, nil }
-func (r *ReadCloser) Close() error { return nil }
-func (f *File) FileInfo() *fileInfo { return &fileInfo{} }
+func u16(data []byte, pos int) int { return int(data[pos]) | int(data[pos+1])<<8 }
+func u32(data []byte, pos int) int { return int(data[pos]) | int(data[pos+1])<<8 | int(data[pos+2])<<16 | int(data[pos+3])<<24 }
+func hasSignature(data []byte, pos int, signature int) bool {
+    return pos >= 0 && pos+4 <= len(data) && u32(data, pos) == signature
+}
+
+func OpenReader(path string) (*ReadCloser, error) {
+    data, err := os.ReadFile(path)
+    if err != nil { return nil, err }
+    if len(data) < 22 { return nil, errors.New("zip: invalid archive") }
+    start := len(data) - 22 - 65535
+    if start < 0 { start = 0 }
+    eocd := -1
+    for i := len(data)-22; i >= start; i = i - 1 {
+        if hasSignature(data, i, 0x06054b50) { eocd = i; break }
+    }
+    if eocd < 0 { return nil, errors.New("zip: end of central directory not found") }
+    count := u16(data, eocd+10)
+    centralSize := u32(data, eocd+12)
+    centralOffset := u32(data, eocd+16)
+    if centralOffset < 0 || centralSize < 0 || centralOffset+centralSize > len(data) {
+        return nil, errors.New("zip: invalid central directory")
+    }
+    result := &ReadCloser{File: make([]*File, 0, count)}
+    pos := centralOffset
+    for i := 0; i < count; i = i + 1 {
+        if !hasSignature(data, pos, 0x02014b50) || pos+46 > len(data) {
+            return nil, errors.New("zip: invalid central directory entry")
+        }
+        method := u16(data, pos+10)
+        compressedSize := u32(data, pos+20)
+        nameSize := u16(data, pos+28)
+        extraSize := u16(data, pos+30)
+        commentSize := u16(data, pos+32)
+        localOffset := u32(data, pos+42)
+        nameStart := pos + 46
+        nameEnd := nameStart + nameSize
+        if nameEnd+extraSize+commentSize > len(data) || localOffset+30 > len(data) {
+            return nil, errors.New("zip: invalid entry bounds")
+        }
+        localNameSize := u16(data, localOffset+26)
+        localExtraSize := u16(data, localOffset+28)
+        contentStart := localOffset + 30 + localNameSize + localExtraSize
+        contentEnd := contentStart + compressedSize
+        if contentStart < 0 || contentEnd > len(data) {
+            return nil, errors.New("zip: invalid entry data")
+        }
+        result.File = append(result.File, &File{
+            Name: string(data[nameStart:nameEnd]), data: data[contentStart:contentEnd], method: method,
+        })
+        pos = nameEnd + extraSize + commentSize
+    }
+    return result, nil
+}
+
+func (r *ReadCloser) Close() error { if r != nil { r.closed = true }; return nil }
+func (f *File) FileInfo() *fileInfo {
+    if f == nil { return &fileInfo{} }
+    return &fileInfo{dir: len(f.Name) > 0 && f.Name[len(f.Name)-1] == byte(47)}
+}
 func (i *fileInfo) IsDir() bool { return i != nil && i.dir }
-func (f *File) Open() (io.ReadCloser, error) { return &readCloser{}, nil }
-func (r *readCloser) Read(data []byte) (int, error) { return 0, nil }
-func (r *readCloser) Close() error { return nil }
+func (f *File) Open() (io.ReadCloser, error) {
+    if f == nil { return nil, errors.New("zip: nil file") }
+    if f.method != 0 { return nil, errors.New("zip: deflate entries are not supported") }
+    return &readCloser{data: f.data}, nil
+}
+func (r *readCloser) Read(data []byte) (int, error) {
+    if r == nil || r.closed || r.pos >= len(r.data) { return 0, io.EOF }
+    n := len(data)
+    if n > len(r.data)-r.pos { n = len(r.data)-r.pos }
+    for i := 0; i < n; i = i + 1 { data[i] = r.data[r.pos+i] }
+    r.pos = r.pos + n
+    return n, nil
+}
+func (r *readCloser) Close() error { if r != nil { r.closed = true }; return nil }

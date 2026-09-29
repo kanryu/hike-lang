@@ -62,6 +62,7 @@ type Lowerer struct {
 	is32Bit              bool // Compilerから伝播される32bitターゲットフラグ
 	recordLocations      bool
 	regionMode           bool
+	retainRelease        bool
 	sourceFile           string
 	sourceLoc            hir.SourceLocation
 	locationStack        []hir.SourceLocation
@@ -104,6 +105,11 @@ func heapAllocType(a *hir.InstrHeapAlloc) sema.Type {
 
 // SetRegionMode enables arena allocation for compiler-generated heap values.
 func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
+
+// SetRetainRelease enables the experimental automatic retain/release
+// lowering for managed string and slice values. It is intentionally opt-in
+// until all ownership paths are proven correct.
+func (l *Lowerer) SetRetainRelease(enabled bool) { l.retainRelease = enabled }
 
 func (l *Lowerer) registerPanicSite() int {
 	if l.curFunc == nil {
@@ -1005,6 +1011,9 @@ func (l *Lowerer) retainString(value hir.Value) {
 }
 
 func (l *Lowerer) retainStringNamed(value hir.Value, variable string) {
+	if !l.retainRelease {
+		return
+	}
 	base, encodedOffset, _ := l.stringViewRawParts(value)
 	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
@@ -1014,6 +1023,9 @@ func (l *Lowerer) releaseString(value hir.Value) {
 }
 
 func (l *Lowerer) releaseStringNamed(value hir.Value, variable string) {
+	if !l.retainRelease {
+		return
+	}
 	base, encodedOffset, _ := l.stringViewRawParts(value)
 	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_release"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
@@ -1033,6 +1045,9 @@ func (l *Lowerer) retainSlice(value hir.Value) {
 }
 
 func (l *Lowerer) retainSliceNamed(value hir.Value, variable string) {
+	if !l.retainRelease {
+		return
+	}
 	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	offset := l.nextReg(sema.TypeInt32)
 	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
@@ -1045,6 +1060,9 @@ func (l *Lowerer) releaseSlice(value hir.Value) {
 }
 
 func (l *Lowerer) releaseSliceNamed(value hir.Value, variable string) {
+	if !l.retainRelease {
+		return
+	}
 	owner := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	offset := l.nextReg(sema.TypeInt32)
 	l.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})

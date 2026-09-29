@@ -8,4 +8,29 @@ func Base(p string) string {
 	return parts[len(parts)-1]
 }
 
-func Clean(p string) string { return p }
+func Clean(p string) string {
+	if p == "" { return "." }
+	absolute := strings.HasPrefix(p, "/")
+	parts := strings.Split(p, "/")
+	stack := make([]string, 0, len(parts))
+	for i := 0; i < len(parts); i = i + 1 {
+		part := parts[i]
+		if part == "" || part == "." { continue }
+		if part == ".." {
+			if len(stack) > 0 && stack[len(stack)-1] != ".." {
+				stack = stack[:len(stack)-1]
+			} else if !absolute {
+				stack = append(stack, part)
+			}
+			continue
+		}
+		stack = append(stack, part)
+	}
+	result := strings.Join(stack, "/")
+	if absolute { result = "/" + result }
+	if result == "" {
+		if absolute { return "/" }
+		return "."
+	}
+	return result
+}
