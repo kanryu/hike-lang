@@ -109,5 +109,8 @@ func osNativeStat(path string) (*FileInfo, error) {
 	f, err := Open(path)
 	if err != nil { return nil, err }
 	defer f.Close()
-	return &FileInfo{name: path, mode: 0, dir: false}, nil
+	if fseek(f.handle, 0, 2) != 0 { return nil, errors.New("stat seek failed") }
+	size := ftell(f.handle)
+	if size < 0 { return nil, errors.New("stat tell failed") }
+	return &FileInfo{name: path, size: int64(size), mode: 0, dir: false}, nil
 }
