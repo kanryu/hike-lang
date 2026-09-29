@@ -254,12 +254,29 @@ var BuiltinTypes = map[string]Type{
 func SetTargetArchitecture(arch string) {
 	arch = strings.ToLower(arch)
 	if arch == "wasm32" || arch == "386" || arch == "arm" || strings.HasPrefix(arch, "wasm32") {
+		SetTargetPointerBits(32)
+	}
+}
+
+// SetTargetPointerBits applies the target ABI width to all target-dependent
+// builtin layouts. Keeping this separate from triple parsing lets target
+// metadata, rather than architecture-name heuristics, select the ABI.
+func SetTargetPointerBits(bits int) {
+	switch bits {
+	case 32:
 		setBasicTypeLayout(TypeInt, 4, "i32")
 		setBasicTypeLayout(TypeUint, 4, "i32")
 		setBasicTypeLayout(TypeUintptr, 4, "i32")
 		setBasicTypeLayout(TypeString, 12, "{ i8*, i32, i32 }")
 		setBasicTypeLayout(TypeCString, 4, "i8*")
 		PointerSize = 4
+	case 64:
+		setBasicTypeLayout(TypeInt, 8, "i64")
+		setBasicTypeLayout(TypeUint, 8, "i64")
+		setBasicTypeLayout(TypeUintptr, 8, "i64")
+		setBasicTypeLayout(TypeString, 16, "{ i8*, i32, i32 }")
+		setBasicTypeLayout(TypeCString, 8, "i8*")
+		PointerSize = 8
 	}
 }
 

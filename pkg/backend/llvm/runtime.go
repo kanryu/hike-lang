@@ -1,43 +1,119 @@
 package llvm
 
 import (
+	"bytes"
 	_ "embed"
 	"strings"
+	"text/template"
 )
 
 //go:embed runtime/runtime_common.ll
 var builtinRuntimeCommonIR string
 
-//go:embed runtime/runtime_windows.ll
-var builtinRuntimeWindowsIR string
+//go:embed runtime/runtime_windows.ll.tmpl
+var builtinRuntimeWindowsTemplate string
 
-//go:embed runtime/runtime_linux.ll
-var builtinRuntimeLinuxIR string
+//go:embed runtime/runtime_linux.ll.tmpl
+var builtinRuntimeLinuxTemplate string
 
 //go:embed runtime/runtime_wasm32.ll
 var builtinRuntimeWasm32IR string
 
+//go:embed runtime/runtime_common32.ll
+var builtinRuntimeCommon32IR string
+
+type RuntimeABI struct {
+	PointerBits     int
+	PointerType     string
+	SizeType        string
+	ThreadIDType    string
+	PointerAlign    int
+	LinuxMutexBytes int
+	LinuxCondBytes  int
+	LinuxEventBytes int
+}
+
+func runtimeABI(pointerBits int) RuntimeABI {
+	if pointerBits == 32 {
+		return RuntimeABI{
+			PointerBits:     32,
+			PointerType:     "i8*",
+			SizeType:        "i32",
+			ThreadIDType:    "i32",
+			PointerAlign:    4,
+			LinuxMutexBytes: 24,
+			LinuxCondBytes:  48,
+			LinuxEventBytes: 80,
+		}
+	}
+	return RuntimeABI{
+		PointerBits:     64,
+		PointerType:     "i8*",
+		SizeType:        "i64",
+		ThreadIDType:    "i64",
+		PointerAlign:    8,
+		LinuxMutexBytes: 40,
+		LinuxCondBytes:  48,
+		LinuxEventBytes: 96,
+	}
+}
+
+func renderRuntimeTemplate(source string, abi RuntimeABI) string {
+	tmpl, err := template.New("runtime").Parse(source)
+	if err != nil {
+		panic(err)
+	}
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, abi); err != nil {
+		panic(err)
+	}
+	return rendered.String()
+}
+
 // GetBuiltinRuntimeIR はデフォルト (Native 64-bit) のランタイム IR を返します
-func GetBuiltinRuntimeIR() string { return builtinRuntimeWindowsIR + "\n" + builtinRuntimeCommonIR }
+func GetBuiltinRuntimeIR() string {
+	abi := runtimeABI(64)
+	return builtinRuntimeCommonIR + "\n" + renderRuntimeTemplate(builtinRuntimeWindowsTemplate, abi)
+}
 
 // GetBuiltinRuntimeWasm32IR は wasm32 ターゲット向けのランタイム IR を返します
 func GetBuiltinRuntimeWasm32IR() string {
 	return builtinRuntimeWasm32IR
 }
 
+// GetBuiltinRuntimeCommon32IR returns the native 32-bit runtime. It uses the
+// same 32-bit value ABI as the wasm32 runtime, but is selected independently
+// so native 32-bit targets do not depend on the wasm target name.
+func GetBuiltinRuntimeCommon32IR() string {
+	return builtinRuntimeCommon32IR
+}
+
 // GetRuntimeIR はターゲットトリプルを判定し、適切なランタイム IR を返します
-func GetRuntimeIR(targetTriple string) string {
+func GetRuntimeIR(targetTriple string, pointerBits ...int) string {
 	t := strings.ToLower(targetTriple)
 	if strings.Contains(t, "wasm32") || strings.Contains(t, "wasm") {
 		return builtinRuntimeWasm32IR
 	}
+
+	processorIR := builtinRuntimeCommonIR
+	if len(pointerBits) > 0 && pointerBits[0] == 32 {
+		processorIR = builtinRuntimeCommon32IR
+	}
+
+	var osIR string
 	if strings.Contains(t, "windows") || strings.Contains(t, "msvc") {
-		return builtinRuntimeWindowsIR + "\n" + builtinRuntimeCommonIR
+		osIR = renderRuntimeTemplate(builtinRuntimeWindowsTemplate, runtimeABI(pointerWidth(pointerBits)))
+	} else {
+		osIR = renderRuntimeTemplate(builtinRuntimeLinuxTemplate, runtimeABI(pointerWidth(pointerBits)))
 	}
-	if strings.Contains(t, "linux") {
-		return builtinRuntimeLinuxIR + "\n" + builtinRuntimeCommonIR
+	return processorIR + "\n" + osIR
+}
+
+func pointerWidth(pointerBits []int) int {
+	if len(pointerBits) > 0 && pointerBits[0] == 32 {
+		return 32
 	}
-	return builtinRuntimeLinuxIR + "\n" + builtinRuntimeCommonIR
+	return 64
 }
 
 // IsRuntimeSymbol は指定されたシンボル名がランタイム IR 内で定義・宣言済みであるかを判定します
@@ -107,7 +183,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_strcat":         true,
 	"hike_strcat_len":     true,
 	"__hike_slice_to_str": true,
-	"__hike_slice_alloc": true, "__hike_slice_cap": true,
+	"__hike_slice_alloc":  true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
 
 	// 文字列ランタイム (32-bit / wasm32) (define internal)
@@ -118,7 +194,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_strcat32":         true,
 	"hike_strcat_len32":     true,
 	"__hike_slice_to_str32": true,
-	"__hike_slice_alloc32": true, "__hike_slice_cap32": true,
+	"__hike_slice_alloc32":  true, "__hike_slice_cap32": true,
 	"__hike_slice_retain32": true, "__hike_slice_release32": true,
 
 	// マップランタイム (define internal)

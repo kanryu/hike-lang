@@ -21,6 +21,7 @@ type Emitter struct {
 	prog            *hir.Program
 	semaCtx         *sema.Context
 	targetTriple    string
+	pointerBits     int
 	b               strings.Builder
 	regCount        int
 	asyncThunks     map[string]*asyncThunk
@@ -44,6 +45,13 @@ func (e *Emitter) panicLabel(functionID, deferID int, suffix string) string {
 
 func (e *Emitter) SetVerboseLevel(level int) {
 	logger.SetLevel(level)
+}
+
+// SetPointerBits selects the target ABI width for runtime emission.
+func (e *Emitter) SetPointerBits(bits int) {
+	if bits == 32 || bits == 64 {
+		e.pointerBits = bits
+	}
 }
 
 func defaultTargetTriple() string {
@@ -74,6 +82,7 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath stri
 		prog:            prog,
 		semaCtx:         semaCtx,
 		targetTriple:    targetTriple,
+		pointerBits:     64,
 		asyncThunks:     make(map[string]*asyncThunk),
 		declaredSymbols: make(map[string]bool),
 		userSymbols:     make(map[string]string),
@@ -154,7 +163,7 @@ func (e *Emitter) emitPrologue() {
 		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 	}
 	// ターゲットトリプルに応じた適切なランタイムIRを出力
-	e.b.WriteString(GetRuntimeIR(e.targetTriple))
+	e.b.WriteString(GetRuntimeIR(e.targetTriple, e.pointerBits))
 	e.b.WriteString("\n\n")
 }
 

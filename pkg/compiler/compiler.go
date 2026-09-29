@@ -137,6 +137,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	if c.target != nil {
 		targetTriple = c.target.Triple
 		sema.SetTargetArchitecture(targetTriple)
+		sema.SetTargetPointerBits(c.target.PointerBits)
 	}
 
 	rootDir := filepath.Dir(primaryFile)
@@ -209,7 +210,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 
 	// 4. HIR への Lowering フェーズ
 	_ = c.safeExecute(primaryFile+" [lower]", func() error {
-		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
+		is32Bit := (c.target != nil && (c.target.PointerBits == 32 || c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
 		lw.SetRegionMode(c.regionMode)
@@ -244,6 +245,9 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	var llvmIR string
 	_ = c.safeExecute(primaryFile, func() error {
 		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
+		if c.target != nil {
+			emitter.SetPointerBits(c.target.PointerBits)
+		}
 		emitter.SetLineTablesOnly(c.lineTablesOnly)
 		llvmIR = emitter.Emit()
 		return nil
@@ -281,6 +285,7 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	filename := "input.hike"
 	c.reporter.Clear()
 	sema.SetTargetArchitecture(c.target.Triple)
+	sema.SetTargetPointerBits(c.target.PointerBits)
 	parserInstance := parser.New(lexer.New(source))
 	p := parserInstance.ParseProgram()
 	if len(parserInstance.Errors()) > 0 {
@@ -373,7 +378,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 		targetTriple = c.target.Triple
 	}
 	_ = c.safeExecute(filename, func() error {
-		is32Bit := (c.target != nil && (c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
+		is32Bit := (c.target != nil && (c.target.PointerBits == 32 || c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
 		lw.SetRegionMode(c.regionMode)

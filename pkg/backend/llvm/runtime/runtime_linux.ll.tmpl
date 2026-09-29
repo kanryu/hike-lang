@@ -1,6 +1,6 @@
-; Hike native Linux OS runtime
+; Hike native Linux OS runtime ({{.PointerBits}}-bit)
 
-declare i32 @pthread_create(i64*, i8*, i8* (i8*)*, i8*)
+declare i32 @pthread_create({{.ThreadIDType}}*, i8*, i8* (i8*)*, i8*)
 declare i32 @pthread_mutex_init(i8*, i8*)
 declare i32 @pthread_mutex_lock(i8*)
 declare i32 @pthread_mutex_unlock(i8*)
@@ -12,24 +12,24 @@ declare i32 @pthread_cond_destroy(i8*)
 declare i32 @clock_gettime(i32, i8*)
 declare i32 @nanosleep(i8*, i8*)
 
-%struct.__hike_linux_event = type { [40 x i8], [48 x i8], i32 }
+%struct.__hike_linux_event = type { [{{.LinuxMutexBytes}} x i8], [{{.LinuxCondBytes}} x i8], i32 }
 
 define internal i32 @hike_thread_spawn(i32 (i8*)* %fn, i8* %param) {
 entry:
-  %tid = alloca i64, align 8
+  %tid = alloca {{.ThreadIDType}}, align {{.PointerAlign}}
   %start = bitcast i32 (i8*)* %fn to i8* (i8*)*
-  %r = call i32 @pthread_create(i64* %tid, i8* null, i8* (i8*)* %start, i8* %param)
+  %r = call i32 @pthread_create({{.ThreadIDType}}* %tid, i8* null, i8* (i8*)* %start, i8* %param)
   ret i32 %r
 }
 
 define internal i8* @hike_event_create() {
 entry:
-  %raw = call i8* @malloc(i64 96)
+  %raw = call i8* @malloc({{.SizeType}} {{.LinuxEventBytes}})
   %ev = bitcast i8* %raw to %struct.__hike_linux_event*
   %mp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 0
   %cp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 1
-  %m = bitcast [40 x i8]* %mp to i8*
-  %c = bitcast [48 x i8]* %cp to i8*
+  %m = bitcast [{{.LinuxMutexBytes}} x i8]* %mp to i8*
+  %c = bitcast [{{.LinuxCondBytes}} x i8]* %cp to i8*
   call i32 @pthread_mutex_init(i8* %m, i8* null)
   call i32 @pthread_cond_init(i8* %c, i8* null)
   %state = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 2
@@ -42,8 +42,8 @@ entry:
   %ev = bitcast i8* %raw to %struct.__hike_linux_event*
   %mp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 0
   %cp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 1
-  %m = bitcast [40 x i8]* %mp to i8*
-  %c = bitcast [48 x i8]* %cp to i8*
+  %m = bitcast [{{.LinuxMutexBytes}} x i8]* %mp to i8*
+  %c = bitcast [{{.LinuxCondBytes}} x i8]* %cp to i8*
   %state = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 2
   call i32 @pthread_mutex_lock(i8* %m)
   store i32 1, i32* %state
@@ -57,8 +57,8 @@ entry:
   %ev = bitcast i8* %raw to %struct.__hike_linux_event*
   %mp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 0
   %cp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 1
-  %m = bitcast [40 x i8]* %mp to i8*
-  %c = bitcast [48 x i8]* %cp to i8*
+  %m = bitcast [{{.LinuxMutexBytes}} x i8]* %mp to i8*
+  %c = bitcast [{{.LinuxCondBytes}} x i8]* %cp to i8*
   %state = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 2
   call i32 @pthread_mutex_lock(i8* %m)
   br label %check
@@ -80,8 +80,8 @@ entry:
   %ev = bitcast i8* %raw to %struct.__hike_linux_event*
   %mp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 0
   %cp = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 1
-  %m = bitcast [40 x i8]* %mp to i8*
-  %c = bitcast [48 x i8]* %cp to i8*
+  %m = bitcast [{{.LinuxMutexBytes}} x i8]* %mp to i8*
+  %c = bitcast [{{.LinuxCondBytes}} x i8]* %cp to i8*
   call i32 @pthread_mutex_destroy(i8* %m)
   call i32 @pthread_cond_destroy(i8* %c)
   call void @free(i8* %raw)
