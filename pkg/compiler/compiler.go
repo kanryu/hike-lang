@@ -33,6 +33,18 @@ type Compiler struct {
 	reporter       *diag.Reporter
 }
 
+// traceVV emits phase-level diagnostics while verbose tracing is enabled.
+// Write small phase markers so native crashes cannot hide buffered console
+// output. The trace is reset at the start of each LLVM compilation.
+func (c *Compiler) traceVV(message string) {
+	if c.verbose {
+		path := ".tmp-hikec-vv-trace.log"
+		previous, _ := os.ReadFile(path)
+		previous = append(previous, []byte(message+"\n")...)
+		_ = os.WriteFile(path, previous, 0644)
+	}
+}
+
 func New(tgt *target.Target) *Compiler {
 	if tgt == nil {
 		tgt = target.DefaultTarget()
@@ -87,14 +99,19 @@ func (c *Compiler) Reporter() *diag.Reporter {
 
 // safeExecute は各コンパイルフェーズを安全に実行し、パニックが発生した場合も捕捉してエラー情報へ正規化する
 func (c *Compiler) safeExecute(defaultFile string, fn func() error) error {
+	c.traceVV("phase begin " + defaultFile)
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("%v\n%s", r, debug.Stack())
+			c.traceVV("phase panic")
 			c.reporter.Add(diag.ParseDiagnostic(defaultFile, msg))
 		}
+		c.traceVV("phase end " + defaultFile)
 	}()
 
 	if err := fn(); err != nil {
+		_ = os.WriteFile(".tmp-hikec-vv-error.log", []byte(err.Error()+"\n"), 0644)
+		c.traceVV("phase returned error")
 		c.reporter.AddRaw(defaultFile, err.Error())
 	}
 	return nil
@@ -102,7 +119,9 @@ func (c *Compiler) safeExecute(defaultFile string, fn func() error) error {
 
 // CompileToHIR はフロントエンド・ミドルエンドを実行し、ターゲットに応じた HIR を生成します
 func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Context, *ast.Program, error) {
+	c.traceVV("CompileToHIR begin")
 	if len(entryPaths) == 0 {
+		c.traceVV("CompileToHIR rejected empty entry paths")
 		return nil, nil, nil, fmt.Errorf("no input files provided")
 	}
 
@@ -136,9 +155,11 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 			return err
 		}
 		rawProg = p
+		c.traceVV(fmt.Sprintf("load result decls=%d imports=%d", len(p.Decls), len(p.Imports)))
 		return nil
 	})
 	if c.reporter.HasErrors() {
+		c.traceVV("CompileToHIR failed stage=load")
 		return nil, nil, nil, c.reporter
 	}
 	if c.target != nil && c.target.IsWasm && c.wasmMode != "concurrent" {
@@ -159,6 +180,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil
 	})
 	if c.reporter.HasErrors() {
+		c.traceVV("CompileToHIR failed stage=sema")
 		return nil, nil, nil, c.reporter
 	}
 
@@ -176,6 +198,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil
 	})
 	if c.reporter.HasErrors() {
+		c.traceVV("CompileToHIR failed stage=transform")
 		return nil, nil, nil, c.reporter
 	}
 
@@ -189,14 +212,20 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		return nil
 	})
 	if c.reporter.HasErrors() {
+		c.traceVV("CompileToHIR failed stage=lower")
 		return nil, nil, nil, c.reporter
 	}
 
+	c.traceVV("CompileToHIR success")
 	return hirProg, semaCtx, concreteProg, nil
 }
 
 // CompileToLLVM は HIR 生成を経て、最終的な LLVM IR 文字列を出力します
 func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *ast.Program, error) {
+	if c.verbose {
+		_ = os.WriteFile(".tmp-hikec-vv-trace.log", []byte{}, 0644)
+	}
+	c.traceVV("CompileToLLVM begin")
 	hirProg, semaCtx, concreteProg, err := c.CompileToHIR(entryPaths...)
 	if err != nil {
 		return "", nil, nil, err
@@ -214,8 +243,10 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 		return nil
 	})
 	if c.reporter.HasErrors() {
+		c.traceVV("CompileToLLVM failed stage=llvm_emit")
 		return "", nil, nil, c.reporter
 	}
+	c.traceVV("CompileToLLVM success")
 	return llvmIR, semaCtx, concreteProg, nil
 }
 

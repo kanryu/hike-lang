@@ -6,6 +6,43 @@ import "testing"
 // Lowerテスト: lower.go網羅的E2Eテスト
 // -------------------------------------------------------------
 
+func TestLower_PointerMethodMutatesNestedStructField(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Builder struct {
+    value int
+}
+
+func (b *Builder) Set(value int) {
+    b.value = value
+}
+
+type Emitter struct {
+    builder Builder
+}
+
+func (e *Emitter) Run() int {
+    e.builder.Set(42)
+    return e.builder.value
+}
+
+func main() int {
+    emitter := Emitter{}
+    printf("VALUE=%d\n", emitter.Run())
+    return 0
+}
+`,
+		ExpectedOut:  "VALUE=42",
+		ExpectedExit: 0,
+	})
+}
+
 // 1. パッケージレベルグローバル変数の初期化式（関数呼び出し・式評価）がmain先頭で先行実行されるかの検証
 func TestLower_GlobalVarInitializers(t *testing.T) {
 	t.Parallel()

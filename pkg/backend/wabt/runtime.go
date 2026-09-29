@@ -99,7 +99,7 @@ var wasmRuntime = map[string]runtimeFunc{
 	"__hike_slice_cap": runtimeFunc{body: `(func $__hike_slice_cap (param $owner i32) (result i32)
     (if (result i32) (i32.eqz (local.get $owner))
       (then (i32.const 0))
-      (else (i32.load (i32.sub (local.get $owner) (i32.const 16)))))`},
+      (else (i32.load (i32.sub (local.get $owner) (i32.const 16))))))`},
 	"__hike_slice_retain": runtimeFunc{body: `(func $__hike_slice_retain (param $owner i32) (param $offset i32) (local $old i32)
 	    (if (i32.or (i32.eqz (local.get $owner)) (i32.lt_s (local.get $offset) (i32.const 0))) (then (return)))
     (local.set $old (i32.load (i32.sub (local.get $owner) (i32.const 12))))

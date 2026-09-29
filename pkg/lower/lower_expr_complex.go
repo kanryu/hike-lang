@@ -476,6 +476,24 @@ func (e *ExprLowerer) lowerArrayLiteralPtr(node *ast.ArrayLiteral) hir.Value {
 // -------------------------------------------------------------
 
 func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
+	// A member expression can be an addressable struct field.  Preserve that
+	// address when it is used as a method receiver; evaluating it as a regular
+	// expression would load a copy, so pointer-receiver methods would mutate the
+	// temporary instead of the field in the containing struct.
+	if _, ok := expr.(*ast.MemberExpr); ok {
+		fieldPtr := e.LowerLValue(expr)
+		// A pointer-valued field is represented by a pointer-to-field-pointer
+		// LValue.  Method calls and subsequent field selection need the loaded
+		// object pointer, not the address of the pointer slot itself.
+		if ptrType, ok := fieldPtr.Type().(*sema.PointerType); ok {
+			if _, isPointerField := ptrType.Base.(*sema.PointerType); isPointerField {
+				loaded := e.root.nextReg(ptrType.Base)
+				e.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: fieldPtr})
+				return loaded
+			}
+		}
+		return fieldPtr
+	}
 	if id, ok := expr.(*ast.Identifier); ok {
 		if ptr, exists := e.root.symbols[astIDValue(id)]; exists {
 			valueType := ptr.Type().(*sema.PointerType).Base

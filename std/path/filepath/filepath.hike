@@ -1,8 +1,18 @@
 package filepath
 
 import "std/strings"
+import "std/os"
 
-func Abs(p string) (string, error) { return p, nil }
+func Abs(p string) (string, error) {
+	if IsAbs(p) {
+		return Clean(p), nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return Clean(Join(cwd, p)), nil
+}
 func IsAbs(p string) bool { return len(p) > 0 && (p[0] == '/' || p[0] == '\\') }
 func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 func FromSlash(p string) string { return p }

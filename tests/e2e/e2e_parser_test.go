@@ -28,8 +28,38 @@ func main() int {
     printf("Z=%d,O=%d,T=%d,S=%d,N=%d\n", Zero, One, Two, Step, Next)
     return 0
 }
+
 `,
 		ExpectedOut:  "Z=0,O=1,T=2,S=100,N=100",
+		ExpectedExit: 0,
+	})
+}
+
+// ParseInt's base=0 mode is used by the parser itself for integer literals.
+// Keep this as an E2E case because the Go host uses the Go standard library,
+// while the native self-hosted compiler uses std/strconv.
+func TestParser_StrconvParseIntBaseZero(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/strconv"
+
+func printf(format string, ...) int
+
+func main() int {
+    decimal, decimalErr := strconv.ParseInt("32", 0, 64)
+    hexadecimal, hexadecimalErr := strconv.ParseInt("0x20", 0, 64)
+    if decimalErr != nil || hexadecimalErr != nil {
+        return 1
+    }
+    printf("%d,%d\n", decimal, hexadecimal)
+    return 0
+}
+`,
+		ExpectedOut:  "32,32",
 		ExpectedExit: 0,
 	})
 }
