@@ -141,6 +141,41 @@ type Program struct {
 	Decls   []Decl
 }
 
+// String returns a compact, reflection-free summary suitable for compiler
+// diagnostics. In particular, it keeps parser output useful in Go-Hike mode,
+// where arbitrary struct formatting is intentionally not supported.
+func (p *Program) String() string {
+	if p == nil {
+		return "<nil>"
+	}
+	names := make([]string, 0)
+	for _, decl := range p.Decls {
+		var name string
+		switch d := decl.(type) {
+		case *FuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *CFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *ExternFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *JFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return "Program{package=" + p.Package + " functions=[" + strings.Join(names, ", ") + "]}"
+}
+
 func (p *Program) TokenLiteral() string {
 	if len(p.Decls) > 0 {
 		return p.Decls[0].TokenLiteral()
@@ -570,9 +605,10 @@ func (at *ArrayType) expressionNode()      {}
 func (at *ArrayType) TokenLiteral() string { return at.Token.Literal }
 
 type MapType struct {
-	Token token.Token
-	Key   TypeExpr
-	Value TypeExpr
+	Token         token.Token
+	Key           TypeExpr
+	Value         TypeExpr
+	IsSingleValue bool
 }
 
 func (mt *MapType) typeExprNode()        {}

@@ -566,6 +566,7 @@ func (s *StmtLowerer) lowerDefineAssignment(stmt *ast.AssignStmt, rhsVals []hir.
 						Name: astIDValue(ident),
 						Typ:  &sema.PointerType{Base: globalType},
 					},
+					GlobalInit: true,
 				})
 				continue
 			}
@@ -663,7 +664,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 					val := rhsVals[i]
 					val = s.root.emitValueCoerce(val, mp.Value)
 					keyI64 := s.root.coerceToI64(keyVal, mp.Key)
-					valI64 := s.root.coerceToI64(val, mp.Value)
+					valI64 := s.root.boxMapValue(val, mp.Value)
 					s.root.emit(&hir.InstrCallStatic{
 						CalleeName: "__hike_map_set",
 						Args:       []hir.Value{leftVal, keyI64, valI64},

@@ -11,6 +11,7 @@ import (
 type SubprogramMeta struct {
 	ID      int
 	Name    string
+	FileID  int
 	Line    int
 	TypeID  int
 	EmptyID int
@@ -20,6 +21,7 @@ type LocalVarMeta struct {
 	ID      int
 	Name    string
 	ScopeID int
+	FileID  int
 	Line    int
 	TypeID  int
 	IsParam bool
@@ -36,6 +38,9 @@ type DebugManager struct {
 	dwarfVerID     int
 	debugVerID     int
 	fileID         int
+	currentFileID  int
+	files          map[string]int
+	filePaths      []string
 	currentSP      int
 	subprograms    []*SubprogramMeta
 	localVars      []*LocalVarMeta
@@ -70,12 +75,17 @@ func NewDebugManager(sourcePath string, enabled bool) *DebugManager {
 		typeMetaList: make([]string, 0),
 		metadataList: make([]string, 0),
 		nextID:       0,
+		files:        make(map[string]int),
+		filePaths:    make([]string, 0),
 	}
 
 	dm.cuID = dm.allocID()       // !0: CompileUnit
 	dm.dwarfVerID = dm.allocID() // !1: Dwarf Version
 	dm.debugVerID = dm.allocID() // !2: Debug Info Version
 	dm.fileID = dm.allocID()     // !3: DIFile
+	dm.currentFileID = dm.fileID
+	dm.files[absPath] = dm.fileID
+	dm.filePaths = append(dm.filePaths, absPath)
 
 	return dm
 }
@@ -103,7 +113,21 @@ func (dm *DebugManager) allocID() int {
 	return id
 }
 
-func (dm *DebugManager) StartFunction(funcName string, line int) int {
+func (dm *DebugManager) fileIDForPath(sourcePath string) int {
+	if !dm.enabled || sourcePath == "" {
+		return dm.fileID
+	}
+	absPath, _ := filepath.Abs(sourcePath)
+	if id, ok := dm.files[absPath]; ok {
+		return id
+	}
+	id := dm.allocID()
+	dm.files[absPath] = id
+	dm.filePaths = append(dm.filePaths, absPath)
+	return id
+}
+
+func (dm *DebugManager) StartFunction(funcName string, line int, sourcePath string) int {
 	if !dm.enabled {
 		return 0
 	}
@@ -114,11 +138,14 @@ func (dm *DebugManager) StartFunction(funcName string, line int) int {
 	spID := dm.allocID()
 	typeID := dm.allocID()
 	emptyID := dm.allocID()
+	fileID := dm.fileIDForPath(sourcePath)
 
 	dm.currentSP = spID
+	dm.currentFileID = fileID
 	dm.subprograms = append(dm.subprograms, &SubprogramMeta{
 		ID:      spID,
 		Name:    funcName,
+		FileID:  fileID,
 		Line:    line,
 		TypeID:  typeID,
 		EmptyID: emptyID,
@@ -247,6 +274,7 @@ func (dm *DebugManager) RegisterLocalVariable(name string, line, col int, t sema
 		ID:      varID,
 		Name:    name,
 		ScopeID: dm.currentSP,
+		FileID:  dm.currentFileID,
 		Line:    line,
 		TypeID:  typeID,
 		IsParam: isParam,
@@ -303,7 +331,13 @@ func (dm *DebugManager) EmitMetadata() string {
 	b.WriteString(fmt.Sprintf("!%d = distinct !DICompileUnit(language: DW_LANG_C, file: !%d, producer: \"hikec\", isOptimized: false, runtimeVersion: 0, emissionKind: %s)\n", dm.cuID, dm.fileID, emissionKind))
 	b.WriteString(fmt.Sprintf("!%d = !{i32 2, !\"Dwarf Version\", i32 4}\n", dm.dwarfVerID))
 	b.WriteString(fmt.Sprintf("!%d = !{i32 2, !\"Debug Info Version\", i32 3}\n", dm.debugVerID))
-	b.WriteString(fmt.Sprintf("!%d = !DIFile(filename: \"%s\", directory: \"%s\")\n\n", dm.fileID, dm.filename, dm.directory))
+	for _, sourcePath := range dm.filePaths {
+		fileID := dm.files[sourcePath]
+		dir := filepath.ToSlash(filepath.Dir(sourcePath))
+		filename := filepath.Base(sourcePath)
+		b.WriteString(fmt.Sprintf("!%d = !DIFile(filename: \"%s\", directory: \"%s\")\n", fileID, filename, dir))
+	}
+	b.WriteString("\n")
 
 	// 型メタデータは line-tables-only では出力しない。
 	if !dm.lineTablesOnly {
@@ -316,7 +350,7 @@ func (dm *DebugManager) EmitMetadata() string {
 	// 関数メタデータの出力
 	for _, sp := range dm.subprograms {
 		b.WriteString(fmt.Sprintf("!%d = distinct !DISubprogram(name: \"%s\", scope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, spFlags: DISPFlagDefinition, unit: !%d)\n",
-			sp.ID, sp.Name, dm.fileID, dm.fileID, sp.Line, sp.TypeID, sp.Line, dm.cuID))
+			sp.ID, sp.Name, sp.FileID, sp.FileID, sp.Line, sp.TypeID, sp.Line, dm.cuID))
 		b.WriteString(fmt.Sprintf("!%d = !DISubroutineType(types: !%d)\n", sp.TypeID, sp.EmptyID))
 		b.WriteString(fmt.Sprintf("!%d = !{null}\n", sp.EmptyID))
 	}
@@ -326,10 +360,10 @@ func (dm *DebugManager) EmitMetadata() string {
 	for _, lv := range dm.localVars {
 		if lv.IsParam {
 			b.WriteString(fmt.Sprintf("!%d = !DILocalVariable(name: \"%s\", arg: %d, scope: !%d, file: !%d, line: %d, type: !%d)\n",
-				lv.ID, lv.Name, lv.ArgIdx, lv.ScopeID, dm.fileID, lv.Line, lv.TypeID))
+				lv.ID, lv.Name, lv.ArgIdx, lv.ScopeID, lv.FileID, lv.Line, lv.TypeID))
 		} else {
 			b.WriteString(fmt.Sprintf("!%d = !DILocalVariable(name: \"%s\", scope: !%d, file: !%d, line: %d, type: !%d)\n",
-				lv.ID, lv.Name, lv.ScopeID, dm.fileID, lv.Line, lv.TypeID))
+				lv.ID, lv.Name, lv.ScopeID, lv.FileID, lv.Line, lv.TypeID))
 		}
 	}
 	b.WriteString("\n")

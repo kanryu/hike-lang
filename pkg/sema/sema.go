@@ -638,8 +638,19 @@ func (t *TupleType) Size() int {
 func (t *TupleType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type MapType struct {
-	Key   Type
-	Value Type
+	Key           Type
+	Value         Type
+	IsSingleValue bool
+}
+
+// IsSingleValueMapValue reports whether a map value fits the scalar map ABI.
+// Composite values, strings, and pointers use the boxed map path.
+func IsSingleValueMapValue(t Type) bool {
+	if t == nil || t == TypeString {
+		return false
+	}
+	_, ok := t.(*BasicType)
+	return ok
 }
 
 func (t *MapType) TypeName() string {
@@ -884,7 +895,7 @@ func typeToTypeExpr(t Type) ast.TypeExpr {
 	case *ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: typeToTypeExpr(v.Elem)}
 	case *MapType:
-		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value)}
+		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value), IsSingleValue: v.IsSingleValue}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: typeNameOf(v)}}
 	}
@@ -2581,19 +2592,40 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 	case *ast.CallExpr:
 		fnType := ctx.InferExprType(expr.Function, locals)
 		if ft, ok := fnType.(*FuncType); ok {
+			// Method signatures include the receiver as their first parameter,
+			// but the receiver is represented by the member expression and is
+			// not present in CallExpr.Args.  Keep argument coercion aligned with
+			// the explicit call arguments.
+			paramOffset := 0
+			isMethodCall := false
+			if member, isMember := expr.Function.(*ast.MemberExpr); isMember {
+				// Package-qualified functions have an unresolved package
+				// identifier here, which falls back to TypeInt. A local receiver
+				// resolves to its actual struct or pointer type.
+				objectType := ctx.InferExprType(member.Object, locals)
+				isMethodCall = objectType != TypeInt && objectType != TypeBad
+			}
+			if isMethodCall && len(ft.ParamTypes) > 0 {
+				paramOffset = 1
+			}
 			if ft.IsVariadic && len(ft.ParamTypes) > 0 {
-				fixedCount := len(ft.ParamTypes) - 1
+				fixedCount := len(ft.ParamTypes) - 1 - paramOffset
+				if fixedCount < 0 {
+					fixedCount = 0
+				}
 				for i := 0; i < fixedCount && i < len(expr.Args); i++ {
-					expr.Args[i] = ctx.CoerceExpr(expr.Args[i], ft.ParamTypes[i], locals)
+					expr.Args[i] = ctx.CoerceExpr(expr.Args[i], ft.ParamTypes[i+paramOffset], locals)
 				}
 				if expr.HasEllipsis {
 					if len(expr.Args) > fixedCount {
-						expr.Args[fixedCount] = ctx.CoerceExpr(expr.Args[fixedCount], ft.ParamTypes[fixedCount], locals)
+						expr.Args[fixedCount] = ctx.CoerceExpr(expr.Args[fixedCount], ft.ParamTypes[fixedCount+paramOffset], locals)
 					}
 				} else {
 					var elemType Type
-					if sl, isSl := ft.ParamTypes[fixedCount].(*SliceType); isSl {
-						elemType = sl.Elem
+					if fixedCount+paramOffset < len(ft.ParamTypes) {
+						if sl, isSl := ft.ParamTypes[fixedCount+paramOffset].(*SliceType); isSl {
+							elemType = sl.Elem
+						}
 					}
 					if elemType != nil {
 						for i := fixedCount; i < len(expr.Args); i++ {
@@ -2603,8 +2635,9 @@ func insertCastsInExpr(e ast.Expression, locals map[string]Type, ctx *Context) {
 				}
 			} else {
 				for i, arg := range expr.Args {
-					if i < len(ft.ParamTypes) {
-						expr.Args[i] = ctx.CoerceExpr(arg, ft.ParamTypes[i], locals)
+					paramIndex := i + paramOffset
+					if paramIndex < len(ft.ParamTypes) {
+						expr.Args[i] = ctx.CoerceExpr(arg, ft.ParamTypes[paramIndex], locals)
 					}
 				}
 			}

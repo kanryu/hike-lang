@@ -13,6 +13,7 @@ func TestAnalyzeModeInfersUntypedGlobalMap(t *testing.T) {
 package main
 
 var values = map[string]int{"answer": 42}
+var texts = map[string]string{"answer": "forty-two"}
 
 func main() int {
 	return values["answer"]
@@ -31,7 +32,14 @@ func main() int {
 	if mapType.Key != TypeString || mapType.Value != TypeInt {
 		t.Fatalf("values type = map[%s]%s, want map[string]int", mapType.Key.TypeName(), mapType.Value.TypeName())
 	}
-	if got := ctx.InferExprType(program.Decls[1].(*ast.FuncDecl).Body.Statements[0].(*ast.ReturnStmt).Values[0], nil); got != TypeInt {
+	if !mapType.IsSingleValue {
+		t.Fatal("numeric map should use the single-value map ABI")
+	}
+	textMap, ok := ctx.Globals["texts"].(*MapType)
+	if !ok || textMap.IsSingleValue {
+		t.Fatal("string map should use the boxed map ABI")
+	}
+	if got := ctx.InferExprType(program.Decls[2].(*ast.FuncDecl).Body.Statements[0].(*ast.ReturnStmt).Values[0], nil); got != TypeInt {
 		t.Fatalf("map index type = %s, want int", got.TypeName())
 	}
 }

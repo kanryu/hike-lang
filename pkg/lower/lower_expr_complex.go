@@ -82,7 +82,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
 		rawVal := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
-		return e.root.coerceFromI64(rawVal, mp.Value)
+		return e.root.unboxMapValue(rawVal, mp.Value)
 	}
 
 	// 2. ユーザー定義コレクション構造体の Indexable (Get(key))

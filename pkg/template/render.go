@@ -1,6 +1,6 @@
 // Package template implements the compile-time template subset used by the
 // Hike standard library and LLVM runtime generator.
-package template
+package compiletemplate
 
 import (
 	"fmt"

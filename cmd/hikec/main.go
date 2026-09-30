@@ -14,6 +14,7 @@ import (
 	gocode "hikec-go/pkg/codegen/go"
 	"hikec-go/pkg/codegen/symbols"
 	"hikec-go/pkg/compiler"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
 	"hikec-go/pkg/toolchain"
@@ -246,12 +247,16 @@ func runEmitIR(args []string) {
 	}
 	comp := compiler.New(tgt)
 	comp.SetVerbose(verbose)
+	comp.SetVerboseLevel(logger.GetLevel())
 	comp.SetWasmMode(wasmMode)
 	comp.SetRegionMode(regionMode)
 	comp.SetRetainRelease(retainRelease)
 	comp.SetGoHikeMode(goHikeMode)
 	comp.SetDebugInfo(debugInfo)
 	comp.SetDebugLineTablesOnly(lineTablesOnly)
+	if logger.IsVerbose2() {
+		fmt.Printf("[Verbose2] compiler before EmitIR: %s\n", comp.String())
+	}
 
 	var llvmIR string
 	var semaCtx *sema.Context

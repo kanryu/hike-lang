@@ -298,8 +298,9 @@ func (i *InstrLoad) String() string {
 }
 
 type InstrStore struct {
-	Val Value
-	Ptr Value
+	Val        Value
+	Ptr        Value
+	GlobalInit bool
 }
 
 func (i *InstrStore) Result() *Reg { return nil }

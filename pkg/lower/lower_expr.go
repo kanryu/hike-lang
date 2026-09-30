@@ -1043,7 +1043,7 @@ func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
 		}
 		valueVal := e.root.Expr.LowerExpr(entry.Value)
 		keyI64 := e.root.coerceToI64(keyVal, mp.Key)
-		valueI64 := e.root.coerceToI64(valueVal, mp.Value)
+		valueI64 := e.root.boxMapValue(valueVal, mp.Value)
 		e.root.emit(&hir.InstrCallStatic{
 			CalleeName: "__hike_map_set",
 			Args:       []hir.Value{mapVal, keyI64, valueI64},

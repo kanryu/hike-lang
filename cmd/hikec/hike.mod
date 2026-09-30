@@ -4,6 +4,7 @@ hike 0.1.0
 # Go-Hike compatibility configuration for compiling the HikeC command itself.
 GoReplace hikec-go/pkg => ../../pkg
 GoReplace std => ../../std
+GoReplace text/template => ../../std/text/template
 GoReplace strings => ../../std/strings
 GoReplace encoding/json => ../../std/encoding/json
 GoReplace bytes => ../../std/bytes

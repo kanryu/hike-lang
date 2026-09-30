@@ -1,0 +1,47 @@
+package main
+
+import "std/maps"
+
+type Config struct {
+	Bits int
+	Name string
+}
+
+func printf(format string, ...)
+
+func main() int {
+	values := make([]int, 0)
+	values = append(values, 10, 20)
+
+	grouped := make(map[string][]int)
+	grouped["numbers"] = values
+
+	loaded := grouped["numbers"]
+	if len(loaded) != 2 || loaded[0] != 10 || loaded[1] != 20 {
+		return 1
+	}
+
+	names := make(map[string]string)
+	names["language"] = "hike"
+	if names["language"] != "hike" {
+		return 2
+	}
+
+	configs := make(map[string]Config)
+	config := Config{Bits: 64, Name: "native"}
+	configs["default"] = config
+	loadedConfig := configs["default"]
+	if loadedConfig.Bits != 64 || loadedConfig.Name != "native" {
+		return 3
+	}
+
+	configPtrs := make(map[string]*Config)
+	configPtrs["default"] = &config
+	loadedConfigPtr := configPtrs["default"]
+	if loadedConfigPtr.Bits != 64 || loadedConfigPtr.Name != "native" {
+		return 4
+	}
+
+	printf("MAP_VALUES=%d,%d,%s,%d,%s,%d\n", loaded[0], loaded[1], names["language"], loadedConfig.Bits, loadedConfig.Name, loadedConfigPtr.Bits)
+	return 0
+}

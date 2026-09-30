@@ -343,6 +343,16 @@ func (e *Emitter) emitItabs() {
 }
 
 func (e *Emitter) emitFunctions() {
+	logger.LogVerbose("[Verbose] LLVM emitter functions=%d\n", len(e.prog.Functions))
+	if logger.IsVerbose2() {
+		names := make([]string, 0, len(e.prog.Functions))
+		for _, fn := range e.prog.Functions {
+			if fn != nil {
+				names = append(names, fn.Name)
+			}
+		}
+		logger.LogVerbose2("[Verbose2] LLVM emitter function names: %s\n", strings.Join(names, ", "))
+	}
 	referencedExterns := make(map[string]bool)
 	definedSymbols := make(map[string]bool)
 	for _, fn := range e.prog.Functions {
@@ -561,7 +571,7 @@ func (e *Emitter) emitFunction(fn *hir.Function, functionID int) {
 	}
 	debugTag := ""
 	if e.debugMgr.Enabled() {
-		spID := e.debugMgr.StartFunction(fn.Name, fn.Location.Line)
+		spID := e.debugMgr.StartFunction(fn.Name, fn.Location.Line, fn.Location.Filename)
 		debugTag = fmt.Sprintf(" !dbg !%d", spID)
 	}
 	e.b.WriteString(fmt.Sprintf("define %s%s @%s(%s)%s%s {\n", storageClass, retTypeStr, e.functionSymbol(fn.Name), strings.Join(params, ", "), featureAttr, debugTag))
@@ -740,9 +750,37 @@ func (e *Emitter) emitInstruction(inst hir.Instruction) {
 		logger.LogVerbose2("[Verbose2] emitInstruction: <nil>\n")
 		return
 	}
+	e.emitGlobalInitComment(inst)
 	start := e.b.Len()
 	e.emitInstructionBody(inst)
 	e.appendDebugLocation(start, inst)
+}
+
+// emitGlobalInitComment preserves the source-level origin of module global
+// initialization stores in the generated IR. These comments are intentionally
+// limited to -vv output and to the synthetic initialization prefix of main so
+// normal IR stays unchanged.
+func (e *Emitter) emitGlobalInitComment(inst hir.Instruction) {
+	if !logger.IsVerbose2() || !e.currentIsMain {
+		return
+	}
+	store, ok := inst.(*hir.InstrStore)
+	if !ok || !store.GlobalInit {
+		return
+	}
+	global, ok := store.Ptr.(*hir.GlobalVar)
+	if !ok || global.Name == "" || e.prog == nil {
+		return
+	}
+	loc, ok := e.prog.InstructionLocations[hir.InstructionKey(inst)]
+	if !ok || loc.Filename == "" || loc.Line <= 0 {
+		return
+	}
+	source := e.sourceLine(loc)
+	if source == "" {
+		source = "<source unavailable>"
+	}
+	e.b.WriteString(fmt.Sprintf("; global-init: @%s at %s:%d:%d: %s\n", global.Name, loc.Filename, loc.Line, loc.Column, source))
 }
 
 // emitInstructionBody emits the LLVM generated for one HIR instruction. The

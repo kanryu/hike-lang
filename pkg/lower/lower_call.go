@@ -952,7 +952,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 	if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
 		kType := c.root.semaCtx.ResolveType(mapTypeNode.Key)
 		vType := c.root.semaCtx.ResolveType(mapTypeNode.Value)
-		resMapType := &sema.MapType{Key: kType, Value: vType}
+		resMapType := &sema.MapType{Key: kType, Value: vType, IsSingleValue: sema.IsSingleValueMapValue(vType)}
 		isStr := 0
 		if kType == sema.TypeString {
 			isStr = 1

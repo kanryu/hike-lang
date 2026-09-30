@@ -8,6 +8,7 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/lexer"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/mod"
 	"hikec-go/pkg/parser"
 )
@@ -111,6 +112,12 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The module root is discovered while collecting entry files. In Go-Hike
+	// mode, load GoReplace mappings only after that discovery so imports in the
+	// entry file (including text/template) are resolved before queuing packages.
+	if l.goHikeMode {
+		LoadGoHikeBot(l)
+	}
 
 	for len(fileQueue) > 0 {
 		curFile := fileQueue[0]
@@ -134,6 +141,17 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		p := parser.New(lx)
 		p.SetVerbose(l.verbose)
 		fileProg := p.ParseProgram()
+		parserFunctionCount := 0
+		for _, decl := range fileProg.Decls {
+			switch decl.(type) {
+			case *ast.FuncDecl, *ast.CFuncDecl, *ast.ExternFuncDecl, *ast.JFuncDecl:
+				parserFunctionCount++
+			}
+		}
+		logger.LogVerbose("[Verbose] parser file=%s functions=%d\n", curFile, parserFunctionCount)
+		if logger.IsVerbose2() {
+			logger.LogVerbose2("[Verbose2] parser %s\n", fileProg.String())
+		}
 
 		if len(p.Errors()) > 0 {
 			return nil, fmt.Errorf("parse error in %s:\n%s", curFile, strings.Join(p.Errors(), "\n"))
@@ -149,6 +167,8 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 		}
 
 		pkgDecls[pkgName] = append(pkgDecls[pkgName], fileProg.Decls...)
+		logger.LogVerbose("[Verbose] loader collected package=%s file=%s fileDecls=%d packageDecls=%d\n",
+			pkgName, curFile, len(fileProg.Decls), len(pkgDecls[pkgName]))
 		for _, decl := range fileProg.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok {
 				fn.Filename = curFile
@@ -182,12 +202,16 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 	// unqualified type could resolve to the wrong imported package.
 	for _, pkgName := range packageOrder {
 		decls := pkgDecls[pkgName]
+		logger.LogVerbose("[Verbose] loader merging package=%s decls=%d combinedBefore=%d\n",
+			pkgName, len(decls), len(combinedProg.Decls))
 		if pkgName != "main" {
 			mangledDecls := l.manglePackageDecls(pkgName, decls)
 			combinedProg.Decls = append(combinedProg.Decls, mangledDecls...)
 		} else {
 			combinedProg.Decls = append(combinedProg.Decls, decls...)
 		}
+		logger.LogVerbose("[Verbose] loader merged package=%s combinedAfter=%d\n",
+			pkgName, len(combinedProg.Decls))
 	}
 
 	for _, imps := range pkgImports {

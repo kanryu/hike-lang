@@ -6,6 +6,11 @@ type Buffer struct {
     data []byte
 }
 
+func (b *Buffer) Write(data []byte) (int, error) {
+    b.data = append(b.data, data...)
+    return len(data), nil
+}
+
 func (b *Buffer) WriteString(s string) int {
     b.data = append(b.data, []byte(s)...)
     return len(s)
@@ -13,6 +18,10 @@ func (b *Buffer) WriteString(s string) int {
 
 func (b *Buffer) Bytes() []byte {
     return b.data
+}
+
+func (b *Buffer) String() string {
+    return string(b.data)
 }
 
 // Equal reports whether a and b are the same byte sequence.

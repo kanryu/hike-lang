@@ -1,5 +1,33 @@
 package template
 
+import "std/errors"
+import "std/io"
+
+type Template struct {
+	name string
+	source string
+}
+
+func New(name string) *Template {
+	return &Template{name: name}
+}
+
+func (t *Template) Parse(source string) (*Template, error) {
+	if t == nil {
+		return nil, errors.New("template: nil template")
+	}
+	t.source = source
+	return t, nil
+}
+
+func (t *Template) Execute(w io.Writer, data any) error {
+	if t == nil || w == nil {
+		return errors.New("template: nil template or writer")
+	}
+	_, err := w.Write([]byte(Render(t.source, data)))
+	return err
+}
+
 // Render expands a compile-time template literal using a struct literal.
 //
 // The compiler resolves this function before lowering. Supported actions are

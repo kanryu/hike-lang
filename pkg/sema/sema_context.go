@@ -688,10 +688,9 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			if end := strings.Index(name, "]"); end > len("map[") && end+1 < len(name) {
 				keyName := name[len("map["):end]
 				valueName := name[end+1:]
-				return &MapType{
-					Key:   c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: keyName}}),
-					Value: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: valueName}}),
-				}
+				key := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: keyName}})
+				value := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: valueName}})
+				return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value)}
 			}
 		}
 
@@ -852,7 +851,10 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	case *ast.ArrayType:
 		return &ArrayType{Len: int(t.Len), Elem: c.ResolveType(t.Elem)}
 	case *ast.MapType:
-		return &MapType{Key: c.ResolveType(t.Key), Value: c.ResolveType(t.Value)}
+		key, value := c.ResolveType(t.Key), c.ResolveType(t.Value)
+		isSingleValue := IsSingleValueMapValue(value)
+		t.IsSingleValue = isSingleValue
+		return &MapType{Key: key, Value: value, IsSingleValue: isSingleValue}
 	case *ast.ChanType:
 		return &ChanType{Elem: c.ResolveType(t.Elem)}
 	case *ast.FutureType:
@@ -1117,10 +1119,9 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 	case *ast.ArrayType:
 		return &ArrayType{Len: int(node.Len), Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
 	case *ast.MapType:
-		return &MapType{
-			Key:   c.ResolveTypeWithSubst(node.Key, subst),
-			Value: c.ResolveTypeWithSubst(node.Value, subst),
-		}
+		key := c.ResolveTypeWithSubst(node.Key, subst)
+		value := c.ResolveTypeWithSubst(node.Value, subst)
+		return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value)}
 	case *ast.ChanType:
 		return &ChanType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
 	}

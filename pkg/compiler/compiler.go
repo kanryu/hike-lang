@@ -14,6 +14,7 @@ import (
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/lexer"
 	"hikec-go/pkg/loader"
+	"hikec-go/pkg/logger"
 	"hikec-go/pkg/lower"
 	"hikec-go/pkg/parser"
 	"hikec-go/pkg/sema"
@@ -24,6 +25,7 @@ import (
 type Compiler struct {
 	target         *target.Target
 	verbose        bool
+	verboseLevel   int
 	wasmMode       string
 	regionMode     bool
 	retainRelease  bool
@@ -32,6 +34,58 @@ type Compiler struct {
 	lineTablesOnly bool
 	wabtDebug      *wabt.DebugInfo
 	reporter       *diag.Reporter
+}
+
+func logFunctionInventory(stage string, names []string) {
+	logger.LogVerbose("[Verbose] %s functions=%d\n", stage, len(names))
+	if logger.IsVerbose2() {
+		logger.LogVerbose2("[Verbose2] %s function names: %s\n", stage, strings.Join(names, ", "))
+	}
+}
+
+func astFunctionNames(program *ast.Program) []string {
+	if program == nil {
+		return nil
+	}
+	names := make([]string, 0)
+	for _, decl := range program.Decls {
+		var name string
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *ast.CFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *ast.ExternFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		case *ast.JFuncDecl:
+			if d.Name != nil {
+				name = d.Name.Value
+			}
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func hirFunctionNames(program *hir.Program) []string {
+	if program == nil {
+		return nil
+	}
+	names := make([]string, 0, len(program.Functions))
+	for _, fn := range program.Functions {
+		if fn != nil {
+			names = append(names, fn.Name)
+		}
+	}
+	return names
 }
 
 // traceVV emits phase-level diagnostics while verbose tracing is enabled.
@@ -51,10 +105,11 @@ func New(tgt *target.Target) *Compiler {
 		tgt = target.DefaultTarget()
 	}
 	return &Compiler{
-		target:   tgt,
-		verbose:  false,
-		wasmMode: "normal",
-		reporter: diag.NewReporter(),
+		target:       tgt,
+		verbose:      false,
+		verboseLevel: 0,
+		wasmMode:     "normal",
+		reporter:     diag.NewReporter(),
 	}
 }
 
@@ -68,6 +123,50 @@ func (c *Compiler) SetWasmMode(mode string) {
 
 func (c *Compiler) SetVerbose(v bool) {
 	c.verbose = v
+	if !v {
+		c.verboseLevel = 0
+	} else if c.verboseLevel == 0 {
+		c.verboseLevel = 1
+	}
+}
+
+// SetVerboseLevel records the command-line verbosity level. Level 1 is -v
+// and level 2 is -vv; keeping the level on the compiler makes it visible in
+// String without relying on reflection or the process-global logger.
+func (c *Compiler) SetVerboseLevel(level int) {
+	if level < 0 {
+		level = 0
+	} else if level > 2 {
+		level = 2
+	}
+	c.verboseLevel = level
+	c.verbose = level >= 1
+}
+
+// DebugString describes every compiler configuration field without relying on
+// reflection. This is also available to Go-Hike builds, whose fmt package
+// intentionally renders arbitrary structs as a placeholder.
+func (c *Compiler) DebugString() string {
+	if c == nil {
+		return "<nil>"
+	}
+	targetName := "<nil>"
+	if c.target != nil {
+		targetName = c.target.Name
+	}
+	reporterErrors := false
+	if c.reporter != nil {
+		reporterErrors = c.reporter.HasErrors()
+	}
+	return fmt.Sprintf("{target=%s verbose=%v verboseLevel=%d wasmMode=%s regionMode=%v retainRelease=%v goHikeMode=%v debugInfo=%v lineTablesOnly=%v wabtDebug=%v reporterHasErrors=%v}",
+		targetName, c.verbose, c.verboseLevel, c.wasmMode, c.regionMode, c.retainRelease, c.goHikeMode,
+		c.debugInfo, c.lineTablesOnly, c.wabtDebug != nil, reporterErrors)
+}
+
+// String implements the standard fmt.Stringer contract used by Hike's fmt
+// package when formatting compiler diagnostics with %v.
+func (c *Compiler) String() string {
+	return c.DebugString()
 }
 
 // SetRegionMode enables the optional --alloc=region arena allocator.
@@ -137,7 +236,9 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	if c.target != nil {
 		targetTriple = c.target.Triple
 		sema.SetTargetArchitecture(targetTriple)
-		sema.SetTargetPointerBits(c.target.PointerBits)
+		if c.target.PointerBits != 64 {
+			sema.SetTargetPointerBits(c.target.PointerBits)
+		}
 	}
 
 	rootDir := filepath.Dir(primaryFile)
@@ -162,6 +263,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		}
 		rawProg = p
 		c.traceVV(fmt.Sprintf("load result decls=%d imports=%d", len(p.Decls), len(p.Imports)))
+		logFunctionInventory("AST", astFunctionNames(p))
 		return nil
 	})
 	if c.reporter.HasErrors() {
@@ -216,6 +318,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		lw.SetRegionMode(c.regionMode)
 		lw.SetRetainRelease(c.retainRelease)
 		hirProg = lw.Lower()
+		logFunctionInventory("HIR", hirFunctionNames(hirProg))
 		return nil
 	})
 	if c.reporter.HasErrors() {
@@ -285,7 +388,9 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 	filename := "input.hike"
 	c.reporter.Clear()
 	sema.SetTargetArchitecture(c.target.Triple)
-	sema.SetTargetPointerBits(c.target.PointerBits)
+	if c.target.PointerBits != 64 {
+		sema.SetTargetPointerBits(c.target.PointerBits)
+	}
 	parserInstance := parser.New(lexer.New(source))
 	p := parserInstance.ParseProgram()
 	if len(parserInstance.Errors()) > 0 {

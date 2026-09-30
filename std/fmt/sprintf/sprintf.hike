@@ -1,5 +1,9 @@
 package sprintf
 
+type Stringer interface {
+	String() string
+}
+
 // -----------------------------------------------------------------------------
 // フォーマット制御フラグ
 // -----------------------------------------------------------------------------
@@ -487,6 +491,8 @@ func Sprintf(format string, args ...any) string {
 
 		case 118: // 'v'
 			switch v := val.(type) {
+			case Stringer:
+				formatted = appendStr(formatted, v.String())
 			case int:
 				formatted = formatIntBase(int64(v), 10, false, flags)
 			case int64:

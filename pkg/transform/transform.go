@@ -119,7 +119,7 @@ func semaTypeToAstType(tok token.Token, typ sema.Type) ast.TypeExpr {
 	case *sema.SliceType:
 		return &ast.SliceType{Token: tok, Elem: semaTypeToAstType(tok, resolved.Elem)}
 	case *sema.MapType:
-		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value)}
+		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value), IsSingleValue: resolved.IsSingleValue}
 	case *sema.StructType:
 		if resolved.Name == "" {
 			fields := make([]*ast.FieldDecl, 0, len(resolved.Fields))
@@ -1231,9 +1231,10 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 		return &ast.EllipsisType{Token: node.Token, Elem: t.substituteAstType(node.Elem, typeMap, orderedTypeArgs)}
 	case *ast.MapType:
 		return &ast.MapType{
-			Token: node.Token,
-			Key:   t.substituteAstType(node.Key, typeMap, orderedTypeArgs),
-			Value: t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
+			Token:         node.Token,
+			Key:           t.substituteAstType(node.Key, typeMap, orderedTypeArgs),
+			Value:         t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
+			IsSingleValue: node.IsSingleValue,
 		}
 
 	case *ast.ChanType:

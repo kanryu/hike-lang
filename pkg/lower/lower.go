@@ -1328,6 +1328,37 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 	return dst
 }
 
+// mapValueNeedsBox identifies values that cannot be represented by the
+// scalar map ABI. Boxed values are copied to heap storage and the map stores
+// the resulting pointer until the typed map entry ABI is available.
+func mapValueNeedsBox(t sema.Type) bool {
+	return !sema.IsSingleValueMapValue(t)
+}
+
+func (l *Lowerer) boxMapValue(value hir.Value, valueType sema.Type) hir.Value {
+	if !mapValueNeedsBox(valueType) {
+		return l.coerceToI64(value, valueType)
+	}
+	size := &hir.ConstInt{Val: int64(sema.SizeOf(valueType)), Typ: sema.TypeInt}
+	raw := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	l.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: "malloc", Args: []hir.Value{size}})
+	boxed := l.nextReg(&sema.PointerType{Base: valueType})
+	l.emit(&hir.InstrCast{Dst: boxed, Val: raw, ToType: boxed.Type()})
+	l.emit(&hir.InstrStore{Val: value, Ptr: boxed})
+	return l.coerceToI64(raw, raw.Type())
+}
+
+func (l *Lowerer) unboxMapValue(raw hir.Value, valueType sema.Type) hir.Value {
+	if !mapValueNeedsBox(valueType) {
+		return l.coerceFromI64(raw, valueType)
+	}
+	boxed := l.nextReg(&sema.PointerType{Base: valueType})
+	l.emit(&hir.InstrCast{Dst: boxed, Val: raw, ToType: boxed.Type()})
+	value := l.nextReg(valueType)
+	l.emit(&hir.InstrLoad{Dst: value, Ptr: boxed})
+	return value
+}
+
 func isZeroSizedMarkerType(t sema.Type) bool {
 	if t == nil || sema.SizeOf(t) == 0 {
 		return true

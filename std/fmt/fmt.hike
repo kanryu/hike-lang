@@ -5,6 +5,10 @@ import "std/errors"
 import "std/strings"
 import "std/strconv"
 
+type Stringer interface {
+	String() string
+}
+
 // 画面出力用のC標準関数宣言 (ネイティブ環境用)
 extern func printf(format cstring, ...) int
 extern func puts(s cstring) int
@@ -12,6 +16,10 @@ extern func puts(s cstring) int
 // Sprintf は std/fmt/sprintf に定義された純粋実装を委譲呼び出しします
 func Sprintf(format string, args ...any) string {
 	return sprintf.Sprintf(format, args...)
+}
+
+func Sprint(args ...any) string {
+	return sprintf.Sprintf("%v", args...)
 }
 
 func Sscan(text string, args ...any) (int, error) { return 0, nil }
