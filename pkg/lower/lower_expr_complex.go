@@ -79,7 +79,19 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
 		outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
 		e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
-		e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
+		if mapValueNeedsBox(mp.Value) {
+			// Go map lookup returns the element type's zero value when the key
+			// is absent. Boxed map values need a valid address for that zero
+			// value because unboxing loads through the returned pointer.
+			zeroValuePtr := e.root.nextReg(&sema.PointerType{Base: mp.Value})
+			e.root.emit(&hir.InstrAlloca{Dst: zeroValuePtr, AllocType: mp.Value})
+			e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(mp.Value), Ptr: zeroValuePtr})
+			zeroPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCast{Dst: zeroPtr, Val: zeroValuePtr, ToType: zeroPtr.Type()})
+			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get_boxed", Args: []hir.Value{baseVal, keyI64, outPtr, zeroPtr}})
+		} else {
+			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
+		}
 		rawVal := e.root.nextReg(sema.TypeInt)
 		e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
 		return e.root.unboxMapValue(rawVal, mp.Value)

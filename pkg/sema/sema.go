@@ -438,10 +438,28 @@ type StructType struct {
 
 func structSize(t *StructType) int { return t.Size() }
 
-func (t *StructType) TypeName() string         { return t.Name }
-func (t *StructType) LLVMType() string         { return "%struct." + t.Name }
+func (t *StructType) TypeName() string { return t.Name }
+func (t *StructType) LLVMType() string {
+	if t.Name != "" {
+		return "%struct." + t.Name
+	}
+
+	// Anonymous structs do not have a declaration name that can be used in
+	// LLVM IR. Emit them as literal structures instead of producing the
+	// invalid `%struct.` type used by the composite map-value boxing path.
+	if len(t.Fields) == 0 {
+		// Empty language structs are represented as one target-sized slot by
+		// Size, so use the matching scalar LLVM representation here.
+		return fmt.Sprintf("{ %s }", TypeInt.LLVMType())
+	}
+	parts := make([]string, len(t.Fields))
+	for i, field := range t.Fields {
+		parts[i] = LLVMTypeOf(field.Type)
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
 func StructType_TypeName(t *StructType) string { return t.Name }
-func StructType_LLVMType(t *StructType) string { return "%struct." + t.Name }
+func StructType_LLVMType(t *StructType) string { return t.LLVMType() }
 func (t *StructType) IsGeneric() bool          { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 func (t *StructType) Align() int {

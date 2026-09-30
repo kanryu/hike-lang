@@ -1369,6 +1369,20 @@ search.next:
   br label %search.entry
 }
 
+; Boxed map lookup (wasm32). A missing key receives the caller-provided zero
+; value pointer so composite values can be read without null loads.
+define internal void @__hike_map_get_boxed(%struct.__hike_map* %m, i32 %key, i32* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get(%struct.__hike_map* %m, i32 %key, i32* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i32
+  store i32 %zero_val, i32* %out_val
+  br label %done
+done:
+  ret void
+}
+
 ; マップ要素の削除 (32-bit)
 define internal void @__hike_map_delete(%struct.__hike_map* %m, i32 %key) {
 entry:

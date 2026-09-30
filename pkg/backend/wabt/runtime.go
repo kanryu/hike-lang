@@ -22,10 +22,11 @@ var WabtRuntimeSymbols = map[string]bool{
 	"hike_streq": true, "hike_streq_len": true, "hike_strcat_len": true,
 	"__hike_map_create": true, "__hike_map_len": true,
 	"__hike_map_set": true, "__hike_map_get": true,
+	"__hike_map_get_boxed": true,
 	"__hike_map_delete":    true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_append": true,
 	"__hike_slice_to_str": true,
-	"__hike_slice_alloc": true, "__hike_slice_cap": true,
+	"__hike_slice_alloc":  true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_fatal": true,
 	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
@@ -430,8 +431,9 @@ var wasmRuntime = map[string]runtimeFunc{
     (i32.store (i32.add (i32.load (local.get $m)) (i32.mul (local.get $idx) (i32.const 4))) (local.get $new))
     (i32.store offset=8 (local.get $m) (i32.add (i32.load offset=8 (local.get $m)) (i32.const 1))))`},
 	"__hike_map_get": runtimeFunc{deps: []string{"strcmp"}, body: `(func $__hike_map_get (param $m i32) (param $key i32) (param $out i32) (result i32)
-    (local $entry i32) (local $idx i32) (local $n i32) (local $is_str i32) (local $same i32)
+    (local $entry i32) (local $idx i32) (local $n i32) (local $is_str i32) (local $same i32) (local $found i32)
     (i32.store (local.get $out) (i32.const 0))
+    (local.set $found (i32.const 0))
     (local.set $n (i32.load offset=4 (local.get $m)))
     (local.set $is_str (i32.load offset=12 (local.get $m)))
     (local.set $idx (if (result i32) (local.get $is_str) (then (i32.const 0)) (else (i32.rem_s (local.get $key) (local.get $n)))))
@@ -444,10 +446,14 @@ var wasmRuntime = map[string]runtimeFunc{
       (if (local.get $same)
         (then
           (i32.store (local.get $out) (i32.load (i32.add (local.get $entry) (if (result i32) (local.get $is_str) (then (i32.const 16)) (else (i32.const 8))))) )
+          (local.set $found (i32.const 1))
           (br $done)))
       (local.set $entry (i32.load (i32.add (local.get $entry) (if (result i32) (local.get $is_str) (then (i32.const 20)) (else (i32.const 12))))))
       (br $scan)))
-    (i32.const 0))`},
+	    (local.get $found))`},
+	"__hike_map_get_boxed": runtimeFunc{deps: []string{"__hike_map_get"}, body: `(func $__hike_map_get_boxed (param $m i32) (param $key i32) (param $out i32) (param $zero_ptr i32)
+    (if (i32.eqz (call $__hike_map_get (local.get $m) (local.get $key) (local.get $out)))
+      (then (i32.store (local.get $out) (local.get $zero_ptr)))) )`},
 	"__hike_map_delete": runtimeFunc{deps: []string{"strcmp"}, body: `(func $__hike_map_delete (param $m i32) (param $key i32)
     (local $n i32) (local $idx i32) (local $entry i32) (local $prev i32) (local $same i32) (local $is_str i32) (local $next i32)
     (local.set $n (i32.load offset=4 (local.get $m)))
@@ -549,7 +555,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_delete", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_region_allocated_bytes", "__hike_region_released_bytes", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

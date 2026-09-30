@@ -205,7 +205,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_map_create": true,
 	"__hike_map_grow":   true,
 	"__hike_map_set":    true,
-	"__hike_map_get":    true,
+	"__hike_map_get":    true, "__hike_map_get_boxed": true,
 	"__hike_map_delete": true,
 	"__hike_map_len":    true,
 }

@@ -36,6 +36,87 @@ func main() int {
 }
 `
 
+const mapMissingSliceAppendE2ESource = `package main
+
+import "std/maps"
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string][]int)
+    values["numbers"] = append(values["numbers"], 10)
+    values["numbers"] = append(values["numbers"], 20)
+    loaded := values["numbers"]
+    if len(loaded) != 2 || loaded[0] != 10 || loaded[1] != 20 { return 1 }
+    printf("MAP_MISSING_SLICE_APPEND=%d,%d\n", loaded[0], loaded[1])
+    return 0
+}
+`
+
+const mapMissingSliceGetE2ESource = `package main
+
+import "std/maps"
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string][]int)
+    loaded := values["missing"]
+    if len(loaded) != 0 || cap(loaded) != 0 { return 1 }
+    printf("MAP_MISSING_SLICE_GET=%d,%d\n", len(loaded), cap(loaded))
+    return 0
+}
+`
+
+const mapMissingStringGetE2ESource = `package main
+
+import "std/maps"
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string]string)
+    loaded := values["missing"]
+    if loaded != "" { return 1 }
+    printf("MAP_MISSING_STRING_GET=%d\n", len(loaded))
+    return 0
+}
+`
+
+const mapMissingStructGetE2ESource = `package main
+
+import "std/maps"
+
+type Config struct { Bits int; Name string }
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string]Config)
+    loaded := values["missing"]
+    if loaded.Bits != 0 || loaded.Name != "" { return 1 }
+    printf("MAP_MISSING_STRUCT_GET=%d,%d\n", loaded.Bits, len(loaded.Name))
+    return 0
+}
+`
+
+const mapMissingStructPointerGetE2ESource = `package main
+
+import "std/maps"
+
+type Config struct { Bits int; Name string }
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string]*Config)
+    loaded := values["missing"]
+    if loaded != nil { return 1 }
+    printf("MAP_MISSING_STRUCT_PTR_GET=0\n")
+    return 0
+}
+`
+
 const mapStructValueE2ESource = `package main
 
 import "std/maps"
@@ -95,6 +176,26 @@ func TestE2EMapCompositeSliceValue(t *testing.T) {
 
 func TestE2EMapCompositeStringValue(t *testing.T) {
 	runMapValueCase(t, mapStringValueE2ESource, "MAP_STRING=hike")
+}
+
+func TestE2EMapMissingSliceAppend(t *testing.T) {
+	runMapValueCase(t, mapMissingSliceAppendE2ESource, "MAP_MISSING_SLICE_APPEND=10,20")
+}
+
+func TestE2EMapMissingSliceGet(t *testing.T) {
+	runMapValueCase(t, mapMissingSliceGetE2ESource, "MAP_MISSING_SLICE_GET=0,0")
+}
+
+func TestE2EMapMissingStringGet(t *testing.T) {
+	runMapValueCase(t, mapMissingStringGetE2ESource, "MAP_MISSING_STRING_GET=0")
+}
+
+func TestE2EMapMissingStructGet(t *testing.T) {
+	runMapValueCase(t, mapMissingStructGetE2ESource, "MAP_MISSING_STRUCT_GET=0,0")
+}
+
+func TestE2EMapMissingStructPointerGet(t *testing.T) {
+	runMapValueCase(t, mapMissingStructPointerGetE2ESource, "MAP_MISSING_STRUCT_PTR_GET=0")
 }
 
 func TestE2EMapCompositeStructValue(t *testing.T) {
