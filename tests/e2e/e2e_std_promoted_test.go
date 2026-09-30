@@ -1,6 +1,9 @@
 package e2e_test
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestE2EStdPromotedValueLibraries(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{
@@ -91,6 +94,15 @@ func main() int {
 
 // 追加された標準配置の互換APIが解決・呼び出し可能であることを検証する。
 func TestE2EStdPromotedCompatibilitySurface(t *testing.T) {
+	expectedRuntime := "unknown/unknown"
+	switch runtime.GOOS {
+	case "windows":
+		expectedRuntime = "windows/amd64"
+	case "linux":
+		expectedRuntime = "linux/amd64"
+	case "darwin":
+		expectedRuntime = "darwin/arm64"
+	}
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -115,7 +127,7 @@ func main() int {
     return 0
 }
 `,
-		ExpectedOut:  "EXEC=hikec:1,RUNTIME=unknown/unknown,ZIP=0:1,EMBED=0",
+		ExpectedOut:  "EXEC=hikec:1,RUNTIME=" + expectedRuntime + ",ZIP=0:1,EMBED=0",
 		ExpectedExit: 0,
 	})
 }

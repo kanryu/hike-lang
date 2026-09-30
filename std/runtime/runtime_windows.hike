@@ -1,0 +1,6 @@
+//hike:build windows
+
+package runtime
+
+const GOOS = "windows"
+const GOARCH = "amd64"

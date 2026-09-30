@@ -743,7 +743,7 @@ func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType 
 			s.root.emit(&hir.InstrGetFieldPtr{Dst: pVal, BasePtr: curE, FieldIndex: 2, FieldName: "val"})
 			rawVal := s.root.nextReg(sema.TypeInt)
 			s.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: pVal})
-			realKeyVal := s.root.coerceFromI64(rawVal, mp.Value)
+			realKeyVal := s.root.unboxMapValue(rawVal, mp.Value)
 			s.root.emit(&hir.InstrStore{Val: realKeyVal, Ptr: vPtr})
 		}
 

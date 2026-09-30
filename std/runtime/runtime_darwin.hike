@@ -1,0 +1,6 @@
+//hike:build darwin
+
+package runtime
+
+const GOOS = "darwin"
+const GOARCH = "arm64"

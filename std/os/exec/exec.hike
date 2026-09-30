@@ -14,9 +14,11 @@ func (e *ExitError) ExitCode() int { if e == nil { return -1 }; return e.Code }
 func Command(name string, args ...string) *Cmd { return &Cmd{Path: name, Args: args} }
 
 func quoteArg(value string) string {
-	// The command is passed through the platform shell. Double-quoting keeps
-	// spaces in paths and arguments intact; embedded quotes are escaped for the
-	// Windows and POSIX shells supported by the native backend.
+	// Avoid quoting simple command names and flags. Windows' system() shell
+	// handling can consume a leading quote before the command name, turning
+	// `"clang" "--target=..."` into the invalid command `clang" "--target=...`.
+	// Quote only arguments that need shell protection.
+	if value != "" && !strings.ContainsAny(value, " \t\"&|<>^()") { return value }
 	return "\"" + strings.ReplaceAll(value, "\"", "\\\"") + "\""
 }
 

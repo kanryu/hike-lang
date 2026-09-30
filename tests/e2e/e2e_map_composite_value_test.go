@@ -154,6 +154,26 @@ func main() int {
 }
 `
 
+const mapRangeStructPointerValueE2ESource = `package main
+
+import "std/maps"
+
+type Config struct { Bits int; Name string }
+
+func printf(format string, ...)
+
+func main() int {
+    config := Config{Bits: 64, Name: "native"}
+    values := make(map[string]*Config)
+    values["default"] = &config
+    for _, loaded := range values {
+        if loaded == nil || loaded.Bits != 64 || loaded.Name != "native" { return 1 }
+        printf("MAP_RANGE_STRUCT_PTR=%d,%s\n", loaded.Bits, loaded.Name)
+    }
+    return 0
+}
+`
+
 func runMapValueCase(t *testing.T, source, output string) {
 	t.Helper()
 	for _, goHike := range []bool{false, true} {
@@ -204,4 +224,8 @@ func TestE2EMapCompositeStructValue(t *testing.T) {
 
 func TestE2EMapCompositeStructPointerValue(t *testing.T) {
 	runMapValueCase(t, mapStructPointerValueE2ESource, "MAP_STRUCT_PTR=64,native")
+}
+
+func TestE2EMapRangeCompositeStructPointerValue(t *testing.T) {
+	runMapValueCase(t, mapRangeStructPointerValueE2ESource, "MAP_RANGE_STRUCT_PTR=64,native")
 }

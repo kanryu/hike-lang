@@ -1,3 +1,5 @@
+//hike:build !windows && !linux && !darwin
+
 package runtime
 
 const GOOS = "unknown"
