@@ -7,6 +7,8 @@ import (
 	"text/template"
 )
 
+//go:replace text/template => std/text/template
+
 //go:embed runtime/runtime_common.ll
 var builtinRuntimeCommonIR string
 

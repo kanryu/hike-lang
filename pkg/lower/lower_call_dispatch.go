@@ -8,6 +8,7 @@ import (
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
+	statictemplate "hikec-go/pkg/template"
 )
 
 // CallLowerer は関数呼び出し、メソッド解決、型キャスト判定、引数パッキングを担当する
@@ -18,6 +19,9 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		defer c.root.popTokenLocation()
 	}
 	logger.LogVerbose2("[Verbose2] Lower call input: function=%T (%+v) args=%d\\n", call.Function, call.Function, len(call.Args))
+	if rendered, ok := c.lowerTemplateRender(call); ok {
+		return rendered
+	}
 	// 1. 型キャスト呼び出し (例: Duration(ns), int64(x), string(cs), cstring(s), uint('a'))
 	if len(call.Args) == 1 {
 		targetType := c.ResolveTypeFromExpr(call.Function)
@@ -106,6 +110,70 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 	}
 
 	return c.lowerCallRemainder(call)
+}
+
+// lowerTemplateRender handles std/text/template.Render. It deliberately only
+// accepts literals so template expansion is completed while compiling the
+// Hike program; no template parser or reflection is emitted into the result.
+func (c *CallLowerer) lowerTemplateRender(call *ast.CallExpr) (hir.Value, bool) {
+	mem, ok := call.Function.(*ast.MemberExpr)
+	if !ok || mem.Field == nil || mem.Field.Value != "Render" {
+		return nil, false
+	}
+	pkg, ok := mem.Object.(*ast.Identifier)
+	if !ok || pkg.Value != "template" || len(call.Args) != 2 {
+		return nil, false
+	}
+	source, ok := call.Args[0].(*ast.StringLiteral)
+	if !ok {
+		panic("template.Render requires a string literal template")
+	}
+	dataExpr := call.Args[1]
+	for {
+		cast, isCast := dataExpr.(*ast.ImplicitCastExpr)
+		if !isCast {
+			break
+		}
+		dataExpr = cast.Expr
+	}
+	data, ok := dataExpr.(*ast.StructLiteral)
+	if !ok {
+		panic("template.Render requires a struct literal data value")
+	}
+	fields := make(map[string]any, len(data.Fields))
+	for _, field := range data.Fields {
+		if field == nil || field.Name == nil {
+			panic("template.Render requires named struct fields")
+		}
+		value, ok := staticTemplateValue(field.Value)
+		if !ok {
+			panic(fmt.Sprintf("template.Render field %q must be a compile-time literal", field.Name.Value))
+		}
+		fields[field.Name.Value] = value
+	}
+	rendered, err := statictemplate.RenderLiteral(source.Value, func(field string) (any, bool) {
+		value, ok := fields[field]
+		return value, ok
+	})
+	if err != nil {
+		panic(err)
+	}
+	return c.root.getStringConst(rendered), true
+}
+
+func staticTemplateValue(expr ast.Expression) (any, bool) {
+	switch value := expr.(type) {
+	case *ast.IntegerLiteral:
+		return value.Value, true
+	case *ast.FloatLiteral:
+		return value.Value, true
+	case *ast.StringLiteral:
+		return value.Value, true
+	case *ast.CharLiteral:
+		return value.CodePoint, true
+	default:
+		return nil, false
+	}
 }
 
 // LowerCall's remaining dispatch paths live in a separate helper to keep the entry point small.

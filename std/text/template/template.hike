@@ -1,0 +1,11 @@
+package template
+
+// Render expands a compile-time template literal using a struct literal.
+//
+// The compiler resolves this function before lowering. Supported actions are
+// {{.Field}} and the field must exist on the supplied struct literal. The
+// function body is intentionally a fallback for source tooling; native Hike
+// compilation replaces the call with the generated string literal.
+func Render(source string, data any) string {
+	return source
+}
