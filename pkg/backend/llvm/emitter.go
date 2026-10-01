@@ -1782,6 +1782,17 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		e.b.WriteString(fmt.Sprintf("  %s = add %s 0, 0\n", i.Dst, toLLVM))
 		return
 	}
+	// A named function value may arrive here after the lowerer has extracted
+	// its code pointer from the fat-pointer representation. Rebuild the
+	// function value instead of sending it through the generic aggregate
+	// fallback, which would silently replace it with zeroinitializer.
+	if _, isFunc := i.ToType.(*sema.FuncType); isFunc &&
+		fromLLVM == "i8*" && toLLVM == "{ i8*, i8* }" {
+		base := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s zeroinitializer, i8* %s, 0\n", base, toLLVM, val))
+		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s %s, i8* null, 1\n", i.Dst, toLLVM, base))
+		return
+	}
 	if (strings.HasPrefix(toLLVM, "{ ") || strings.HasPrefix(toLLVM, "%struct.")) && !strings.HasSuffix(toLLVM, "*") {
 		// The compatibility frontend can materialize metadata values through a
 		// scalar placeholder. Produce a valid zero aggregate instead of an

@@ -359,13 +359,30 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			// complete signature. Prefer that complete entry when available.
 			// Otherwise the call below would silently omit method arguments.
 			if len(targetFn.ParamTypes) <= 1 {
-				for _, candidate := range c.root.semaCtx.Functions {
+				var fallback *sema.FuncType
+				fallbackName := ""
+				rawRecvName := strings.TrimPrefix(semaTypeName(objType), "*")
+				for functionName, candidate := range c.root.semaCtx.Functions {
 					if candidate == nil || len(candidate.ParamTypes) <= 1 {
 						continue
 					}
 					if candidate.IRName == targetFnName || candidate.Name == targetFnName {
-						targetFn = candidate
+						fallback, fallbackName = candidate, functionName
 						break
+					}
+					// Imported Go-Hike method metadata can retain only the
+					// receiver in the lookup entry, while the complete function
+					// is registered under its package-qualified name.
+					if candidate.Name == mem.Field.Value && strings.Contains(functionName, rawRecvName) {
+						fallback, fallbackName = candidate, functionName
+					}
+				}
+				if fallback != nil {
+					targetFn = fallback
+					if targetFn.IRName != "" {
+						targetFnName = targetFn.IRName
+					} else if fallbackName != "" {
+						targetFnName = fallbackName
 					}
 				}
 			}
@@ -391,7 +408,30 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			}
 
 			params := c.getFuncParams(targetFn, targetFnName)
+			// Some imported method entries expose the receiver as the first
+			// template parameter even though method arguments are stored
+			// separately. Do not treat that receiver as the callback argument.
+			if len(params) > 0 && len(call.Args) > 0 {
+				firstType := c.root.semaCtx.ResolveType(params[0].Type)
+				recvName := semaTypeName(objType)
+				firstName := semaTypeName(firstType)
+				if firstName == recvName || strings.TrimPrefix(firstName, "*") == strings.TrimPrefix(recvName, "*") {
+					params = params[1:]
+				}
+			}
 			callArgs := c.fillDefaultArgs(call.Args, params)
+			// Sema may insert an aggregate implicit cast around a function
+			// identifier when the imported method signature is incomplete.  The
+			// cast is not meaningful for the fat-pointer ABI; retain the original
+			// function expression so lowerIdentifier can materialize its code
+			// pointer and environment pointer.
+			for i, arg := range callArgs {
+				if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
+					if _, isFn := c.root.semaCtx.ResolveType(cast.TargetType).(*sema.FuncType); isFn {
+						callArgs[i] = cast.Expr
+					}
+				}
+			}
 
 			methodParamTypes := []sema.Type{}
 			if len(targetFn.ParamTypes) > 1 {

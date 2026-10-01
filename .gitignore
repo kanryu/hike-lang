@@ -38,6 +38,7 @@ output_*.ll
 .region-test-*/
 .region-case-*/
 .hike/
+go-selfhost-current.log
 
 # IDE & Editor files
 .vscode/

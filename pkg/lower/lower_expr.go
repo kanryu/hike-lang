@@ -901,6 +901,33 @@ func (e *ExprLowerer) lowerImplicitCast(node *ast.ImplicitCastExpr) hir.Value {
 	}
 
 	value := e.LowerExpr(node.Expr)
+	if _, targetFn := targetType.(*sema.FuncType); targetFn && !isNilValue(value) {
+		// Function values are already represented by the runtime fat pointer.
+		// Never destructure or re-cast them merely because semantic analysis
+		// inserted an implicit function conversion.
+		return value
+	}
+	// Function values share the fat-pointer ABI.  Semantic analysis may wrap a
+	// named function in an implicit cast when the method parameter comes from an
+	// imported package, but lowering that cast as a generic aggregate conversion
+	// can replace the callback with a zero value.
+	if _, sourceFn := value.Type().(*sema.FuncType); sourceFn {
+		if _, targetFn := targetType.(*sema.FuncType); targetFn {
+			return value
+		}
+	}
+	// Go-Hike may represent a function signature as a tuple-like semantic
+	// value during cast insertion.  The LLVM ABI is still the same fat pointer;
+	// compare the lowered ABI before extracting tuple elements or emitting a
+	// generic aggregate cast.
+	if _, targetFn := targetType.(*sema.FuncType); targetFn &&
+		sema.LLVMTypeOf(value.Type()) == sema.LLVMTypeOf(targetType) {
+		return value
+	}
+	if sema.LLVMTypeOf(value.Type()) == "{ i8*, i8* }" &&
+		sema.LLVMTypeOf(targetType) == "{ i8*, i8* }" {
+		return value
+	}
 	if isNilValue(value) {
 		return e.root.defaultConstValue(targetType)
 	}

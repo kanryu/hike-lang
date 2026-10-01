@@ -29,3 +29,32 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// TestE2ESyncOnceNamedFunctionValue covers the named-function path used by
+// the compiler's logger initialization callback.
+func TestE2ESyncOnceNamedFunctionValue(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/sync"
+
+func printf(format string, ...) int
+
+func initOnce() {
+    printf("NAMED_ONCE\n")
+}
+
+func main() int {
+    var once sync.Once
+    once.Do(initOnce)
+    return 0
+}
+`,
+		GoHike:       true,
+		ExpectedOut:  "NAMED_ONCE",
+		ExpectedExit: 0,
+	})
+}
