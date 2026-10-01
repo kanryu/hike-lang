@@ -420,18 +420,6 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 				}
 			}
 			callArgs := c.fillDefaultArgs(call.Args, params)
-			// Sema may insert an aggregate implicit cast around a function
-			// identifier when the imported method signature is incomplete.  The
-			// cast is not meaningful for the fat-pointer ABI; retain the original
-			// function expression so lowerIdentifier can materialize its code
-			// pointer and environment pointer.
-			for i, arg := range callArgs {
-				if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
-					if _, isFn := c.root.semaCtx.ResolveType(cast.TargetType).(*sema.FuncType); isFn {
-						callArgs[i] = cast.Expr
-					}
-				}
-			}
 
 			methodParamTypes := []sema.Type{}
 			if len(targetFn.ParamTypes) > 1 {
@@ -453,6 +441,23 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 						}
 					}
 					methodParamTypes = append(methodParamTypes, paramType)
+				}
+			}
+			// Sema may attach the receiver type to an explicit method argument
+			// when an imported method signature is incomplete.  If the resolved
+			// parameter is a function value, discard that stale implicit cast and
+			// let lowerArgs coerce the original expression to the actual function
+			// type.  This preserves the function-value ABI without making the LLVM
+			// emitter guess from the aggregate layout.
+			for i, arg := range callArgs {
+				if i >= len(methodParamTypes) {
+					break
+				}
+				if _, expectsFunction := methodParamTypes[i].(*sema.FuncType); !expectsFunction {
+					continue
+				}
+				if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
+					callArgs[i] = cast.Expr
 				}
 			}
 			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)

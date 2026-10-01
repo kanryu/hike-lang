@@ -28,3 +28,24 @@ func TestEmitCastRebuildsFunctionValueFromCodePointer(t *testing.T) {
 		t.Fatalf("function value was replaced with a zero aggregate: %s", ir)
 	}
 }
+
+func TestEmitCastDoesNotTreatInterfaceLayoutAsFunctionValue(t *testing.T) {
+	interfaceType := &sema.InterfaceType{
+		Name:    "Reader",
+		Methods: []sema.Method{{Name: "Read"}},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitCast(&hir.InstrCast{
+		Dst:    &hir.Reg{ID: 1, Typ: interfaceType},
+		Val:    &hir.Reg{ID: 2, Typ: &sema.PointerType{Base: sema.TypeByte}},
+		ToType: interfaceType,
+	})
+
+	ir := emitter.b.String()
+	if strings.Contains(ir, "insertvalue { i8*, i8* } zeroinitializer, i8* %v2, 0") {
+		t.Fatalf("interface layout was incorrectly rebuilt as a function value: %s", ir)
+	}
+	if !strings.Contains(ir, "select i1 true, { i8*, i8* } zeroinitializer") {
+		t.Fatalf("expected the generic aggregate fallback for a non-function destination: %s", ir)
+	}
+}

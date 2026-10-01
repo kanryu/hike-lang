@@ -133,6 +133,9 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 	}
 	for name, source := range tc.Files {
 		path := filepath.Join(tmpDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("追加ソースディレクトリ作成失敗 (%s): %v", name, err)
+		}
 		if err := os.WriteFile(path, []byte(source), 0644); err != nil {
 			t.Fatalf("追加ソース書き込み失敗 (%s): %v", name, err)
 		}
