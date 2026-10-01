@@ -354,6 +354,21 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 		// 静的型メソッド呼び出し (構造体および基本型エイリアス)
 		targetFnName, targetFn, finalRecv, found := c.ResolveMethod(objType, mem.Field.Value, objPtr)
 		if found && targetFn != nil {
+			// Method tables assembled from imported packages may contain a
+			// receiver-only FuncType while the canonical function entry has the
+			// complete signature. Prefer that complete entry when available.
+			// Otherwise the call below would silently omit method arguments.
+			if len(targetFn.ParamTypes) <= 1 {
+				for _, candidate := range c.root.semaCtx.Functions {
+					if candidate == nil || len(candidate.ParamTypes) <= 1 {
+						continue
+					}
+					if candidate.IRName == targetFnName || candidate.Name == targetFnName {
+						targetFn = candidate
+						break
+					}
+				}
+			}
 			isPtrRecv := false
 			if len(targetFn.ParamTypes) > 0 {
 				_, isPtrRecv = targetFn.ParamTypes[0].(*sema.PointerType)
@@ -382,8 +397,38 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			if len(targetFn.ParamTypes) > 1 {
 				methodParamTypes = targetFn.ParamTypes[1:]
 			}
+			// Imported Go-Hike methods can arrive with only their receiver
+			// signature resolved, even though the declaration is available in
+			// Template. Recover the parameter types from that declaration before
+			// lowering arguments. Without this, a call such as
+			// Once.Do(initLevel) is emitted with only the receiver and the
+			// callback fat pointer becomes the zero value in native self-hosting.
+			if len(methodParamTypes) < len(params) {
+				methodParamTypes = make([]sema.Type, 0, len(params))
+				for _, param := range params {
+					paramType := c.root.semaCtx.ResolveType(param.Type)
+					if param.IsVariadic {
+						if _, isSlice := paramType.(*sema.SliceType); !isSlice {
+							paramType = &sema.SliceType{Elem: paramType}
+						}
+					}
+					methodParamTypes = append(methodParamTypes, paramType)
+				}
+			}
 			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
-			callArgVals := c.lowerArgs(callArgs, methodParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
+			var callArgVals []hir.Value
+			if len(methodParamTypes) == 0 && len(callArgs) > 0 {
+				// A partially resolved imported method may have no parameter
+				// metadata at all. Preserve the actual argument values rather than
+				// dropping them; the static callee's ABI still describes the
+				// expected types. This is especially important for function values.
+				callArgVals = make([]hir.Value, 0, len(callArgs))
+				for _, arg := range callArgs {
+					callArgVals = append(callArgVals, c.root.Expr.LowerExpr(arg))
+				}
+			} else {
+				callArgVals = c.lowerArgs(callArgs, methodParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
+			}
 			args := append([]hir.Value{recvArg}, callArgVals...)
 
 			var retType sema.Type = sema.TypeVoid

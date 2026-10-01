@@ -1229,6 +1229,17 @@ func (l *Lowerer) emitValueCoerce(val hir.Value, targetType sema.Type) hir.Value
 	if val.Type() == targetType || semaTypeName(val.Type()) == semaTypeName(targetType) {
 		return val
 	}
+	// Function values use the same fat-pointer ABI even when the semantic
+	// layer has produced distinct FuncType instances for the source function
+	// and the parameter declaration.  Do not send such values through the
+	// generic cast path: the LLVM emitter cannot cast one aggregate function
+	// value to another and would replace it with a zero value, leaving a null
+	// callback for calls such as sync.Once.Do(initLevel).
+	if _, sourceFn := val.Type().(*sema.FuncType); sourceFn {
+		if _, targetFn := targetType.(*sema.FuncType); targetFn {
+			return val
+		}
+	}
 	if targetType == sema.TypeString {
 		if _, isPtr := val.Type().(*sema.PointerType); isPtr {
 			return l.Call.lowerCStringToString(val)
