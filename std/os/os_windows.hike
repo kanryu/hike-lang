@@ -17,7 +17,10 @@ extern func GetTempPathA(size int, buffer *byte) int
 extern func GetModuleFileNameA(module *byte, buffer *byte, size int) int
 extern func DeleteFileA(path cstring) int
 extern func MoveFileExA(oldPath cstring, newPath cstring, flags int) int
-extern func GetFileAttributesA(path cstring) int
+// GetFileAttributesA returns a Windows DWORD.  Keep the unsigned 32-bit
+// width here so INVALID_FILE_ATTRIBUTES (0xffffffff) is not zero-extended
+// and then compared with a sign-extended Hike int.
+extern func GetFileAttributesA(path cstring) uint32
 extern func GetEnvironmentVariableA(name cstring, buffer *byte, size int) int
 extern func SetEnvironmentVariableA(name cstring, value cstring) int
 extern func ExpandEnvironmentStringsA(value cstring, buffer *byte, size int) int
@@ -28,10 +31,10 @@ const (
 	winFileAttributesOffset int = 0
 	winFileSizeHighOffset int = 28
 	winFileSizeLowOffset int = 32
-	winFileAttributesDirectory int = 16
+	winFileAttributesDirectory uint32 = 16
 	formatMessageFromSystem int = 4096
 	formatMessageIgnoreInsert int = 512
-	winInvalidFileAttributes int = -1
+	winInvalidFileAttributes uint32 = 4294967295
 	moveFileReplaceExisting int = 2
 )
 

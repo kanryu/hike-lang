@@ -129,7 +129,9 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 			continue
 		}
 		l.visitedFiles[curFile] = true
-		l.log(fmt.Sprintf("Parsing file: %s", curFile))
+		if l.verbose {
+			l.log(fmt.Sprintf("Parsing file: %s", curFile))
+		}
 
 		content, err := os.ReadFile(curFile)
 		if err != nil {

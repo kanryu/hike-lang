@@ -23,6 +23,9 @@ func ValidateConcreteProgram(program *ast.Program) error {
 }
 
 func validateDecl(decl ast.Decl, path string) error {
+	if decl == nil {
+		return nil
+	}
 	switch n := decl.(type) {
 	case nil:
 		return nil
@@ -137,6 +140,9 @@ func validateBlock(n *ast.BlockStmt, path string) error {
 }
 
 func validateStmt(s ast.Statement, path string) error {
+	if s == nil {
+		return nil
+	}
 	switch n := s.(type) {
 	case nil:
 		return nil
@@ -292,6 +298,13 @@ func validateTypeCase(n *ast.TypeCaseClause, path string) error {
 }
 
 func validateExpr(e ast.Expression, path string) error {
+	// Optional expression fields are represented by a nil interface when they
+	// are absent.  Check that case before entering the typed-nil switch below.
+	// This also keeps the Go-Hike backend from dispatching a type switch on a
+	// completely nil interface value.
+	if e == nil {
+		return nil
+	}
 	if isNilExpr(e) {
 		return nil
 	}
@@ -419,6 +432,9 @@ func validateExpr(e ast.Expression, path string) error {
 }
 
 func validateType(t ast.TypeExpr, path string) error {
+	if t == nil {
+		return nil
+	}
 	if isNilType(t) {
 		return nil
 	}

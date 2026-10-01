@@ -404,7 +404,10 @@ func (e *Emitter) emitFunctions() {
 			for i, p := range fn.Params {
 				paramTypes[i] = e.externalABIType(p.Typ)
 			}
-			if fn.IsVariadic {
+			// Hike variadic functions receive one typed slice parameter.  Only
+			// C variadic functions use LLVM's native varargs ABI; marking a Hike
+			// function as LLVM-vararg breaks aggregate arguments on Win64.
+			if fn.IsVariadic && (fn.IsCFunc || fn.IsExtern) {
 				paramTypes = append(paramTypes, "...")
 			}
 			e.b.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retTypeStr, fn.Name, strings.Join(paramTypes, ", ")))
@@ -556,7 +559,7 @@ func (e *Emitter) emitFunction(fn *hir.Function, functionID int) {
 	for i, p := range fn.Params {
 		params[i] = fmt.Sprintf("%s %s", p.Typ.LLVMType(), p)
 	}
-	if fn.IsVariadic {
+	if fn.IsVariadic && fn.IsCFunc {
 		params = append(params, "...")
 	}
 
@@ -631,7 +634,7 @@ func (e *Emitter) isVariadicFunc(name string) (bool, string) {
 	if e.semaCtx != nil {
 		fnType, _ = e.semaCtx.LookupFunction(name)
 	}
-	if fnType != nil && fnType.IsVariadic {
+	if fnType != nil && fnType.IsVariadic && (fnType.IsCFunc || fnType.IsExtern) {
 		paramTypes := make([]string, len(fnType.ParamTypes))
 		for idx, pt := range fnType.ParamTypes {
 			if fnType.IsExtern {

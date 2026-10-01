@@ -69,6 +69,31 @@ func main() int {
 	})
 }
 
+// os.Stat がファイルとディレクトリを正しく区別することを検証する。
+// ネイティブ版では、この判定に失敗するとモジュールルート探索も壊れる。
+func TestE2EStdOS_StatFileAndDirectory(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/os"
+
+func printf(format string, ...) int
+
+func main() int {
+    fileInfo, fileErr := os.Stat("main.hike")
+    dirInfo, dirErr := os.Stat(".")
+    printf("FILE=%d:%d,DIR=%d:%d\n",
+        fileErr == nil, fileInfo.IsDir(), dirErr == nil, dirInfo.IsDir())
+    return 0
+}
+`,
+		ExpectedOut:  "FILE=1:0,DIR=1:1",
+		ExpectedExit: 0,
+	})
+}
+
 // os.File の位置操作、ReadAt、Stat、および Rename をネイティブ実装で検証する。
 func TestE2EStdOS_FilePositionAndMetadata(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{

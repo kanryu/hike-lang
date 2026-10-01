@@ -49,3 +49,36 @@ func TestEmitCastDoesNotTreatInterfaceLayoutAsFunctionValue(t *testing.T) {
 		t.Fatalf("expected the generic aggregate fallback for a non-function destination: %s", ir)
 	}
 }
+
+func TestHikeVariadicFunctionsUseTypedSliceABI(t *testing.T) {
+	ctx := sema.NewContext()
+	ctx.Functions["hikeVariadic"] = &sema.FuncType{
+		Name:       "hikeVariadic",
+		ParamTypes: []sema.Type{sema.TypeString, &sema.SliceType{Elem: sema.TypeInt}},
+		IsVariadic: true,
+		IsCFunc:    false,
+	}
+	ctx.Functions["cVariadic"] = &sema.FuncType{
+		Name:       "cVariadic",
+		ParamTypes: []sema.Type{sema.TypeString},
+		IsVariadic: true,
+		IsCFunc:    true,
+	}
+	ctx.Functions["externVariadic"] = &sema.FuncType{
+		Name:       "externVariadic",
+		ParamTypes: []sema.Type{sema.TypeString},
+		IsVariadic: true,
+		IsExtern:   true,
+	}
+
+	emitter := &Emitter{semaCtx: ctx, renderedTypes: make(map[string]string)}
+	if isVar, _ := emitter.isVariadicFunc("hikeVariadic"); isVar {
+		t.Fatal("ordinary Hike variadic functions must not use LLVM varargs")
+	}
+	if isVar, sig := emitter.isVariadicFunc("cVariadic"); !isVar || !strings.HasSuffix(sig, ", ...)") {
+		t.Fatalf("C variadic signature was not preserved: isVar=%v sig=%q", isVar, sig)
+	}
+	if isVar, sig := emitter.isVariadicFunc("externVariadic"); !isVar || !strings.HasSuffix(sig, ", ...)") {
+		t.Fatalf("external variadic signature was not preserved: isVar=%v sig=%q", isVar, sig)
+	}
+}
