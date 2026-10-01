@@ -80,7 +80,9 @@ func LoadGoHikeBot(l *Loader) {
 		}
 		parts := strings.Fields(strings.TrimPrefix(line, "GoReplace "))
 		if len(parts) >= 3 && parts[1] == "=>" {
-			l.module.Replaces[parts[0]] = parts[2]
+			if _, exists := l.module.Replaces[parts[0]]; !exists {
+				l.module.Replaces[parts[0]] = parts[2]
+			}
 		}
 	}
 }
@@ -300,7 +302,9 @@ func (l *Loader) applyGoHikeReplacements(content string) {
 			}
 			parts := strings.Fields(strings.TrimPrefix(line, prefix))
 			if len(parts) >= 3 && parts[1] == "=>" {
-				l.module.Replaces[parts[0]] = parts[2]
+				if _, exists := l.module.Replaces[parts[0]]; !exists {
+					l.module.Replaces[parts[0]] = parts[2]
+				}
 			}
 		}
 	}

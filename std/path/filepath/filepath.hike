@@ -14,7 +14,11 @@ func Abs(p string) (string, error) {
 	}
 	return Clean(Join(cwd, p)), nil
 }
-func IsAbs(p string) bool { return len(p) > 0 && (p[0] == '/' || p[0] == '\\') }
+func IsAbs(p string) bool {
+	if len(p) == 0 { return false }
+	if p[0] == '/' || p[0] == '\\' { return true }
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '/' || p[2] == '\\')
+}
 func ToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 func FromSlash(p string) string { return p }
 func Rel(base string, target string) (string, error) {
@@ -40,7 +44,12 @@ func Rel(base string, target string) (string, error) {
 }
 func Clean(p string) string {
 	if p == "" { return "." }
+	volume := ""
 	abs := IsAbs(p)
+	if len(p) >= 2 && p[1] == ':' {
+		volume = p[0:2]
+		p = p[2:]
+	}
 	parts := strings.Split(ToSlash(p), "/")
 	stack := make([]string, 0, len(parts))
 	for i := 0; i < len(parts); i = i + 1 {
@@ -56,6 +65,10 @@ func Clean(p string) string {
 	}
 	result := strings.Join(stack, "/")
 	if abs { result = "/" + result }
+	if volume != "" {
+		result = volume + result
+		if result == volume { result = volume + "/" }
+	}
 	if result == "" { if abs { return "/" }; return "." }
 	return result
 }

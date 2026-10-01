@@ -1083,6 +1083,16 @@ func Analyze(prog *ast.Program) (*Context, error) {
 func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 	ctx := NewContext()
 	configureAnalyzeMode(ctx, prog, goHikeMode)
+	for _, imp := range prog.Imports {
+		if imp.Alias == "" || imp.Alias == "." {
+			continue
+		}
+		path := strings.Trim(imp.Path, "\"`")
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			path = path[idx+1:]
+		}
+		ctx.PackageAliases[imp.Alias] = path
+	}
 
 	if err := validateProgramMapUsage(prog, ctx); err != nil {
 		return nil, err

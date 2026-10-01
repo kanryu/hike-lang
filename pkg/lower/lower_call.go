@@ -670,9 +670,21 @@ func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.Member
 		return nil
 	}
 	targetFnName := pkgIdent.Value + "_" + methodName
-	targetFn, canonicalName := c.root.semaCtx.LookupFunction(targetFnName)
+	resolvedFn, resolved := c.root.semaCtx.ResolvedCalls[call]
+	var targetFn *sema.FuncType
+	var canonicalName string
+	if resolved {
+		targetFn = resolvedFn
+	}
+	if targetFn != nil {
+		// The semantic pass has already resolved package-qualified calls.  Keep
+		// that result: falling back to an unqualified lookup can select another
+		// package's same-named function (for example compiler.New instead of
+		// template.New) after packages are merged into one AST.
+		canonicalName = semaFuncName(targetFn)
+	}
 	if targetFn == nil {
-		targetFn, canonicalName = c.root.semaCtx.LookupFunction(methodName)
+		targetFn, canonicalName = c.root.semaCtx.LookupQualifiedFunction(targetFnName)
 	}
 	if targetFn == nil {
 		panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))

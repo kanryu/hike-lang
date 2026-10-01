@@ -28,6 +28,7 @@ type Context struct {
 	Aliases            map[string]Type
 	GenericTypes       map[string]*ast.TypeDecl
 	GenericFuncs       map[string]*ast.FuncDecl
+	PackageAliases     map[string]string
 	TypeParams         map[string]*TypeParamType
 	typeIDs            map[string]int64
 	moduleTypeBases    map[string]int64
@@ -65,6 +66,7 @@ func NewContext() *Context {
 		Aliases:            make(map[string]Type),
 		GenericTypes:       make(map[string]*ast.TypeDecl),
 		GenericFuncs:       make(map[string]*ast.FuncDecl),
+		PackageAliases:     make(map[string]string),
 		TypeParams:         make(map[string]*TypeParamType),
 		typeIDs:            make(map[string]int64),
 		moduleTypeBases:    make(map[string]int64),
@@ -299,6 +301,45 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 				return v, k
 			}
 		}
+	}
+	return nil, ""
+}
+
+// LookupQualifiedFunction resolves a package-qualified function name without
+// applying the short-name compatibility fallback used by LookupFunction.
+// A qualified member expression such as template.New must never resolve to a
+// same-named function from another package.
+func (c *Context) LookupQualifiedFunction(name string) (*FuncType, string) {
+	fn, ok := c.Functions[name]
+	if ok {
+		return fn, name
+	}
+	sep := strings.IndexByte(name, '_')
+	if sep > 0 {
+		if pkg, aliased := c.PackageAliases[name[:sep]]; aliased {
+			canonical := pkg + name[sep:]
+			if fn, ok := c.Functions[canonical]; ok {
+				return fn, canonical
+			}
+		}
+	}
+	// Keep package aliases usable even when an older AST producer omitted the
+	// import alias from the merged import list. Only accept an unambiguous
+	// canonical suffix; never choose arbitrarily among same-named functions.
+	short := name[sep+1:]
+	var candidate *FuncType
+	candidateName := ""
+	for key, fn := range c.Functions {
+		if strings.HasSuffix(key, "_"+short) {
+			if candidate != nil {
+				return nil, ""
+			}
+			candidate = fn
+			candidateName = key
+		}
+	}
+	if candidate != nil {
+		return candidate, candidateName
 	}
 	return nil, ""
 }
@@ -1355,7 +1396,7 @@ func (c *Context) inferMemberExprType(e *ast.MemberExpr, locals map[string]Type)
 		if _, ok := c.LookupFloatConstant(qualified); ok {
 			return TypeFloat64
 		}
-		if fn, _ := c.LookupFunction(qualified); fn != nil {
+		if fn, _ := c.LookupQualifiedFunction(qualified); fn != nil {
 			return fn
 		}
 	}
@@ -1476,7 +1517,7 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 	if mem, ok := e.Function.(*ast.MemberExpr); ok {
 		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
 			targetName := pkgId.Value + "_" + mem.Field.Value
-			if fn, _ := c.LookupFunction(targetName); fn != nil {
+			if fn, _ := c.LookupQualifiedFunction(targetName); fn != nil {
 				c.ResolvedCalls[e] = fn
 			}
 		} else {

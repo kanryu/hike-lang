@@ -218,6 +218,25 @@ func SplitN(s string, sep string, n int) []string {
 	return result
 }
 
+// Fields splits s around runs of ASCII whitespace.
+func Fields(s string) []string {
+	result := make([]string, 0)
+	i := 0
+	for i < len(s) {
+		for i < len(s) && IndexByte(" \t\r\n\v\f", s[i]) >= 0 {
+			i = i + 1
+		}
+		start := i
+		for i < len(s) && IndexByte(" \t\r\n\v\f", s[i]) < 0 {
+			i = i + 1
+		}
+		if start < i {
+			result = append(result, s[start:i])
+		}
+	}
+	return result
+}
+
 func ToUpper(s string) string {
 	lenS := len(s)
 	// Keep one zero byte after the view for runtimes that use C-style
