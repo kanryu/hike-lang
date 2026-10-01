@@ -5,42 +5,60 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-const importedPointerTypeMain = `package main
+const qualifiedFunctionMain = `package main
 
-import "hikec-go/pkg/backend/llvm"
+import "repro/template"
+import "repro/compiler"
 
 func main() int {
+	t := template.New()
+	t.Parse()
+	_ = compiler.New()
 	return 0
 }
 `
 
-// TestE2ENativeImportedLLVMBackend is a minimal reproducer for the native
-// compiler failure. Importing the LLVM backend must compile and emit IR; its
-// runtime template call must not select a same-named function from another
-// package during native lowering.
-func TestE2ENativeImportedLLVMBackend(t *testing.T) {
+const qualifiedFunctionTemplate = `package template
+
+type Template struct{}
+
+func New() *Template { return &Template{} }
+func (t *Template) Parse() {}
+`
+
+const qualifiedFunctionCompiler = `package compiler
+
+func New() int { return 1 }
+`
+
+// TestE2ENativeQualifiedFunctionResolution is a minimal reproducer for the
+// native compiler failure: template.New must not resolve to compiler.New.
+func TestE2ENativeQualifiedFunctionResolution(t *testing.T) {
 	if !useNativeBins {
 		t.Skip("requires a native HikeC binary")
 	}
 
 	tmpDir := t.TempDir()
-	modSource, err := os.ReadFile(filepath.Join(projectRoot, "cmd", "hikec", "hike.mod"))
-	if err != nil {
+	if err := os.MkdirAll(filepath.Join(tmpDir, "template"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	stdRoot := filepath.ToSlash(filepath.Join(projectRoot, "std"))
-	mod := strings.ReplaceAll(string(modSource), "../../std", stdRoot)
-	mod = strings.ReplaceAll(mod, "../../pkg", filepath.ToSlash(filepath.Join(projectRoot, "pkg")))
-	mod = strings.Replace(mod, "module hikec-go", "module repro", 1)
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(importedPointerTypeMain), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(tmpDir, "compiler"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "hike.mod"), []byte(mod), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(qualifiedFunctionMain), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "template", "template.hike"), []byte(qualifiedFunctionTemplate), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "compiler", "compiler.hike"), []byte(qualifiedFunctionCompiler), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "hike.mod"), []byte("module repro\nhike 0.1.0\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

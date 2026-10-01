@@ -190,42 +190,57 @@ func runMapValueCase(t *testing.T, source, output string) {
 	}
 }
 
-func TestE2EMapCompositeSliceValue(t *testing.T) {
-	runMapValueCase(t, mapSliceValueE2ESource, "MAP_SLICE=10,20")
-}
+func TestE2EMapCompositeValues(t *testing.T) {
+	const source = `package main
 
-func TestE2EMapCompositeStringValue(t *testing.T) {
-	runMapValueCase(t, mapStringValueE2ESource, "MAP_STRING=hike")
-}
+import "std/maps"
 
-func TestE2EMapMissingSliceAppend(t *testing.T) {
-	runMapValueCase(t, mapMissingSliceAppendE2ESource, "MAP_MISSING_SLICE_APPEND=10,20")
-}
+type Config struct { Bits int; Name string }
 
-func TestE2EMapMissingSliceGet(t *testing.T) {
-	runMapValueCase(t, mapMissingSliceGetE2ESource, "MAP_MISSING_SLICE_GET=0,0")
-}
+func printf(format string, ...)
 
-func TestE2EMapMissingStringGet(t *testing.T) {
-	runMapValueCase(t, mapMissingStringGetE2ESource, "MAP_MISSING_STRING_GET=0")
-}
+func main() int {
+    values := make(map[string][]int)
+    values["numbers"] = append(values["numbers"], 10)
+    values["numbers"] = append(values["numbers"], 20)
+    loaded := values["numbers"]
+    if len(loaded) != 2 || loaded[0] != 10 || loaded[1] != 20 { return 1 }
+    printf("MAP_SLICE=%d,%d\n", loaded[0], loaded[1])
 
-func TestE2EMapMissingStructGet(t *testing.T) {
-	runMapValueCase(t, mapMissingStructGetE2ESource, "MAP_MISSING_STRUCT_GET=0,0")
-}
+    strings := make(map[string]string)
+    strings["language"] = "hike"
+    if strings["language"] != "hike" || strings["missing"] != "" { return 1 }
+    printf("MAP_STRING=%s\n", strings["language"])
 
-func TestE2EMapMissingStructPointerGet(t *testing.T) {
-	runMapValueCase(t, mapMissingStructPointerGetE2ESource, "MAP_MISSING_STRUCT_PTR_GET=0")
-}
+    missing := make(map[string][]int)["missing"]
+    if len(missing) != 0 || cap(missing) != 0 { return 1 }
+    printf("MAP_MISSING_SLICE_GET=%d,%d\n", len(missing), cap(missing))
 
-func TestE2EMapCompositeStructValue(t *testing.T) {
-	runMapValueCase(t, mapStructValueE2ESource, "MAP_STRUCT=64,native")
-}
+    config := Config{Bits: 64, Name: "native"}
+    configs := make(map[string]Config)
+    configs["default"] = config
+    if configs["default"].Bits != 64 || configs["missing"].Bits != 0 { return 1 }
+    printf("MAP_STRUCT=%d,%s\n", configs["default"].Bits, configs["default"].Name)
 
-func TestE2EMapCompositeStructPointerValue(t *testing.T) {
-	runMapValueCase(t, mapStructPointerValueE2ESource, "MAP_STRUCT_PTR=64,native")
+    pointers := make(map[string]*Config)
+    pointers["default"] = &config
+    if pointers["default"].Bits != 64 || pointers["missing"] != nil { return 1 }
+    printf("MAP_STRUCT_PTR=%d,%s\n", pointers["default"].Bits, pointers["default"].Name)
+    for _, item := range pointers {
+        if item == nil || item.Bits != 64 || item.Name != "native" { return 1 }
+        printf("MAP_RANGE_STRUCT_PTR=%d,%s\n", item.Bits, item.Name)
+    }
+    return 0
 }
-
-func TestE2EMapRangeCompositeStructPointerValue(t *testing.T) {
-	runMapValueCase(t, mapRangeStructPointerValueE2ESource, "MAP_RANGE_STRUCT_PTR=64,native")
+`
+	const output = "MAP_SLICE=10,20\nMAP_STRING=hike\nMAP_MISSING_SLICE_GET=0,0\nMAP_STRUCT=64,native\nMAP_STRUCT_PTR=64,native\nMAP_RANGE_STRUCT_PTR=64,native"
+	for _, goHike := range []bool{false, true} {
+		name := "go"
+		if goHike {
+			name = "go-hike"
+		}
+		t.Run(name, func(t *testing.T) {
+			RunHikeCase(t, HikeTestCase{Source: source, GoHike: goHike, ExpectedOut: output, ExpectedExit: 0})
+		})
+	}
 }

@@ -13,11 +13,11 @@ import (
 )
 
 var (
-	hikecBin       string
-	projectRoot    string
-	testCaseBase   string
-	nativeBinDir   string
-	useNativeBins  bool
+	hikecBin      string
+	projectRoot   string
+	testCaseBase  string
+	nativeBinDir  string
+	useNativeBins bool
 )
 
 func envEnabled(name string) bool {
