@@ -445,11 +445,24 @@ func (c *CallLowerer) lowerFunctionParameters(fn *ast.FuncDecl, hirFn *hir.Funct
 	}
 }
 
+// parameterNeedsHeap reports whether the storage slot for a function
+// parameter must outlive the current activation record.  A closure captures
+// the slot address, rather than a transient register value, so receivers and
+// parameters need the same escape treatment as ordinary local variables.
+func (c *CallLowerer) parameterNeedsHeap(name string, explicitlyEscaped bool) bool {
+	return explicitlyEscaped || (name != "" && c.root.escapedVars[name])
+}
+
 func (c *CallLowerer) lowerReceiverParameter(receiver *ast.ParamDecl, hirFn *hir.Function, recvType sema.Type) {
 	paramReg := c.root.nextReg(recvType, receiver.Name.Value+"_arg")
 	hirFn.Params = append(hirFn.Params, paramReg)
 	ptrReg := c.root.nextReg(&sema.PointerType{Base: recvType}, receiver.Name.Value)
-	if receiver.IsEscaped {
+	// A method receiver is an ordinary captured local from the lowering
+	// layer's perspective.  CompileFork can run a closure after the method
+	// returns, so the receiver slot must escape whenever the body captures it;
+	// checking only the parser's explicit escape marker leaves the receiver in
+	// an alloca and lets the async closure retain a pointer to the dead frame.
+	if c.parameterNeedsHeap(receiver.Name.Value, receiver.IsEscaped) {
 		sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(recvType)), Typ: sema.TypeInt}
 		c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: recvType, KeepOnHeap: true})
 	} else {
@@ -474,7 +487,7 @@ func (c *CallLowerer) lowerParameter(param *ast.ParamDecl, hirFn *hir.Function) 
 	paramReg := c.root.nextReg(paramType, param.Name.Value+"_arg")
 	hirFn.Params = append(hirFn.Params, paramReg)
 	ptrReg := c.root.nextReg(&sema.PointerType{Base: paramType}, param.Name.Value)
-	if param.IsEscaped || c.root.escapedVars[param.Name.Value] {
+	if c.parameterNeedsHeap(param.Name.Value, param.IsEscaped) {
 		sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(paramType)), Typ: sema.TypeInt}
 		c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: paramType, KeepOnHeap: true})
 	} else {
@@ -656,9 +669,9 @@ func (c *CallLowerer) lowerCFuncParameters(cfn *ast.CFuncDecl, implFn *hir.Funct
 		implFn.Params = append(implFn.Params, paramReg)
 
 		ptrReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
-		if p.IsEscaped || c.root.escapedVars[p.Name.Value] {
+		if c.parameterNeedsHeap(p.Name.Value, p.IsEscaped) {
 			sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(pType)), Typ: sema.TypeInt}
-			c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType})
+			c.root.emit(&hir.InstrHeapAlloc{Dst: ptrReg, Size: sizeVal, AllocType: pType, KeepOnHeap: true})
 		} else {
 			c.root.emit(&hir.InstrAlloca{Dst: ptrReg, AllocType: pType})
 		}
@@ -868,9 +881,9 @@ func (c *CallLowerer) LowerFuncLit(fl *ast.FuncLit) hir.Value {
 		pReg := c.root.nextReg(pType, p.Name.Value+"_arg")
 		anonFn.Params = append(anonFn.Params, pReg)
 		allocaReg := c.root.nextReg(&sema.PointerType{Base: pType}, p.Name.Value)
-		if p.IsEscaped || c.root.escapedVars[p.Name.Value] {
+		if c.parameterNeedsHeap(p.Name.Value, p.IsEscaped) {
 			sizeVal := &hir.ConstInt{Val: int64(sema.SizeOf(pType)), Typ: sema.TypeInt}
-			c.root.emit(&hir.InstrHeapAlloc{Dst: allocaReg, Size: sizeVal, AllocType: pType})
+			c.root.emit(&hir.InstrHeapAlloc{Dst: allocaReg, Size: sizeVal, AllocType: pType, KeepOnHeap: true})
 		} else {
 			c.root.emit(&hir.InstrAlloca{Dst: allocaReg, AllocType: pType})
 		}
