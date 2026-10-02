@@ -88,9 +88,35 @@ func main() int {
         fileErr == nil, fileInfo.IsDir(), dirErr == nil, dirInfo.IsDir())
     return 0
 }
+
+
 `,
 		ExpectedOut:  "FILE=1:0,DIR=1:1",
 		ExpectedExit: 0,
+	})
+}
+
+func TestE2EStdOS_ReadDirReturnsTrimmedNames(t *testing.T) {
+	const source = `package main
+
+import "std/os"
+
+func printf(format string, ...)
+
+func main() int {
+    entries, err := os.ReadDir(".")
+    found := false
+    if err == nil {
+        for _, entry := range entries {
+            if entry.Name() == "main.hike" { found = true }
+        }
+    }
+    printf("READDIR=%d:%d\n", err == nil, found)
+    return 0
+}
+`
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true, Source: source, ExpectedOut: "READDIR=1:1\n", ExpectedExit: 0,
 	})
 }
 

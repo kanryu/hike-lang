@@ -46,7 +46,9 @@ func winU32(data []byte, offset int) int {
 }
 
 func winFindName(data []byte) string {
-	return string(&data[winFileNameOffset])
+	end := winFileNameOffset
+	for end < len(data) && data[end] != 0 { end++ }
+	return string(data[winFileNameOffset:end])
 }
 
 func winFindSize(data []byte) int64 {

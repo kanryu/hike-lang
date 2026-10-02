@@ -278,6 +278,12 @@ func (l *Loader) findHikeFilesInDir(dir string) ([]string, error) {
 
 	var files []string
 	for _, entry := range entries {
+		// Match Go package discovery: hidden and underscore-prefixed source
+		// files are excluded. This keeps editor/debugging scratch files such
+		// as .tmp-logger-probe.go out of Go-Hike self-hosting builds.
+		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		isSource := strings.HasSuffix(entry.Name(), ".hike")
 		if l.goHikeMode {

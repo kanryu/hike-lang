@@ -66,3 +66,26 @@ func TestLoadPreservesPackageDiscoveryOrder(t *testing.T) {
 		t.Fatalf("method receiver base = %v, want first_First", method.Receiver.Type)
 	}
 }
+
+func TestLoadIgnoresHiddenAndUnderscoreSources(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hike.mod"), []byte("module hidden-test\nhike 0.1.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.hike"), []byte("package main\n\nfunc main() int { return 0 }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".tmp-debug.go", "_generated.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n\ntype Broken struct {\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	program, err := New(root).Load(filepath.Join(root, "main.hike"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(program.Decls) != 1 {
+		t.Fatalf("loaded declarations = %d, want 1", len(program.Decls))
+	}
+}
