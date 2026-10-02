@@ -39,6 +39,7 @@ output_*.ll
 .region-case-*/
 .hike/
 bin/*.log
+bin/*.txt
 
 # IDE & Editor files
 .vscode/

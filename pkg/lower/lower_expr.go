@@ -1069,12 +1069,14 @@ func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
 			}
 		}
 		valueVal := e.root.Expr.LowerExpr(entry.Value)
-		keyI64 := e.root.coerceToI64(keyVal, mp.Key)
 		valueI64 := e.root.boxMapValue(valueVal, mp.Value)
-		e.root.emit(&hir.InstrCallStatic{
-			CalleeName: "__hike_map_set",
-			Args:       []hir.Value{mapVal, keyI64, valueI64},
-		})
+		if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+			keyPtr, keyLen := e.root.stringParts(keyVal)
+			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set_str", Args: []hir.Value{mapVal, keyPtr, keyLen, valueI64}})
+		} else {
+			keyI64 := e.root.coerceToI64(keyVal, mp.Key)
+			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set", Args: []hir.Value{mapVal, keyI64, valueI64}})
+		}
 	}
 	return mapVal
 }

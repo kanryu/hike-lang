@@ -1115,27 +1115,55 @@ alloc:
 
 %struct.__hike_map_entry = type { i32, i32, i32, %struct.__hike_map_entry* }
 %struct.__hike_map = type { %struct.__hike_map_entry**, i32, i32, i32 }
+%struct.__hike_string_key = type { i8*, i32 }
+
+; Return the visible start of an encoded Hike string view.
+define internal i8* @__hike_string_start32(i8* %base, i32 %encoded_offset) {
+entry:
+  %sign = ashr i32 %encoded_offset, 31
+  %offset = xor i32 %encoded_offset, %sign
+  %start = getelementptr inbounds i8, i8* %base, i32 %offset
+  ret i8* %start
+}
+
+define internal i32 @__hike_string_key(i8* %ptr, i32 %len) {
+entry:
+  %raw = call i8* @malloc(i32 8)
+  %key = bitcast i8* %raw to %struct.__hike_string_key*
+  %p_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %p_ptr
+  %p_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i32 %len, i32* %p_len
+  %token = ptrtoint i8* %raw to i32
+  ret i32 %token
+}
 
 ; 文字列 FNV-1a ハッシュ算出 (32-bit: offset=-2128831035, prime=16777619)
-define internal i32 @__hike_hash_str(i8* %s) {
+define internal i32 @__hike_hash_str(i8* %key_raw) {
 entry:
-  %null_chk = icmp eq i8* %s, null
+  %null_chk = icmp eq i8* %key_raw, null
   br i1 %null_chk, label %ret_zero, label %loop_init
 ret_zero:
   ret i32 0
 loop_init:
+  %key = bitcast i8* %key_raw to %struct.__hike_string_key*
+  %p_data = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  %data = load i8*, i8** %p_data
+  %p_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  %len = load i32, i32* %p_len
   br label %loop.cond
 loop.cond:
   %h = phi i32 [ -2128831035, %loop_init ], [ %h.next, %loop.body ]
-  %ptr = phi i8* [ %s, %loop_init ], [ %ptr.next, %loop.body ]
-  %ch = load i8, i8* %ptr
-  %is_null = icmp eq i8 %ch, 0
-  br i1 %is_null, label %loop.end, label %loop.body
+  %i = phi i32 [ 0, %loop_init ], [ %i.next, %loop.body ]
+  %ptr = getelementptr inbounds i8, i8* %data, i32 %i
+  %done = icmp uge i32 %i, %len
+  br i1 %done, label %loop.end, label %loop.body
 loop.body:
+  %ch = load i8, i8* %ptr
   %ch.zext = zext i8 %ch to i32
   %h.xor = xor i32 %h, %ch.zext
   %h.next = mul i32 %h.xor, 16777619
-  %ptr.next = getelementptr inbounds i8, i8* %ptr, i32 1
+  %i.next = add i32 %i, 1
   br label %loop.cond
 loop.end:
   ret i32 %h
@@ -1152,19 +1180,30 @@ check_int:
 check_str:
   %p1 = inttoptr i32 %k1 to i8*
   %p2 = inttoptr i32 %k2 to i8*
-  %eq_ptr = icmp eq i8* %p1, %p2
-  br i1 %eq_ptr, label %ret_true, label %check_null
-check_null:
   %n1 = icmp eq i8* %p1, null
   %n2 = icmp eq i8* %p2, null
   %either_null = or i1 %n1, %n2
-  br i1 %either_null, label %ret_false, label %do_cmp
-do_cmp:
-  %res = call i32 @strcmp32(i8* %p1, i8* %p2)
+  br i1 %either_null, label %check_both_null, label %load_keys
+check_both_null:
+  %both_null = and i1 %n1, %n2
+  ret i1 %both_null
+load_keys:
+  %key1 = bitcast i8* %p1 to %struct.__hike_string_key*
+  %key2 = bitcast i8* %p2 to %struct.__hike_string_key*
+  %d1p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key1, i32 0, i32 0
+  %d2p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key2, i32 0, i32 0
+  %d1 = load i8*, i8** %d1p
+  %d2 = load i8*, i8** %d2p
+  %l1p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key1, i32 0, i32 1
+  %l2p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key2, i32 0, i32 1
+  %l1 = load i32, i32* %l1p
+  %l2 = load i32, i32* %l2p
+  %len_eq = icmp eq i32 %l1, %l2
+  br i1 %len_eq, label %compare_bytes, label %ret_false
+compare_bytes:
+  %res = call i32 @memcmp32(i8* %d1, i8* %d2, i32 %l1)
   %is_z = icmp eq i32 %res, 0
   ret i1 %is_z
-ret_true:
-  ret i1 true
 ret_false:
   ret i1 false
 }
@@ -1381,6 +1420,86 @@ missing:
   br label %done
 done:
   ret void
+}
+
+define internal i1 @__hike_map_get_boxed_ok(%struct.__hike_map* %m, i32 %key, i32* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get(%struct.__hike_map* %m, i32 %key, i32* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i32
+  store i32 %zero_val, i32* %out_val
+  br label %done
+done:
+  ret i1 %found
+}
+
+; String-key map ABI: visible start pointer plus length at the lookup boundary.
+define internal void @__hike_map_set_str(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32 %val) {
+entry:
+  %key = call i32 @__hike_string_key(i8* %ptr, i32 %len)
+  call void @__hike_map_set(%struct.__hike_map* %m, i32 %key, i32 %val)
+  ret void
+}
+
+define internal i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32* %out_val) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %key_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %key_ptr
+  %key_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i32 %len, i32* %key_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i32
+  %found = call i1 @__hike_map_get(%struct.__hike_map* %m, i32 %token, i32* %out_val)
+  ret i1 %found
+}
+
+define internal void @__hike_map_get_boxed_str(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i32
+  store i32 %zero_val, i32* %out_val
+  br label %done
+done:
+  ret void
+}
+
+define internal i1 @__hike_map_get_boxed_str_ok(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i32 %len, i32* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i32
+  store i32 %zero_val, i32* %out_val
+  br label %done
+done:
+  ret i1 %found
+}
+
+define internal void @__hike_map_delete_str(%struct.__hike_map* %m, i8* %ptr, i32 %len) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %key_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %key_ptr
+  %key_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i32 %len, i32* %key_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i32
+  call void @__hike_map_delete(%struct.__hike_map* %m, i32 %token)
+  ret void
+}
+
+define internal i32 @__hike_iface_typeid(i8* %itab) {
+entry:
+  %is_null = icmp eq i8* %itab, null
+  br i1 %is_null, label %missing, label %present
+missing:
+  ret i32 0
+present:
+  %type_ptr = bitcast i8* %itab to i32*
+  %type_id = load i32, i32* %type_ptr
+  ret i32 %type_id
 }
 
 ; マップ要素の削除 (32-bit)

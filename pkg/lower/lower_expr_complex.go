@@ -76,25 +76,8 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 
 	// 1. 組み込み map[K]V
 	if mp, isMap := baseType.(*sema.MapType); isMap {
-		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
-		outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
-		e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
-		if mapValueNeedsBox(mp.Value) {
-			// Go map lookup returns the element type's zero value when the key
-			// is absent. Boxed map values need a valid address for that zero
-			// value because unboxing loads through the returned pointer.
-			zeroValuePtr := e.root.nextReg(&sema.PointerType{Base: mp.Value})
-			e.root.emit(&hir.InstrAlloca{Dst: zeroValuePtr, AllocType: mp.Value})
-			e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(mp.Value), Ptr: zeroValuePtr})
-			zeroPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-			e.root.emit(&hir.InstrCast{Dst: zeroPtr, Val: zeroValuePtr, ToType: zeroPtr.Type()})
-			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get_boxed", Args: []hir.Value{baseVal, keyI64, outPtr, zeroPtr}})
-		} else {
-			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_get", Args: []hir.Value{baseVal, keyI64, outPtr}})
-		}
-		rawVal := e.root.nextReg(sema.TypeInt)
-		e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
-		return e.root.unboxMapValue(rawVal, mp.Value)
+		value, _ := e.lowerBuiltinMapIndex(node, baseVal, idxVal, mp, false)
+		return value
 	}
 
 	// 2. ユーザー定義コレクション構造体の Indexable (Get(key))
@@ -284,6 +267,77 @@ func annotateNestedLiteralType(expr ast.Expression, target sema.Type) {
 			}
 		}
 	}
+}
+
+// lowerBuiltinMapIndex lowers a built-in map lookup. When wantOK is true it
+// also returns the presence bit required by Go's comma-ok assignment form.
+func (e *ExprLowerer) lowerBuiltinMapIndex(_ *ast.IndexExpr, baseVal, idxVal hir.Value, mp *sema.MapType, wantOK bool) (hir.Value, hir.Value) {
+	outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+	e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
+	var keyArgs []hir.Value
+	callee := "__hike_map_get"
+	isStringKey := mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string"
+	if isStringKey {
+		keyPtr, keyLen := e.root.stringParts(idxVal)
+		keyArgs = []hir.Value{baseVal, keyPtr, keyLen, outPtr}
+		callee = "__hike_map_get_str"
+	} else {
+		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
+		keyArgs = []hir.Value{baseVal, keyI64, outPtr}
+	}
+
+	var found *hir.Reg
+	if wantOK {
+		found = e.root.nextReg(sema.TypeBool)
+	}
+	if mapValueNeedsBox(mp.Value) {
+		zeroValuePtr := e.root.nextReg(&sema.PointerType{Base: mp.Value})
+		e.root.emit(&hir.InstrAlloca{Dst: zeroValuePtr, AllocType: mp.Value})
+		e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(mp.Value), Ptr: zeroValuePtr})
+		zeroPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrCast{Dst: zeroPtr, Val: zeroValuePtr, ToType: zeroPtr.Type()})
+		boxedCallee := "__hike_map_get_boxed"
+		if isStringKey {
+			boxedCallee = "__hike_map_get_boxed_str"
+		}
+		if wantOK {
+			boxedCallee = "__hike_map_get_boxed_ok"
+			if isStringKey {
+				boxedCallee = "__hike_map_get_boxed_str_ok"
+			}
+		}
+		e.root.emit(&hir.InstrCallStatic{Dst: found, CalleeName: boxedCallee, Args: append(keyArgs, zeroPtr)})
+	} else {
+		e.root.emit(&hir.InstrCallStatic{Dst: found, CalleeName: callee, Args: keyArgs})
+	}
+	rawVal := e.root.nextReg(sema.TypeInt)
+	e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
+	return e.root.unboxMapValue(rawVal, mp.Value), found
+}
+
+// LowerMapIndexWithOK lowers (value, ok) for a built-in map index. It returns
+// nil for non-map expressions so ordinary tuple lowering can continue.
+func (e *ExprLowerer) LowerMapIndexWithOK(node *ast.IndexExpr) hir.Value {
+	baseVal := e.LowerExpr(node.Left)
+	idxVal := e.LowerExpr(node.Index)
+	if baseVal == nil || idxVal == nil {
+		return nil
+	}
+	mp, ok := baseVal.Type().(*sema.MapType)
+	if !ok {
+		return nil
+	}
+	value, found := e.lowerBuiltinMapIndex(node, baseVal, idxVal, mp, true)
+	foundReg, ok := found.(*hir.Reg)
+	if !ok || foundReg == nil {
+		panic("[Lower Error] map comma-ok lookup did not produce a boolean register")
+	}
+	tupleType := &sema.TupleType{Types: []sema.Type{mp.Value, sema.TypeBool}}
+	tuple0 := e.root.nextReg(tupleType)
+	e.root.emit(&hir.InstrInsertValue{Dst: tuple0, Agg: e.root.defaultConstValue(tupleType), Val: value, Index: 0})
+	tuple := e.root.nextReg(tupleType)
+	e.root.emit(&hir.InstrInsertValue{Dst: tuple, Agg: tuple0, Val: foundReg, Index: 1})
+	return tuple
 }
 
 // lowerStructLiteralPtrはスタック上の構造体リテラルをゼロ初期化して生成
@@ -1112,9 +1166,10 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 		itabRawReg := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 0})
 		e.root.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: ifaceVal, Index: 1})
-		typeIDPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
-		e.root.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt32}})
-		e.root.emit(&hir.InstrLoad{Dst: typeIDReg, Ptr: typeIDPtr})
+		// A typed interface may temporarily carry a nil itab during
+		// self-hosting. Read its type ID through the null-safe runtime helper
+		// instead of dereferencing the itab directly.
+		e.root.emit(&hir.InstrCallStatic{Dst: typeIDReg, CalleeName: "__hike_iface_typeid", Args: []hir.Value{itabRawReg}})
 	} else {
 		e.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: ifaceVal, Index: 1})
 		e.root.emit(&hir.InstrExtractValue{Dst: typeIDReg, Agg: ifaceVal, Index: 0})

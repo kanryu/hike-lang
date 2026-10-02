@@ -663,12 +663,14 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				if i < len(rhsVals) {
 					val := rhsVals[i]
 					val = s.root.emitValueCoerce(val, mp.Value)
-					keyI64 := s.root.coerceToI64(keyVal, mp.Key)
 					valI64 := s.root.boxMapValue(val, mp.Value)
-					s.root.emit(&hir.InstrCallStatic{
-						CalleeName: "__hike_map_set",
-						Args:       []hir.Value{leftVal, keyI64, valI64},
-					})
+					if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+						keyPtr, keyLen := s.root.stringParts(keyVal)
+						s.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set_str", Args: []hir.Value{leftVal, keyPtr, keyLen, valI64}})
+					} else {
+						keyI64 := s.root.coerceToI64(keyVal, mp.Key)
+						s.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set", Args: []hir.Value{leftVal, keyI64, valI64}})
+					}
 				}
 				continue
 			}
@@ -943,7 +945,12 @@ func (s *StmtLowerer) annotateAssignmentLiteral(expr ast.Expression, target sema
 
 func (s *StmtLowerer) lowerTupleAssignment(stmt *ast.AssignStmt, isDefine bool) bool {
 	var rhsVal hir.Value
-	if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
+	if idx, ok := stmt.Right[0].(*ast.IndexExpr); ok {
+		rhsVal = s.root.Expr.LowerMapIndexWithOK(idx)
+		if rhsVal == nil {
+			rhsVal = s.root.Expr.LowerExpr(stmt.Right[0])
+		}
+	} else if tae, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok {
 		rhsVal = s.root.Expr.LowerTypeAssertExpr(tae)
 	} else {
 		rhsVal = s.root.Expr.LowerExpr(stmt.Right[0])

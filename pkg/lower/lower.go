@@ -856,12 +856,13 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 	return sc
 }
 
-// stringParts exposes the two fields of the length-aware string value to
-// operations that still use the NUL-terminated C runtime ABI.
+// stringParts exposes the visible data pointer and length of a string view.
+// Runtime APIs that consume strings must use both values; the backing storage
+// is not required to be NUL terminated.
 func (l *Lowerer) stringParts(value hir.Value) (hir.Value, hir.Value) {
-	base, offset, length32 := l.stringViewParts(value)
+	base, encodedOffset, length32 := l.stringViewRawParts(value)
 	ptr := l.nextReg(&sema.PointerType{Base: sema.TypeByte})
-	l.emit(&hir.InstrGetElemPtr{Dst: ptr, BasePtr: base, Index: offset})
+	l.emit(&hir.InstrCallStatic{Dst: ptr, CalleeName: l.BuiltinName("__hike_string_start"), Args: []hir.Value{base, encodedOffset}})
 	length := hir.Value(length32)
 	if sema.LLVMTypeOf(sema.TypeInt) != sema.LLVMTypeOf(sema.TypeInt32) {
 		length64 := l.nextReg(sema.TypeInt)
@@ -1327,9 +1328,10 @@ func (l *Lowerer) coerceToI64(v hir.Value, fromType sema.Type) hir.Value {
 		return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 	}
 	if fromType == sema.TypeString || semaTypeName(fromType) == "string" {
-		ptr, _ := l.stringParts(v)
-		fromType = ptr.Type()
-		v = ptr
+		ptr, length := l.stringParts(v)
+		key := l.nextReg(sema.TypeInt)
+		l.emit(&hir.InstrCallStatic{Dst: key, CalleeName: l.BuiltinName("__hike_string_key"), Args: []hir.Value{ptr, length}})
+		return key
 	}
 	if sema.LLVMTypeOf(fromType) == sema.LLVMTypeOf(sema.TypeInt) {
 		return v

@@ -257,8 +257,13 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			argVal := c.root.Expr.LowerExpr(call.Args[0])
 			keyVal := c.root.Expr.LowerExpr(call.Args[1])
 			if mp, isMap := argVal.Type().(*sema.MapType); isMap {
-				keyI64 := c.root.coerceToI64(keyVal, mp.Key)
-				c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_delete", Args: []hir.Value{argVal, keyI64}})
+				if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+					keyPtr, keyLen := c.root.stringParts(keyVal)
+					c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_delete_str", Args: []hir.Value{argVal, keyPtr, keyLen}})
+				} else {
+					keyI64 := c.root.coerceToI64(keyVal, mp.Key)
+					c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_delete", Args: []hir.Value{argVal, keyI64}})
+				}
 				return nil
 			}
 

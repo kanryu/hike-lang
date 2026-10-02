@@ -117,6 +117,25 @@ func main() int {
 }
 `
 
+const mapStringKeyViewE2ESource = `package main
+
+import "std/maps"
+
+func printf(format string, ...)
+
+func main() int {
+    values := make(map[string]int)
+    left := "compiler:left"
+    right := "compiler:right"
+    values[left[:8]] = 42
+    // Equal substring views must compare by visible bytes and length, not by
+    // backing pointer or by bytes after the view.
+    if values[right[:8]] != 42 { return 1 }
+    printf("MAP_STRING_KEY_VIEW=%d\n", values[right[:8]])
+    return 0
+}
+`
+
 const mapStructValueE2ESource = `package main
 
 import "std/maps"
@@ -225,6 +244,10 @@ func main() int {
     pointers := make(map[string]*Config)
     pointers["default"] = &config
     if pointers["default"].Bits != 64 || pointers["missing"] != nil { return 1 }
+    found, ok := pointers["default"]
+    if !ok || found == nil || found.Bits != 64 { return 1 }
+    missingPtr, missingOK := pointers["missing"]
+    if missingOK || missingPtr != nil { return 1 }
     printf("MAP_STRUCT_PTR=%d,%s\n", pointers["default"].Bits, pointers["default"].Name)
     for _, item := range pointers {
         if item == nil || item.Bits != 64 || item.Name != "native" { return 1 }
@@ -232,6 +255,7 @@ func main() int {
     }
     return 0
 }
+
 `
 	const output = "MAP_SLICE=10,20\nMAP_STRING=hike\nMAP_MISSING_SLICE_GET=0,0\nMAP_STRUCT=64,native\nMAP_STRUCT_PTR=64,native\nMAP_RANGE_STRUCT_PTR=64,native"
 	for _, goHike := range []bool{false, true} {
@@ -241,6 +265,22 @@ func main() int {
 		}
 		t.Run(name, func(t *testing.T) {
 			RunHikeCase(t, HikeTestCase{Source: source, GoHike: goHike, ExpectedOut: output, ExpectedExit: 0})
+		})
+	}
+}
+
+func TestE2EMapStringKeyViews(t *testing.T) {
+	const output = "MAP_STRING_KEY_VIEW=42\n"
+	for _, goHike := range []bool{false, true} {
+		name := "go"
+		if goHike {
+			name = "go-hike"
+		}
+		t.Run(name, func(t *testing.T) {
+			RunHikeCase(t, HikeTestCase{
+				Source: mapStringKeyViewE2ESource, GoHike: goHike,
+				ExpectedOut: output, ExpectedExit: 0,
+			})
 		})
 	}
 }

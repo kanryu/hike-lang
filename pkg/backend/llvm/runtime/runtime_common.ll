@@ -1151,27 +1151,60 @@ alloc:
 
 %struct.__hike_map_entry = type { i64, i64, i64, %struct.__hike_map_entry* }
 %struct.__hike_map = type { %struct.__hike_map_entry**, i64, i64, i64 }
+%struct.__hike_string_key = type { i8*, i64 }
+
+; Return the visible start of a string view. The offset uses the same encoded
+; representation as the Hike fat-string value, so literals and borrowed views
+; are normalized at one runtime boundary.
+define internal i8* @__hike_string_start(i8* %base, i32 %encoded_offset) {
+entry:
+  %sign = ashr i32 %encoded_offset, 31
+  %offset = xor i32 %encoded_offset, %sign
+  %start = getelementptr inbounds i8, i8* %base, i32 %offset
+  ret i8* %start
+}
+
+; Create an owned descriptor for a length-aware Hike string view.  The bytes
+; themselves remain owned by the string value; only the descriptor is stored
+; as the map key.
+define internal i64 @__hike_string_key(i8* %ptr, i64 %len) {
+entry:
+  %raw = call i8* @malloc(i64 16)
+  %key = bitcast i8* %raw to %struct.__hike_string_key*
+  %p_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %p_ptr
+  %p_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %p_len
+  %token = ptrtoint i8* %raw to i64
+  ret i64 %token
+}
 
 ; 文字列 FNV-1a ハッシュ算出
-define internal i64 @__hike_hash_str(i8* %s) {
+define internal i64 @__hike_hash_str(i8* %key_raw) {
 entry:
-  %null_chk = icmp eq i8* %s, null
+  %null_chk = icmp eq i8* %key_raw, null
   br i1 %null_chk, label %ret_zero, label %loop_init
 ret_zero:
   ret i64 0
 loop_init:
+  %key = bitcast i8* %key_raw to %struct.__hike_string_key*
+  %p_data = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  %data = load i8*, i8** %p_data
+  %p_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  %len = load i64, i64* %p_len
   br label %loop.cond
 loop.cond:
   %h = phi i64 [ -3750763034362895579, %loop_init ], [ %h.next, %loop.body ]
-  %ptr = phi i8* [ %s, %loop_init ], [ %ptr.next, %loop.body ]
-  %ch = load i8, i8* %ptr
-  %is_null = icmp eq i8 %ch, 0
-  br i1 %is_null, label %loop.end, label %loop.body
+  %i = phi i64 [ 0, %loop_init ], [ %i.next, %loop.body ]
+  %ptr = getelementptr inbounds i8, i8* %data, i64 %i
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %loop.end, label %loop.body
 loop.body:
+  %ch = load i8, i8* %ptr
   %ch.zext = zext i8 %ch to i64
   %h.xor = xor i64 %h, %ch.zext
   %h.next = mul i64 %h.xor, 1099511628211
-  %ptr.next = getelementptr inbounds i8, i8* %ptr, i64 1
+  %i.next = add i64 %i, 1
   br label %loop.cond
 loop.end:
   ret i64 %h
@@ -1188,19 +1221,30 @@ check_int:
 check_str:
   %p1 = inttoptr i64 %k1 to i8*
   %p2 = inttoptr i64 %k2 to i8*
-  %eq_ptr = icmp eq i8* %p1, %p2
-  br i1 %eq_ptr, label %ret_true, label %check_null
-check_null:
   %n1 = icmp eq i8* %p1, null
   %n2 = icmp eq i8* %p2, null
   %either_null = or i1 %n1, %n2
-  br i1 %either_null, label %ret_false, label %do_cmp
-do_cmp:
-  %res = call i32 @strcmp(i8* %p1, i8* %p2)
+  br i1 %either_null, label %check_both_null, label %load_keys
+check_both_null:
+  %both_null = and i1 %n1, %n2
+  ret i1 %both_null
+load_keys:
+  %key1 = bitcast i8* %p1 to %struct.__hike_string_key*
+  %key2 = bitcast i8* %p2 to %struct.__hike_string_key*
+  %d1p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key1, i32 0, i32 0
+  %d2p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key2, i32 0, i32 0
+  %d1 = load i8*, i8** %d1p
+  %d2 = load i8*, i8** %d2p
+  %l1p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key1, i32 0, i32 1
+  %l2p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key2, i32 0, i32 1
+  %l1 = load i64, i64* %l1p
+  %l2 = load i64, i64* %l2p
+  %len_eq = icmp eq i64 %l1, %l2
+  br i1 %len_eq, label %compare_bytes, label %ret_false
+compare_bytes:
+  %res = call i32 @memcmp(i8* %d1, i8* %d2, i64 %l1)
   %is_z = icmp eq i32 %res, 0
   ret i1 %is_z
-ret_true:
-  ret i1 true
 ret_false:
   ret i1 false
 }
@@ -1417,6 +1461,87 @@ missing:
   br label %done
 done:
   ret void
+}
+
+define internal i1 @__hike_map_get_boxed_ok(%struct.__hike_map* %m, i64 %key, i64* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get(%struct.__hike_map* %m, i64 %key, i64* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i64
+  store i64 %zero_val, i64* %out_val
+  br label %done
+done:
+  ret i1 %found
+}
+
+; String-key map ABI. The lookup boundary receives the visible start pointer
+; and length directly; only the stored entry uses an owned key descriptor.
+define internal void @__hike_map_set_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64 %val) {
+entry:
+  %key = call i64 @__hike_string_key(i8* %ptr, i64 %len)
+  call void @__hike_map_set(%struct.__hike_map* %m, i64 %key, i64 %val)
+  ret void
+}
+
+define internal i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out_val) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %key_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %key_ptr
+  %key_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %key_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i64
+  %found = call i1 @__hike_map_get(%struct.__hike_map* %m, i64 %token, i64* %out_val)
+  ret i1 %found
+}
+
+define internal void @__hike_map_get_boxed_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i64
+  store i64 %zero_val, i64* %out_val
+  br label %done
+done:
+  ret void
+}
+
+define internal i1 @__hike_map_get_boxed_str_ok(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out_val, i8* %zero_ptr) {
+entry:
+  %found = call i1 @__hike_map_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out_val)
+  br i1 %found, label %done, label %missing
+missing:
+  %zero_val = ptrtoint i8* %zero_ptr to i64
+  store i64 %zero_val, i64* %out_val
+  br label %done
+done:
+  ret i1 %found
+}
+
+define internal void @__hike_map_delete_str(%struct.__hike_map* %m, i8* %ptr, i64 %len) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %key_ptr = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %key_ptr
+  %key_len = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %key_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i64
+  call void @__hike_map_delete(%struct.__hike_map* %m, i64 %token)
+  ret void
+}
+
+define internal i32 @__hike_iface_typeid(i8* %itab) {
+entry:
+  %is_null = icmp eq i8* %itab, null
+  br i1 %is_null, label %missing, label %present
+missing:
+  ret i32 0
+present:
+  %type_ptr = bitcast i8* %itab to i32*
+  %type_id = load i32, i32* %type_ptr
+  ret i32 %type_id
 }
 
 ; マップ要素の削除
