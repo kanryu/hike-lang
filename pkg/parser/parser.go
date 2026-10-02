@@ -30,6 +30,8 @@ type Parser struct {
 	peekToken      token.Token
 	errors         []string
 	verbose        bool
+	goHikeMode     bool
+	compileFork    bool
 	allowStructLit bool
 	queue          []*ParseTask
 }
@@ -70,6 +72,8 @@ func NewFromTokens(tokens []token.Token) *Parser {
 func (p *Parser) newSubParser(tokens []token.Token) *Parser {
 	sp := NewFromTokens(tokens)
 	sp.verbose = p.verbose
+	sp.goHikeMode = p.goHikeMode
+	sp.compileFork = p.compileFork
 	sp.allowStructLit = true
 	// サブパーサーは独自の「空のキュー」を持つ（親キューを複製・混同させない）
 	sp.queue = make([]*ParseTask, 0)
@@ -82,6 +86,17 @@ func (p *Parser) enqueue(task *ParseTask) {
 
 func (p *Parser) SetVerbose(v bool) {
 	p.verbose = v
+}
+
+// SetGoHikeMode enables syntax compatibility needed when parsing the Go
+// sources used to build the self-hosting compiler.
+func (p *Parser) SetGoHikeMode(enabled bool) {
+	p.goHikeMode = enabled
+}
+
+// SetCompileFork enables syntax needed by the parallel self-hosting path.
+func (p *Parser) SetCompileFork(enabled bool) {
+	p.compileFork = enabled
 }
 
 func (p *Parser) log(msg string) {
@@ -1242,17 +1257,45 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.LBRACE:
 		return p.parseBlockStmt()
 	default:
-		// Go-only concurrency constructs are not represented in the current
-		// Hike AST. In Go-Hike compatibility sources these are used by optional
-		// service code; skip their balanced block while keeping the token stream
-		// aligned for the surrounding function.
-		if p.curTokenIs(token.IDENT) && (p.curToken.Literal == "select" || p.curToken.Literal == "go") {
+		if p.goHikeMode && p.compileFork && p.curTokenIs(token.IDENT) && p.curToken.Literal == "go" {
+			return p.parseGoStmt()
+		}
+		// select remains unsupported by the Hike AST; retain the compatibility
+		// fallback for Go-Hike sources while keeping it disabled in normal mode.
+		if p.goHikeMode && p.curTokenIs(token.IDENT) && (p.curToken.Literal == "select" || p.curToken.Literal == "go") {
 			if p.skipUnsupportedGoBlock() {
 				return nil
 			}
 		}
 		return p.parseAssignOrExprStmt()
 	}
+}
+
+func (p *Parser) parseGoStmt() ast.Statement {
+	goTok := p.curToken
+	p.nextToken()
+	call := p.parseExpression(LOWEST)
+	if call == nil {
+		return nil
+	}
+	if _, ok := call.(*ast.CallExpr); !ok {
+		p.errors = append(p.errors, fmt.Sprintf("line %d:%d: go statement requires a function call", goTok.Line, goTok.Col))
+		return nil
+	}
+
+	// Go's `go f(args)` evaluates the call asynchronously. Hike's Async
+	// primitive takes a function value, so preserve the call and its arguments
+	// inside a zero-argument closure before constructing the ordinary Async AST.
+	fn := &ast.FuncLit{
+		Token:       goTok,
+		Params:      []*ast.ParamDecl{},
+		ReturnTypes: []ast.TypeExpr{},
+		Body: &ast.BlockStmt{
+			Token:      goTok,
+			Statements: []ast.Statement{&ast.ExprStmt{Token: goTok, Expr: call}},
+		},
+	}
+	return &ast.ExprStmt{Token: goTok, Expr: &ast.AsyncExpr{Token: goTok, Fn: fn}}
 }
 
 func (p *Parser) skipUnsupportedGoBlock() bool {

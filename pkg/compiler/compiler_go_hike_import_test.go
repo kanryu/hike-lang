@@ -26,7 +26,10 @@ func TestGoHikeCompilesImportedTokenPackage(t *testing.T) {
 
 import "hikec-go/pkg/token"
 
+func worker(value int) {}
+
 func main() int {
+	go worker(42)
 	if token.LookupIdent("package") == token.PACKAGE {
 		return 1
 	}

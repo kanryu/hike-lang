@@ -176,6 +176,8 @@ func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 		lx := lexer.New(string(content))
 		p := parser.New(lx)
 		p.SetVerbose(l.verbose)
+		p.SetGoHikeMode(l.goHikeMode)
+		p.SetCompileFork(l.compileFork)
 		fileProg := p.ParseProgram()
 		parserFunctionCount := 0
 		for _, decl := range fileProg.Decls {
@@ -380,6 +382,8 @@ func (l *Loader) parseFile(path string) (loadedFile, error) {
 	}
 	p := parser.New(lexer.New(string(content)))
 	p.SetVerbose(l.verbose)
+	p.SetGoHikeMode(l.goHikeMode)
+	p.SetCompileFork(l.compileFork)
 	program := p.ParseProgram()
 	if len(p.Errors()) > 0 {
 		return loadedFile{}, fmt.Errorf("parse error in %s:\n%s", path, strings.Join(p.Errors(), "\n"))

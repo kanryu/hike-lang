@@ -482,10 +482,12 @@ func (e *Emitter) prepareAsyncThunks() {
 
 type forkFunctionUnit struct {
 	name      string
-	functions []struct {
-		id int
-		fn *hir.Function
-	}
+	functions []forkFunction
+}
+
+type forkFunction struct {
+	id int
+	fn *hir.Function
 }
 
 // emitFunctionsFork emits independent source units concurrently. Declarations
@@ -519,10 +521,7 @@ func (e *Emitter) emitFunctionsFork(referencedExterns map[string]bool) {
 			byName[name] = unit
 			units = append(units, unit)
 		}
-		unit.functions = append(unit.functions, struct {
-			id int
-			fn *hir.Function
-		}{fnID, fn})
+		unit.functions = append(unit.functions, forkFunction{id: fnID, fn: fn})
 	}
 
 	results := make([]string, len(units))

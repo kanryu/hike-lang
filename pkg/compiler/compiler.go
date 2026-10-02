@@ -399,6 +399,8 @@ func (c *Compiler) CompileSourceToWAT(source string) (string, *ast.Program, erro
 		sema.SetTargetPointerBits(c.target.PointerBits)
 	}
 	parserInstance := parser.New(lexer.New(source))
+	parserInstance.SetGoHikeMode(c.goHikeMode)
+	parserInstance.SetCompileFork(c.compileFork)
 	p := parserInstance.ParseProgram()
 	if len(parserInstance.Errors()) > 0 {
 		return "", nil, fmt.Errorf("parse error in %s: %s", filename, strings.Join(parserInstance.Errors(), "\n"))
