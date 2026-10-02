@@ -34,6 +34,7 @@ type Emitter struct {
 	Concurrent       bool
 	debugInfo        bool
 	lineTablesOnly   bool
+	compileFork      bool
 	runtimeFunctions int
 }
 
@@ -58,6 +59,11 @@ func (e *Emitter) SetDebugInfo(enabled bool) { e.debugInfo = enabled }
 // SetLineTablesOnly keeps source line markers while omitting local-variable
 // entries from the generated DWARF.
 func (e *Emitter) SetLineTablesOnly(enabled bool) { e.lineTablesOnly = enabled }
+
+// SetCompileFork enables source-unit buffering for fork-mode frontend loads.
+// WAT still has one module-level index space, so the final merge remains
+// ordered after all function buffers have been produced.
+func (e *Emitter) SetCompileFork(enabled bool) { e.compileFork = enabled }
 
 func watType(t sema.Type) string {
 	if t == nil {
@@ -588,19 +594,57 @@ func (e *Emitter) Emit() string {
 	if e.Concurrent {
 		e.emitAsyncDispatcher()
 	}
-	emitted := make(map[string]bool)
-	for _, fn := range e.p.Functions {
-		if emitted[fn.Name] {
-			continue
+	if e.compileFork && !e.debugInfo {
+		e.emitFunctionsBuffered()
+	} else {
+		emitted := make(map[string]bool)
+		for _, fn := range e.p.Functions {
+			if emitted[fn.Name] {
+				continue
+			}
+			emitted[fn.Name] = true
+			e.function(fn)
 		}
-		emitted[fn.Name] = true
-		e.function(fn)
 	}
 	if e.Concurrent {
 		e.emitConcurrentBootstrap()
 	}
 	e.b.WriteString(")\n")
 	return e.b.String()
+}
+
+// emitFunctionsBuffered gives every source file its own WAT buffer. Function
+// indices and type tables have already been prepared above, so references can
+// safely point forward to a function in a later buffer.
+func (e *Emitter) emitFunctionsBuffered() {
+	unitBuffers := make(map[string]string)
+	unitOrder := make([]string, 0)
+	emitted := make(map[string]bool)
+	for _, fn := range e.p.Functions {
+		if emitted[fn.Name] {
+			continue
+		}
+		emitted[fn.Name] = true
+		if hirFunctionExtern(fn) {
+			continue
+		}
+		unit := fn.Location.Filename
+		if unit == "" {
+			unit = "<generated>"
+		}
+		previous := e.b
+		e.b = strings.Builder{}
+		e.function(fn)
+		content := e.b.String()
+		e.b = previous
+		if _, exists := unitBuffers[unit]; !exists {
+			unitOrder = append(unitOrder, unit)
+		}
+		unitBuffers[unit] += content
+	}
+	for _, unit := range unitOrder {
+		e.b.WriteString(unitBuffers[unit])
+	}
 }
 
 func (e *Emitter) emitConcurrentBootstrap() {

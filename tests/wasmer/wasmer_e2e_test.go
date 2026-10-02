@@ -90,7 +90,8 @@ func main() int {
 		t.Fatal(err)
 	}
 
-	build := exec.Command(hikecBin, "build", "-target", "wabt", "-o", wasm, source)
+	args := testutil.AddCompileFork([]string{"build", "-target", "wabt", "-o", wasm, source})
+	build := exec.Command(hikecBin, args...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("WABT build failed: %v\n%s", err, output)

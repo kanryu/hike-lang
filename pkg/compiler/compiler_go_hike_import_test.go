@@ -43,4 +43,11 @@ func main() int {
 	if _, _, _, err := c.CompileToLLVM(entry); err != nil {
 		t.Fatalf("Go-Hike import compilation failed: %v\n%s", err, c.Reporter().FormatAll())
 	}
+
+	forked := New(&tgt)
+	forked.SetGoHikeMode(true)
+	forked.SetCompileFork(true)
+	if _, _, _, err := forked.CompileToLLVM(entry); err != nil {
+		t.Fatalf("Go-Hike compile-fork import compilation failed: %v\n%s", err, forked.Reporter().FormatAll())
+	}
 }

@@ -74,7 +74,7 @@ func buildWasm(t *testing.T, source, mode string) string {
 		t.Fatal(err)
 	}
 	wasm := filepath.Join(tmp, "main.wasm")
-	args := []string{"build", "-target", "wasm32", "-wasm-mode", mode, "-o", wasm, src}
+	args := testutil.AddCompileFork([]string{"build", "-target", "wasm32", "-wasm-mode", mode, "-o", wasm, src})
 	build := exec.Command(hikecBin, args...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {

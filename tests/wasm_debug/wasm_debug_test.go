@@ -96,7 +96,8 @@ func main() int {
 		t.Fatal(err)
 	}
 	wasmPath := filepath.Join(tmp, "debug.wasm")
-	build := exec.Command(hikecPath, "build", "-g", "-target", "wabt", "-o", wasmPath, sourcePath)
+	args := testutil.AddCompileFork([]string{"build", "-g", "-target", "wabt", "-o", wasmPath, sourcePath})
+	build := exec.Command(hikecPath, args...)
 	build.Dir = tmp
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("WABT debug build failed: %v\n%s", err, output)

@@ -20,6 +20,7 @@ func usage() {
 func main() {
 	output := ""
 	wasmMode := "normal"
+	compileFork := false
 	var sources []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -35,6 +36,10 @@ func main() {
 			usage()
 			return
 		default:
+			if os.Args[i] == "-compile-fork" || os.Args[i] == "--compile-fork" {
+				compileFork = true
+				break
+			}
 			if strings.HasPrefix(os.Args[i], "--wasm-mode=") {
 				wasmMode = strings.TrimPrefix(os.Args[i], "--wasm-mode=")
 				break
@@ -56,6 +61,7 @@ func main() {
 	tgt := target.TargetWabt
 	comp := compiler.New(&tgt)
 	comp.SetWasmMode(wasmMode)
+	comp.SetCompileFork(compileFork)
 	wat, _, _, err := comp.CompileToWAT(sources...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hike-hike: compilation failed: %v\n", err)

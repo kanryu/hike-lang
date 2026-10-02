@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 func TestWabtDebugNamesAreEmbeddedWithG(t *testing.T) {
@@ -25,7 +27,8 @@ func main() int {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(hikecBin, "build", "-g", "-target", "wabt", "-o", wasm, source)
+	args := testutil.AddCompileFork([]string{"build", "-g", "-target", "wabt", "-o", wasm, source})
+	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = projectRoot(t)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("WABT debug build failed: %v\n%s", err, output)

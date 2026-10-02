@@ -30,6 +30,7 @@ type Compiler struct {
 	regionMode     bool
 	retainRelease  bool
 	goHikeMode     bool
+	compileFork    bool
 	debugInfo      bool
 	lineTablesOnly bool
 	wabtDebug      *wabt.DebugInfo
@@ -158,9 +159,9 @@ func (c *Compiler) DebugString() string {
 	if c.reporter != nil {
 		reporterErrors = c.reporter.HasErrors()
 	}
-	return fmt.Sprintf("{target=%s verbose=%v verboseLevel=%d wasmMode=%s regionMode=%v retainRelease=%v goHikeMode=%v debugInfo=%v lineTablesOnly=%v wabtDebug=%v reporterHasErrors=%v}",
+	return fmt.Sprintf("{target=%s verbose=%v verboseLevel=%d wasmMode=%s regionMode=%v retainRelease=%v goHikeMode=%v compileFork=%v debugInfo=%v lineTablesOnly=%v wabtDebug=%v reporterHasErrors=%v}",
 		targetName, c.verbose, c.verboseLevel, c.wasmMode, c.regionMode, c.retainRelease, c.goHikeMode,
-		c.debugInfo, c.lineTablesOnly, c.wabtDebug != nil, reporterErrors)
+		c.compileFork, c.debugInfo, c.lineTablesOnly, c.wabtDebug != nil, reporterErrors)
 }
 
 // String implements the standard fmt.Stringer contract used by Hike's fmt
@@ -178,6 +179,9 @@ func (c *Compiler) SetRetainRelease(enabled bool) { c.retainRelease = enabled }
 
 // SetGoHikeMode enables compilation of Go-compatible self-hosting sources.
 func (c *Compiler) SetGoHikeMode(enabled bool) { c.goHikeMode = enabled }
+
+// SetCompileFork enables concurrent imported-package loading in the frontend.
+func (c *Compiler) SetCompileFork(enabled bool) { c.compileFork = enabled }
 
 // SetDebugInfo enables source-level debug metadata emission for LLVM and WABT.
 func (c *Compiler) SetDebugInfo(enabled bool) { c.debugInfo = enabled }
@@ -257,6 +261,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		ld.SetTarget(c.target)
 		ld.SetVerbose(c.verbose)
 		ld.SetGoHikeMode(c.goHikeMode)
+		ld.SetCompileFork(c.compileFork)
 		p, err := ld.Load(entryPaths...)
 		if err != nil {
 			return err
@@ -348,6 +353,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	var llvmIR string
 	_ = c.safeExecute(primaryFile, func() error {
 		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
+		emitter.SetCompileFork(c.compileFork)
 		if c.target != nil {
 			emitter.SetPointerBits(c.target.PointerBits)
 		}
@@ -372,6 +378,7 @@ func (c *Compiler) CompileToWAT(entryPaths ...string) (string, *sema.Context, *a
 		return "", nil, nil, err
 	}
 	emitter := wabt.New(hirProg, semaCtx)
+	emitter.SetCompileFork(c.compileFork)
 	emitter.SetConcurrent(c.wasmMode == "concurrent")
 	emitter.SetDebugInfo(c.debugInfo)
 	emitter.SetLineTablesOnly(c.lineTablesOnly)

@@ -105,7 +105,7 @@ func buildWabtProject(t *testing.T, source string, files map[string]string) stri
 		sources = append(sources, filepath.Join(tmp, name))
 	}
 	sort.Strings(sources[1:])
-	args := []string{"build", "-target", "wabt", "-o", wasm}
+	args := testutil.AddCompileFork([]string{"build", "-target", "wabt", "-o", wasm})
 	args = append(args, sources...)
 	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = projectRoot(t)

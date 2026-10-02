@@ -10,6 +10,7 @@ import (
 var (
 	level     int
 	levelInit sync.Once
+	outputMu  sync.Mutex
 )
 
 func initLevel() {
@@ -62,6 +63,8 @@ func IsVerbose2() bool {
 // LogVerbose は -v レベル以上の場合にのみフォーマット出力を行う
 func LogVerbose(format string, a ...any) {
 	if GetLevel() >= 1 {
+		outputMu.Lock()
+		defer outputMu.Unlock()
 		fmt.Printf(format, a...)
 	}
 }
@@ -69,6 +72,8 @@ func LogVerbose(format string, a ...any) {
 // LogVerbose2 は -vv レベル以上の場合にのみフォーマット出力を行う
 func LogVerbose2(format string, a ...any) {
 	if GetLevel() >= 2 {
+		outputMu.Lock()
+		defer outputMu.Unlock()
 		fmt.Printf(format, a...)
 	}
 }

@@ -122,7 +122,7 @@ func RunHikeCompileErrorCase(t *testing.T, tc HikeCompileErrorCase) {
 		t.Fatalf("hike.mod書き込み失敗: %v", err)
 	}
 
-	cmd := exec.Command(hikecBin, "emit-ir", srcPath)
+	cmd := exec.Command(hikecBin, testutil.AddCompileFork([]string{"emit-ir", srcPath})...)
 	cmd.Dir = tmpDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

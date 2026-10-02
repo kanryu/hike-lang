@@ -48,7 +48,8 @@ func main() int {
 		t.Fatal(err)
 	}
 
-	emit := exec.Command(hikecBin, "emit-ir", "-target", targetName, "-o", irPath, sourcePath)
+	args := addCompileFork([]string{"emit-ir", "-target", targetName, "-o", irPath, sourcePath})
+	emit := exec.Command(hikecBin, args...)
 	emit.Dir = tmpDir
 	if output, err := emit.CombinedOutput(); err != nil {
 		t.Fatalf("32-bit %s IR emission failed: %v\n%s", targetName, err, output)

@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 var (
@@ -24,6 +26,8 @@ func envEnabled(name string) bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
+
+func addCompileFork(args []string) []string { return testutil.AddCompileFork(args) }
 
 func executableName(name string) string {
 	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
@@ -174,6 +178,7 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 		commandArgs = append(commandArgs, "-target", tc.Target)
 	}
 	commandArgs = append(commandArgs, srcPath)
+	commandArgs = addCompileFork(commandArgs)
 	runCmd := exec.Command(hikecBin, commandArgs...)
 	runCmd.Dir = tmpDir
 	var stdout, stderr bytes.Buffer

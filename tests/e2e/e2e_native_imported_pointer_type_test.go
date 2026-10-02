@@ -65,7 +65,8 @@ func TestE2ENativeQualifiedFunctionResolution(t *testing.T) {
 	output := filepath.Join(tmpDir, "main.ll")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, hikecBin, "emit-ir", "-go-hike=1", "-o", output, "main.go")
+	args := addCompileFork([]string{"emit-ir", "-go-hike=1", "-o", output, "main.go"})
+	cmd := exec.CommandContext(ctx, hikecBin, args...)
 	cmd.Dir = tmpDir
 	combined, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {

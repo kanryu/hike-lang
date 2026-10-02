@@ -102,7 +102,8 @@ func RunHikeCase(t *testing.T, tc HikeTestCase) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	run := exec.Command(lifetimeHikec, "run", filepath.Join(tmp, "main.hike"))
+	args := testutil.AddCompileFork([]string{"run", filepath.Join(tmp, "main.hike")})
+	run := exec.Command(lifetimeHikec, args...)
 	run.Dir = tmp
 	run.Stdout = &stdout
 	run.Stderr = &stderr

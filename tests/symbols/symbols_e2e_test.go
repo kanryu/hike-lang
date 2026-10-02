@@ -109,7 +109,8 @@ func Helper() int {
 	writeFile(t, filepath.Join(testDir, "hike.mod"), "module symbols-test\nhike 0.1.0\nreplace dep => ./dep\n")
 
 	outputPath := filepath.Join(testDir, "symbols.json")
-	cmd := exec.Command(hikecBin, "emit-ir", "--export-symbols", outputPath, filepath.Join(testDir, "main.hike"))
+	args := testutil.AddCompileFork([]string{"emit-ir", "--export-symbols", outputPath, filepath.Join(testDir, "main.hike")})
+	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = testDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("symbol export failed: %v\n%s", err, output)

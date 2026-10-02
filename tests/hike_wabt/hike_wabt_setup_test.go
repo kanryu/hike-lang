@@ -162,7 +162,7 @@ func buildAndRunHikeWabtProject(t *testing.T, source string, files map[string]st
 		sources = append(sources, filepath.Join(tmp, name))
 	}
 	sort.Strings(sources[1:])
-	args := []string{"-o", wat}
+	args := testutil.AddCompileFork([]string{"-o", wat})
 	args = append(args, sources...)
 	compile := exec.Command(hikeHikeBin, args...)
 	compile.Dir = projectRoot
@@ -207,7 +207,7 @@ func buildAndRunHikeWabtStringWithCheckerModeAndWorkers(t *testing.T, source, fu
 	if err := os.WriteFile(src, []byte(source), 0644); err != nil {
 		t.Fatal(err)
 	}
-	compileArgs := []string{"-o", wat}
+	compileArgs := testutil.AddCompileFork([]string{"-o", wat})
 	if checkerMode != "normal" {
 		compileArgs = append(compileArgs, "--wasm-mode="+checkerMode)
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 
 	"hikec-go/pkg/debug"
 	"hikec-go/pkg/hir"
@@ -34,6 +35,9 @@ type Emitter struct {
 	currentIsMain   bool
 	renderedTypes   map[string]string
 	sourceLines     map[string][]string
+	compileFork     bool
+	unitBuffers     map[string]string
+	unitOrder       []string
 }
 
 // panicLabel returns an emitter-owned label for a function's defer chain.
@@ -89,6 +93,7 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath stri
 		renderedTypes:   make(map[string]string),
 		sourceLines:     make(map[string][]string),
 		debugMgr:        debug.NewDebugManager(sourcePath, debugEnabled),
+		unitBuffers:     make(map[string]string),
 	}
 
 	for sym := range RuntimeLLVMSymbols {
@@ -96,6 +101,11 @@ func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath stri
 	}
 	return e
 }
+
+// SetCompileFork enables deterministic per-source output buffering. The
+// frontend may load sources concurrently, but LLVM text is merged in source
+// discovery order so concurrent work cannot interleave bytes in the module.
+func (e *Emitter) SetCompileFork(enabled bool) { e.compileFork = enabled }
 
 // SetLineTablesOnly retains DILocation metadata but suppresses local-variable
 // and type metadata, matching LLVM's -gline-tables-only mode.
@@ -133,6 +143,8 @@ func (e *Emitter) nextTmp() string {
 
 func (e *Emitter) Emit() string {
 	e.b.Reset()
+	e.unitBuffers = make(map[string]string)
+	e.unitOrder = nil
 	e.collectUserSymbols()
 	e.emitPrologue()
 	e.emitTypeDefs()
@@ -373,6 +385,11 @@ func (e *Emitter) emitFunctions() {
 			referencedExterns[m.TargetFnName] = true
 		}
 	}
+	if e.compileFork && !e.debugMgr.Enabled() {
+		e.prepareAsyncThunks()
+		e.emitFunctionsFork(referencedExterns)
+		return
+	}
 
 	for fnID, fn := range e.prog.Functions {
 		if fn.IsExtern {
@@ -423,8 +440,145 @@ func (e *Emitter) emitFunctions() {
 		}
 		definedSymbols[fn.Name] = true
 		e.declaredSymbols[fn.Name] = true
+		if !e.compileFork {
+			e.emitFunction(fn, fnID)
+			continue
+		}
+		unit := fn.Location.Filename
+		if unit == "" {
+			unit = "<generated>"
+		}
+		previous := e.b
+		e.b = strings.Builder{}
 		e.emitFunction(fn, fnID)
+		content := e.b.String()
+		e.b = previous
+		if _, exists := e.unitBuffers[unit]; !exists {
+			e.unitOrder = append(e.unitOrder, unit)
+		}
+		e.unitBuffers[unit] += content
 	}
+	if e.compileFork {
+		for _, unit := range e.unitOrder {
+			e.b.WriteString(e.unitBuffers[unit])
+		}
+	}
+}
+
+// prepareAsyncThunks assigns all helper names before worker emitters start.
+// Workers receive this immutable-by-convention table, so async output can
+// refer to stable names without racing on the parent emitter's map.
+func (e *Emitter) prepareAsyncThunks() {
+	for _, fn := range e.prog.Functions {
+		for _, bb := range e.blocksForEmission(fn) {
+			for _, inst := range bb.Instructions {
+				if async, ok := inst.(*hir.InstrAsync); ok {
+					e.getOrCreateAsyncThunk(e.getRetLLVMType(async.RetTypes))
+				}
+			}
+		}
+	}
+}
+
+type forkFunctionUnit struct {
+	name      string
+	functions []struct {
+		id int
+		fn *hir.Function
+	}
+}
+
+// emitFunctionsFork emits independent source units concurrently. Declarations
+// remain in the parent module prelude; completed function buffers are appended
+// in the original HIR order, so forward calls cannot interleave output.
+func (e *Emitter) emitFunctionsFork(referencedExterns map[string]bool) {
+	units := make([]*forkFunctionUnit, 0)
+	byName := make(map[string]*forkFunctionUnit)
+	for fnID, fn := range e.prog.Functions {
+		if fn.IsExtern {
+			if llvmIntrinsicName(fn.Name) != "" || e.declaredSymbols[fn.Name] {
+				continue
+			}
+			if fn.IsCFunc && fn.CFuncTarget != "" && !referencedExterns[fn.Name] && !referencedExterns[fn.CFuncTarget] {
+				continue
+			}
+			e.emitExternalDeclaration(fn)
+			continue
+		}
+		if e.declaredSymbols[fn.Name] {
+			continue
+		}
+		e.declaredSymbols[fn.Name] = true
+		name := fn.Location.Filename
+		if name == "" {
+			name = "<generated>"
+		}
+		unit := byName[name]
+		if unit == nil {
+			unit = &forkFunctionUnit{name: name}
+			byName[name] = unit
+			units = append(units, unit)
+		}
+		unit.functions = append(unit.functions, struct {
+			id int
+			fn *hir.Function
+		}{fnID, fn})
+	}
+
+	results := make([]string, len(units))
+	var wg sync.WaitGroup
+	for index, unit := range units {
+		wg.Add(1)
+		go func(index int, unit *forkFunctionUnit) {
+			defer wg.Done()
+			child := e.newForkFunctionEmitter()
+			for _, item := range unit.functions {
+				child.emitFunction(item.fn, item.id)
+			}
+			results[index] = child.b.String()
+		}(index, unit)
+	}
+	wg.Wait()
+	for _, result := range results {
+		e.b.WriteString(result)
+	}
+}
+
+func (e *Emitter) newForkFunctionEmitter() *Emitter {
+	child := New(e.prog, e.semaCtx, e.targetTriple, "", false)
+	child.pointerBits = e.pointerBits
+	child.userSymbols = make(map[string]string, len(e.userSymbols))
+	for name, symbol := range e.userSymbols {
+		child.userSymbols[name] = symbol
+	}
+	child.asyncThunks = make(map[string]*asyncThunk, len(e.asyncThunks))
+	for retType, thunk := range e.asyncThunks {
+		copy := *thunk
+		child.asyncThunks[retType] = &copy
+	}
+	return child
+}
+
+func (e *Emitter) emitExternalDeclaration(fn *hir.Function) {
+	e.declaredSymbols[fn.Name] = true
+	retTypeStr := "void"
+	if len(fn.ReturnTypes) == 1 {
+		retTypeStr = e.externalABIType(fn.ReturnTypes[0])
+	} else if len(fn.ReturnTypes) > 1 {
+		types := make([]string, len(fn.ReturnTypes))
+		for i, rt := range fn.ReturnTypes {
+			types[i] = rt.LLVMType()
+		}
+		retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
+	}
+	paramTypes := make([]string, len(fn.Params))
+	for i, p := range fn.Params {
+		paramTypes[i] = e.externalABIType(p.Typ)
+	}
+	if fn.IsVariadic && (fn.IsCFunc || fn.IsExtern) {
+		paramTypes = append(paramTypes, "...")
+	}
+	e.b.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retTypeStr, fn.Name, strings.Join(paramTypes, ", ")))
 }
 
 // blocksForEmission is the single CFG view used by LLVM-side prepasses. For

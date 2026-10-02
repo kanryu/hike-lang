@@ -53,6 +53,7 @@ func printUsage() {
 	fmt.Println("  --alloc=<mode> Allocation mode: heap (default) or region")
 	fmt.Println("  -retain          Enable experimental automatic string/slice retain/release")
 	fmt.Println("  -go-hike=1       Enable Go-compatible self-hosting mode (.go sources and Go replacements)")
+	fmt.Println("  -compile-fork    Parse imported packages concurrently")
 	fmt.Println("  -cflags <flags>  Additional flags passed directly to Clang")
 	fmt.Println("  -g               Generate DWARF debug information")
 	fmt.Println("  -gline-tables-only  Emit only source line tables (suppress locals and types)")
@@ -71,6 +72,10 @@ func reportCompilationError(comp *compiler.Compiler, err error) {
 
 func isGoHikeFlag(arg string) bool {
 	return arg == "-go-hike" || arg == "--go-hike" || arg == "-go-hike=1" || arg == "--go-hike=1"
+}
+
+func isCompileForkFlag(arg string) bool {
+	return arg == "-compile-fork" || arg == "--compile-fork" || arg == "-compile-fork=1" || arg == "--compile-fork=1"
 }
 
 func main() {
@@ -170,6 +175,7 @@ func runEmitIR(args []string) {
 	regionMode := false
 	retainRelease := false
 	goHikeMode := false
+	compileFork := false
 	debugInfo := false
 	lineTablesOnly := false
 	exportSymbolsPath := ""
@@ -206,6 +212,8 @@ func runEmitIR(args []string) {
 			retainRelease = true
 		} else if isGoHikeFlag(arg) {
 			goHikeMode = true
+		} else if isCompileForkFlag(arg) {
+			compileFork = true
 		} else if arg == "-g" || arg == "--debug" {
 			debugInfo = true
 		} else if arg == "-gline-tables-only" || arg == "--gline-tables-only" {
@@ -252,6 +260,7 @@ func runEmitIR(args []string) {
 	comp.SetRegionMode(regionMode)
 	comp.SetRetainRelease(retainRelease)
 	comp.SetGoHikeMode(goHikeMode)
+	comp.SetCompileFork(compileFork)
 	comp.SetDebugInfo(debugInfo)
 	comp.SetDebugLineTablesOnly(lineTablesOnly)
 	if logger.IsVerbose2() {
@@ -422,6 +431,7 @@ func runBuild(args []string) {
 	regionMode := false
 	retainRelease := false
 	goHikeMode := false
+	compileFork := false
 	var passThroughArgs []string
 	var sourceFiles []string
 
@@ -454,6 +464,9 @@ func runBuild(args []string) {
 		} else if isGoHikeFlag(arg) {
 			goHikeMode = true
 			passThroughArgs = append(passThroughArgs, "-go-hike=1")
+		} else if isCompileForkFlag(arg) {
+			compileFork = true
+			passThroughArgs = append(passThroughArgs, "-compile-fork")
 		} else if arg == "-cflags" && i+1 < len(args) {
 			extraCflags = args[i+1]
 			i++
@@ -527,6 +540,7 @@ func runBuild(args []string) {
 		wabtCompiler.SetRegionMode(regionMode)
 		wabtCompiler.SetRetainRelease(retainRelease)
 		wabtCompiler.SetGoHikeMode(goHikeMode)
+		wabtCompiler.SetCompileFork(compileFork)
 		wabtCompiler.SetDebugInfo(debugInfo)
 		wabtCompiler.SetDebugLineTablesOnly(lineTablesOnly)
 		var program *ast.Program

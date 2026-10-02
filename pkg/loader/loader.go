@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/lexer"
@@ -21,6 +22,24 @@ type Loader struct {
 	verbose      bool
 	buildTags    map[string]bool
 	goHikeMode   bool
+	compileFork  bool
+	mu           sync.Mutex
+	packageJobs  map[string]*packageJob
+	packageOrder []string
+}
+
+// packageJob represents an imported package that is being parsed in a
+// goroutine.  Closing done publishes every field in the job to the caller.
+type packageJob struct {
+	dir   string
+	done  chan struct{}
+	files []loadedFile
+	err   error
+}
+
+type loadedFile struct {
+	path    string
+	program *ast.Program
 }
 
 func New(rootDir string) *Loader {
@@ -41,6 +60,7 @@ func New(rootDir string) *Loader {
 		visitedPkgs:  make(map[string]bool),
 		buildTags:    defaultBuildTags(),
 		verbose:      false,
+		packageJobs:  make(map[string]*packageJob),
 	}
 	if loader.goHikeMode {
 		LoadGoHikeBot(loader)
@@ -51,6 +71,11 @@ func New(rootDir string) *Loader {
 func (l *Loader) SetVerbose(v bool) {
 	l.verbose = v
 }
+
+// SetCompileFork enables concurrent parsing of imported packages. The default
+// remains the historical sequential loader for reproducible builds and for
+// callers that do not opt into the experimental parallel path.
+func (l *Loader) SetCompileFork(enabled bool) { l.compileFork = enabled }
 
 // SetGoHikeMode enables the self-hosting compatibility mode. In this mode
 // .go files are accepted as Hike source files.
@@ -99,6 +124,13 @@ func (l *Loader) log(msg string) {
 }
 
 func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
+	if l.compileFork {
+		return l.loadWithCompileFork(entryPaths...)
+	}
+	return l.loadSequential(entryPaths...)
+}
+
+func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 	combinedProg := &ast.Program{
 		Package: "main",
 		Imports: []*ast.ImportDecl{},
@@ -223,6 +255,165 @@ func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
 	}
 
 	return combinedProg, nil
+}
+
+// loadWithCompileFork keeps the entry package on the caller's goroutine while
+// imported packages are parsed independently. An import starts a job and the
+// caller only waits on that job when collecting its result. Jobs may discover
+// and start more jobs, so the same mechanism works recursively.
+func (l *Loader) loadWithCompileFork(entryPaths ...string) (*ast.Program, error) {
+	combinedProg := &ast.Program{Package: "main", Imports: []*ast.ImportDecl{}, Decls: []ast.Decl{}}
+	pkgDecls := make(map[string][]ast.Decl)
+	pkgImports := make(map[string][]*ast.ImportDecl)
+	packageOrder := make([]string, 0)
+	seenPackages := make(map[string]bool)
+
+	fileQueue, err := l.collectEntryFiles(entryPaths)
+	if err != nil {
+		return nil, err
+	}
+	if l.goHikeMode {
+		LoadGoHikeBot(l)
+	}
+
+	rootFiles, err := l.parseFilesAndStartImports(fileQueue)
+	if err != nil {
+		return nil, err
+	}
+	appendLoadedFiles(rootFiles, pkgDecls, pkgImports, &packageOrder, seenPackages, l)
+
+	// Jobs can append more jobs while their parent is running. Taking one job
+	// at a time from the growing list gives every package a completion point
+	// without racing with WaitGroup.Add/Wait.
+	for index := 0; ; index++ {
+		l.mu.Lock()
+		if index >= len(l.packageOrder) {
+			l.mu.Unlock()
+			break
+		}
+		job := l.packageJobs[l.packageOrder[index]]
+		l.mu.Unlock()
+		<-job.done
+		if job.err != nil {
+			return nil, job.err
+		}
+		appendLoadedFiles(job.files, pkgDecls, pkgImports, &packageOrder, seenPackages, l)
+	}
+
+	for _, pkgName := range packageOrder {
+		decls := pkgDecls[pkgName]
+		if pkgName != "main" {
+			combinedProg.Decls = append(combinedProg.Decls, l.manglePackageDecls(pkgName, decls)...)
+		} else {
+			combinedProg.Decls = append(combinedProg.Decls, decls...)
+		}
+	}
+	for _, pkgName := range packageOrder {
+		combinedProg.Imports = append(combinedProg.Imports, pkgImports[pkgName]...)
+	}
+	return combinedProg, nil
+}
+
+func (l *Loader) parseFilesAndStartImports(paths []string) ([]loadedFile, error) {
+	files := make([]loadedFile, 0, len(paths))
+	for _, path := range paths {
+		loaded, err := l.parseFile(path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, loaded)
+		l.startImports(filepath.Dir(path), loaded.program.Imports)
+	}
+	return files, nil
+}
+
+func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) {
+	for _, imp := range imports {
+		if l.module == nil {
+			continue
+		}
+		l.mu.Lock()
+		pkgDir, err := l.module.ResolvePackagePath(fromDir, imp.Path)
+		l.mu.Unlock()
+		if err != nil || pkgDir == "" {
+			continue
+		}
+		pkgDir = filepath.Clean(pkgDir)
+		l.mu.Lock()
+		if _, exists := l.packageJobs[pkgDir]; exists {
+			l.mu.Unlock()
+			continue
+		}
+		job := &packageJob{dir: pkgDir, done: make(chan struct{})}
+		l.packageJobs[pkgDir] = job
+		l.packageOrder = append(l.packageOrder, pkgDir)
+		l.mu.Unlock()
+		go func() {
+			defer close(job.done)
+			files, err := l.findHikeFilesInDir(job.dir)
+			if err != nil {
+				job.err = err
+				return
+			}
+			job.files, job.err = l.parseFilesAndStartImports(files)
+		}()
+	}
+}
+
+func (l *Loader) parseFile(path string) (loadedFile, error) {
+	l.mu.Lock()
+	if l.visitedFiles[path] {
+		l.mu.Unlock()
+		return loadedFile{path: path, program: &ast.Program{}}, nil
+	}
+	l.visitedFiles[path] = true
+	l.mu.Unlock()
+	if l.verbose {
+		l.log(fmt.Sprintf("Parsing file: %s", path))
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return loadedFile{}, fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+	if err := validateInlineAsmBuildConstraint(path, content, l.buildTags); err != nil {
+		return loadedFile{}, err
+	}
+	p := parser.New(lexer.New(string(content)))
+	p.SetVerbose(l.verbose)
+	program := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		return loadedFile{}, fmt.Errorf("parse error in %s:\n%s", path, strings.Join(p.Errors(), "\n"))
+	}
+	for _, decl := range program.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			fn.Filename = path
+		}
+	}
+	if l.goHikeMode {
+		l.mu.Lock()
+		l.applyGoHikeReplacements(string(content))
+		l.mu.Unlock()
+	}
+	return loadedFile{path: path, program: program}, nil
+}
+
+func appendLoadedFiles(files []loadedFile, pkgDecls map[string][]ast.Decl, pkgImports map[string][]*ast.ImportDecl, packageOrder *[]string, seen map[string]bool, l *Loader) {
+	for _, file := range files {
+		if file.program == nil || file.program.Package == "" && len(file.program.Decls) == 0 && len(file.program.Imports) == 0 {
+			continue
+		}
+		pkgName := file.program.Package
+		if pkgName == "" {
+			pkgName = "main"
+		}
+		if !seen[pkgName] {
+			seen[pkgName] = true
+			*packageOrder = append(*packageOrder, pkgName)
+		}
+		pkgDecls[pkgName] = append(pkgDecls[pkgName], file.program.Decls...)
+		pkgImports[pkgName] = append(pkgImports[pkgName], file.program.Imports...)
+		logger.LogVerbose("[Verbose] loader collected package=%s file=%s fileDecls=%d packageDecls=%d\n", pkgName, file.path, len(file.program.Decls), len(pkgDecls[pkgName]))
+	}
 }
 
 func (l *Loader) collectEntryFiles(entryPaths []string) ([]string, error) {

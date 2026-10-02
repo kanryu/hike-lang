@@ -53,7 +53,7 @@ func main() int {
 	if err := os.WriteFile(filepath.Join(tmpDir, "hike.mod"), []byte(mod), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(hikecBin, "run", srcPath)
+	cmd := exec.Command(hikecBin, addCompileFork([]string{"run", srcPath})...)
 	cmd.Dir = tmpDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -110,7 +110,7 @@ func main() int {
 	}
 
 	outPath := filepath.Join(tmpDir, "crypto.ll")
-	cmd := exec.Command(hikecBin, "emit-ir", "-o", outPath, srcPath)
+	cmd := exec.Command(hikecBin, addCompileFork([]string{"emit-ir", "-o", outPath, srcPath})...)
 	cmd.Dir = tmpDir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

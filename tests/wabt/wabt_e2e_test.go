@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"hikec-go/tests/testutil"
 )
 
 func TestWabtBuildAndNodeExecution(t *testing.T) {
@@ -26,7 +28,8 @@ func TestWabtEmitIRProducesWatAndRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	wat := filepath.Join(tmp, "main.wat")
-	cmd := exec.Command(hikecBin, "emit-ir", "-target", "wabt", "-o", wat, src)
+	args := testutil.AddCompileFork([]string{"emit-ir", "-target", "wabt", "-o", wat, src})
+	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Wabt emit-ir failed: %v\n%s", err, out)

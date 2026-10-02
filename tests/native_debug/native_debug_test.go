@@ -97,7 +97,8 @@ func main() int {
 	if runtime.GOOS == "windows" {
 		outputPath += ".exe"
 	}
-	build := exec.Command(hikecPath, "build", "-g", "-o", outputPath, sourcePath)
+	args := testutil.AddCompileFork([]string{"build", "-g", "-o", outputPath, sourcePath})
+	build := exec.Command(hikecPath, args...)
 	build.Dir = tmp
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("native debug build failed: %v\n%s\nclang: %s", err, output, clang)

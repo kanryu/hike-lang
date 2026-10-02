@@ -107,6 +107,7 @@ func runRegionCaseWithMode(t *testing.T, tc regionCase, enabled bool) {
 		args = append(args, "--alloc=region")
 	}
 	args = append(args, path)
+	args = testutil.AddCompileFork(args)
 	cmd := exec.Command(hikecBin, args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
