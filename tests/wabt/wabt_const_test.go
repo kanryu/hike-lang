@@ -18,3 +18,22 @@ func main() int {
 		t.Fatalf("Wabt const/iota output = %q, want %q", got, want)
 	}
 }
+
+func TestWabtConstGroupIotaInheritance(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+const (
+    Zero = iota
+    One
+    Offset = iota + 10
+    Next
+)
+
+func main() int {
+    return Zero + One*10 + Offset*100 + Next*1000
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=14210\n"; got != want {
+		t.Fatalf("Wabt const group/iota output = %q, want %q", got, want)
+	}
+}

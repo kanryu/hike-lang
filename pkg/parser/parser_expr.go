@@ -360,6 +360,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseCharLiteral()
 	case token.STRING:
 		leftExp = p.parseStringLiteral()
+	case token.IOTA:
+		// IOTA is a compile-time-only expression. The const-group parser
+		// replaces it with the declaration's ordinal before semantic analysis.
+		leftExp = &ast.IotaExpr{Token: p.curToken}
 	case token.INLINEASM:
 		leftExp = p.parseInlineAsmExpr()
 	case token.NIL:

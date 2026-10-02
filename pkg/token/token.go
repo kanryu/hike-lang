@@ -173,6 +173,7 @@ func LookupIdent(ident string) TokenType {
 	case "passthrough": return PASSTHROUGH
 	case "var": return VAR
 	case "const": return CONST
+	case "iota": return IOTA
 	case "type": return TYPE
 	case "struct": return STRUCT
 	case "interface": return INTERFACE
