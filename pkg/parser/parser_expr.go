@@ -87,6 +87,31 @@ func replaceIota(expr ast.Expression, iotaVal int64) ast.Expression {
 	return expr
 }
 
+func countIotaReferences(expr ast.Expression) int {
+	if expr == nil {
+		return 0
+	}
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if e.Value == "iota" {
+			return 1
+		}
+	case *ast.IotaExpr:
+		return 1
+	case *ast.BinaryExpr:
+		return countIotaReferences(e.Left) + countIotaReferences(e.Right)
+	case *ast.PrefixExpr:
+		return countIotaReferences(e.Right)
+	case *ast.CallExpr:
+		count := countIotaReferences(e.Function)
+		for _, arg := range e.Args {
+			count += countIotaReferences(arg)
+		}
+		return count
+	}
+	return 0
+}
+
 func isBasicTypeName(name string) bool {
 	switch name {
 	case "int", "int8", "int16", "int32", "int64",

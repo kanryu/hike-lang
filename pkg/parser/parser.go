@@ -986,6 +986,9 @@ func (p *Parser) parseConstDecl() []ast.Decl {
 					valExpr = &ast.IntegerLiteral{Token: name.Token, Value: iotaVal}
 				}
 
+				if countIotaReferences(valExpr) > 1 {
+					p.errors = append(p.errors, fmt.Sprintf("[%d:%d] iota may be referenced only once in a const expression", name.Token.Line, name.Token.Col))
+				}
 				valExpr = replaceIota(valExpr, iotaVal)
 
 				decls = append(decls, &ast.ConstDecl{

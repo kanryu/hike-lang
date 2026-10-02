@@ -37,3 +37,41 @@ func main() int {
 		t.Fatalf("Wabt const group/iota output = %q, want %q", got, want)
 	}
 }
+
+func TestWabtConstRepeatedIotaReferences(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+const (
+    First = iota
+    Second = iota
+    Double = iota + 10
+    Inherited
+)
+
+func main() int {
+    return First + Second*10 + Double*100 + Inherited*1000
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=14210\n"; got != want {
+		t.Fatalf("Wabt repeated iota output = %q, want %q", got, want)
+	}
+}
+
+func TestWabtConstIotaOffsetMatchingNames(t *testing.T) {
+	wasm := buildWabt(t, `package main
+
+const (
+    Zero = iota
+    One
+    Eleven = iota + 9
+    Twelve
+)
+
+func main() int {
+    return Zero + One*10 + Eleven*100 + Twelve*1000
+}
+`)
+	if got, want := runWabt(t, wasm), "WABT_RESULT=13110\n"; got != want {
+		t.Fatalf("Wabt iota offset output = %q, want %q", got, want)
+	}
+}

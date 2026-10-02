@@ -517,9 +517,13 @@ func (l *Loader) applyGoHikeReplacements(content string) {
 func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl {
 	var mangled []ast.Decl
 	localTypes := make(map[string]bool)
+	localConstants := make(map[string]bool)
 	for _, decl := range decls {
 		if td, ok := decl.(*ast.TypeDecl); ok && td.Name != nil {
 			localTypes[td.Name.Value] = true
+		}
+		if cd, ok := decl.(*ast.ConstDecl); ok && cd.Name != nil {
+			localConstants[cd.Name.Value] = true
 		}
 	}
 
@@ -540,7 +544,7 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			// package-qualified names. Leaving a composite literal such as
 			// &Parser{} unqualified allows it to bind to another package's
 			// Parser after declarations have been merged.
-			qualifyLocalBlock(pkgName, d.Body, localTypes)
+			qualifyLocalBlock(pkgName, d.Body, localTypes, localConstants)
 			// 外部 C 関数（Body == nil の extern 宣言）は C ライブラリのシンボルであるためマングルしない。
 			// 実体を持つ関数（Body != nil）のみ、main パッケージ以外でパッケージ名を付与してマングルする。
 			if d.Body != nil && (pkgName != "main" || d.Name.Value != "main") {
@@ -702,141 +706,145 @@ func isNilTypeExpr(typ ast.TypeExpr) bool {
 // manglePackageDecls, but a composite literal such as &Parser{} used to remain
 // unqualified.  Once another package also defined Parser, semantic lookup
 // could bind that literal to the wrong package's struct.
-func qualifyLocalBlock(pkgName string, block *ast.BlockStmt, localTypes map[string]bool) {
+func qualifyLocalBlock(pkgName string, block *ast.BlockStmt, localTypes map[string]bool, localConstants map[string]bool) {
 	if block == nil {
 		return
 	}
 	for _, stmt := range block.Statements {
-		qualifyLocalStmt(pkgName, stmt, localTypes)
+		qualifyLocalStmt(pkgName, stmt, localTypes, localConstants)
 	}
 }
 
-func qualifyLocalStmt(pkgName string, stmt ast.Statement, localTypes map[string]bool) {
+func qualifyLocalStmt(pkgName string, stmt ast.Statement, localTypes map[string]bool, localConstants map[string]bool) {
 	if stmt == nil {
 		return
 	}
 	switch s := stmt.(type) {
 	case *ast.BlockStmt:
-		qualifyLocalBlock(pkgName, s, localTypes)
+		qualifyLocalBlock(pkgName, s, localTypes, localConstants)
 	case *ast.ExprStmt:
-		qualifyLocalExpr(pkgName, s.Expr, localTypes)
+		qualifyLocalExpr(pkgName, s.Expr, localTypes, localConstants)
 	case *ast.AssignStmt:
 		for _, expr := range s.Left {
-			qualifyLocalExpr(pkgName, expr, localTypes)
+			qualifyLocalExpr(pkgName, expr, localTypes, localConstants)
 		}
 		for _, expr := range s.Right {
-			qualifyLocalExpr(pkgName, expr, localTypes)
+			qualifyLocalExpr(pkgName, expr, localTypes, localConstants)
 		}
 		qualifyLocalTypeExpr(pkgName, s.Type, localTypes)
 	case *ast.VarDecl:
 		qualifyLocalTypeExpr(pkgName, s.Type, localTypes)
-		qualifyLocalExpr(pkgName, s.Value, localTypes)
+		qualifyLocalExpr(pkgName, s.Value, localTypes, localConstants)
 	case *ast.ReturnStmt:
 		for _, expr := range s.Values {
-			qualifyLocalExpr(pkgName, expr, localTypes)
+			qualifyLocalExpr(pkgName, expr, localTypes, localConstants)
 		}
 	case *ast.IfStmt:
-		qualifyLocalStmt(pkgName, s.Init, localTypes)
-		qualifyLocalExpr(pkgName, s.Condition, localTypes)
-		qualifyLocalBlock(pkgName, s.Consequence, localTypes)
-		qualifyLocalStmt(pkgName, s.Alternative, localTypes)
+		qualifyLocalStmt(pkgName, s.Init, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, s.Condition, localTypes, localConstants)
+		qualifyLocalBlock(pkgName, s.Consequence, localTypes, localConstants)
+		qualifyLocalStmt(pkgName, s.Alternative, localTypes, localConstants)
 	case *ast.ForStmt:
-		qualifyLocalStmt(pkgName, s.Init, localTypes)
-		qualifyLocalExpr(pkgName, s.Cond, localTypes)
-		qualifyLocalStmt(pkgName, s.Post, localTypes)
-		qualifyLocalBlock(pkgName, s.Body, localTypes)
+		qualifyLocalStmt(pkgName, s.Init, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, s.Cond, localTypes, localConstants)
+		qualifyLocalStmt(pkgName, s.Post, localTypes, localConstants)
+		qualifyLocalBlock(pkgName, s.Body, localTypes, localConstants)
 	case *ast.ForRangeStmt:
-		qualifyLocalExpr(pkgName, s.Key, localTypes)
-		qualifyLocalExpr(pkgName, s.Value, localTypes)
-		qualifyLocalExpr(pkgName, s.X, localTypes)
-		qualifyLocalBlock(pkgName, s.Body, localTypes)
+		qualifyLocalExpr(pkgName, s.Key, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, s.Value, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, s.X, localTypes, localConstants)
+		qualifyLocalBlock(pkgName, s.Body, localTypes, localConstants)
 	case *ast.DeferStmt:
-		qualifyLocalExpr(pkgName, s.Call, localTypes)
+		qualifyLocalExpr(pkgName, s.Call, localTypes, localConstants)
 	case *ast.LockStmt:
-		qualifyLocalBlock(pkgName, s.Body, localTypes)
+		qualifyLocalBlock(pkgName, s.Body, localTypes, localConstants)
 	case *ast.AreaStmt:
-		qualifyLocalExpr(pkgName, s.Size, localTypes)
-		qualifyLocalBlock(pkgName, s.Body, localTypes)
+		qualifyLocalExpr(pkgName, s.Size, localTypes, localConstants)
+		qualifyLocalBlock(pkgName, s.Body, localTypes, localConstants)
 	case *ast.SwitchStmt:
-		qualifyLocalStmt(pkgName, s.Init, localTypes)
-		qualifyLocalExpr(pkgName, s.Value, localTypes)
+		qualifyLocalStmt(pkgName, s.Init, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, s.Value, localTypes, localConstants)
 		for _, clause := range s.Cases {
 			for _, value := range clause.Values {
-				qualifyLocalExpr(pkgName, value, localTypes)
+				qualifyLocalExpr(pkgName, value, localTypes, localConstants)
 			}
 			for _, child := range clause.Body {
-				qualifyLocalStmt(pkgName, child, localTypes)
+				qualifyLocalStmt(pkgName, child, localTypes, localConstants)
 			}
 		}
 	}
 }
 
-func qualifyLocalExpr(pkgName string, expr ast.ASTExpression, localTypes map[string]bool) {
+func qualifyLocalExpr(pkgName string, expr ast.ASTExpression, localTypes map[string]bool, localConstants map[string]bool) {
 	if expr == nil {
 		return
 	}
 	switch e := expr.(type) {
+	case *ast.Identifier:
+		if pkgName != "main" && e.Value != "_" && localConstants[e.Value] {
+			e.Value = pkgName + "_" + e.Value
+		}
 	case *ast.StructLiteral:
 		qualifyLocalTypeExpr(pkgName, e.Type, localTypes)
 		for _, field := range e.Fields {
 			if field != nil {
-				qualifyLocalExpr(pkgName, field.Value, localTypes)
+				qualifyLocalExpr(pkgName, field.Value, localTypes, localConstants)
 			}
 		}
 	case *ast.ArrayLiteral:
 		qualifyLocalTypeExpr(pkgName, e.Type, localTypes)
 		for _, value := range e.Elements {
-			qualifyLocalExpr(pkgName, value, localTypes)
+			qualifyLocalExpr(pkgName, value, localTypes, localConstants)
 		}
 	case *ast.SliceLiteral:
 		qualifyLocalTypeExpr(pkgName, e.Type, localTypes)
 		for _, value := range e.Elements {
-			qualifyLocalExpr(pkgName, value, localTypes)
+			qualifyLocalExpr(pkgName, value, localTypes, localConstants)
 		}
 	case *ast.MapLiteral:
 		qualifyLocalTypeExpr(pkgName, e.Type, localTypes)
 		for _, entry := range e.Entries {
 			if entry != nil {
-				qualifyLocalExpr(pkgName, entry.Key, localTypes)
-				qualifyLocalExpr(pkgName, entry.Value, localTypes)
+				qualifyLocalExpr(pkgName, entry.Key, localTypes, localConstants)
+				qualifyLocalExpr(pkgName, entry.Value, localTypes, localConstants)
 			}
 		}
 	case *ast.CallExpr:
-		qualifyLocalExpr(pkgName, e.Function, localTypes)
+		qualifyLocalExpr(pkgName, e.Function, localTypes, localConstants)
 		for _, arg := range e.Args {
-			qualifyLocalExpr(pkgName, arg, localTypes)
+			qualifyLocalExpr(pkgName, arg, localTypes, localConstants)
 		}
 	case *ast.MemberExpr:
-		qualifyLocalExpr(pkgName, e.Object, localTypes)
+		qualifyLocalExpr(pkgName, e.Object, localTypes, localConstants)
 	case *ast.IndexExpr:
-		qualifyLocalExpr(pkgName, e.Left, localTypes)
-		qualifyLocalExpr(pkgName, e.Index, localTypes)
+		qualifyLocalExpr(pkgName, e.Left, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, e.Index, localTypes, localConstants)
 	case *ast.SliceExpr:
-		qualifyLocalExpr(pkgName, e.Left, localTypes)
-		qualifyLocalExpr(pkgName, e.Low, localTypes)
-		qualifyLocalExpr(pkgName, e.High, localTypes)
+		qualifyLocalExpr(pkgName, e.Left, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, e.Low, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, e.High, localTypes, localConstants)
 	case *ast.BinaryExpr:
-		qualifyLocalExpr(pkgName, e.Left, localTypes)
-		qualifyLocalExpr(pkgName, e.Right, localTypes)
+		qualifyLocalExpr(pkgName, e.Left, localTypes, localConstants)
+		qualifyLocalExpr(pkgName, e.Right, localTypes, localConstants)
 	case *ast.PrefixExpr:
-		qualifyLocalExpr(pkgName, e.Right, localTypes)
+		qualifyLocalExpr(pkgName, e.Right, localTypes, localConstants)
 	case *ast.ReceiveExpr:
-		qualifyLocalExpr(pkgName, e.Expr, localTypes)
+		qualifyLocalExpr(pkgName, e.Expr, localTypes, localConstants)
 	case *ast.AsyncExpr:
-		qualifyLocalExpr(pkgName, e.Fn, localTypes)
+		qualifyLocalExpr(pkgName, e.Fn, localTypes, localConstants)
 	case *ast.GenericInstExpr:
-		qualifyLocalExpr(pkgName, e.Left, localTypes)
+		qualifyLocalExpr(pkgName, e.Left, localTypes, localConstants)
 		for _, arg := range e.TypeArgs {
 			qualifyLocalTypeExpr(pkgName, arg, localTypes)
 		}
 	case *ast.TypeAssertExpr:
-		qualifyLocalExpr(pkgName, e.Expr, localTypes)
+		qualifyLocalExpr(pkgName, e.Expr, localTypes, localConstants)
 		qualifyLocalTypeExpr(pkgName, e.Target, localTypes)
 	case *ast.ConstArg:
-		qualifyLocalExpr(pkgName, e.Expr, localTypes)
+		qualifyLocalExpr(pkgName, e.Expr, localTypes, localConstants)
 	case *ast.InlineAsmExpr:
 		for _, operand := range e.Operands {
-			qualifyLocalExpr(pkgName, operand, localTypes)
+			qualifyLocalExpr(pkgName, operand, localTypes, localConstants)
 		}
 	}
 }
