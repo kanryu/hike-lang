@@ -27,46 +27,42 @@ const (
 	INDEX       // array[index], .field
 )
 
-var precedences = map[token.TokenType]int{
-	token.LOR:       LOR,
-	token.LAND:      LAND,
-	token.OR:        SUM,
-	token.CARET:     SUM,
-	token.EQ:        EQUALS,
-	token.NEQ:       EQUALS,
-	token.LT:        LESSGREATER,
-	token.GT:        LESSGREATER,
-	token.LE:        LESSGREATER,
-	token.GE:        LESSGREATER,
-	token.PLUS:      SUM,
-	token.MINUS:     SUM,
-	token.SLASH:     PRODUCT,
-	token.ASTERISK:  PRODUCT,
-	token.PERCENT:   PRODUCT,
-	token.AMPERSAND: PRODUCT,
-	token.SHL:       PRODUCT,
-	token.SHR:       PRODUCT,
-	token.LPAREN:    CALL,
-	token.LBRACKET:  INDEX,
-	token.DOT:       INDEX,
+// tokenPrecedence deliberately uses a switch instead of ranging over a map.
+// The parser is used by the self-hosted compiler, where map iteration is not
+// guaranteed to visit every entry in a deterministic way. Missing an operator
+// here makes valid binary expressions look like malformed parenthesized
+// expressions and can produce a very large diagnostic that masks the cause.
+func tokenPrecedence(operator token.TokenType) int {
+	switch operator {
+	case token.LOR:
+		return LOR
+	case token.LAND:
+		return LAND
+	case token.OR, token.CARET:
+		return SUM
+	case token.EQ, token.NEQ:
+		return EQUALS
+	case token.LT, token.GT, token.LE, token.GE:
+		return LESSGREATER
+	case token.PLUS, token.MINUS:
+		return SUM
+	case token.SLASH, token.ASTERISK, token.PERCENT, token.AMPERSAND, token.SHL, token.SHR:
+		return PRODUCT
+	case token.LPAREN:
+		return CALL
+	case token.LBRACKET, token.DOT:
+		return INDEX
+	default:
+		return LOWEST
+	}
 }
 
 func (p *Parser) peekPrecedence() int {
-	for operator, precedence := range precedences {
-		if operator == p.peekToken.Type {
-			return precedence
-		}
-	}
-	return LOWEST
+	return tokenPrecedence(p.peekToken.Type)
 }
 
 func (p *Parser) curPrecedence() int {
-	for operator, precedence := range precedences {
-		if operator == p.curToken.Type {
-			return precedence
-		}
-	}
-	return LOWEST
+	return tokenPrecedence(p.curToken.Type)
 }
 
 func replaceIota(expr ast.Expression, iotaVal int64) ast.Expression {
