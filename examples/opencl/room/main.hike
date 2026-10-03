@@ -1,6 +1,6 @@
 package main
 
-extern func room_open() *byte
+extern func room_open(program cstring, programLength int) *byte
 extern func room_step(room *byte) int
 extern func room_read(room *byte, output *float32, count int) int
 extern func room_close(room *byte)
@@ -13,6 +13,30 @@ const width = 64
 const height = 64
 const cells = 64 * 64 * 64
 const steps = 1200
+
+// OpenCL kernel source is kept in Hike and passed to the OpenCL bridge as a
+// C string together with its explicit byte length.
+const kernelSource = `__kernel void step(__global const float *src, __global float *dst) {
+  int x = get_global_id(0); int y = get_global_id(1); int z = get_global_id(2);
+  int i = (z * 64 + y) * 64 + x;
+  if (abs(x - 32) <= 4 && y < 6 && z >= 58) { dst[i] = 0.0f; return; }
+  int xm = x > 0 ? x - 1 : x; int xp = x < 63 ? x + 1 : x;
+  int ym = y > 0 ? y - 1 : y; int yp = y < 63 ? y + 1 : y;
+  int zm = z > 0 ? z - 1 : z; int zp = z < 63 ? z + 1 : z;
+  float c = src[i];
+  float lap = src[(z*64+y)*64+xm] + src[(z*64+y)*64+xp]
+    + src[(z*64+ym)*64+x] + src[(z*64+yp)*64+x]
+    + src[(zm*64+y)*64+x] + src[(zp*64+y)*64+x] - 6.0f*c;
+  float horizontalVelocity = ((float)z - 31.5f) / 32.0f * 0.70f;
+  if (abs(x - 32) <= 5 && z >= 52 && y < 40) horizontalVelocity = 2.00f;
+  int horizontalY = horizontalVelocity >= 0.0f ? ym : yp;
+  float horizontalAdvection = fabs(horizontalVelocity) * (src[(z*64+horizontalY)*64+x] - c);
+  float verticalVelocity = -((float)y - 31.5f) / 32.0f * 0.90f;
+  int verticalZ = verticalVelocity >= 0.0f ? zm : zp;
+  float verticalAdvection = fabs(verticalVelocity) * (src[(verticalZ*64+y)*64+x] - c);
+  dst[i] = clamp(c + 0.22f * (0.20f * lap + horizontalAdvection + verticalAdvection), 0.0f, 1.0f);
+}
+`
 
 func put16(data []byte, offset int, value int) {
     data[offset] = byte(value % 256)
@@ -75,7 +99,7 @@ func writeBitmap(path cstring, field []float32) bool {
 }
 
 func main() int {
-    room := room_open()
+    room := room_open(cstring(kernelSource), len(kernelSource))
     if room == nil {
         printf("OpenCL GPU initialization failed\n")
         return 1

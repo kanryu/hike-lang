@@ -1,7 +1,6 @@
 #include <CL/cl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define N 64
 #define CELLS (N * N * N)
@@ -17,42 +16,13 @@ typedef struct Room {
 
 void room_close(Room *room);
 
-static const char *kernel_source =
-"__kernel void step(__global const float *src, __global float *dst) {\n"
-"  int x = get_global_id(0); int y = get_global_id(1); int z = get_global_id(2);\n"
-"  int i = (z * 64 + y) * 64 + x;\n"
-"  // Wide, cold outlet: a 9 x 6 x 6 voxel intake/plenum at the ceiling.\n"
-"  if (abs(x - 32) <= 4 && y < 6 && z >= 58) { dst[i] = 0.0f; return; }\n"
-"  int xm = x > 0 ? x - 1 : x; int xp = x < 63 ? x + 1 : x;\n"
-"  int ym = y > 0 ? y - 1 : y; int yp = y < 63 ? y + 1 : y;\n"
-"  int zm = z > 0 ? z - 1 : z; int zp = z < 63 ? z + 1 : z;\n"
-"  float c = src[i];\n"
-"  float lap = src[(z*64+y)*64+xm] + src[(z*64+y)*64+xp]\n"
-"    + src[(z*64+ym)*64+x] + src[(z*64+yp)*64+x]\n"
-"    + src[(zm*64+y)*64+x] + src[(zp*64+y)*64+x] - 6.0f*c;\n"
-"  // A room-scale circulation loop: +Y at the ceiling and -Y at the floor.\n"
-"  float horizontalVelocity = ((float)z - 31.5f) / 32.0f * 0.70f;\n"
-"  // The ceiling-mounted air conditioner produces a stronger +Y jet.\n"
-"  if (abs(x - 32) <= 5 && z >= 52 && y < 40) horizontalVelocity = 2.00f;\n"
-"  int horizontalY = horizontalVelocity >= 0.0f ? ym : yp;\n"
-"  float horizontalAdvection = fabs(horizontalVelocity)\n"
-"    * (src[(z*64+horizontalY)*64+x] - c);\n"
-"  // At the far wall air descends; at the near wall it rises.\n"
-"  float verticalVelocity = -((float)y - 31.5f) / 32.0f * 0.90f;\n"
-"  int verticalZ = verticalVelocity >= 0.0f ? zm : zp;\n"
-"  float verticalAdvection = fabs(verticalVelocity)\n"
-"    * (src[(verticalZ*64+y)*64+x] - c);\n"
-"  dst[i] = clamp(c + 0.22f * (0.20f * lap\n"
-"    + horizontalAdvection + verticalAdvection), 0.0f, 1.0f);\n"
-"}\n";
-
 static int check(cl_int error, const char *operation) {
     if (error == CL_SUCCESS) return 0;
     fprintf(stderr, "OpenCL %s failed: %d\n", operation, error);
     return -1;
 }
 
-Room *room_open(void) {
+Room *room_open(const char *kernel_source, int source_length) {
     cl_platform_id platforms[8];
     cl_uint platform_count = 0;
     cl_device_id device = NULL;
@@ -76,9 +46,10 @@ Room *room_open(void) {
     if (check(error, "create context")) goto fail;
     room->queue = clCreateCommandQueue(room->context, device, 0, &error);
     if (check(error, "create command queue")) goto fail;
-    size_t source_length = strlen(kernel_source);
+    if (!kernel_source || source_length <= 0) goto fail;
+    size_t program_length = (size_t)source_length;
     room->program = clCreateProgramWithSource(room->context, 1,
-        &kernel_source, &source_length, &error);
+        &kernel_source, &program_length, &error);
     if (check(error, "create program")) goto fail;
     error = clBuildProgram(room->program, 1, &device, NULL, NULL, NULL);
     if (check(error, "build kernel")) goto fail;

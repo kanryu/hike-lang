@@ -6,9 +6,10 @@ conditioner is placed at the center of the north ceiling edge and emits air at
 temperature `0.0` toward the room. The GPU kernel advances diffusion and
 advection for 1200 steps.
 
-The small `room_opencl.c` file is only an ABI bridge for the OpenCL C API.
-The simulation loop, result download request, and bitmap generation are in
-`main.hike`.
+The OpenCL kernel source is defined in `main.hike` and passed to
+`room_open` as a C string plus its byte length. The small `room_opencl.c` file
+only provides the ABI bridge for the OpenCL C API. The simulation loop, result
+download request, and bitmap generation are also in `main.hike`.
 
 The output `room_yz.bmp` is a vertical `Y-Z` slice through the air conditioner
 and its blowing direction. Temperature `1.0` is red, temperature `0.0` is
