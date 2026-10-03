@@ -7,6 +7,10 @@ A systems programming language with Go-like syntax that compiles to LLVM IR or
 WebAssembly, generating C-ABI compliant shared libraries, standalone
 executables, and browser-ready Wasm modules.
 
+With a minimal C wrapper, Hike can also orchestrate GPGPU and AI programs
+using APIs such as OpenCL and ONNX Runtime while keeping buffer management,
+tensor preparation, and application logic in Hike.
+
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![LLVM/Clang](https://img.shields.io/badge/Backend-LLVM%2FClang-blue?style=flat&logo=llvm)](https://llvm.org)
 [![WebAssembly](https://img.shields.io/badge/Backend-WebAssembly%2FWABT-654ff0?style=flat&logo=webassembly)](https://webassembly.org/)
@@ -121,6 +125,7 @@ See the linked design documents below for the exact implementation boundaries.
 | [`build-constraints-and-assembly.md`](build-constraints-and-assembly.md) | Build constraints and the inline assembly syntax and lowering rules. |
 | [`without_cgo.md`](without_cgo.md) | C-ABI integration without cgo, `.syso` builds, and ownership rules at language boundaries. |
 | [`gpu/webgpu/Hike.md`](gpu/webgpu/Hike.md) | WebGPU-oriented Hike integration and GPU programming notes. |
+| [`HIKE_AS_BETTER_C.md`](HIKE_AS_BETTER_C.md) | How Hike combines C-level control with concise GPGPU and AI integration, including OpenCL and ONNX Runtime examples. |
 
 ---
 

@@ -104,6 +104,24 @@ Hike therefore occupies a useful middle ground: direct enough for driver and
 GPU integration, but concise enough that the source remains close to the
 problem statement.
 
+## AI inference through ONNX Runtime
+
+The [AI ONNX example](examples/ai_onnx/README.md) demonstrates the same
+design at an AI inference boundary. Hike performs the image loading, BMP
+parsing, RGB-to-CHW tensor conversion, buffer allocation, output conversion,
+and bitmap encoding in [main.hike](examples/ai_onnx/main.hike). A thin C
+wrapper exposes only the ONNX Runtime session and inference calls in
+`upscale_bridge.c`.
+
+This keeps the model execution close to ordinary systems code while avoiding
+the repetitive buffer and shape bookkeeping that would otherwise be required
+in C. The sample downloads the official ONNX Runtime package, runs the
+4x-UltraSharp model, and converts `icon64.bmp` into a 4x larger
+`icon256.bmp`. It shows that the same Hike features useful for OpenCL
+orchestration also apply to practical neural-network inference: direct C ABI
+interoperability, contiguous slices, explicit tensor layout, and readable
+multiline data processing.
+
 ## Trade-offs
 
 Hike is not a replacement for every C use case. This example still relies on:
