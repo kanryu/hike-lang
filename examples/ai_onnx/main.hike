@@ -1,0 +1,168 @@
+package main
+
+extern func upscale_init(modelPath cstring) *byte
+extern func upscale_run(session *byte, input *float32, width int, height int, output *float32) int
+extern func upscale_close(session *byte)
+extern func fopen(path cstring, mode cstring) *byte
+extern func fread(ptr *byte, size int, count int, stream *byte) int
+extern func fwrite(ptr *byte, size int, count int, stream *byte) int
+extern func fclose(stream *byte) int
+extern func fseek(stream *byte, offset int, whence int) int
+extern func ftell(stream *byte) int
+extern func printf(format cstring, ...) int
+
+const inputPath = "icon64.bmp"
+const modelPath = "4x-UltraSharp.onnx"
+const outputPath = "icon256.bmp"
+
+// byte is an 8-bit storage type; normalize it before treating a BMP byte as
+// a numeric color component because values >= 128 are represented negatively.
+func unsignedByte(data []byte, offset int) int {
+    value := int(data[offset])
+    if value < 0 {
+        value += 256
+    }
+    return value
+}
+
+func read16(data []byte, offset int) int {
+    return unsignedByte(data, offset) + unsignedByte(data, offset + 1) * 256
+}
+
+func read32(data []byte, offset int) int {
+    return unsignedByte(data, offset) + unsignedByte(data, offset + 1) * 256 +
+        unsignedByte(data, offset + 2) * 65536 + unsignedByte(data, offset + 3) * 16777216
+}
+
+func put16(data []byte, offset int, value int) {
+    data[offset] = byte(value % 256)
+    data[offset + 1] = byte((value / 256) % 256)
+}
+
+func put32(data []byte, offset int, value int) {
+    data[offset] = byte(value % 256)
+    data[offset + 1] = byte((value / 256) % 256)
+    data[offset + 2] = byte((value / 65536) % 256)
+    data[offset + 3] = byte((value / 16777216) % 256)
+}
+
+func readBMP(path string) []byte {
+    file := fopen(cstring(path), "rb")
+    if file == nil {
+        return nil
+    }
+    fseek(file, 0, 2)
+    size := ftell(file)
+    fseek(file, 0, 0)
+    if size < 54 {
+        fclose(file)
+        return nil
+    }
+    data := make([]byte, size)
+    if fread(&data[0], 1, size, file) != size {
+        fclose(file)
+        return nil
+    }
+    fclose(file)
+    if data[0] != byte(66) || data[1] != byte(77) || read16(data, 28) != 24 {
+        return nil
+    }
+    return data
+}
+
+func bitmapToTensor(data []byte, width int, height int) []float32 {
+    rowSize := (width * 3 + 3) / 4 * 4
+    plane := width * height
+    tensor := make([]float32, plane * 3)
+    for y := 0; y < height; y++ {
+        sourceY := height - 1 - y
+        for x := 0; x < width; x++ {
+            pixel := 54 + sourceY * rowSize + x * 3
+            tensor[y * width + x] = float32(unsignedByte(data, pixel + 2)) / 255.0
+            tensor[plane + y * width + x] = float32(unsignedByte(data, pixel + 1)) / 255.0
+            tensor[plane * 2 + y * width + x] = float32(unsignedByte(data, pixel)) / 255.0
+        }
+    }
+    return tensor
+}
+
+func writeUpscaledBMP(path string, tensor []float32, width int, height int) bool {
+    rowSize := (width * 3 + 3) / 4 * 4
+    pixelBytes := rowSize * height
+    header := make([]byte, 54)
+    header[0] = byte(66)
+    header[1] = byte(77)
+    put32(header, 2, 54 + pixelBytes)
+    put32(header, 10, 54)
+    put32(header, 14, 40)
+    put32(header, 18, width)
+    put32(header, 22, height)
+    put16(header, 26, 1)
+    put16(header, 28, 24)
+    put32(header, 34, pixelBytes)
+
+    file := fopen(cstring(path), "wb")
+    if file == nil {
+        return false
+    }
+    fwrite(&header[0], 1, len(header), file)
+    row := make([]byte, rowSize)
+    plane := width * height
+    for outputY := 0; outputY < height; outputY++ {
+        y := height - 1 - outputY
+        for x := 0; x < width; x++ {
+            pixel := y * width + x
+            red := tensor[pixel]
+            green := tensor[plane + pixel]
+            blue := tensor[plane * 2 + pixel]
+            if red < 0 { red = 0 }
+            if red > 1 { red = 1 }
+            if green < 0 { green = 0 }
+            if green > 1 { green = 1 }
+            if blue < 0 { blue = 0 }
+            if blue > 1 { blue = 1 }
+            row[x * 3] = byte(blue * 255)
+            row[x * 3 + 1] = byte(green * 255)
+            row[x * 3 + 2] = byte(red * 255)
+        }
+        for i := width * 3; i < rowSize; i++ {
+            row[i] = 0
+        }
+        fwrite(&row[0], 1, len(row), file)
+    }
+    fclose(file)
+    return true
+}
+
+func main() int {
+    source := readBMP(inputPath)
+    if source == nil {
+        printf("Failed to read 24-bit BMP: %s\n", inputPath)
+        return 1
+    }
+    width := read32(source, 18)
+    height := read32(source, 22)
+    input := bitmapToTensor(source, width, height)
+    outputWidth := width * 4
+    outputHeight := height * 4
+    output := make([]float32, 3 * outputWidth * outputHeight)
+
+    session := upscale_init(cstring(modelPath))
+    if session == nil {
+        printf("Failed to initialize ONNX Runtime model: %s\n", modelPath)
+        return 1
+    }
+    printf("Running 4x-UltraSharp on %dx%d input...\n", width, height)
+    result := upscale_run(session, &input[0], width, height, &output[0])
+    upscale_close(session)
+    if result != 0 {
+        printf("ONNX Runtime inference failed\n")
+        return 1
+    }
+    if !writeUpscaledBMP(outputPath, output, outputWidth, outputHeight) {
+        printf("Failed to write upscaled BMP: %s\n", outputPath)
+        return 1
+    }
+    printf("Wrote %s (%dx%d)\n", outputPath, outputWidth, outputHeight)
+    return 0
+}

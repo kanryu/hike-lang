@@ -41,6 +41,11 @@ output_*.ll
 bin/*.log
 bin/*.txt
 
+# AI/ONNX example artifacts
+examples/ai_onnx/__pycache__/
+examples/ai_onnx/*.pth
+examples/ai_onnx/*.onnx
+
 # IDE & Editor files
 .vscode/
 .idea/
