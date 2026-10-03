@@ -45,6 +45,8 @@ bin/*.txt
 examples/ai_onnx/__pycache__/
 examples/ai_onnx/*.pth
 examples/ai_onnx/*.onnx
+examples/ai_onnx/onnxruntime-*.zip
+examples/ai_onnx/onnxruntime-win-*/
 
 # IDE & Editor files
 .vscode/

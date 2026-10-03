@@ -26,8 +26,7 @@ API session and tensor invocation.
 - Windows and Clang
 - Python with `torch` and `onnx`
 - `curl.exe`
-- The Windows ONNX Runtime package, including `onnxruntime_c_api.h`,
-  `onnxruntime.lib`, and `onnxruntime.dll`
+- `unzip`
 
 Install the Python packages in the environment used for export:
 
@@ -35,11 +34,13 @@ Install the Python packages in the environment used for export:
 python -m pip install torch onnx
 ```
 
-Download and extract the Windows ONNX Runtime package, then set `ORT_ROOT` to
-its directory. The Makefile defaults to:
+The Makefile downloads the official ONNX Runtime GPU package from the
+Microsoft GitHub release and extracts it into the sample directory. The
+archive contains `onnxruntime_c_api.h`, `onnxruntime.lib`, and
+`onnxruntime.dll`:
 
 ```text
-C:\local\onnxruntime-win-x64-1.20.1
+https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-win-x64-gpu_cuda12-1.30.0.zip
 ```
 
 ## Build and run
@@ -48,10 +49,9 @@ The sample includes `icon64.bmp` as its input image. Run:
 
 ```powershell
 cd examples/ai_onnx
-$env:PATH = "C:\local\onnxruntime-win-x64-1.20.1\lib;$env:PATH"
 make download
 make convert
-make run ORT_ROOT="C:/local/onnxruntime-win-x64-1.20.1"
+make run
 ```
 
 The final image is written to `icon256.bmp`. The sample expects the
