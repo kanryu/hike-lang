@@ -867,6 +867,14 @@ func (s *StmtLowerer) shouldOptimizeStringAppend(left ast.Expression) bool {
 		return false
 	}
 	name := astIDValue(ident)
+	// A captured string is shared with a closure through its heap-backed
+	// variable slot. The growth-buffer fast path mutates the backing buffer in
+	// place and can leave the closure observing the pre-append view. Keep the
+	// ordinary allocating path for escaped variables; non-captured locals still
+	// receive the optimization.
+	if s.root.escapedVars[name] {
+		return false
+	}
 	return s.root.stringMutationCounts[name] >= 3 || s.root.stringMutationInLoop[name]
 }
 
