@@ -109,7 +109,12 @@ func TestLLVMDeferFunctionUsesFatalPanicPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"@__hike_panic_fatal", "call void @__hike_panic_fatal"} {
+	for _, marker := range []string{
+		"@__hike_panic_fatal",
+		"call void @__hike_panic_fatal",
+		"call void @__hike_stderr_write",
+		"call i64 @write(i32 2",
+	} {
 		if !strings.Contains(ir, marker) {
 			t.Fatalf("LLVM IR does not contain %q:\n%s", marker, ir)
 		}
@@ -148,7 +153,13 @@ func TestLLVMWindowsDeferUsesFatalPanicPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"@__hike_panic_fatal", "call void @__hike_panic_fatal"} {
+	for _, marker := range []string{
+		"@__hike_panic_fatal",
+		"call void @__hike_panic_fatal",
+		"call void @__hike_stderr_write",
+		"call i8* @GetStdHandle(i32 -12)",
+		"call i32 @WriteFile",
+	} {
 		if !strings.Contains(ir, marker) {
 			t.Fatalf("Windows LLVM IR does not contain %q:\n%s", marker, ir)
 		}

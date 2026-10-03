@@ -126,6 +126,7 @@ func IsRuntimeSymbol(name string) bool {
 // RuntimeLLVMSymbols は各 runtime.ll 内で既に宣言・定義されているシンボル群
 var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true, "__hike_panic_fatal": true,
+	"__hike_stderr_write": true,
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
@@ -149,6 +150,11 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"CloseHandle":         true,
 	"Sleep":               true,
 	"GetTickCount64":      true,
+	"GetStdHandle":        true,
+	"WriteFile":           true,
+
+	// --- Native POSIX output API ---
+	"write": true,
 
 	// --- POSIX / WASM32 抽象スレッド同期 API (declare) ---
 	"hike_thread_spawn":  true,
