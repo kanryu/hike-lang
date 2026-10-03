@@ -451,7 +451,9 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 	}
 	if len(l.structuredStack) > 0 {
 		current := l.structuredDestination()
-		*current = append(*current, &hir.InstructionNode{Instruction: instr})
+		if current != nil {
+			*current = append(*current, &hir.InstructionNode{Instruction: instr})
+		}
 	}
 }
 
@@ -492,6 +494,9 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 	}
 	if len(l.structuredStack) > 0 {
 		current := l.structuredDestination()
+		if current == nil {
+			return
+		}
 		switch t := term.(type) {
 		case *hir.InstrReturn:
 			*current = append(*current, &hir.ReturnNode{Values: t.Vals})
@@ -608,6 +613,9 @@ func (l *Lowerer) appendExistingStructuredNode(node hir.ControlNode) {
 }
 
 func (l *Lowerer) pushStructuredBody(body *hir.ControlBody) {
+	if body == nil {
+		return
+	}
 	l.structuredStack = append(l.structuredStack, body)
 }
 
@@ -687,7 +695,13 @@ func (l *Lowerer) appendStructuredNodeTo(body *hir.ControlBody, node hir.Control
 }
 
 func (l *Lowerer) structuredDestination() *hir.ControlBody {
+	if len(l.structuredStack) == 0 {
+		return nil
+	}
 	current := l.structuredStack[len(l.structuredStack)-1]
+	if current == nil {
+		return nil
+	}
 	if idx := lastContinuationIndex(*current); idx >= 0 {
 		if last, ok := (*current)[idx].(*hir.BlockNode); ok && last.ContinuationPlaceholder {
 			return &last.Body

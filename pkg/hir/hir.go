@@ -177,11 +177,12 @@ func InstructionKey(instr Instruction) string {
 	if instr == nil {
 		return ""
 	}
-	// The textual form is not unique: every function can contain v3, v4,
-	// identical loads, and identical stores. Use the instruction identity as
-	// part of the string key while keeping the metadata map wasm-friendly
-	// (string keys rather than interface keys).
-	return fmt.Sprintf("%T@%p", instr, instr)
+	// Do not format the interface-held pointer with %p.  The self-hosted Hike
+	// formatter handles integer pointers only, so that representation traps
+	// while lowering imported packages.  Instruction strings include result
+	// registers for value-producing instructions and are sufficient for the
+	// source-location metadata map without depending on interface identity.
+	return fmt.Sprintf("%T@%s", instr, instr.String())
 }
 
 // SourceLocation identifies the Hike source location associated with a HIR

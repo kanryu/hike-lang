@@ -58,3 +58,33 @@ func TestResolvePackagePathPrefersSpecificReplacement(t *testing.T) {
 		t.Fatalf("specific replacement path = %q, want %q", got, specific)
 	}
 }
+
+func TestFindModuleRootWithoutModFileUsesStartDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	m, err := FindModuleRoot(root)
+	if err != nil {
+		t.Fatalf("FindModuleRoot without hike.mod returned error: %v", err)
+	}
+	if m.RootDir != root {
+		t.Fatalf("synthetic module root = %q, want %q", m.RootDir, root)
+	}
+	if m.Name != filepath.Base(root) {
+		t.Fatalf("synthetic module name = %q, want %q", m.Name, filepath.Base(root))
+	}
+}
+
+func TestFindModuleRootRejectsMalformedModFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hike.mod"), []byte("hike 0.1.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := FindModuleRoot(root)
+	if err == nil {
+		t.Fatal("FindModuleRoot accepted hike.mod without a module directive")
+	}
+	if m == nil || m.RootDir != root {
+		t.Fatalf("error result did not preserve module root: %#v", m)
+	}
+}

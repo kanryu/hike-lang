@@ -17,19 +17,36 @@ type Module struct {
 	RequireOrder []string          // require ディレクティブの宣言順
 }
 
+// cloneModuleString detaches persisted module metadata from scanner-backed
+// strings. The self-hosted string scanner may reuse its input buffer between
+// lines, so retaining a substring view would corrupt names and map keys on the
+// next scan.
+func cloneModuleString(value string) string {
+	buf := make([]byte, len(value))
+	for i := 0; i < len(value); i++ {
+		buf[i] = value[i]
+	}
+	return string(buf)
+}
+
 // FindModuleRoot は開始ディレクトリから親ディレクトリを遡り、hike.mod を探索してモジュール情報を構築します
 func FindModuleRoot(startDir string) (*Module, error) {
 	absDir, err := filepath.Abs(startDir)
 	if err != nil {
 		cwd, _ := os.Getwd()
-		return &Module{RootDir: cwd, Replaces: make(map[string]string), Requires: make(map[string]string)}, err
+		return newSyntheticModule(cwd), err
 	}
 
 	cur := absDir
 	for {
 		modFile := filepath.Join(cur, "hike.mod")
-		if fi, err := os.Stat(modFile); err == nil && !fi.IsDir() {
+		if fi, statErr := os.Stat(modFile); statErr == nil {
+			if fi.IsDir() {
+				return newSyntheticModule(cur), fmt.Errorf("module file is a directory: %s", modFile)
+			}
 			return parseModFile(modFile, cur)
+		} else if !os.IsNotExist(statErr) {
+			return newSyntheticModule(cur), fmt.Errorf("stat module file %s: %w", modFile, statErr)
 		}
 
 		parent := filepath.Dir(cur)
@@ -39,14 +56,19 @@ func FindModuleRoot(startDir string) (*Module, error) {
 		cur = parent
 	}
 
-	// hike.mod が見つからない場合はカレントディレクトリをルートとする仮モジュールを生成
-	cwd, _ := os.Getwd()
+	// hike.mod が見つからない場合は開始ディレクトリをルートとする
+	// 仮モジュールを生成する。これはHikeの単一ファイル利用を許可する
+	// 正常系であり、エラーにはしない。
+	return newSyntheticModule(absDir), nil
+}
+
+func newSyntheticModule(rootDir string) *Module {
 	return &Module{
-		Name:     filepath.Base(cwd),
-		RootDir:  cwd,
+		Name:     filepath.Base(rootDir),
+		RootDir:  rootDir,
 		Replaces: make(map[string]string),
 		Requires: make(map[string]string),
-	}, nil
+	}
 }
 
 func parseModFile(modPath string, rootDir string) (*Module, error) {
@@ -62,6 +84,7 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 		Requires: make(map[string]string),
 	}
 
+	hasModuleName := false
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -71,34 +94,43 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 
 		parts := strings.Fields(line)
 		if len(parts) < 2 {
+			if parts[0] == "module" {
+				return mod, fmt.Errorf("invalid module directive in %s", modPath)
+			}
 			continue
 		}
 
 		switch parts[0] {
 		case "module":
-			mod.Name = parts[1]
+			mod.Name = cloneModuleString(parts[1])
+			hasModuleName = true
 		case "hike":
-			mod.Version = parts[1]
+			mod.Version = cloneModuleString(parts[1])
 		case "require":
 			if len(parts) >= 3 {
-				if _, exists := mod.Requires[parts[1]]; !exists {
-					mod.RequireOrder = append(mod.RequireOrder, parts[1])
+				path := cloneModuleString(parts[1])
+				version := cloneModuleString(parts[2])
+				if _, exists := mod.Requires[path]; !exists {
+					mod.RequireOrder = append(mod.RequireOrder, path)
 				}
-				mod.Requires[parts[1]] = parts[2]
+				mod.Requires[path] = version
 			}
 		case "replace":
 			// 形式1: replace std/json => ../../std/json
 			// 形式2: replace std/json ../../std/json
 			if len(parts) >= 4 && parts[2] == "=>" {
-				mod.Replaces[parts[1]] = parts[3]
+				mod.Replaces[cloneModuleString(parts[1])] = cloneModuleString(parts[3])
 			} else if len(parts) >= 3 {
-				mod.Replaces[parts[1]] = parts[2]
+				mod.Replaces[cloneModuleString(parts[1])] = cloneModuleString(parts[2])
 			}
 		}
 	}
 
-	if mod.Name == "" {
-		mod.Name = filepath.Base(rootDir)
+	if err := scanner.Err(); err != nil {
+		return mod, fmt.Errorf("read module file %s: %w", modPath, err)
+	}
+	if !hasModuleName || mod.Name == "" {
+		return mod, fmt.Errorf("module directive not found in %s", modPath)
 	}
 
 	return mod, nil
@@ -166,6 +198,7 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 		if fi, err := os.Stat(modTarget); err == nil && fi.IsDir() {
 			return modTarget, nil
 		}
+
 	}
 
 	// 5. コンパイラ実行バイナリ隣接標準ライブラリ（フォールバック）

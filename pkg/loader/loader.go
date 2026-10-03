@@ -48,7 +48,10 @@ func New(rootDir string) *Loader {
 		effectiveRoot = "."
 	}
 
-	module, _ := mod.FindModuleRoot(effectiveRoot)
+	module, err := mod.FindModuleRoot(effectiveRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[loader] failed to find module root from %s: %v\n", effectiveRoot, err)
+	}
 	if module != nil && module.RootDir != "" {
 		effectiveRoot = module.RootDir
 	}
@@ -98,18 +101,91 @@ func LoadGoHikeBot(l *Loader) {
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(string(content), "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if !strings.HasPrefix(line, "GoReplace ") {
+	for _, parts := range scanGoHikeModTokens([]byte(content)) {
+		if len(parts) >= 2 && parts[0] == "module" {
+			l.module.Name = cloneLoaderString(parts[1])
 			continue
 		}
-		parts := strings.Fields(strings.TrimPrefix(line, "GoReplace "))
-		if len(parts) >= 3 && parts[1] == "=>" {
-			if _, exists := l.module.Replaces[parts[0]]; !exists {
-				l.module.Replaces[parts[0]] = parts[2]
+		if len(parts) >= 4 && parts[0] == "GoReplace" && parts[2] == "=>" {
+			key := cloneLoaderString(parts[1])
+			target := cloneLoaderString(parts[3])
+			if _, exists := l.module.Replaces[key]; !exists {
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(l.module.RootDir, target)
+				}
+				l.module.Replaces[key] = filepath.Clean(target)
 			}
 		}
 	}
+}
+
+func scanGoHikeModTokens(data []byte) [][]string {
+	lines := make([][]string, 0)
+	lineStart := 0
+	for lineStart <= len(data) {
+		lineEnd := lineStart
+		for lineEnd < len(data) && data[lineEnd] != '\n' {
+			lineEnd++
+		}
+		parts := make([]string, 0, 4)
+		tokenStart := -1
+		for i := lineStart; i <= lineEnd; i++ {
+			separator := i == lineEnd || data[i] == ' ' || data[i] == '\t' || data[i] == '\r'
+			if !separator {
+				if tokenStart < 0 {
+					tokenStart = i
+				}
+				continue
+			}
+			if tokenStart >= 0 {
+				parts = append(parts, cloneLoaderBytes(data, tokenStart, i))
+				tokenStart = -1
+			}
+		}
+		if len(parts) > 0 && parts[0] != "#" && !strings.HasPrefix(parts[0], "//") {
+			lines = append(lines, parts)
+		}
+		if lineEnd == len(data) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return lines
+}
+
+func cloneLoaderString(value string) string {
+	return cloneLoaderRange(value, 0, len(value))
+}
+
+func cloneLoaderRange(value string, start int, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(value) {
+		end = len(value)
+	}
+	if start >= end {
+		return ""
+	}
+	result := ""
+	for i := start; i < end; i++ {
+		result = result + string(value[i])
+	}
+	return result
+}
+
+func cloneLoaderBytes(value []byte, start int, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(value) {
+		end = len(value)
+	}
+	result := ""
+	for i := start; i < end; i++ {
+		result = result + string(value[i])
+	}
+	return result
 }
 
 // SetBuildTags overrides the target tags used by source-file selection.
@@ -220,14 +296,26 @@ func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 		}
 		for _, imp := range fileProg.Imports {
 			if l.module == nil {
+				if l.goHikeMode {
+					return nil, fmt.Errorf("cannot resolve import %q from %s: module information is unavailable", imp.Path, fileDir)
+				}
 				continue
 			}
 			pkgDir, err := l.module.ResolvePackagePath(fileDir, imp.Path)
-			if err == nil && pkgDir != "" && !l.visitedPkgs[pkgDir] {
+			if err != nil {
+				if l.goHikeMode {
+					return nil, fmt.Errorf("cannot resolve import %q from %s: %w", imp.Path, fileDir, err)
+				}
+				continue
+			}
+			if pkgDir != "" && !l.visitedPkgs[pkgDir] {
 				l.visitedPkgs[pkgDir] = true
 				hikeFiles, err := l.findHikeFilesInDir(pkgDir)
 				if err != nil {
 					return nil, err
+				}
+				if l.goHikeMode && len(hikeFiles) == 0 {
+					return nil, fmt.Errorf("import %q resolved to %s, but no Hike/Go source files were found", imp.Path, pkgDir)
 				}
 				fileQueue = append(fileQueue, hikeFiles...)
 			}
@@ -324,21 +412,32 @@ func (l *Loader) parseFilesAndStartImports(paths []string) ([]loadedFile, error)
 			return nil, err
 		}
 		files = append(files, loaded)
-		l.startImports(filepath.Dir(path), loaded.program.Imports)
+		if err := l.startImports(filepath.Dir(path), loaded.program.Imports); err != nil {
+			return nil, err
+		}
 	}
 	return files, nil
 }
 
-func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) {
+func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) error {
 	for _, imp := range imports {
 		if l.module == nil {
+			if l.goHikeMode {
+				return fmt.Errorf("cannot resolve import %q from %s: module information is unavailable", imp.Path, fromDir)
+			}
 			continue
 		}
 		l.mu.Lock()
 		pkgDir, err := l.module.ResolvePackagePath(fromDir, imp.Path)
 		l.mu.Unlock()
 		if err != nil || pkgDir == "" {
-			continue
+			if !l.goHikeMode {
+				continue
+			}
+			if err == nil {
+				err = fmt.Errorf("resolved package directory is empty")
+			}
+			return fmt.Errorf("cannot resolve import %q from %s: %w", imp.Path, fromDir, err)
 		}
 		pkgDir = filepath.Clean(pkgDir)
 		l.mu.Lock()
@@ -357,9 +456,14 @@ func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) {
 				job.err = err
 				return
 			}
+			if l.goHikeMode && len(files) == 0 {
+				job.err = fmt.Errorf("import package %s contains no Hike/Go source files", job.dir)
+				return
+			}
 			job.files, job.err = l.parseFilesAndStartImports(files)
 		}()
 	}
+	return nil
 }
 
 func (l *Loader) parseFile(path string) (loadedFile, error) {
@@ -459,7 +563,11 @@ func (l *Loader) ensureModuleRoot(absPath string) {
 	if l.module != nil && l.module.RootDir != "" {
 		return
 	}
-	l.module, _ = mod.FindModuleRoot(filepath.Dir(absPath))
+	module, err := mod.FindModuleRoot(filepath.Dir(absPath))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[loader] failed to find module root from %s: %v\n", filepath.Dir(absPath), err)
+	}
+	l.module = module
 	if l.module != nil {
 		l.rootDir = l.module.RootDir
 	}
