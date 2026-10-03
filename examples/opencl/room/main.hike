@@ -1,0 +1,125 @@
+package main
+
+extern func room_open() *byte
+extern func room_step(room *byte) int
+extern func room_read(room *byte, output *float32, count int) int
+extern func room_close(room *byte)
+extern func fopen(path cstring, mode cstring) *byte
+extern func fwrite(ptr *byte, size int, count int, stream *byte) int
+extern func fclose(stream *byte) int
+extern func printf(format cstring, ...) int
+
+const width = 64
+const height = 64
+const cells = 64 * 64 * 64
+const steps = 1200
+
+func put16(data []byte, offset int, value int) {
+    data[offset] = byte(value % 256)
+    data[offset + 1] = byte((value / 256) % 256)
+}
+
+func put32(data []byte, offset int, value int) {
+    data[offset] = byte(value % 256)
+    data[offset + 1] = byte((value / 256) % 256)
+    data[offset + 2] = byte((value / 65536) % 256)
+    data[offset + 3] = byte((value / 16777216) % 256)
+}
+
+func writeBitmap(path cstring, field []float32) bool {
+    rowSize := (width * 3 + 3) / 4 * 4
+    pixelBytes := rowSize * height
+    header := make([]byte, 54)
+    header[0] = byte(66)
+    header[1] = byte(77)
+    put32(header, 2, 54 + pixelBytes)
+    put32(header, 10, 54)
+    put32(header, 14, 40)
+    put32(header, 18, width)
+    put32(header, 22, height)
+    put16(header, 26, 1)
+    put16(header, 28, 24)
+    put32(header, 34, pixelBytes)
+
+    file := fopen(path, "wb")
+    if file == nil {
+        return false
+    }
+    fwrite(&header[0], 1, len(header), file)
+
+    // The Y-Z plane at X=32 contains the air conditioner and +Y jet.
+    row := make([]byte, rowSize)
+    for outputZ := 0; outputZ < height; outputZ++ {
+        // BMP stores rows bottom-up, so this order keeps the floor at the
+        // bottom of the displayed image and the ceiling at the top.
+        z := outputZ
+        for y := 0; y < width; y++ {
+            temperature := field[(z * width + y) * width + width / 2]
+            if temperature < 0 {
+                temperature = 0
+            }
+            if temperature > 1 {
+                temperature = 1
+            }
+            row[y * 3] = byte((1 - temperature) * 255)
+            row[y * 3 + 1] = 0
+            row[y * 3 + 2] = byte(temperature * 255)
+        }
+        for i := width * 3; i < rowSize; i++ {
+            row[i] = 0
+        }
+        fwrite(&row[0], 1, len(row), file)
+    }
+    fclose(file)
+    return true
+}
+
+func main() int {
+    room := room_open()
+    if room == nil {
+        printf("OpenCL GPU initialization failed\n")
+        return 1
+    }
+
+    field := make([]float32, cells)
+    for step := 1; step <= steps; step++ {
+        if room_step(room) != 0 {
+            printf("OpenCL simulation failed at step %d\n", step)
+            room_close(room)
+            return 1
+        }
+        if step % 100 == 0 {
+            printf("step %d/%d\n", step, steps)
+        }
+        if step % 300 == 0 {
+            if room_read(room, &field[0], cells) != 0 {
+                printf("OpenCL snapshot download failed at step %d\n", step)
+                room_close(room)
+                return 1
+            }
+            if step == 300 {
+                writeBitmap("room_yz_0300.bmp", field)
+            }
+            if step == 600 {
+                writeBitmap("room_yz_0600.bmp", field)
+            }
+            if step == 900 {
+                writeBitmap("room_yz_0900.bmp", field)
+            }
+        }
+    }
+
+    if room_read(room, &field[0], cells) != 0 {
+        printf("OpenCL result download failed\n")
+        room_close(room)
+        return 1
+    }
+    room_close(room)
+
+    if !writeBitmap("room_yz.bmp", field) {
+        printf("failed to write room_yz.bmp\n")
+        return 1
+    }
+    printf("wrote room_yz.bmp (YZ slice through the air conditioner)\n")
+    return 0
+}
