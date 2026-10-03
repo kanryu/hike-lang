@@ -302,6 +302,10 @@ if (typeof window !== 'undefined' || (typeof module !== 'undefined' && module.ex
                 // bootstrap. Browser examples do not need to render it, but
                 // the import must exist for modules that reference printf.
                 printf: () => 0,
+                __hike_js_JSPunkPanic: (ptr, length) => {
+                    const bytes = new Uint8Array(runtime.memory.buffer, Number(ptr), Number(length));
+                    console.log("panic: " + new TextDecoder().decode(bytes));
+                },
                 memcpy: (dst, src, n) => {
                     const d = new Uint8Array(runtime.memory.buffer, Number(dst), Number(n));
                     const s = new Uint8Array(runtime.memory.buffer, Number(src), Number(n));

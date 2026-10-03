@@ -513,6 +513,9 @@ func (e *Emitter) Emit() string {
 	}
 	e.prepareTypes()
 	e.b.WriteString("(module\n")
+	if e.hasPanic() && !e.hasJSPunkPanic() {
+		e.b.WriteString("  (import \"env\" \"__hike_js_JSPunkPanic\" (func $__hike_js_JSPunkPanic (param i32) (param i32)))\n")
+	}
 	if e.Concurrent && len(e.asyncSigs) > 0 {
 		e.b.WriteString("  (import \"env\" \"hike_thread_spawn\" (func $__hike_thread_spawn (param i32) (param i32) (param i32) (param i32)))\n")
 		e.b.WriteString("  (import \"env\" \"hike_thread_pump\" (func $__hike_thread_pump))\n")
@@ -611,6 +614,26 @@ func (e *Emitter) Emit() string {
 	}
 	e.b.WriteString(")\n")
 	return e.b.String()
+}
+
+func (e *Emitter) hasPanic() bool {
+	for _, fn := range e.p.Functions {
+		for _, bb := range e.blocksForEmission(fn) {
+			if _, ok := bb.Terminator.(*hir.InstrPanic); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *Emitter) hasJSPunkPanic() bool {
+	for _, fn := range e.p.Functions {
+		if fn.IsExtern && fn.Name == "__hike_js_JSPunkPanic" {
+			return true
+		}
+	}
+	return false
 }
 
 // emitFunctionsBuffered gives every source file its own WAT buffer. Function

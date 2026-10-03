@@ -140,6 +140,17 @@ entry:
 }
 define internal void @__hike_panic_fatal(i32 %site) {
 entry:
+	%panic = load { i32, i8* }, { i32, i8* }* @__hike_panic_value
+	%data = extractvalue { i32, i8* } %panic, 1
+	%string = bitcast i8* %data to { i8*, i32, i32 }*
+	%base_ptr = getelementptr { i8*, i32, i32 }, { i8*, i32, i32 }* %string, i32 0, i32 0
+	%offset_ptr = getelementptr { i8*, i32, i32 }, { i8*, i32, i32 }* %string, i32 0, i32 1
+	%length_ptr = getelementptr { i8*, i32, i32 }, { i8*, i32, i32 }* %string, i32 0, i32 2
+	%base = load i8*, i8** %base_ptr
+	%offset = load i32, i32* %offset_ptr
+	%length = load i32, i32* %length_ptr
+	%start = call i8* @__hike_string_start32(i8* %base, i32 %offset)
+	call void @__hike_js_JSPunkPanic(i8* %start, i32 %length)
   call void @llvm.trap()
   unreachable
 }

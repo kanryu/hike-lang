@@ -258,6 +258,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "wasm-checker: define printf bridge: %v\n", err)
 		os.Exit(1)
 	}
+	if err := linker.DefineFunc(store, "env", "__hike_js_JSPunkPanic", func(caller *wasmtime.Caller, ptr, length int32) {
+		memoryExtern := caller.GetExport("memory")
+		if memoryExtern == nil || memoryExtern.Memory() == nil {
+			return
+		}
+		data := memoryExtern.Memory().UnsafeData(caller)
+		start, end := int(ptr), int(ptr)+int(length)
+		if start < 0 || end < start || end > len(data) {
+			return
+		}
+		fmt.Printf("panic: %s\n", string(data[start:end]))
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm-checker: define panic bridge: %v\n", err)
+		os.Exit(1)
+	}
 	if err := linker.DefineFunc(store, "env", "__hike_js_wasm_hikec_publish_wat", func(caller *wasmtime.Caller, watPtr int32) int32 {
 		generatedWAT = readCallerString(caller, watPtr)
 		return int32(len(generatedWAT))

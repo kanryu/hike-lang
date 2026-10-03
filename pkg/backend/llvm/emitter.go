@@ -167,10 +167,23 @@ func (e *Emitter) collectUserSymbols() {
 	}
 }
 
+func (e *Emitter) hasJSPunkPanic() bool {
+	for _, fn := range e.prog.Functions {
+		if fn.IsExtern && fn.Name == "__hike_js_JSPunkPanic" {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Emitter) emitPrologue() {
 	e.b.WriteString(fmt.Sprintf("; ModuleID = '%s'\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("source_filename = \"%s.hike\"\n", e.prog.ModuleName))
 	e.b.WriteString(fmt.Sprintf("target triple = \"%s\"\n\n", e.targetTriple))
+	if e.isWasmTarget() && !e.hasJSPunkPanic() {
+		// wasm32 panic reporting is supplied by the host JavaScript runtime.
+		e.b.WriteString("declare void @__hike_js_JSPunkPanic(i8*, i32)\n\n")
+	}
 	if e.debugMgr.Enabled() && !e.debugMgr.LineTablesOnly() {
 		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 	}
@@ -392,15 +405,19 @@ func (e *Emitter) emitFunctions() {
 	}
 
 	for fnID, fn := range e.prog.Functions {
+		logger.LogVerbose2("[Verbose2] LLVM emit HIR function begin index=%d/%d name=%s extern=%t\n", fnID, len(e.prog.Functions), fn.Name, fn.IsExtern)
 		if fn.IsExtern {
 			if llvmIntrinsicName(fn.Name) != "" {
+				logger.LogVerbose2("[Verbose2] LLVM emit HIR function skip name=%s reason=llvm-intrinsic\n", fn.Name)
 				continue
 			}
 			if e.declaredSymbols[fn.Name] {
+				logger.LogVerbose2("[Verbose2] LLVM emit HIR function skip name=%s reason=declared\n", fn.Name)
 				continue
 			}
 
 			if fn.IsCFunc && fn.CFuncTarget != "" && !referencedExterns[fn.Name] && !referencedExterns[fn.CFuncTarget] {
+				logger.LogVerbose2("[Verbose2] LLVM emit HIR function skip name=%s reason=unreferenced-extern\n", fn.Name)
 				continue
 			}
 
@@ -428,6 +445,7 @@ func (e *Emitter) emitFunctions() {
 				paramTypes = append(paramTypes, "...")
 			}
 			e.b.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retTypeStr, fn.Name, strings.Join(paramTypes, ", ")))
+			logger.LogVerbose2("[Verbose2] LLVM emit HIR function end index=%d/%d name=%s mode=declaration\n", fnID, len(e.prog.Functions), fn.Name)
 			continue
 		}
 
@@ -436,12 +454,15 @@ func (e *Emitter) emitFunctions() {
 			// under one IR name more than once. LLVM rejects duplicate definitions;
 			// retain the first definition until receiver-name mangling is fully
 			// canonicalized.
+			logger.LogVerbose2("[Verbose2] LLVM emit HIR function skip name=%s reason=duplicate-symbol\n", fn.Name)
 			continue
 		}
 		definedSymbols[fn.Name] = true
 		e.declaredSymbols[fn.Name] = true
 		if !e.compileFork {
+			logger.LogVerbose2("[Verbose2] LLVM emit HIR function body begin index=%d/%d name=%s\n", fnID, len(e.prog.Functions), fn.Name)
 			e.emitFunction(fn, fnID)
+			logger.LogVerbose2("[Verbose2] LLVM emit HIR function end index=%d/%d name=%s\n", fnID, len(e.prog.Functions), fn.Name)
 			continue
 		}
 		unit := fn.Location.Filename

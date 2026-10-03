@@ -160,8 +160,18 @@ var wasmRuntime = map[string]runtimeFunc{
     (global.get $__panic_site))`},
 	"__hike_panic_is_active": runtimeFunc{body: `(func $__hike_panic_is_active (result i32)
     (global.get $__panic_active))`},
-	"__hike_panic_fatal": runtimeFunc{deps: []string{"llvm.trap"}, body: `(func $__hike_panic_fatal (param $site i32)
-    ;; The site ID remains available through $__panic_site for host diagnostics.
+	"__hike_panic_fatal": runtimeFunc{deps: []string{"__hike_string_start", "llvm.trap"}, body: `(func $__hike_panic_fatal (param $site i32)
+    ;; Panic values currently use the string descriptor as their payload.  Let
+    ;; the host-side JS function print it before terminating the module.
+    (local $record i32) (local $data i32) (local $base i32)
+    (local $offset i32) (local $length i32) (local $start i32)
+    (local.set $record (global.get $__panic_value))
+    (local.set $data (i32.load (i32.add (local.get $record) (i32.const 4))))
+    (local.set $base (i32.load (local.get $data)))
+    (local.set $offset (i32.load (i32.add (local.get $data) (i32.const 4))))
+    (local.set $length (i32.load (i32.add (local.get $data) (i32.const 8))))
+    (local.set $start (call $__hike_string_start (local.get $base) (local.get $offset)))
+	    (call $__hike_js_JSPunkPanic (local.get $start) (local.get $length))
     (call $llvm.trap))`},
 	"malloc": runtimeFunc{body: `(func $malloc (param $n i32) (result i32)
     (local $p i32) (local $next i32) (local $pages i32)
