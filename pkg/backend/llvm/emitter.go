@@ -1591,74 +1591,104 @@ func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
 func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	e.renderedTypes[i.Dst.String()] = i.Dst.Typ.LLVMType()
 	typ := i.L.Type()
-	isFloat := (typ == sema.TypeFloat64 || typ == sema.TypeFloat32)
+	if isAggregateBinaryType(typ) {
+		e.emitAggregateBinary(i)
+		return
+	}
+	if typ == sema.TypeFloat64 || typ == sema.TypeFloat32 {
+		e.emitFloatBinary(i)
+		return
+	}
+	if i.Op == hir.OpShl || i.Op == hir.OpShr {
+		e.emitShiftBinary(i)
+		return
+	}
+	e.emitIntegerBinary(i)
+}
+
+func (e *Emitter) emitAggregateBinary(i *hir.InstrBinary) {
+	typ := i.L.Type()
+	if i.Op != hir.OpEq && i.Op != hir.OpNeq {
+		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, typ.LLVMType()))
+	}
+	result := e.emitAggregateEquality(typ, e.formatVal(i.L), e.formatVal(i.R))
+	if i.Op == hir.OpNeq {
+		negated := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", negated, result))
+		result = negated
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = select i1 true, i1 %s, i1 false\n", i.Dst, result))
+}
+
+func (e *Emitter) emitFloatBinary(i *hir.InstrBinary) {
+	typ := i.L.Type()
+	llvmT := typ.LLVMType()
+	var opStr string
+	switch i.Op {
+	case hir.OpAdd:
+		opStr = "fadd"
+	case hir.OpSub:
+		opStr = "fsub"
+	case hir.OpMul:
+		opStr = "fmul"
+	case hir.OpDiv:
+		opStr = "fdiv"
+	case hir.OpEq:
+		opStr = "fcmp oeq"
+	case hir.OpNeq:
+		opStr = "fcmp one"
+	case hir.OpLt:
+		opStr = "fcmp olt"
+	case hir.OpLe:
+		opStr = "fcmp ole"
+	case hir.OpGt:
+		opStr = "fcmp ogt"
+	case hir.OpGe:
+		opStr = "fcmp oge"
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", i.Dst, opStr, llvmT, e.formatVal(i.L), e.formatVal(i.R)))
+}
+
+func (e *Emitter) emitShiftBinary(i *hir.InstrBinary) {
+	if !isShiftIntegerType(i.L.Type()) {
+		panic(fmt.Sprintf("[Emitter Panic] shift requires an integer operand, got '%s'", i.L.Type().LLVMType()))
+	}
+	if i.R == nil || !isShiftIntegerType(i.R.Type()) {
+		var rhsType string
+		if i.R != nil && i.R.Type() != nil {
+			rhsType = i.R.Type().LLVMType()
+		}
+		panic(fmt.Sprintf("[Emitter Panic] shift count requires an integer operand, got '%s'", rhsType))
+	}
+	// A literal shift count is represented as the default signed integer type,
+	// but its signedness must not affect the direction of the shift. For a
+	// non-literal count, retain the mixed-operand rule used by the other integer
+	// operations.
+	unsignedOperands := isUnsignedIntegerType(i.L.Type()) &&
+		(isUnsignedIntegerType(i.R.Type()) || isIntegerLiteral(i.R))
+	e.emitIntegerBinaryWithUnsignedOperands(i,
+		unsignedOperands)
+}
+
+func isIntegerLiteral(v hir.Value) bool {
+	_, ok := v.(*hir.ConstInt)
+	return ok
+}
+
+func (e *Emitter) emitIntegerBinary(i *hir.InstrBinary) {
+	e.emitIntegerBinaryWithUnsignedOperands(i,
+		isUnsignedIntegerType(i.L.Type()) && isUnsignedIntegerType(i.R.Type()))
+}
+
+func (e *Emitter) emitIntegerBinaryWithUnsignedOperands(i *hir.InstrBinary, unsignedOperands bool) {
+	typ := i.L.Type()
 	llvmT := typ.LLVMType()
 	lVal := e.formatVal(i.L)
 	rVal := e.formatVal(i.R)
-	if isAggregateBinaryType(typ) {
-		if i.Op == hir.OpEq || i.Op == hir.OpNeq {
-			result := e.emitAggregateEquality(typ, lVal, rVal)
-			if i.Op == hir.OpNeq {
-				negated := e.nextTmp()
-				e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", negated, result))
-				result = negated
-			}
-			e.b.WriteString(fmt.Sprintf("  %s = select i1 true, i1 %s, i1 false\n", i.Dst, result))
-			return
-		}
-		// Aggregate arithmetic is not an LLVM operation. Go-Hike compatibility
-		// Do not silently turn unsupported aggregate arithmetic into a value
-		// preserving select. That produces valid-looking but incorrect IR.
-		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, llvmT))
-	}
-
-	if i.Op == hir.OpShl || i.Op == hir.OpShr {
-		if isFloat || !isShiftIntegerType(typ) {
-			panic(fmt.Sprintf("[Emitter Panic] shift requires an integer operand, got '%s'", llvmT))
-		}
-		if i.R == nil || !isShiftIntegerType(i.R.Type()) {
-			panic(fmt.Sprintf("[Emitter Panic] shift count requires an integer operand, got '%s'", i.R.Type().LLVMType()))
-		}
-	}
-
-	if isFloat {
-		var opStr string
-		switch i.Op {
-		case hir.OpAdd:
-			opStr = "fadd"
-		case hir.OpSub:
-			opStr = "fsub"
-		case hir.OpMul:
-			opStr = "fmul"
-		case hir.OpDiv:
-			opStr = "fdiv"
-		case hir.OpEq:
-			opStr = "fcmp oeq"
-		case hir.OpNeq:
-			opStr = "fcmp one"
-		case hir.OpLt:
-			opStr = "fcmp olt"
-		case hir.OpLe:
-			opStr = "fcmp ole"
-		case hir.OpGt:
-			opStr = "fcmp ogt"
-		case hir.OpGe:
-			opStr = "fcmp oge"
-		}
-		e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", i.Dst, opStr, llvmT, lVal, rVal))
-		return
-	}
-
 	// LLVM has separate arithmetic right shift (ashr) and logical right shift
 	// (lshr) instructions.  Keep the signedness of the Hike integer type when
 	// selecting the instruction; treating every integer as signed corrupts
 	// high-bit values of uint/byte/uintptr.
-	// An operation is unsigned only when both operands are unsigned.  Using
-	// the left operand alone makes mixed expressions such as uint32 + int32
-	// select the wrong division, remainder, comparison, or right-shift
-	// instruction after operand coercion.
-	unsignedOperands := isUnsignedIntegerType(i.L.Type()) && isUnsignedIntegerType(i.R.Type())
-
 	var opStr string
 	switch i.Op {
 	case hir.OpAdd:
