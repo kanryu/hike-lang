@@ -41,3 +41,29 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// Substring views may contain embedded NUL bytes. Concatenating two such
+// views must preserve their explicit lengths instead of deriving the result
+// length with strlen.
+func TestStrings_Primitive_SubstringConcatPreservesLength(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...)
+
+func main() int {
+    bytes := []byte{'A', 0, 'B', 'C', 0, 'D'}
+    source := string(bytes)
+    left := source[0:3]
+    right := source[3:6]
+    joined := left + right
+    printf("LEN=%d,B0=%d,B1=%d,B2=%d,B3=%d,B4=%d,B5=%d\n",
+        len(joined), joined[0], joined[1], joined[2], joined[3], joined[4], joined[5])
+    return 0
+}
+`,
+		ExpectedOut:  "LEN=6,B0=65,B1=0,B2=66,B3=67,B4=0,B5=68",
+		ExpectedExit: 0,
+	})
+}
