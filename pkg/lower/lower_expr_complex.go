@@ -937,7 +937,7 @@ func (e *ExprLowerer) LowerBinaryExpr(node *ast.BinaryExpr) hir.Value {
 			raw := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 			e.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: e.root.BuiltinName("hike_strcat_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
 			length := e.root.nextReg(sema.TypeInt)
-			e.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+			e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpAdd, L: leftLen, R: rightLen})
 			return e.root.makeString(raw, length)
 		}
 		if node.Operator == "==" || node.Operator == "!=" {
