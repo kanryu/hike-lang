@@ -206,21 +206,23 @@ func (c *Compiler) Reporter() *diag.Reporter {
 }
 
 // safeExecute は各コンパイルフェーズを安全に実行し、パニックが発生した場合も捕捉してエラー情報へ正規化する
-func (c *Compiler) safeExecute(defaultFile string, fn func() error) error {
+func (c *Compiler) safeExecute(defaultFile string, fn func() error) (err error) {
 	c.traceVV("phase begin " + defaultFile)
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("%v\n%s", r, debug.Stack())
 			c.traceVV("phase panic")
 			c.reporter.Add(diag.ParseDiagnostic(defaultFile, msg))
+			err = fmt.Errorf("%s", msg)
 		}
 		c.traceVV("phase end " + defaultFile)
 	}()
 
-	if err := fn(); err != nil {
+	if err = fn(); err != nil {
 		_ = os.WriteFile(".tmp-hikec-vv-error.log", []byte(err.Error()+"\n"), 0644)
 		c.traceVV("phase returned error")
 		c.reporter.AddRaw(defaultFile, err.Error())
+		return err
 	}
 	return nil
 }
@@ -256,7 +258,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	var hirProg *hir.Program
 
 	// 1. パッケージ探索・構文解析フェーズ
-	_ = c.safeExecute(primaryFile+" [load]", func() error {
+	if err := c.safeExecute(primaryFile+" [load]", func() error {
 		ld := loader.New(rootDir)
 		ld.SetTarget(c.target)
 		ld.SetVerbose(c.verbose)
@@ -266,13 +268,24 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		if err != nil {
 			return err
 		}
+		if p == nil {
+			return fmt.Errorf("loader returned nil program")
+		}
 		rawProg = p
 		c.traceVV(fmt.Sprintf("load result decls=%d imports=%d", len(p.Decls), len(p.Imports)))
 		logFunctionInventory("AST", astFunctionNames(p))
 		return nil
-	})
+	}); err != nil {
+		c.traceVV("CompileToHIR failed stage=load")
+		return nil, nil, nil, err
+	}
 	if c.reporter.HasErrors() {
 		c.traceVV("CompileToHIR failed stage=load")
+		return nil, nil, nil, c.reporter
+	}
+	if rawProg == nil {
+		c.traceVV("CompileToHIR failed stage=load: nil program")
+		c.reporter.AddRaw(primaryFile+" [load]", "loader returned a nil program")
 		return nil, nil, nil, c.reporter
 	}
 	if c.target != nil && c.target.IsWasm && c.wasmMode != "concurrent" {
@@ -284,21 +297,24 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 	}
 
 	// 2. 意味解析・型検査フェーズ
-	_ = c.safeExecute(primaryFile+" [sema]", func() error {
+	if err := c.safeExecute(primaryFile+" [sema]", func() error {
 		ctx, err := sema.AnalyzeWithReporterModes(rawProg, c.reporter, primaryFile, c.regionMode, c.goHikeMode)
 		if err != nil {
 			return err
 		}
 		semaCtx = ctx
 		return nil
-	})
+	}); err != nil {
+		c.traceVV("CompileToHIR failed stage=sema")
+		return nil, nil, nil, err
+	}
 	if c.reporter.HasErrors() {
 		c.traceVV("CompileToHIR failed stage=sema")
 		return nil, nil, nil, c.reporter
 	}
 
 	// 3. ジェネリクス単相化フェーズ
-	_ = c.safeExecute(primaryFile+" [transform]", func() error {
+	if err := c.safeExecute(primaryFile+" [transform]", func() error {
 		tf := transform.New(rawProg, semaCtx)
 		p, err := tf.Transform()
 		if err != nil {
@@ -309,14 +325,17 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		}
 		concreteProg = p
 		return nil
-	})
+	}); err != nil {
+		c.traceVV("CompileToHIR failed stage=transform")
+		return nil, nil, nil, err
+	}
 	if c.reporter.HasErrors() {
 		c.traceVV("CompileToHIR failed stage=transform")
 		return nil, nil, nil, c.reporter
 	}
 
 	// 4. HIR への Lowering フェーズ
-	_ = c.safeExecute(primaryFile+" [lower]", func() error {
+	if err := c.safeExecute(primaryFile+" [lower]", func() error {
 		is32Bit := (c.target != nil && (c.target.PointerBits == 32 || c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
@@ -325,7 +344,10 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 		hirProg = lw.Lower()
 		logFunctionInventory("HIR", hirFunctionNames(hirProg))
 		return nil
-	})
+	}); err != nil {
+		c.traceVV("CompileToHIR failed stage=lower")
+		return nil, nil, nil, err
+	}
 	if c.reporter.HasErrors() {
 		c.traceVV("CompileToHIR failed stage=lower")
 		return nil, nil, nil, c.reporter
@@ -351,7 +373,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	}
 	primaryFile := entryPaths[0]
 	var llvmIR string
-	_ = c.safeExecute(primaryFile, func() error {
+	if err := c.safeExecute(primaryFile, func() error {
 		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
 		emitter.SetCompileFork(c.compileFork)
 		if c.target != nil {
@@ -360,7 +382,10 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 		emitter.SetLineTablesOnly(c.lineTablesOnly)
 		llvmIR = emitter.Emit()
 		return nil
-	})
+	}); err != nil {
+		c.traceVV("CompileToLLVM failed stage=llvm_emit")
+		return "", nil, nil, err
+	}
 	if c.reporter.HasErrors() {
 		c.traceVV("CompileToLLVM failed stage=llvm_emit")
 		return "", nil, nil, c.reporter
@@ -453,14 +478,17 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 
 	// 1. Sema フェーズ (エラーが出ても最後まで回す)
 	var semaCtx *sema.Context
-	_ = c.safeExecute(filename, func() error {
+	if err := c.safeExecute(filename, func() error {
 		ctx, err := sema.AnalyzeWithReporterModes(prog, c.reporter, filename, c.regionMode, c.goHikeMode)
 		if err != nil {
 			return err
 		}
 		semaCtx = ctx
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return err
+	}
 	if c.reporter.HasErrors() {
 		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
 		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
@@ -468,7 +496,7 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 
 	// 2. Transform フェーズ
 	var concreteProg *ast.Program
-	_ = c.safeExecute(filename, func() error {
+	if err := c.safeExecute(filename, func() error {
 		tf := transform.New(prog, semaCtx)
 		p, err := tf.Transform()
 		if err != nil {
@@ -479,7 +507,10 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 		}
 		concreteProg = p
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return err
+	}
 	if c.reporter.HasErrors() {
 		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
 		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
@@ -491,24 +522,30 @@ func (c *Compiler) CompileProgram(prog *ast.Program, filename string) error {
 	if c.target != nil {
 		targetTriple = c.target.Triple
 	}
-	_ = c.safeExecute(filename, func() error {
+	if err := c.safeExecute(filename, func() error {
 		is32Bit := (c.target != nil && (c.target.PointerBits == 32 || c.target.IsWasm || sema.PointerSize == 4 || strings.HasPrefix(targetTriple, "wasm32")))
 		lw := lower.New(concreteProg, semaCtx)
 		lw.Set32Bit(is32Bit)
 		lw.SetRegionMode(c.regionMode)
 		hirProg = lw.Lower()
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return err
+	}
 	if c.reporter.HasErrors() {
 		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
 		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())
 	}
 
-	_ = c.safeExecute(filename, func() error {
+	if err := c.safeExecute(filename, func() error {
 		emitter := wabt.New(hirProg, semaCtx)
 		_ = emitter.Emit()
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
+		return err
+	}
 	if c.reporter.HasErrors() {
 		fmt.Fprintln(os.Stderr, c.reporter.FormatAll())
 		return fmt.Errorf("compilation failed with %d error(s)", c.reporter.ErrorCount())

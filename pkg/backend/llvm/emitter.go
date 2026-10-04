@@ -1591,6 +1591,24 @@ func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
 func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	e.renderedTypes[i.Dst.String()] = i.Dst.Typ.LLVMType()
 	typ := i.L.Type()
+	if i.Op == hir.OpEq || i.Op == hir.OpNeq {
+		if leftIface, ok := typ.(*sema.InterfaceType); ok {
+			if _, rightInteger := i.R.(*hir.ConstInt); rightInteger {
+				e.emitInterfaceIntegerBinary(i, leftIface, i.R.(*hir.ConstInt))
+				return
+			}
+			if _, rightPointer := i.R.Type().(*sema.PointerType); rightPointer {
+				e.emitInterfacePointerBinary(i, leftIface, i.R, true)
+				return
+			}
+		}
+		if _, leftPointer := typ.(*sema.PointerType); leftPointer {
+			if rightIface, ok := i.R.Type().(*sema.InterfaceType); ok {
+				e.emitInterfacePointerBinary(i, rightIface, i.L, false)
+				return
+			}
+		}
+	}
 	if isStringBinaryType(typ) {
 		e.emitStringBinary(i)
 		return
@@ -1619,11 +1637,77 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 		e.emitFloatBinary(i)
 		return
 	}
+	if _, isPointer := typ.(*sema.PointerType); isPointer {
+		e.emitPointerBinary(i)
+		return
+	}
 	if i.Op == hir.OpShl || i.Op == hir.OpShr {
 		e.emitShiftBinary(i)
 		return
 	}
 	e.emitIntegerBinary(i)
+}
+
+func (e *Emitter) emitInterfaceIntegerBinary(i *hir.InstrBinary, iface *sema.InterfaceType, value *hir.ConstInt) {
+	dataIndex := 0
+	if sema.InterfaceType_IsAny(iface) {
+		dataIndex = 1
+	}
+	data := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n",
+		data, iface.LLVMType(), e.formatVal(i.L), dataIndex))
+	literal := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %d to i8*\n", literal, value.Val))
+	op := "eq"
+	if i.Op == hir.OpNeq {
+		op = "ne"
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = icmp %s i8* %s, %s\n", i.Dst, op, data, literal))
+}
+
+// emitInterfacePointerBinary compares the data pointer carried by an
+// interface with a concrete pointer value. The interface and concrete value
+// are different HIR types, so treating both operands as the interface
+// aggregate would emit extractvalue against the concrete pointer.
+func (e *Emitter) emitInterfacePointerBinary(i *hir.InstrBinary, iface *sema.InterfaceType, pointer hir.Value, interfaceOnLeft bool) {
+	interfaceValue := i.L
+	if !interfaceOnLeft {
+		interfaceValue = i.R
+	}
+	dataIndex := 0
+	if sema.InterfaceType_IsAny(iface) {
+		dataIndex = 1
+	}
+	data := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n",
+		data, iface.LLVMType(), e.formatVal(interfaceValue), dataIndex))
+
+	pointerValue := e.formatBinaryOperand(pointer, pointer.Type())
+	pointerLLVM := sema.LLVMTypeOf(pointer.Type())
+	if pointerLLVM != "i8*" {
+		cast := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast %s %s to i8*\n", cast, pointerLLVM, pointerValue))
+		pointerValue = cast
+	}
+
+	op := "eq"
+	if i.Op == hir.OpNeq {
+		op = "ne"
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = icmp %s i8* %s, %s\n", i.Dst, op, data, pointerValue))
+}
+
+func (e *Emitter) emitPointerBinary(i *hir.InstrBinary) {
+	if i.Op != hir.OpEq && i.Op != hir.OpNeq {
+		panic(fmt.Sprintf("[Emitter Panic] unsupported pointer binary operation '%s' for '%s'", i.Op, i.L.Type().LLVMType()))
+	}
+	typ := i.L.Type().LLVMType()
+	op := "eq"
+	if i.Op == hir.OpNeq {
+		op = "ne"
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = icmp %s %s %s, %s\n",
+		i.Dst, op, typ, e.formatVal(i.L), e.formatBinaryOperand(i.R, i.L.Type())))
 }
 
 func isStringBinaryType(typ sema.Type) bool {
@@ -1799,7 +1883,7 @@ func (e *Emitter) emitIntegerBinaryWithUnsignedOperands(i *hir.InstrBinary, unsi
 	typ := i.L.Type()
 	llvmT := typ.LLVMType()
 	lVal := e.formatVal(i.L)
-	rVal := e.formatVal(i.R)
+	rVal := e.formatBinaryOperand(i.R, typ)
 	// LLVM has separate arithmetic right shift (ashr) and logical right shift
 	// (lshr) instructions.  Keep the signedness of the Hike integer type when
 	// selecting the instruction; treating every integer as signed corrupts
@@ -1868,6 +1952,34 @@ func (e *Emitter) emitIntegerBinaryWithUnsignedOperands(i *hir.InstrBinary, unsi
 		}
 	}
 	e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", i.Dst, opStr, llvmT, lVal, rVal))
+}
+
+// formatBinaryOperand keeps literal operands valid for the LLVM type selected
+// by the left operand.  HIR can carry pointer-shaped semantic values whose
+// literal representation is still an integer (notably during self-hosted
+// compilation).  Printing that integer directly produces invalid IR such as
+// `icmp eq %struct.T* %lhs, 1`.
+func (e *Emitter) formatBinaryOperand(v hir.Value, target sema.Type) string {
+	if v == nil || target == nil {
+		return e.formatVal(v)
+	}
+	if _, isPointer := target.(*sema.PointerType); isPointer {
+		switch value := v.(type) {
+		case *hir.ConstInt:
+			cast := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %d to %s\n", cast, value.Val, sema.LLVMTypeOf(target)))
+			return cast
+		case *hir.ConstBool:
+			literal := "0"
+			if value.Val {
+				literal = "1"
+			}
+			cast := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = inttoptr i64 %s to %s\n", cast, literal, sema.LLVMTypeOf(target)))
+			return cast
+		}
+	}
+	return e.formatVal(v)
 }
 
 func isAggregateBinaryType(typ sema.Type) bool {

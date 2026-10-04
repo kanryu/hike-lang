@@ -198,6 +198,24 @@ func (m *Module) ResolvePackagePath(fromDir string, importPath string) (string, 
 		if fi, err := os.Stat(modTarget); err == nil && fi.IsDir() {
 			return modTarget, nil
 		}
+		// Go-Hike's standard-library replacements are rooted below std in
+		// the repository. Keep this fallback available when a self-hosted
+		// module map cannot retain a replacement key across its scanner pass.
+		stdTarget := filepath.Join(m.RootDir, "std", cleanPath)
+		if fi, err := os.Stat(stdTarget); err == nil && fi.IsDir() {
+			return stdTarget, nil
+		}
+		// cmd/hikec keeps its compatibility module two levels below the
+		// repository root. Resolve repository-local packages there as well.
+		repoRoot := filepath.Join(m.RootDir, "..", "..")
+		for _, candidate := range []string{
+			filepath.Join(repoRoot, cleanPath),
+			filepath.Join(repoRoot, "std", cleanPath),
+		} {
+			if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+				return candidate, nil
+			}
+		}
 
 	}
 

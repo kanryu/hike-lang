@@ -8,6 +8,10 @@ func (e *errorString) Error() string {
 	return e.s
 }
 
+func (e *errorString) String() string {
+	return e.s
+}
+
 func New(text string) error {
 	return &errorString{s: text}
 }

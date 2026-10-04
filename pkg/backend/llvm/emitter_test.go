@@ -464,6 +464,146 @@ func TestEmitBinaryFatTypesCoverEqualityAndInequality(t *testing.T) {
 	}
 }
 
+func TestEmitBinaryCoversPointerEqualityWithoutIntegerFallback(t *testing.T) {
+	pointerType := &sema.PointerType{
+		Base: &sema.StructType{Name: "sema_BasicType"},
+	}
+
+	for _, op := range []hir.Opcode{hir.OpEq, hir.OpNeq} {
+		t.Run(op.String(), func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  op,
+				L:   &hir.Reg{ID: 2, Typ: pointerType},
+				R:   &hir.Reg{ID: 3, Typ: pointerType},
+			})
+
+			ir := emitter.b.String()
+			want := "icmp " + map[hir.Opcode]string{
+				hir.OpEq:  "eq",
+				hir.OpNeq: "ne",
+			}[op] + " %struct.sema_BasicType* %v2, %v3"
+			if !strings.Contains(ir, want) {
+				t.Fatalf("pointer %s must use a pointer comparison, want %q: %s", op, want, ir)
+			}
+			if strings.Contains(ir, "icmp "+map[hir.Opcode]string{
+				hir.OpEq:  "eq",
+				hir.OpNeq: "ne",
+			}[op]+" i64") {
+				t.Fatalf("pointer %s was routed through an integer comparison: %s", op, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryCastsIntegerLiteralsForPointerEquality(t *testing.T) {
+	pointerType := &sema.PointerType{
+		Base: &sema.StructType{Name: "sema_BasicType"},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpNeq,
+		L:   &hir.Reg{ID: 2, Typ: pointerType},
+		R:   &hir.ConstInt{Val: 1, Typ: pointerType},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "inttoptr i64 1 to %struct.sema_BasicType*") {
+		t.Fatalf("pointer literal was not converted to a pointer: %s", ir)
+	}
+	if strings.Contains(ir, "icmp ne %struct.sema_BasicType* %v2, 1") {
+		t.Fatalf("pointer comparison still emits an integer literal: %s", ir)
+	}
+}
+
+func TestEmitBinaryComparesInterfaceAndConcretePointer(t *testing.T) {
+	interfaceType := &sema.InterfaceType{
+		Name:    "Type",
+		Methods: []sema.Method{{Name: "Marker"}},
+	}
+	pointerType := &sema.PointerType{Base: &sema.StructType{Name: "sema_BasicType"}}
+
+	for _, tt := range []struct {
+		name          string
+		left, right   hir.Value
+		interfaceLeft bool
+	}{
+		{
+			name:          "interface-left",
+			left:          &hir.Reg{ID: 2, Typ: interfaceType},
+			right:         &hir.Reg{ID: 3, Typ: pointerType},
+			interfaceLeft: true,
+		},
+		{
+			name:  "interface-right",
+			left:  &hir.Reg{ID: 2, Typ: pointerType},
+			right: &hir.Reg{ID: 3, Typ: interfaceType},
+		},
+	} {
+		for _, op := range []hir.Opcode{hir.OpEq, hir.OpNeq} {
+			t.Run(tt.name+"/"+op.String(), func(t *testing.T) {
+				emitter := &Emitter{renderedTypes: make(map[string]string)}
+				emitter.emitBinary(&hir.InstrBinary{
+					Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+					Op:  op,
+					L:   tt.left,
+					R:   tt.right,
+				})
+
+				ir := emitter.b.String()
+				if !strings.Contains(ir, "extractvalue { i8*, i8* }") {
+					t.Fatalf("interface data field was not extracted: %s", ir)
+				}
+				if !strings.Contains(ir, "bitcast %struct.sema_BasicType* ") {
+					t.Fatalf("concrete pointer was not normalized to i8*: %s", ir)
+				}
+				if !strings.Contains(ir, "icmp "+map[hir.Opcode]string{hir.OpEq: "eq", hir.OpNeq: "ne"}[op]+" i8*") {
+					t.Fatalf("mixed comparison did not compare data pointers: %s", ir)
+				}
+				if strings.Contains(ir, "extractvalue %struct.sema_BasicType*") {
+					t.Fatalf("concrete pointer was incorrectly treated as an aggregate: %s", ir)
+				}
+			})
+		}
+	}
+
+	anyType := &sema.InterfaceType{Name: "any"}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpEq,
+		L:   &hir.Reg{ID: 2, Typ: anyType},
+		R:   &hir.Reg{ID: 3, Typ: pointerType},
+	})
+	if ir := emitter.b.String(); !strings.Contains(ir, "extractvalue { i32, i8* }") {
+		t.Fatalf("any interface data field was not extracted: %s", ir)
+	}
+}
+
+func TestEmitBinaryComparesInterfaceWithPointerLiteral(t *testing.T) {
+	interfaceType := &sema.InterfaceType{
+		Name:    "Type",
+		Methods: []sema.Method{{Name: "Marker"}},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpNeq,
+		L:   &hir.Reg{ID: 2, Typ: interfaceType},
+		R:   &hir.ConstInt{Val: 1, Typ: interfaceType},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "inttoptr i64 1 to i8*") {
+		t.Fatalf("interface pointer literal was not normalized: %s", ir)
+	}
+	if strings.Contains(ir, "extractvalue { i8*, i8* } 1") {
+		t.Fatalf("pointer literal was incorrectly treated as an aggregate: %s", ir)
+	}
+}
+
 func TestHikeVariadicFunctionsUseTypedSliceABI(t *testing.T) {
 	ctx := sema.NewContext()
 	ctx.Functions["hikeVariadic"] = &sema.FuncType{

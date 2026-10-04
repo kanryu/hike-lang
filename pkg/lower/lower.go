@@ -1033,6 +1033,15 @@ func (l *Lowerer) retainStringNamed(value hir.Value, variable string) {
 	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, variable)})
 }
 
+// retainStringForAppend protects the left-hand buffer from the release that
+// __hike_string_append performs when it has to allocate a replacement.
+// This is intentionally unconditional; callers use it only for the disabled
+// automatic retain/release compatibility path.
+func (l *Lowerer) retainStringForAppend(value hir.Value) {
+	base, encodedOffset, _ := l.stringViewRawParts(value)
+	l.emit(&hir.InstrCallStatic{CalleeName: l.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, encodedOffset}, OwnershipTarget: ownershipTargetName(value), OwnershipVariable: ownershipVariableName(value, "")})
+}
+
 func (l *Lowerer) releaseString(value hir.Value) {
 	l.releaseStringNamed(value, "")
 }

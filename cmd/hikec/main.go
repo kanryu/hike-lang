@@ -63,11 +63,14 @@ func printUsage() {
 }
 
 func reportCompilationError(comp *compiler.Compiler, err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Compilation error: "+err.Error())
+		return
+	}
 	if comp != nil && comp.Reporter().HasErrors() {
 		fmt.Fprintln(os.Stderr, comp.Reporter().FormatAll())
 		return
 	}
-	fmt.Fprintf(os.Stderr, "Compilation error: %v\n", err)
 }
 
 func isGoHikeFlag(arg string) bool {
