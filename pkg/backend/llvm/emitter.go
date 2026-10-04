@@ -1672,24 +1672,61 @@ func (e *Emitter) emitStringParts(v hir.Value) (string, string) {
 	return ptr, length64
 }
 
-func (e *Emitter) emitInterfaceBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitFunctionBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitSliceBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitArrayBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitStructBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitTupleBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
-
-func (e *Emitter) emitAggregateEqualityBinary(i *hir.InstrBinary) {
-	typ := i.L.Type()
-	if i.Op != hir.OpEq && i.Op != hir.OpNeq {
-		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, typ.LLVMType()))
+func (e *Emitter) emitInterfaceBinary(i *hir.InstrBinary) {
+	typ := i.L.Type().(*sema.InterfaceType)
+	fields := []sema.Type{
+		&sema.PointerType{Base: sema.TypeByte},
+		&sema.PointerType{Base: sema.TypeByte},
 	}
-	result := e.emitAggregateEquality(typ, e.formatVal(i.L), e.formatVal(i.R))
+	if typ.IsAny() {
+		fields[0] = sema.TypeInt32
+	}
+	e.emitFatEqualityBinary(i, fields)
+}
+
+func (e *Emitter) emitFunctionBinary(i *hir.InstrBinary) {
+	e.emitFatEqualityBinary(i, []sema.Type{
+		&sema.PointerType{Base: sema.TypeByte},
+		&sema.PointerType{Base: sema.TypeByte},
+	})
+}
+
+func (e *Emitter) emitSliceBinary(i *hir.InstrBinary) {
+	e.emitFatEqualityBinary(i, []sema.Type{
+		&sema.PointerType{Base: sema.TypeByte},
+		sema.TypeInt32,
+		sema.TypeInt32,
+	})
+}
+
+func (e *Emitter) emitArrayBinary(i *hir.InstrBinary) {
+	typ := i.L.Type().(*sema.ArrayType)
+	fields := make([]sema.Type, typ.Len)
+	for index := range fields {
+		fields[index] = typ.Elem
+	}
+	e.emitFatEqualityBinary(i, fields)
+}
+
+func (e *Emitter) emitStructBinary(i *hir.InstrBinary) {
+	typ := i.L.Type().(*sema.StructType)
+	fields := make([]sema.Type, len(typ.Fields))
+	for index, field := range typ.Fields {
+		fields[index] = field.Type
+	}
+	e.emitFatEqualityBinary(i, fields)
+}
+
+func (e *Emitter) emitTupleBinary(i *hir.InstrBinary) {
+	typ := i.L.Type().(*sema.TupleType)
+	e.emitFatEqualityBinary(i, typ.Types)
+}
+
+func (e *Emitter) emitFatEqualityBinary(i *hir.InstrBinary, fields []sema.Type) {
+	if i.Op != hir.OpEq && i.Op != hir.OpNeq {
+		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, i.L.Type().LLVMType()))
+	}
+	result := e.emitAggregateFieldsEquality(i.L.Type(), e.formatVal(i.L), e.formatVal(i.R), fields)
 	if i.Op == hir.OpNeq {
 		negated := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", negated, result))
@@ -1843,10 +1880,10 @@ func isAggregateBinaryType(typ sema.Type) bool {
 	}
 }
 
-// emitAggregateEquality recursively compares the source-level fields of an
-// aggregate. Parsing LLVM type strings cannot handle named structs, arrays, or
-// nested aggregates, so the semantic type is the source of truth here.
-func (e *Emitter) emitAggregateEquality(typ sema.Type, left, right string) string {
+// emitAggregateFieldsEquality compares the explicitly supplied fields of one
+// aggregate. The callers above choose the field layout for each fat type;
+// this helper only emits the recursive field comparisons.
+func (e *Emitter) emitAggregateFieldsEquality(typ sema.Type, left, right string, fields []sema.Type) string {
 	// HIR represents a nil value for aggregate-shaped types as the untyped LLVM
 	// literal `null`. LLVM only permits `extractvalue` on an aggregate value,
 	// so materialize nil as the aggregate zero value before walking its fields.
@@ -1856,7 +1893,6 @@ func (e *Emitter) emitAggregateEquality(typ sema.Type, left, right string) strin
 	if right == "null" {
 		right = "zeroinitializer"
 	}
-	fields := aggregateTypeFields(typ)
 	if len(fields) == 0 {
 		return "true"
 	}
@@ -1868,18 +1904,7 @@ func (e *Emitter) emitAggregateEquality(typ sema.Type, left, right string) strin
 		llvmT := typ.LLVMType()
 		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", leftField, llvmT, left, index))
 		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", rightField, llvmT, right, index))
-		if isAggregateBinaryType(fieldType) {
-			comparisons = append(comparisons, e.emitAggregateEquality(fieldType, leftField, rightField))
-			continue
-		}
-
-		cmp := e.nextTmp()
-		cmpOp := "icmp eq"
-		if fieldType == sema.TypeFloat32 || fieldType == sema.TypeFloat64 {
-			cmpOp = "fcmp oeq"
-		}
-		e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", cmp, cmpOp, fieldType.LLVMType(), leftField, rightField))
-		comparisons = append(comparisons, cmp)
+		comparisons = append(comparisons, e.emitFieldEquality(fieldType, leftField, rightField))
 	}
 
 	result := comparisons[0]
@@ -1891,42 +1916,82 @@ func (e *Emitter) emitAggregateEquality(typ sema.Type, left, right string) strin
 	return result
 }
 
-func aggregateTypeFields(typ sema.Type) []sema.Type {
+func (e *Emitter) emitFieldEquality(typ sema.Type, left, right string) string {
+	if isStringBinaryType(typ) {
+		leftPtr, leftLen := e.emitStringPartsText(typ, left)
+		rightPtr, rightLen := e.emitStringPartsText(typ, right)
+		runtime, lengthType := "hike_streq_len", "i64"
+		if e.pointerBits == 32 || e.isWasmTarget() {
+			runtime, lengthType = "hike_streq_len32", "i32"
+		}
+		result := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = call i1 @%s(i8* %s, %s %s, i8* %s, %s %s)\n", result, runtime, leftPtr, lengthType, leftLen, rightPtr, lengthType, rightLen))
+		return result
+	}
+	if isAggregateBinaryType(typ) {
+		return e.emitAggregateValueEquality(typ, left, right)
+	}
+
+	result := e.nextTmp()
+	cmpOp := "icmp eq"
+	if typ == sema.TypeFloat32 || typ == sema.TypeFloat64 {
+		cmpOp = "fcmp oeq"
+	}
+	e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", result, cmpOp, typ.LLVMType(), left, right))
+	return result
+}
+
+func (e *Emitter) emitAggregateValueEquality(typ sema.Type, left, right string) string {
 	switch t := typ.(type) {
 	case *sema.InterfaceType:
+		fields := []sema.Type{
+			&sema.PointerType{Base: sema.TypeByte},
+			&sema.PointerType{Base: sema.TypeByte},
+		}
 		if t.IsAny() {
-			return []sema.Type{sema.TypeInt32, &sema.PointerType{Base: sema.TypeByte}}
+			fields[0] = sema.TypeInt32
 		}
-		return []sema.Type{
-			&sema.PointerType{Base: sema.TypeByte},
-			&sema.PointerType{Base: sema.TypeByte},
-		}
+		return e.emitAggregateFieldsEquality(typ, left, right, fields)
 	case *sema.FuncType:
-		return []sema.Type{
+		return e.emitAggregateFieldsEquality(typ, left, right, []sema.Type{
 			&sema.PointerType{Base: sema.TypeByte},
 			&sema.PointerType{Base: sema.TypeByte},
-		}
+		})
 	case *sema.SliceType:
-		return []sema.Type{
+		return e.emitAggregateFieldsEquality(typ, left, right, []sema.Type{
 			&sema.PointerType{Base: sema.TypeByte}, sema.TypeInt32, sema.TypeInt32,
-		}
+		})
 	case *sema.ArrayType:
 		fields := make([]sema.Type, t.Len)
 		for index := range fields {
 			fields[index] = t.Elem
 		}
-		return fields
+		return e.emitAggregateFieldsEquality(typ, left, right, fields)
 	case *sema.StructType:
 		fields := make([]sema.Type, len(t.Fields))
 		for index, field := range t.Fields {
 			fields[index] = field.Type
 		}
-		return fields
+		return e.emitAggregateFieldsEquality(typ, left, right, fields)
 	case *sema.TupleType:
-		return t.Types
+		return e.emitAggregateFieldsEquality(typ, left, right, t.Types)
 	default:
-		return nil
+		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate field type '%s'", typ.LLVMType()))
 	}
+}
+
+func (e *Emitter) emitStringPartsText(typ sema.Type, value string) (string, string) {
+	ptr := e.nextTmp()
+	length := e.nextTmp()
+	llvmT := typ.LLVMType()
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", ptr, llvmT, value))
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", length, llvmT, value))
+	if e.pointerBits == 32 || e.isWasmTarget() {
+		return ptr, length
+	}
+	length64 := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = sext i32 %s to i64\n", length64, length))
+	return ptr, length64
 }
 
 func isUnsignedIntegerType(typ sema.Type) bool {

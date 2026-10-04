@@ -264,6 +264,206 @@ func TestEmitBinaryComparesNamedAndNestedAggregates(t *testing.T) {
 	}
 }
 
+func TestEmitBinaryFatTypesUseTheirDeclaredLayouts(t *testing.T) {
+	tests := []struct {
+		name       string
+		typ        sema.Type
+		extracts   int
+		comparison string
+	}{
+		{
+			name:       "array",
+			typ:        &sema.ArrayType{Len: 3, Elem: sema.TypeInt16},
+			extracts:   6,
+			comparison: "icmp eq i16",
+		},
+		{
+			name: "struct",
+			typ: &sema.StructType{
+				Name: "Triple",
+				Fields: []sema.Field{
+					{Name: "first", Type: sema.TypeInt32},
+					{Name: "second", Type: sema.TypeFloat64},
+					{Name: "third", Type: sema.TypeByte},
+				},
+			},
+			extracts:   6,
+			comparison: "fcmp oeq double",
+		},
+		{
+			name:       "tuple",
+			typ:        &sema.TupleType{Types: []sema.Type{sema.TypeInt8, sema.TypeUint64}},
+			extracts:   4,
+			comparison: "icmp eq i64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  hir.OpEq,
+				L:   &hir.Reg{ID: 2, Typ: tt.typ},
+				R:   &hir.Reg{ID: 3, Typ: tt.typ},
+			})
+
+			ir := emitter.b.String()
+			if got := strings.Count(ir, "extractvalue "+tt.typ.LLVMType()); got != tt.extracts {
+				t.Fatalf("expected %d extracts for %s, got %d: %s", tt.extracts, tt.name, got, ir)
+			}
+			if !strings.Contains(ir, tt.comparison) {
+				t.Fatalf("missing declared-field comparison %q for %s: %s", tt.comparison, tt.name, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryNestedStringFieldUsesStringRuntime(t *testing.T) {
+	typ := &sema.StructType{
+		Name: "StringPair",
+		Fields: []sema.Field{
+			{Name: "label", Type: sema.TypeString},
+			{Name: "value", Type: sema.TypeInt32},
+		},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpEq,
+		L:   &hir.Reg{ID: 2, Typ: typ},
+		R:   &hir.Reg{ID: 3, Typ: typ},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "call i1 @hike_streq_len") {
+		t.Fatalf("nested string field must use the length-aware string runtime: %s", ir)
+	}
+	if strings.Contains(ir, "icmp eq { i8*, i32, i32 }") {
+		t.Fatalf("nested string field must not be compared as an aggregate: %s", ir)
+	}
+}
+
+func TestEmitBinaryIntegerCoversEveryOpcode(t *testing.T) {
+	tests := []struct {
+		op   hir.Opcode
+		want string
+	}{
+		{hir.OpAdd, "add i32"},
+		{hir.OpSub, "sub i32"},
+		{hir.OpMul, "mul i32"},
+		{hir.OpDiv, "sdiv i32"},
+		{hir.OpRem, "srem i32"},
+		{hir.OpAnd, "and i32"},
+		{hir.OpOr, "or i32"},
+		{hir.OpXor, "xor i32"},
+		{hir.OpShl, "shl i32"},
+		{hir.OpShr, "ashr i32"},
+		{hir.OpEq, "icmp eq i32"},
+		{hir.OpNeq, "icmp ne i32"},
+		{hir.OpLt, "icmp slt i32"},
+		{hir.OpLe, "icmp sle i32"},
+		{hir.OpGt, "icmp sgt i32"},
+		{hir.OpGe, "icmp sge i32"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.op.String(), func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeInt32},
+				Op:  tt.op,
+				L:   &hir.Reg{ID: 2, Typ: sema.TypeInt32},
+				R:   &hir.Reg{ID: 3, Typ: sema.TypeInt32},
+			})
+			if ir := emitter.b.String(); !strings.Contains(ir, tt.want) {
+				t.Fatalf("expected %q for %s: %s", tt.want, tt.op, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryFloatCoversEverySupportedOpcode(t *testing.T) {
+	tests := []struct {
+		op   hir.Opcode
+		want string
+	}{
+		{hir.OpAdd, "fadd double"},
+		{hir.OpSub, "fsub double"},
+		{hir.OpMul, "fmul double"},
+		{hir.OpDiv, "fdiv double"},
+		{hir.OpEq, "fcmp oeq double"},
+		{hir.OpNeq, "fcmp one double"},
+		{hir.OpLt, "fcmp olt double"},
+		{hir.OpLe, "fcmp ole double"},
+		{hir.OpGt, "fcmp ogt double"},
+		{hir.OpGe, "fcmp oge double"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.op.String(), func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeFloat64},
+				Op:  tt.op,
+				L:   &hir.Reg{ID: 2, Typ: sema.TypeFloat64},
+				R:   &hir.Reg{ID: 3, Typ: sema.TypeFloat64},
+			})
+			if ir := emitter.b.String(); !strings.Contains(ir, tt.want) {
+				t.Fatalf("expected %q for %s: %s", tt.want, tt.op, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryStringCoversAllComparisons(t *testing.T) {
+	for _, op := range []hir.Opcode{hir.OpEq, hir.OpNeq, hir.OpLt, hir.OpLe, hir.OpGt, hir.OpGe} {
+		t.Run(op.String(), func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  op,
+				L:   &hir.Reg{ID: 2, Typ: sema.TypeString},
+				R:   &hir.Reg{ID: 3, Typ: sema.TypeString},
+			})
+			ir := emitter.b.String()
+			if op == hir.OpEq || op == hir.OpNeq {
+				if !strings.Contains(ir, "call i1 @hike_streq_len") {
+					t.Fatalf("string equality must use hike_streq_len: %s", ir)
+				}
+			} else if !strings.Contains(ir, "call i32 @hike_strcmp_len") {
+				t.Fatalf("string ordering must use hike_strcmp_len: %s", ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryFatTypesCoverEqualityAndInequality(t *testing.T) {
+	types := []sema.Type{
+		&sema.InterfaceType{Name: "Reader", Methods: []sema.Method{{Name: "Read"}}},
+		&sema.FuncType{},
+		&sema.SliceType{Elem: sema.TypeByte},
+		&sema.ArrayType{Len: 2, Elem: sema.TypeInt32},
+		&sema.StructType{Name: "Pair", Fields: []sema.Field{{Name: "value", Type: sema.TypeInt32}}},
+		&sema.TupleType{Types: []sema.Type{sema.TypeInt32, sema.TypeByte}},
+	}
+
+	for _, op := range []hir.Opcode{hir.OpEq, hir.OpNeq} {
+		for _, typ := range types {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  op,
+				L:   &hir.Reg{ID: 2, Typ: typ},
+				R:   &hir.Reg{ID: 3, Typ: typ},
+			})
+			if ir := emitter.b.String(); !strings.Contains(ir, "select i1 true, i1") {
+				t.Fatalf("%s on %s did not produce a boolean result: %s", op, typ.TypeName(), ir)
+			}
+		}
+	}
+}
+
 func TestHikeVariadicFunctionsUseTypedSliceABI(t *testing.T) {
 	ctx := sema.NewContext()
 	ctx.Functions["hikeVariadic"] = &sema.FuncType{
