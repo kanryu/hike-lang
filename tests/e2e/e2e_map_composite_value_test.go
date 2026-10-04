@@ -225,11 +225,19 @@ func main() int {
     loaded := values["numbers"]
     if len(loaded) != 2 || loaded[0] != 10 || loaded[1] != 20 { return 1 }
     printf("MAP_SLICE=%d,%d\n", loaded[0], loaded[1])
+    for key, item := range values {
+        if key != "numbers" || len(item) != 2 || item[0] != 10 || item[1] != 20 { return 1 }
+        printf("MAP_RANGE_SLICE=%s,%d,%d\n", key, item[0], item[1])
+    }
 
     strings := make(map[string]string)
     strings["language"] = "hike"
     if strings["language"] != "hike" || strings["missing"] != "" { return 1 }
     printf("MAP_STRING=%s\n", strings["language"])
+    for key, item := range strings {
+        if key != "language" || item != "hike" { return 1 }
+        printf("MAP_RANGE_STRING=%s,%s\n", key, item)
+    }
 
     missing := make(map[string][]int)["missing"]
     if len(missing) != 0 || cap(missing) != 0 { return 1 }
@@ -240,6 +248,10 @@ func main() int {
     configs["default"] = config
     if configs["default"].Bits != 64 || configs["missing"].Bits != 0 { return 1 }
     printf("MAP_STRUCT=%d,%s\n", configs["default"].Bits, configs["default"].Name)
+    for key, item := range configs {
+        if key != "default" || item.Bits != 64 || item.Name != "native" { return 1 }
+        printf("MAP_RANGE_STRUCT=%s,%d,%s\n", key, item.Bits, item.Name)
+    }
 
     pointers := make(map[string]*Config)
     pointers["default"] = &config
@@ -257,7 +269,7 @@ func main() int {
 }
 
 `
-	const output = "MAP_SLICE=10,20\nMAP_STRING=hike\nMAP_MISSING_SLICE_GET=0,0\nMAP_STRUCT=64,native\nMAP_STRUCT_PTR=64,native\nMAP_RANGE_STRUCT_PTR=64,native"
+	const output = "MAP_SLICE=10,20\nMAP_RANGE_SLICE=numbers,10,20\nMAP_STRING=hike\nMAP_RANGE_STRING=language,hike\nMAP_MISSING_SLICE_GET=0,0\nMAP_STRUCT=64,native\nMAP_RANGE_STRUCT=default,64,native\nMAP_STRUCT_PTR=64,native\nMAP_RANGE_STRUCT_PTR=64,native"
 	for _, goHike := range []bool{false, true} {
 		name := "go"
 		if goHike {
@@ -280,6 +292,44 @@ func TestE2EMapStringKeyViews(t *testing.T) {
 			RunHikeCase(t, HikeTestCase{
 				Source: mapStringKeyViewE2ESource, GoHike: goHike,
 				ExpectedOut: output, ExpectedExit: 0,
+			})
+		})
+	}
+}
+
+func TestE2EMapStringRangePreservesKeysAndValues(t *testing.T) {
+	const source = `package main
+
+import "std/maps"
+
+func printf(format string, ...)
+
+func main() int {
+    replaces := make(map[string]string)
+    replaces["fmt"] = "../../std/fmt"
+    replaces["os"] = "../../std/os"
+
+    found := false
+    for module, target := range replaces {
+        if module == "fmt" && target == "../../std/fmt" {
+            found = true
+        }
+    }
+    if !found { return 1 }
+    printf("MAP_STRING_RANGE=%d\n", len(replaces))
+    return 0
+}
+`
+
+	for _, goHike := range []bool{false, true} {
+		name := "go"
+		if goHike {
+			name = "go-hike"
+		}
+		t.Run(name, func(t *testing.T) {
+			RunHikeCase(t, HikeTestCase{
+				Source: source, GoHike: goHike,
+				ExpectedOut: "MAP_STRING_RANGE=2\n", ExpectedExit: 0,
 			})
 		})
 	}

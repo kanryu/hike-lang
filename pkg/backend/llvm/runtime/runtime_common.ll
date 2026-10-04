@@ -1190,6 +1190,24 @@ entry:
   ret i64 %token
 }
 
+define internal i8* @__hike_map_key_ptr(i64 %token) {
+entry:
+  %raw = inttoptr i64 %token to i8*
+  %key = bitcast i8* %raw to %struct.__hike_string_key*
+  %p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  %ptr = load i8*, i8** %p
+  ret i8* %ptr
+}
+
+define internal i64 @__hike_map_key_len(i64 %token) {
+entry:
+  %raw = inttoptr i64 %token to i8*
+  %key = bitcast i8* %raw to %struct.__hike_string_key*
+  %p = getelementptr inbounds %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  %len = load i64, i64* %p
+  ret i64 %len
+}
+
 ; 文字列 FNV-1a ハッシュ算出
 define internal i64 @__hike_hash_str(i8* %key_raw) {
 entry:

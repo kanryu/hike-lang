@@ -200,10 +200,37 @@ func (l *Loader) log(msg string) {
 }
 
 func (l *Loader) Load(entryPaths ...string) (*ast.Program, error) {
+	if err := l.prepareModule(entryPaths); err != nil {
+		return nil, err
+	}
 	if l.compileFork {
 		return l.loadWithCompileFork(entryPaths...)
 	}
 	return l.loadSequential(entryPaths...)
+}
+
+// prepareModule discovers and parses hike.mod before any entry source is
+// collected. Go-Hike imports depend on GoReplace directives, so resolving the
+// first import while the replacement table is still empty causes the loader
+// to fall back to the executable directory.
+func (l *Loader) prepareModule(entryPaths []string) error {
+	if len(entryPaths) == 0 {
+		return nil
+	}
+	for _, entryPath := range entryPaths {
+		absPath, err := filepath.Abs(entryPath)
+		if err != nil {
+			return err
+		}
+		l.ensureModuleRoot(absPath)
+		if l.goHikeMode {
+			LoadGoHikeBot(l)
+		}
+		if l.module != nil && l.module.RootDir != "" {
+			return nil
+		}
+	}
+	return nil
 }
 
 func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {

@@ -735,7 +735,19 @@ func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType 
 			s.root.emit(&hir.InstrGetFieldPtr{Dst: pKey, BasePtr: curE, FieldIndex: 1, FieldName: "key"})
 			rawKey := s.root.nextReg(sema.TypeInt)
 			s.root.emit(&hir.InstrLoad{Dst: rawKey, Ptr: pKey})
-			realKey := s.root.coerceFromI64(rawKey, mp.Key)
+			var realKey hir.Value
+			if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+				// String map entries store an owned runtime key descriptor token,
+				// not the visible string pointer.  Reconstruct the Hike string
+				// from that descriptor instead of treating the token as a C string.
+				keyPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+				s.root.emit(&hir.InstrCallStatic{Dst: keyPtr, CalleeName: s.root.BuiltinName("__hike_map_key_ptr"), Args: []hir.Value{rawKey}})
+				keyLen := s.root.nextReg(sema.TypeInt)
+				s.root.emit(&hir.InstrCallStatic{Dst: keyLen, CalleeName: s.root.BuiltinName("__hike_map_key_len"), Args: []hir.Value{rawKey}})
+				realKey = s.root.makeString(keyPtr, keyLen)
+			} else {
+				realKey = s.root.coerceFromI64(rawKey, mp.Key)
+			}
 			s.root.emit(&hir.InstrStore{Val: realKey, Ptr: kPtr})
 		}
 		if vPtr != nil {
