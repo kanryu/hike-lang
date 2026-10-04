@@ -1002,6 +1002,29 @@ false:
   ret i1 false
 }
 
+define internal i32 @hike_strcmp_len32(i8* %a, i32 %alen, i8* %b, i32 %blen) #0 {
+entry:
+  %shorter = icmp ult i32 %alen, %blen
+  %n = select i1 %shorter, i32 %alen, i32 %blen
+  %res = call i32 @memcmp32(i8* %a, i8* %b, i32 %n)
+  %different = icmp ne i32 %res, 0
+  br i1 %different, label %done, label %compare_len
+compare_len:
+  %less = icmp ult i32 %alen, %blen
+  %greater = icmp ugt i32 %alen, %blen
+  br i1 %less, label %ret_less, label %check_greater
+check_greater:
+  br i1 %greater, label %ret_greater, label %ret_equal
+ret_less:
+  ret i32 -1
+ret_greater:
+  ret i32 1
+ret_equal:
+  ret i32 0
+done:
+  ret i32 %res
+}
+
 ; Length-aware concatenation for fat-string views (not NUL-terminated).
 define internal i8* @hike_strcat_len32(i8* %a, i32 %alen, i8* %b, i32 %blen) #0 {
 entry:

@@ -127,11 +127,11 @@ func TestEmitBinaryComparesAllFatPointerLayouts(t *testing.T) {
 
 func TestEmitBinaryUsesUnsignedInstructionsOnlyForUnsignedOperands(t *testing.T) {
 	tests := []struct {
-		name string
-		op   hir.Opcode
-		left sema.Type
+		name  string
+		op    hir.Opcode
+		left  sema.Type
 		right sema.Type
-		want string
+		want  string
 	}{
 		{name: "unsigned division", op: hir.OpDiv, left: sema.TypeUint32, right: sema.TypeUint32, want: "udiv"},
 		{name: "mixed division", op: hir.OpDiv, left: sema.TypeUint32, right: sema.TypeInt32, want: "sdiv"},
@@ -156,6 +156,83 @@ func TestEmitBinaryUsesUnsignedInstructionsOnlyForUnsignedOperands(t *testing.T)
 				t.Fatalf("expected %q in IR: %s", tt.want, ir)
 			}
 		})
+	}
+}
+
+func TestEmitBinaryStringOrderingUsesLengthAwareRuntime(t *testing.T) {
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpLt,
+		L:   &hir.Reg{ID: 2, Typ: sema.TypeString},
+		R:   &hir.Reg{ID: 3, Typ: sema.TypeString},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "call i32 @hike_strcmp_len") {
+		t.Fatalf("string ordering must use the length-aware comparison runtime: %s", ir)
+	}
+	if strings.Contains(ir, "icmp slt { i8*, i32, i32 }") {
+		t.Fatalf("string ordering must not compare aggregate values with icmp: %s", ir)
+	}
+}
+
+func TestEmitBinaryDispatchesEveryFatBinaryType(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  sema.Type
+	}{
+		{name: "interface", typ: &sema.InterfaceType{Name: "Reader", Methods: []sema.Method{{Name: "Read"}}}},
+		{name: "function", typ: &sema.FuncType{}},
+		{name: "slice", typ: &sema.SliceType{Elem: sema.TypeByte}},
+		{name: "array", typ: &sema.ArrayType{Len: 2, Elem: sema.TypeByte}},
+		{name: "struct", typ: &sema.StructType{Name: "Pair", Fields: []sema.Field{{Name: "value", Type: sema.TypeInt32}}}},
+		{name: "tuple", typ: &sema.TupleType{Types: []sema.Type{sema.TypeInt32, sema.TypeByte}}},
+		{name: "string", typ: sema.TypeString},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  hir.OpEq,
+				L:   &hir.Reg{ID: 2, Typ: tt.typ},
+				R:   &hir.Reg{ID: 3, Typ: tt.typ},
+			})
+
+			ir := emitter.b.String()
+			if strings.Contains(ir, "icmp eq "+tt.typ.LLVMType()) {
+				t.Fatalf("%s comparison must not use icmp directly on a fat type: %s", tt.name, ir)
+			}
+			if tt.name == "string" {
+				if !strings.Contains(ir, "call i1 @hike_streq_len") {
+					t.Fatalf("string comparison must use the length-aware runtime: %s", ir)
+				}
+				return
+			}
+			if !strings.Contains(ir, "extractvalue "+tt.typ.LLVMType()) {
+				t.Fatalf("%s comparison did not dispatch to its fat-value implementation: %s", tt.name, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryStringOrderingUses32BitRuntime(t *testing.T) {
+	emitter := &Emitter{
+		pointerBits:   32,
+		targetTriple:  "wasm32-unknown-unknown",
+		renderedTypes: make(map[string]string),
+	}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpLt,
+		L:   &hir.Reg{ID: 2, Typ: sema.TypeString},
+		R:   &hir.Reg{ID: 3, Typ: sema.TypeString},
+	})
+
+	if ir := emitter.b.String(); !strings.Contains(ir, "call i32 @hike_strcmp_len32") {
+		t.Fatalf("32-bit string comparison used the wrong runtime: %s", ir)
 	}
 }
 

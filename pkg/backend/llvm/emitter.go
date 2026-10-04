@@ -1591,8 +1591,28 @@ func (e *Emitter) appendDebugLocation(start int, inst hir.Instruction) {
 func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	e.renderedTypes[i.Dst.String()] = i.Dst.Typ.LLVMType()
 	typ := i.L.Type()
-	if isAggregateBinaryType(typ) {
-		e.emitAggregateBinary(i)
+	if isStringBinaryType(typ) {
+		e.emitStringBinary(i)
+		return
+	}
+	switch typ.(type) {
+	case *sema.InterfaceType:
+		e.emitInterfaceBinary(i)
+		return
+	case *sema.FuncType:
+		e.emitFunctionBinary(i)
+		return
+	case *sema.SliceType:
+		e.emitSliceBinary(i)
+		return
+	case *sema.ArrayType:
+		e.emitArrayBinary(i)
+		return
+	case *sema.StructType:
+		e.emitStructBinary(i)
+		return
+	case *sema.TupleType:
+		e.emitTupleBinary(i)
 		return
 	}
 	if typ == sema.TypeFloat64 || typ == sema.TypeFloat32 {
@@ -1606,7 +1626,65 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	e.emitIntegerBinary(i)
 }
 
-func (e *Emitter) emitAggregateBinary(i *hir.InstrBinary) {
+func isStringBinaryType(typ sema.Type) bool {
+	return typ == sema.TypeString || (typ != nil && typ.TypeName() == "string")
+}
+
+func (e *Emitter) emitStringBinary(i *hir.InstrBinary) {
+	leftPtr, leftLen := e.emitStringParts(i.L)
+	rightPtr, rightLen := e.emitStringParts(i.R)
+	result := e.nextTmp()
+	eqRuntime, cmpRuntime, lengthType := "hike_streq_len", "hike_strcmp_len", "i64"
+	if e.pointerBits == 32 || e.isWasmTarget() {
+		eqRuntime, cmpRuntime, lengthType = eqRuntime+"32", cmpRuntime+"32", "i32"
+	}
+	if i.Op == hir.OpEq || i.Op == hir.OpNeq {
+		e.b.WriteString(fmt.Sprintf("  %s = call i1 @%s(i8* %s, %s %s, i8* %s, %s %s)\n", result, eqRuntime, leftPtr, lengthType, leftLen, rightPtr, lengthType, rightLen))
+		if i.Op == hir.OpNeq {
+			notResult := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", notResult, result))
+			result = notResult
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = select i1 true, i1 %s, i1 false\n", i.Dst, result))
+		return
+	}
+	if i.Op != hir.OpLt && i.Op != hir.OpLe && i.Op != hir.OpGt && i.Op != hir.OpGe {
+		panic(fmt.Sprintf("[Emitter Panic] unsupported string binary operation '%s'", i.Op))
+	}
+	cmp := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = call i32 @%s(i8* %s, %s %s, i8* %s, %s %s)\n", cmp, cmpRuntime, leftPtr, lengthType, leftLen, rightPtr, lengthType, rightLen))
+	op := map[hir.Opcode]string{hir.OpLt: "slt", hir.OpLe: "sle", hir.OpGt: "sgt", hir.OpGe: "sge"}[i.Op]
+	e.b.WriteString(fmt.Sprintf("  %s = icmp %s i32 %s, 0\n", i.Dst, op, cmp))
+}
+
+func (e *Emitter) emitStringParts(v hir.Value) (string, string) {
+	value := e.formatVal(v)
+	typ := v.Type().LLVMType()
+	ptr := e.nextTmp()
+	length := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 0\n", ptr, typ, value))
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, 2\n", length, typ, value))
+	if e.pointerBits == 32 || e.isWasmTarget() {
+		return ptr, length
+	}
+	length64 := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = sext i32 %s to i64\n", length64, length))
+	return ptr, length64
+}
+
+func (e *Emitter) emitInterfaceBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitFunctionBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitSliceBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitArrayBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitStructBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitTupleBinary(i *hir.InstrBinary) { e.emitAggregateEqualityBinary(i) }
+
+func (e *Emitter) emitAggregateEqualityBinary(i *hir.InstrBinary) {
 	typ := i.L.Type()
 	if i.Op != hir.OpEq && i.Op != hir.OpNeq {
 		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, typ.LLVMType()))
