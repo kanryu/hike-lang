@@ -323,10 +323,6 @@ func (e *ExprLowerer) lowerMemberExpr(node *ast.MemberExpr) hir.Value {
 		if e.root.semaCtx.GoHikeMode && !isLocal && pkgId.Value == "logger" {
 			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
 		}
-		if e.root.semaCtx.GoHikeMode && pkgId.Value == "os" &&
-			(node.Field.Value == "Stdin" || node.Field.Value == "Stdout" || node.Field.Value == "Stderr") {
-			return &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
-		}
 		if e.root.semaCtx.GoHikeMode && pkgId.Value == "filepath" && node.Field.Value == "Separator" {
 			return e.root.getStringConst("/")
 		}

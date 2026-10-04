@@ -115,7 +115,7 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 				}
 				mod.Requires[path] = version
 			}
-		case "replace":
+		case "replace", "GoReplace":
 			// 形式1: replace std/json => ../../std/json
 			// 形式2: replace std/json ../../std/json
 			if len(parts) >= 4 && parts[2] == "=>" {

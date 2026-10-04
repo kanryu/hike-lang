@@ -532,6 +532,12 @@ func (l *Loader) collectEntryFiles(entryPaths []string) ([]string, error) {
 			return nil, err
 		}
 		l.ensureModuleRoot(absPath)
+		// The entry path is the first point at which the module root is
+		// guaranteed to be known. Load GoReplace directives before resolving
+		// any imports discovered in the entry package.
+		if l.goHikeMode {
+			LoadGoHikeBot(l)
+		}
 
 		fi, err := os.Stat(absPath)
 		if err != nil {
@@ -675,6 +681,8 @@ func (l *Loader) manglePackageDecls(pkgName string, decls []ast.Decl) []ast.Decl
 			mangled = append(mangled, d)
 
 		case *ast.VarDecl:
+			qualifyLocalTypeExpr(pkgName, d.Type, localTypes)
+			qualifyLocalExpr(pkgName, d.Value, localTypes, localConstants)
 			if pkgName != "main" {
 				d.Name.Value = pkgName + "_" + d.Name.Value
 			}

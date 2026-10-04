@@ -78,10 +78,19 @@ func (r *testReader) Read(data []byte) (int, error) {
     return 2, nil
 }
 
+type scannerReader struct { used bool }
+func (r *scannerReader) Read(data []byte) (int, error) {
+    if r.used { return 0, io.EOF }
+    text := []byte("first\nsecond")
+    for i := 0; i < len(text); i++ { data[i] = text[i] }
+    r.used = true
+    return len(text), nil
+}
+
 func main() int {
     reader := &testReader{}
     all, allErr := ioutil.ReadAll(reader)
-    scanner := bufio.NewScanner(cstring("first\nsecond"))
+    scanner := bufio.NewScanner(&scannerReader{})
     scan := scanner.Scan()
     printf("READ=%s:%d,SCAN=%d:%s\n", string(all), allErr == nil, scan, scanner.Text())
     return 0

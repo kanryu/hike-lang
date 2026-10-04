@@ -23,14 +23,11 @@ func NewBuilder(initCap int) *Builder {
 	return b
 }
 
-func (b *Builder) WriteString(s cstring) {
-	if s == nil {
-		return
+func (b *Builder) WriteString(s string) (int, error) {
+	if b == nil || len(s) == 0 {
+		return 0, nil
 	}
-	addLen := strlen(s)
-	if addLen == 0 {
-		return
-	}
+	addLen := len(s)
 	needCap := b.len + addLen + 1
 	if needCap > b.cap {
 		newCap := b.cap * 2
@@ -49,17 +46,18 @@ func (b *Builder) WriteString(s cstring) {
 		b.cap = newCap
 	}
 	// b.buf + b.len のポインタ位置へ文字列をコピー
-	memcpy(b.buf+b.len, s, addLen)
+	memcpy(b.buf+b.len, cstring(s), addLen)
 	b.len = b.len + addLen
 	b.buf[b.len] = 0
+	return addLen, nil
 }
 
 // Write appends a byte slice and returns the number of bytes written.
-func (b *Builder) Write(data []byte) int {
+func (b *Builder) Write(data []byte) (int, error) {
 	for i := 0; i < len(data); i = i + 1 {
 		b.WriteByte(data[i])
 	}
-	return len(data)
+	return len(data), nil
 }
 
 func (b *Builder) WriteByte(ch byte) {

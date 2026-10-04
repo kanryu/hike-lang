@@ -1,15 +1,33 @@
 package bufio
 
-type Scanner struct { input string; pos int; text string; done bool }
-func NewScanner(input *byte) *Scanner { return &Scanner{input: string(input)} }
+import "std/io"
+
+// Scanner follows the Go bufio.Scanner contract: it consumes an io.Reader
+// rather than treating the reader object itself as a byte string.  The old
+// implementation accepted *byte and therefore converted *os.File's address
+// into scanner input, which made module files unreadable in Go-Hike mode.
+type Scanner struct { input []byte; pos int; text string; done bool; err error }
+func NewScanner(reader io.Reader) *Scanner {
+	input := make([]byte, 0)
+	buffer := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 { input = append(input, buffer[0:n]...) }
+		if err != nil || n == 0 {
+			if err != io.EOF { return &Scanner{input: input, err: err} }
+			break
+		}
+	}
+	return &Scanner{input: input}
+}
 func (s *Scanner) Scan() bool {
 	if s == nil || s.done { return false }
 	if s.pos >= len(s.input) { s.done = true; return false }
 	start := s.pos
 	for s.pos < len(s.input) && s.input[s.pos] != 10 { s.pos++ }
-	s.text = s.input[start:s.pos]
+	s.text = string(s.input[start:s.pos])
 	if s.pos < len(s.input) { s.pos++ }
 	return true
 }
 func (s *Scanner) Text() string { if s == nil { return "" }; return s.text }
-func (s *Scanner) Err() error { return nil }
+func (s *Scanner) Err() error { if s == nil { return nil }; return s.err }

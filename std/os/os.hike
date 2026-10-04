@@ -2,6 +2,7 @@ package os
 
 import (
 	"std/errors"
+	"std/io"
 	"std/time"
 )
 
@@ -20,11 +21,12 @@ func exit(status int)
 func getenv(name cstring) cstring
 func getcwd(buffer *byte, size int) *byte
 func getpid() int
+extern func __hike_stderr_write(data *byte, length int32)
 
 var Args []string
 var Stdin *File
 var Stdout *File
-var Stderr *File
+var Stderr *File = &File{standardError: true}
 var ErrNotExist error = errors.New("file does not exist")
 var ErrExist error = errors.New("file already exists")
 var ErrPermission error = errors.New("permission denied")
@@ -63,6 +65,7 @@ type FileInfo struct {
 type File struct {
 	handle *byte
 	path string
+	standardError bool
 }
 
 type DirEntry struct {
@@ -135,7 +138,7 @@ func (f *File) Read(data []byte) (int, error) {
 	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
 	if len(data) == 0 { return 0, nil }
 	n := fread(&data[0], 1, len(data), f.handle)
-	if n == 0 { return 0, errors.New("EOF") }
+	if n == 0 { return 0, io.EOF }
 	return n, nil
 }
 
@@ -149,22 +152,32 @@ func (f *File) ReadAt(data []byte, offset int64) (int, error) {
 	n := fread(&data[0], 1, len(data), f.handle)
 	// Restore the caller's position even when the read reaches EOF.
 	fseek(f.handle, current, 0)
-	if n == 0 { return 0, errors.New("EOF") }
-	if n < len(data) { return n, errors.New("EOF") }
+	if n == 0 { return 0, io.EOF }
+	if n < len(data) { return n, io.EOF }
 	return n, nil
 }
 
 func (f *File) Write(data []byte) (int, error) {
-	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if f == nil { return 0, errors.New("file not open") }
 	if len(data) == 0 { return 0, nil }
+	if f.standardError {
+		__hike_stderr_write(&data[0], int32(len(data)))
+		return len(data), nil
+	}
+	if f.handle == nil { return 0, errors.New("file not open") }
 	n := fwrite(&data[0], 1, len(data), f.handle)
 	if n < len(data) { return n, errors.New("short write") }
 	return n, nil
 }
 
 func (f *File) WriteString(data string) (int, error) {
-	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if f == nil { return 0, errors.New("file not open") }
 	if len(data) == 0 { return 0, nil }
+	if f.standardError {
+		__hike_stderr_write(cstring(data), int32(len(data)))
+		return len(data), nil
+	}
+	if f.handle == nil { return 0, errors.New("file not open") }
 	ptr := cstring(data)
 	n := fwrite(ptr, 1, len(data), f.handle)
 	if n < len(data) { return n, errors.New("short write") }
