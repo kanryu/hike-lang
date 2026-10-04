@@ -1595,19 +1595,21 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	llvmT := typ.LLVMType()
 	lVal := e.formatVal(i.L)
 	rVal := e.formatVal(i.R)
-	if (strings.HasPrefix(llvmT, "{ ") || strings.HasPrefix(llvmT, "%struct.")) && !strings.HasSuffix(llvmT, "*") {
-		// Aggregate arithmetic is not an LLVM operation. Go-Hike compatibility
-		// code can form such expressions while manipulating metadata; retain
-		// the left value with a valid aggregate select. Some legacy HIR nodes
-		// carry a scalar result type for these probes, so honor the result type
-		// instead of emitting an aggregate into a scalar destination.
-		dstType := i.Dst.Typ.LLVMType()
-		if dstType != llvmT {
-			e.b.WriteString(fmt.Sprintf("  %s = add %s 0, 0\n", i.Dst, dstType))
-		} else {
-			e.b.WriteString(fmt.Sprintf("  %s = select i1 true, %s %s, %s zeroinitializer\n", i.Dst, llvmT, lVal, llvmT))
+	if isAggregateBinaryType(typ) {
+		if i.Op == hir.OpEq || i.Op == hir.OpNeq {
+			result := e.emitAggregateEquality(typ, lVal, rVal)
+			if i.Op == hir.OpNeq {
+				negated := e.nextTmp()
+				e.b.WriteString(fmt.Sprintf("  %s = xor i1 %s, true\n", negated, result))
+				result = negated
+			}
+			e.b.WriteString(fmt.Sprintf("  %s = select i1 true, i1 %s, i1 false\n", i.Dst, result))
+			return
 		}
-		return
+		// Aggregate arithmetic is not an LLVM operation. Go-Hike compatibility
+		// Do not silently turn unsupported aggregate arithmetic into a value
+		// preserving select. That produces valid-looking but incorrect IR.
+		panic(fmt.Sprintf("[Emitter Panic] unsupported aggregate binary operation '%s' for '%s'", i.Op, llvmT))
 	}
 
 	if i.Op == hir.OpShl || i.Op == hir.OpShr {
@@ -1651,13 +1653,11 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	// (lshr) instructions.  Keep the signedness of the Hike integer type when
 	// selecting the instruction; treating every integer as signed corrupts
 	// high-bit values of uint/byte/uintptr.
-	isUnsigned := false
-	if basic, ok := typ.(*sema.BasicType); ok {
-		switch basic {
-		case sema.TypeUint, sema.TypeUint64, sema.TypeUint32, sema.TypeUint16, sema.TypeUint8, sema.TypeUintptr, sema.TypeByte:
-			isUnsigned = true
-		}
-	}
+	// An operation is unsigned only when both operands are unsigned.  Using
+	// the left operand alone makes mixed expressions such as uint32 + int32
+	// select the wrong division, remainder, comparison, or right-shift
+	// instruction after operand coercion.
+	unsignedOperands := isUnsignedIntegerType(i.L.Type()) && isUnsignedIntegerType(i.R.Type())
 
 	var opStr string
 	switch i.Op {
@@ -1668,9 +1668,17 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	case hir.OpMul:
 		opStr = "mul"
 	case hir.OpDiv:
-		opStr = "sdiv"
+		if unsignedOperands {
+			opStr = "udiv"
+		} else {
+			opStr = "sdiv"
+		}
 	case hir.OpRem:
-		opStr = "srem"
+		if unsignedOperands {
+			opStr = "urem"
+		} else {
+			opStr = "srem"
+		}
 	case hir.OpAnd:
 		opStr = "and"
 	case hir.OpOr:
@@ -1680,7 +1688,7 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	case hir.OpShl:
 		opStr = "shl"
 	case hir.OpShr:
-		if i.LogicalShift || isUnsigned {
+		if i.LogicalShift || unsignedOperands {
 			opStr = "lshr"
 		} else {
 			opStr = "ashr"
@@ -1690,15 +1698,143 @@ func (e *Emitter) emitBinary(i *hir.InstrBinary) {
 	case hir.OpNeq:
 		opStr = "icmp ne"
 	case hir.OpLt:
-		opStr = "icmp slt"
+		if unsignedOperands {
+			opStr = "icmp ult"
+		} else {
+			opStr = "icmp slt"
+		}
 	case hir.OpLe:
-		opStr = "icmp sle"
+		if unsignedOperands {
+			opStr = "icmp ule"
+		} else {
+			opStr = "icmp sle"
+		}
 	case hir.OpGt:
-		opStr = "icmp sgt"
+		if unsignedOperands {
+			opStr = "icmp ugt"
+		} else {
+			opStr = "icmp sgt"
+		}
 	case hir.OpGe:
-		opStr = "icmp sge"
+		if unsignedOperands {
+			opStr = "icmp uge"
+		} else {
+			opStr = "icmp sge"
+		}
 	}
 	e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", i.Dst, opStr, llvmT, lVal, rVal))
+}
+
+func isAggregateBinaryType(typ sema.Type) bool {
+	switch typ.(type) {
+	case *sema.InterfaceType, *sema.FuncType, *sema.SliceType,
+		*sema.ArrayType, *sema.StructType, *sema.TupleType:
+		return true
+	default:
+		return false
+	}
+}
+
+// emitAggregateEquality recursively compares the source-level fields of an
+// aggregate. Parsing LLVM type strings cannot handle named structs, arrays, or
+// nested aggregates, so the semantic type is the source of truth here.
+func (e *Emitter) emitAggregateEquality(typ sema.Type, left, right string) string {
+	// HIR represents a nil value for aggregate-shaped types as the untyped LLVM
+	// literal `null`. LLVM only permits `extractvalue` on an aggregate value,
+	// so materialize nil as the aggregate zero value before walking its fields.
+	if left == "null" {
+		left = "zeroinitializer"
+	}
+	if right == "null" {
+		right = "zeroinitializer"
+	}
+	fields := aggregateTypeFields(typ)
+	if len(fields) == 0 {
+		return "true"
+	}
+
+	comparisons := make([]string, 0, len(fields))
+	for index, fieldType := range fields {
+		leftField := e.nextTmp()
+		rightField := e.nextTmp()
+		llvmT := typ.LLVMType()
+		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", leftField, llvmT, left, index))
+		e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", rightField, llvmT, right, index))
+		if isAggregateBinaryType(fieldType) {
+			comparisons = append(comparisons, e.emitAggregateEquality(fieldType, leftField, rightField))
+			continue
+		}
+
+		cmp := e.nextTmp()
+		cmpOp := "icmp eq"
+		if fieldType == sema.TypeFloat32 || fieldType == sema.TypeFloat64 {
+			cmpOp = "fcmp oeq"
+		}
+		e.b.WriteString(fmt.Sprintf("  %s = %s %s %s, %s\n", cmp, cmpOp, fieldType.LLVMType(), leftField, rightField))
+		comparisons = append(comparisons, cmp)
+	}
+
+	result := comparisons[0]
+	for _, cmp := range comparisons[1:] {
+		and := e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = and i1 %s, %s\n", and, result, cmp))
+		result = and
+	}
+	return result
+}
+
+func aggregateTypeFields(typ sema.Type) []sema.Type {
+	switch t := typ.(type) {
+	case *sema.InterfaceType:
+		if t.IsAny() {
+			return []sema.Type{sema.TypeInt32, &sema.PointerType{Base: sema.TypeByte}}
+		}
+		return []sema.Type{
+			&sema.PointerType{Base: sema.TypeByte},
+			&sema.PointerType{Base: sema.TypeByte},
+		}
+	case *sema.FuncType:
+		return []sema.Type{
+			&sema.PointerType{Base: sema.TypeByte},
+			&sema.PointerType{Base: sema.TypeByte},
+		}
+	case *sema.SliceType:
+		return []sema.Type{
+			&sema.PointerType{Base: sema.TypeByte}, sema.TypeInt32, sema.TypeInt32,
+		}
+	case *sema.ArrayType:
+		fields := make([]sema.Type, t.Len)
+		for index := range fields {
+			fields[index] = t.Elem
+		}
+		return fields
+	case *sema.StructType:
+		fields := make([]sema.Type, len(t.Fields))
+		for index, field := range t.Fields {
+			fields[index] = field.Type
+		}
+		return fields
+	case *sema.TupleType:
+		return t.Types
+	default:
+		return nil
+	}
+}
+
+func isUnsignedIntegerType(typ sema.Type) bool {
+	basic, ok := typ.(*sema.BasicType)
+	if !ok {
+		return false
+	}
+	switch basic {
+	case sema.TypeUint, sema.TypeUint64, sema.TypeUint32, sema.TypeUint16,
+		sema.TypeUint8, sema.TypeUintptr, sema.TypeByte:
+		return true
+	default:
+		return basic.Name == "uint" || basic.Name == "uint64" || basic.Name == "uint32" ||
+			basic.Name == "uint16" || basic.Name == "uint8" || basic.Name == "uintptr" ||
+			basic.Name == "byte"
+	}
 }
 
 func isIntegerLLVMType(llvmType string) bool {

@@ -50,6 +50,143 @@ func TestEmitCastDoesNotTreatInterfaceLayoutAsFunctionValue(t *testing.T) {
 	}
 }
 
+func TestEmitBinaryComparesBothInterfaceFields(t *testing.T) {
+	interfaceType := &sema.InterfaceType{
+		Name:    "Reader",
+		Methods: []sema.Method{{Name: "Read"}},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpEq,
+		L:   &hir.Reg{ID: 2, Typ: interfaceType},
+		R:   &hir.Reg{ID: 3, Typ: interfaceType},
+	})
+
+	ir := emitter.b.String()
+	if strings.Count(ir, "extractvalue { i8*, i8* }") != 4 {
+		t.Fatalf("interface comparison must extract both fields from both operands: %s", ir)
+	}
+	if !strings.Contains(ir, "and i1") {
+		t.Fatalf("interface comparison must combine data and itab comparisons: %s", ir)
+	}
+	if !strings.Contains(ir, "icmp eq i8*") {
+		t.Fatalf("interface comparison must compare pointer fields: %s", ir)
+	}
+}
+
+func TestEmitBinaryComparesAllFatPointerLayouts(t *testing.T) {
+	tests := []struct {
+		name       string
+		typ        sema.Type
+		fields     int
+		fieldTypes []string
+	}{
+		{
+			name:       "any",
+			typ:        &sema.InterfaceType{Name: "any"},
+			fields:     2,
+			fieldTypes: []string{"i32", "i8*"},
+		},
+		{
+			name:       "function",
+			typ:        &sema.FuncType{},
+			fields:     2,
+			fieldTypes: []string{"i8*", "i8*"},
+		},
+		{
+			name:       "slice",
+			typ:        &sema.SliceType{Elem: sema.TypeByte},
+			fields:     3,
+			fieldTypes: []string{"i8*", "i32", "i32"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+				Op:  hir.OpEq,
+				L:   &hir.Reg{ID: 2, Typ: tt.typ},
+				R:   &hir.Reg{ID: 3, Typ: tt.typ},
+			})
+
+			ir := emitter.b.String()
+			if got := strings.Count(ir, "extractvalue "+tt.typ.LLVMType()); got != tt.fields*2 {
+				t.Fatalf("expected %d field extractions, got %d: %s", tt.fields*2, got, ir)
+			}
+			for _, fieldType := range tt.fieldTypes {
+				if !strings.Contains(ir, "icmp eq "+fieldType) {
+					t.Fatalf("missing comparison for %s: %s", fieldType, ir)
+				}
+			}
+		})
+	}
+}
+
+func TestEmitBinaryUsesUnsignedInstructionsOnlyForUnsignedOperands(t *testing.T) {
+	tests := []struct {
+		name string
+		op   hir.Opcode
+		left sema.Type
+		right sema.Type
+		want string
+	}{
+		{name: "unsigned division", op: hir.OpDiv, left: sema.TypeUint32, right: sema.TypeUint32, want: "udiv"},
+		{name: "mixed division", op: hir.OpDiv, left: sema.TypeUint32, right: sema.TypeInt32, want: "sdiv"},
+		{name: "unsigned remainder", op: hir.OpRem, left: sema.TypeUint32, right: sema.TypeUint32, want: "urem"},
+		{name: "mixed remainder", op: hir.OpRem, left: sema.TypeInt32, right: sema.TypeUint32, want: "srem"},
+		{name: "unsigned less-than", op: hir.OpLt, left: sema.TypeUint32, right: sema.TypeUint32, want: "icmp ult"},
+		{name: "mixed less-than", op: hir.OpLt, left: sema.TypeUint32, right: sema.TypeInt32, want: "icmp slt"},
+		{name: "unsigned right-shift", op: hir.OpShr, left: sema.TypeUint32, right: sema.TypeUint32, want: "lshr"},
+		{name: "mixed right-shift", op: hir.OpShr, left: sema.TypeUint32, right: sema.TypeInt32, want: "ashr"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emitter := &Emitter{renderedTypes: make(map[string]string)}
+			emitter.emitBinary(&hir.InstrBinary{
+				Dst: &hir.Reg{ID: 1, Typ: sema.TypeInt32},
+				Op:  tt.op,
+				L:   &hir.Reg{ID: 2, Typ: tt.left},
+				R:   &hir.Reg{ID: 3, Typ: tt.right},
+			})
+			if ir := emitter.b.String(); !strings.Contains(ir, tt.want) {
+				t.Fatalf("expected %q in IR: %s", tt.want, ir)
+			}
+		})
+	}
+}
+
+func TestEmitBinaryComparesNamedAndNestedAggregates(t *testing.T) {
+	nested := &sema.StructType{
+		Name: "NestedValue",
+		Fields: []sema.Field{
+			{Name: "x", Type: sema.TypeInt32},
+			{Name: "y", Type: &sema.ArrayType{Len: 2, Elem: sema.TypeUint8}},
+		},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpEq,
+		L:   &hir.Reg{ID: 2, Typ: nested},
+		R:   &hir.Reg{ID: 3, Typ: nested},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "extractvalue %struct.NestedValue") {
+		t.Fatalf("named struct fields were not extracted: %s", ir)
+	}
+	if !strings.Contains(ir, "extractvalue [2 x i8]") {
+		t.Fatalf("nested array fields were not recursively compared: %s", ir)
+	}
+	if strings.Count(ir, "icmp eq") != 3 {
+		t.Fatalf("expected one scalar and two nested element comparisons: %s", ir)
+	}
+}
+
 func TestHikeVariadicFunctionsUseTypedSliceABI(t *testing.T) {
 	ctx := sema.NewContext()
 	ctx.Functions["hikeVariadic"] = &sema.FuncType{
