@@ -89,8 +89,16 @@ func Ext(p string) string {
 	if idx < 0 { return "" }
 	return name[idx:len(name)]
 }
-func Join(a string, b string) string {
-	if a == "" { return b }
-	if b == "" { return a }
-	return ToSlash(a) + "/" + b
+func Join(parts ...string) string {
+	joined := ""
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if part == "" { continue }
+		if joined == "" {
+			joined = part
+			continue
+		}
+		joined = ToSlash(joined) + "/" + part
+	}
+	return joined
 }

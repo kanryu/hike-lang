@@ -36,6 +36,29 @@ func main() int {
 	})
 }
 
+// filepath.Join は Go 互換 API として可変個の要素を受け取る必要がある。
+// 3引数呼び出しで全要素が結果に含まれることを検証する回帰テスト。
+func TestE2EStdFilepathJoinThreeArguments(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/path/filepath"
+
+func printf(format string, ...) int
+
+func main() int {
+    joined := filepath.Join("root", "nested", "file.hike")
+    printf("JOIN=%s\n", joined)
+    return 0
+}
+`,
+		ExpectedOut:  "JOIN=root/nested/file.hike",
+		ExpectedExit: 0,
+	})
+}
+
 func TestE2EStdPromotedRegexp(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
