@@ -813,9 +813,8 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
 				if op == "+=" && s.root.isStringType(elemType) {
 					leftBase, leftOffset, leftLen := s.root.stringViewRawParts(curVal)
-					rightBase, rightOffset, rightLen := s.root.stringViewRawParts(val)
 					leftPtr, _ := s.root.stringParts(curVal)
-					rightPtr, _ := s.root.stringParts(val)
+					rightPtr, rightLen := s.root.stringParts(val)
 					if s.shouldOptimizeStringAppend(left) {
 						// Repeated local writes use the growth-buffer runtime.
 						if s.root.is32Bit {
@@ -824,7 +823,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 							if !s.root.retainRelease {
 								s.root.retainStringForAppend(curVal)
 							}
-							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightBase, rightOffset, rightLen}})
+							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightPtr, rightLen}})
 							length := s.root.nextReg(sema.TypeInt)
 							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
 							val = s.root.makeString(raw, length)
@@ -834,7 +833,7 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 							if !s.root.retainRelease {
 								s.root.retainStringForAppend(curVal)
 							}
-							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightBase, rightOffset, rightLen}})
+							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightPtr, rightLen}})
 							length := s.root.nextReg(sema.TypeInt)
 							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
 							val = s.root.makeString(raw, length)

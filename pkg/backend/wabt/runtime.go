@@ -23,7 +23,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_map_create": true, "__hike_map_len": true,
 	"__hike_map_set": true, "__hike_map_get": true,
 	"__hike_map_get_boxed": true,
-	"__hike_map_set_str": true, "__hike_map_get_str": true, "__hike_map_get_boxed_str": true, "__hike_map_get_boxed_str_ok": true, "__hike_map_delete_str": true,
+	"__hike_map_set_str":   true, "__hike_map_get_str": true, "__hike_map_get_boxed_str": true, "__hike_map_get_boxed_str_ok": true, "__hike_map_delete_str": true,
 	"__hike_map_delete":    true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_append": true,
 	"__hike_string_start": true,
@@ -396,11 +396,15 @@ var wasmRuntime = map[string]runtimeFunc{
     (memory.copy (i32.add (local.get $p) (local.get $alen)) (local.get $b) (local.get $blen))
     (i32.store8 (i32.add (local.get $p) (i32.add (local.get $alen) (local.get $blen))) (i32.const 0))
 	(local.get $p))`},
-	"__hike_string_append": runtimeFunc{deps: []string{"hike_strcat_len"}, body: `(func $__hike_string_append (param $a i32) (param $offset i32) (param $alen i32) (param $b i32) (param $boffset i32) (param $blen i32) (result i32)
+	"__hike_string_append": runtimeFunc{deps: []string{"hike_strcat_len"}, body: `(func $__hike_string_append (param $a i32) (param $offset i32) (param $alen i32) (param $b i32) (param $blen i32) (result i32)
+    (local $sign i32)
+    (local $decoded i32)
+    (local.set $sign (i32.shr_s (local.get $offset) (i32.const 31)))
+    (local.set $decoded (i32.xor (local.get $offset) (local.get $sign)))
     (call $hike_strcat_len
-      (i32.add (local.get $a) (local.get $offset))
+      (i32.add (local.get $a) (local.get $decoded))
       (local.get $alen)
-      (i32.add (local.get $b) (local.get $boffset))
+      (local.get $b)
       (local.get $blen)))`},
 	"__hike_map_create": runtimeFunc{deps: []string{"calloc"}, body: `(func $__hike_map_create (param $cap i32) (param $is_str i32) (result i32)
     (local $m i32) (local $n i32) (local $buckets i32)
@@ -509,8 +513,18 @@ var wasmRuntime = map[string]runtimeFunc{
       (local.set $prev (local.get $entry))
       (local.set $entry (local.get $next))
       (br $scan))))`},
-	"__hike_string_retain":  runtimeFunc{body: `(func $__hike_string_retain (param $s i32) (param $offset i32))`},
-	"__hike_string_release": runtimeFunc{body: `(func $__hike_string_release (param $s i32) (param $offset i32))`},
+	"__hike_string_retain": runtimeFunc{body: `(func $__hike_string_retain (param $s i32) (param $offset i32) (local $old i32)
+    (if (i32.or (i32.eqz (local.get $s)) (i32.lt_s (local.get $offset) (i32.const 0))) (then (return)))
+    (local.set $old (i32.load (i32.sub (local.get $s) (i32.const 4))))
+    (if (i32.ne (local.get $old) (i32.const -2147483648))
+      (then (i32.store (i32.sub (local.get $s) (i32.const 4)) (i32.add (local.get $old) (i32.const 1))))))`},
+	"__hike_string_release": runtimeFunc{deps: []string{"free"}, body: `(func $__hike_string_release (param $s i32) (param $offset i32) (local $old i32)
+    (if (i32.or (i32.eqz (local.get $s)) (i32.lt_s (local.get $offset) (i32.const 0))) (then (return)))
+    (local.set $old (i32.load (i32.sub (local.get $s) (i32.const 4))))
+    (if (i32.eq (local.get $old) (i32.const -2147483648)) (then (return)))
+    (if (i32.eq (local.get $old) (i32.const 1))
+      (then (call $free (i32.sub (local.get $s) (i32.const 8))))
+      (else (i32.store (i32.sub (local.get $s) (i32.const 4)) (i32.sub (local.get $old) (i32.const 1))))))`},
 	"__hike_string_start": runtimeFunc{body: `(func $__hike_string_start (param $base i32) (param $encoded_offset i32) (result i32)
     (local $sign i32)
     (local.set $sign (i32.shr_s (local.get $encoded_offset) (i32.const 31)))
@@ -520,7 +534,7 @@ var wasmRuntime = map[string]runtimeFunc{
     (local.set $key (call $__hike_slice_to_str (local.get $ptr) (local.get $len)))
     (call $__hike_map_delete (local.get $m) (local.get $key))
     (call $free (local.get $key)))`},
-	"llvm.trap":             runtimeFunc{body: `(func $llvm.trap (unreachable))`},
+	"llvm.trap": runtimeFunc{body: `(func $llvm.trap (unreachable))`},
 }
 
 func lookupWasmRuntime(name string) (runtimeFunc, bool) {
