@@ -50,6 +50,24 @@ func TestEmitCastDoesNotTreatInterfaceLayoutAsFunctionValue(t *testing.T) {
 	}
 }
 
+func TestEmitCastDoesNotTreatSliceAsString(t *testing.T) {
+	sliceType := &sema.SliceType{Elem: sema.TypeByte}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitCast(&hir.InstrCast{
+		Dst:    &hir.Reg{ID: 1, Typ: sliceType},
+		Val:    &hir.Reg{ID: 2, Typ: &sema.PointerType{Base: sema.TypeByte}},
+		ToType: sliceType,
+	})
+
+	ir := emitter.b.String()
+	if strings.Contains(ir, "strlen(i8* %v2)") {
+		t.Fatalf("slice conversion must not derive a string length with strlen: %s", ir)
+	}
+	if !strings.Contains(ir, "zeroinitializer") {
+		t.Fatalf("slice conversion should use the aggregate fallback: %s", ir)
+	}
+}
+
 func TestEmitBinaryComparesBothInterfaceFields(t *testing.T) {
 	interfaceType := &sema.InterfaceType{
 		Name:    "Reader",

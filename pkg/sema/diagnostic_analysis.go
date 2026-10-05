@@ -337,6 +337,15 @@ func (c *Context) checkDiagnosticStmt(stmt ast.Statement, locals map[string]Type
 		for i, right := range s.Right {
 			rightTypes[i] = c.InferExprTypeWithDiag(right, locals, reporter, filename)
 		}
+		if s.Token.Literal == "++" || s.Token.Literal == "--" {
+			for _, left := range s.Left {
+				leftType := c.InferExprTypeWithDiag(left, locals, reporter, filename)
+				if !IsBad(leftType) && typeNameOf(leftType) == "string" {
+					reporter.Errorf(filename, s.Token.Line, s.Token.Col,
+						"invalid operation: operator %s not defined on %s", s.Token.Literal, typeNameOf(leftType))
+				}
+			}
+		}
 		c.checkTupleAssignment(s, rightTypes, locals, reporter, filename)
 
 	case *ast.ExprStmt:

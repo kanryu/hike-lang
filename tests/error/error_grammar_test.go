@@ -68,6 +68,17 @@ func main() int {
 `, ExpectedError: "cannot use int as bool"})
 }
 
+func TestGrammar_StringIncrementIsInvalid(t *testing.T) {
+	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
+package main
+func main() int {
+    value := "text"
+    value++
+    return 0
+}
+`, ExpectedError: "invalid operation: operator ++ not defined on string"})
+}
+
 func TestGrammar_MapMakeWithoutImport(t *testing.T) {
 	RunHikeCompileErrorCase(t, HikeCompileErrorCase{Source: `
 package main

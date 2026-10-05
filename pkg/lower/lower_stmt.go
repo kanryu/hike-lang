@@ -808,36 +808,25 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 			}
 
 			switch op {
-			case "+=", "++":
+			case "+=":
 				curVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
 				if op == "+=" && s.root.isStringType(elemType) {
 					leftBase, leftOffset, leftLen := s.root.stringViewRawParts(curVal)
 					leftPtr, _ := s.root.stringParts(curVal)
-					rightPtr, rightLen := s.root.stringParts(val)
+					_, _, rightLen := s.root.stringViewRawParts(val)
+					rightPtr, _ := s.root.stringParts(val)
 					if s.shouldOptimizeStringAppend(left) {
 						// Repeated local writes use the growth-buffer runtime.
-						if s.root.is32Bit {
-							raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-							// TODO: FORCE A RETAIN BEFORE STRING APPEND WHEN AUTOMATIC RETAIN/RELEASE IS DISABLED.
-							if !s.root.retainRelease {
-								s.root.retainStringForAppend(curVal)
-							}
-							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightPtr, rightLen}})
-							length := s.root.nextReg(sema.TypeInt)
-							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
-							val = s.root.makeString(raw, length)
-						} else {
-							raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-							// TODO: FORCE A RETAIN BEFORE STRING APPEND WHEN AUTOMATIC RETAIN/RELEASE IS DISABLED.
-							if !s.root.retainRelease {
-								s.root.retainStringForAppend(curVal)
-							}
-							s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightPtr, rightLen}})
-							length := s.root.nextReg(sema.TypeInt)
-							s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
-							val = s.root.makeString(raw, length)
+						raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+						// TODO: FORCE A RETAIN BEFORE STRING APPEND WHEN AUTOMATIC RETAIN/RELEASE IS DISABLED.
+						if !s.root.retainRelease {
+							s.root.retainStringForAppend(curVal)
 						}
+						s.root.emit(&hir.InstrCallStatic{Dst: raw, CalleeName: s.root.BuiltinName("__hike_string_append"), Args: []hir.Value{leftBase, leftOffset, leftLen, rightPtr, rightLen}})
+						length := s.root.nextReg(sema.TypeInt)
+						s.root.emit(&hir.InstrCallStatic{Dst: length, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{raw}})
+						val = s.root.makeString(raw, length)
 					} else {
 						// Infrequent writes keep the exact-size concatenation path.
 						raw := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
@@ -848,6 +837,12 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 					}
 					break
 				}
+				newVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpAdd, L: curVal, R: val})
+				val = newVal
+			case "++":
+				curVal := s.root.nextReg(elemType)
+				s.root.emit(&hir.InstrLoad{Dst: curVal, Ptr: targetPtr})
 				newVal := s.root.nextReg(elemType)
 				s.root.emit(&hir.InstrBinary{Dst: newVal, Op: hir.OpAdd, L: curVal, R: val})
 				val = newVal

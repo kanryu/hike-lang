@@ -2306,7 +2306,10 @@ func (e *Emitter) emitCast(i *hir.InstrCast) {
 		e.b.WriteString(fmt.Sprintf("  %s = select i1 true, %s null, %s null\n", i.Dst, toLLVM, toLLVM))
 		return
 	}
-	if isFromPtr && toLLVM == "{ i8*, i32, i32 }" {
+	// Only Hike strings use the pointer-to-fat-value conversion that derives
+	// the length with strlen. Slices and other three-field aggregates happen
+	// to share the same LLVM layout, but their pointer values are not C strings.
+	if isFromPtr && isStringBinaryType(i.ToType) && toLLVM == "{ i8*, i32, i32 }" {
 		base := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue %s undef, %s %s, 0\n", base, toLLVM, fromLLVM, val))
 		length := e.nextTmp()
