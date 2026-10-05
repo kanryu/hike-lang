@@ -437,6 +437,28 @@ func (l *Lowerer) setBlock(bb *basicBlock) {
 }
 
 func (l *Lowerer) emit(instr hir.Instruction) {
+	if l.inLoop() {
+		switch alloc := instr.(type) {
+		case *hir.InstrAlloca:
+			if l.containsManagedStackType(alloc.AllocType, make(map[sema.Type]bool)) {
+				instr = &hir.InstrHeapAlloc{
+					Dst:        alloc.Dst,
+					Size:       &hir.ConstInt{Val: int64(sema.SizeOf(alloc.AllocType)), Typ: sema.TypeInt},
+					AllocType:  alloc.AllocType,
+					KeepOnHeap: true,
+				}
+			}
+		case *hir.InstrAllocaDynamic:
+			if l.containsManagedStackType(alloc.AllocType, make(map[sema.Type]bool)) {
+				instr = &hir.InstrHeapAlloc{
+					Dst:        alloc.Dst,
+					Size:       alloc.Size,
+					AllocType:  alloc.AllocType,
+					KeepOnHeap: true,
+				}
+			}
+		}
+	}
 	if alloc, ok := instr.(*hir.InstrHeapAlloc); ok && len(l.areaStack) > 0 && !alloc.KeepOnHeap && !alloc.KeepOnHeapInArea && !l.isAreaHeapValue(alloc.AllocType) {
 		instr = &hir.InstrAreaAlloc{
 			Dst:       alloc.Dst,
@@ -455,6 +477,48 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 			*current = append(*current, &hir.InstructionNode{Instruction: instr})
 		}
 	}
+}
+
+// inLoop reports whether lowering is currently inside an actual loop. The
+// loopStack also contains switch contexts, whose break and continue targets
+// are intentionally identical and therefore must not trigger this check.
+func (l *Lowerer) inLoop() bool {
+	for i := len(l.loopStack) - 1; i >= 0; i-- {
+		ctx := l.loopStack[i]
+		if ctx.breakBlock != nil && ctx.continueBlock != nil && ctx.breakBlock != ctx.continueBlock {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *Lowerer) containsManagedStackType(t sema.Type, seen map[sema.Type]bool) bool {
+	if t == nil || seen[t] {
+		return false
+	}
+	seen[t] = true
+	if l.isStringType(t) {
+		return true
+	}
+	switch typ := t.(type) {
+	case *sema.SliceType:
+		return true
+	case *sema.ArrayType:
+		return l.containsManagedStackType(typ.Elem, seen)
+	case *sema.StructType:
+		for _, field := range typ.Fields {
+			if l.containsManagedStackType(field.Type, seen) {
+				return true
+			}
+		}
+	case *sema.TupleType:
+		for _, elem := range typ.Types {
+			if l.containsManagedStackType(elem, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Strings and slices keep their backing storage beyond the lexical area. The

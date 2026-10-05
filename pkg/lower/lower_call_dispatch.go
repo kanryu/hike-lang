@@ -704,10 +704,27 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	finalCapAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "finalCap")
 	finalOwnerAlloca := c.root.nextReg(&sema.PointerType{Base: &sema.PointerType{Base: sema.TypeByte}}, "finalOwner")
 	finalOffsetAlloca := c.root.nextReg(&sema.PointerType{Base: sema.TypeInt32}, "finalOffset")
-	c.root.emit(&hir.InstrAlloca{Dst: finalPtrAlloca, AllocType: &sema.PointerType{Base: slType.Elem}})
-	c.root.emit(&hir.InstrAlloca{Dst: finalCapAlloca, AllocType: sema.TypeInt})
-	c.root.emit(&hir.InstrAlloca{Dst: finalOwnerAlloca, AllocType: &sema.PointerType{Base: sema.TypeByte}})
-	c.root.emit(&hir.InstrAlloca{Dst: finalOffsetAlloca, AllocType: sema.TypeInt32})
+	// append may itself be lowered inside a source loop.  These temporaries
+	// are used across the grow/no-grow branches; keeping their allocas in the
+	// loop body makes LLVM move the stack pointer on every iteration and never
+	// reclaim that space until the surrounding function returns.  Use the same
+	// heap path as other loop-local temporaries in that case.
+	emitAppendTemp := func(dst *hir.Reg, typ sema.Type) {
+		if c.root.inLoop() {
+			c.root.emit(&hir.InstrHeapAlloc{
+				Dst:        dst,
+				Size:       &hir.ConstInt{Val: int64(sema.SizeOf(typ)), Typ: sema.TypeInt},
+				AllocType:  typ,
+				KeepOnHeap: true,
+			})
+			return
+		}
+		c.root.emit(&hir.InstrAlloca{Dst: dst, AllocType: typ})
+	}
+	emitAppendTemp(finalPtrAlloca, &sema.PointerType{Base: slType.Elem})
+	emitAppendTemp(finalCapAlloca, sema.TypeInt)
+	emitAppendTemp(finalOwnerAlloca, &sema.PointerType{Base: sema.TypeByte})
+	emitAppendTemp(finalOffsetAlloca, sema.TypeInt32)
 	var structuredAppend *hir.IfNode
 	if len(c.root.structuredStack) > 0 {
 		structuredAppend = &hir.IfNode{Label: growBB.Label, Cond: growCond}
