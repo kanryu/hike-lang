@@ -110,13 +110,25 @@ func (p *Parser) Errors() []string {
 }
 
 func (p *Parser) nextToken() {
-	p.curToken = p.peekToken
-	if p.pos < len(p.tokens) {
-		p.peekToken = p.tokens[p.pos]
-		p.pos++
-	} else {
-		p.peekToken = token.Token{Type: token.EOF, Literal: ""}
+	// Keep the cursor and both lookahead slots in a stable terminal state once
+	// the parser has consumed the finite token slice. This matters for
+	// sub-parsers: callers may advance more than once while closing a nested
+	// block, but must never re-process the previous token after the slice ends.
+	if p.pos > len(p.tokens) {
+		eof := token.Token{Type: token.EOF, Literal: ""}
+		p.pos = len(p.tokens)
+		p.curToken = eof
+		p.peekToken = eof
+		return
 	}
+
+	p.curToken = p.peekToken
+	if p.pos == len(p.tokens) {
+		p.peekToken = token.Token{Type: token.EOF, Literal: ""}
+		return
+	}
+	p.peekToken = p.tokens[p.pos]
+	p.pos++
 }
 
 // curIdx は現在の curToken が大元スライスのどのインデックスにあるかを返す

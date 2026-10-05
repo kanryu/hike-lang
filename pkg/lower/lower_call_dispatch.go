@@ -671,7 +671,10 @@ func (c *CallLowerer) LowerAppend(call *ast.CallExpr) hir.Value {
 	c.root.emit(&hir.InstrExtractValue{Dst: oldRawBytePtr, Agg: sliceVal, Index: 0})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldOffset, Agg: sliceVal, Index: 1})
 	c.root.emit(&hir.InstrExtractValue{Dst: oldLen, Agg: sliceVal, Index: 2})
-	oldOffsetInt := c.root.asInt(oldOffset)
+	// Slice offsets use a negative sentinel for non-owning pointer-backed
+	// views. Decode it before doing pointer arithmetic; using the encoded
+	// value directly would address one element before the visible view.
+	oldOffsetInt := c.root.asInt(c.root.decodeViewOffset(oldOffset))
 	oldLenInt := c.root.asInt(oldLen)
 	oldCap = c.root.sliceCapacity(oldRawBytePtr)
 	oldOwner := oldRawBytePtr
@@ -812,12 +815,12 @@ func (c *CallLowerer) lowerAppendSlice(dst hir.Value, dstType *sema.SliceType, s
 	c.root.emit(&hir.InstrExtractValue{Dst: srcLen, Agg: src, Index: 2})
 	oldLenInt := c.root.asInt(oldLen)
 	oldByteOffset := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: oldByteOffset, Op: hir.OpMul, L: c.root.asInt(oldOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: oldByteOffset, Op: hir.OpMul, L: c.root.asInt(c.root.decodeViewOffset(oldOffset)), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	oldDataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrGetElemPtr{Dst: oldDataPtr, BasePtr: oldPtr, Index: oldByteOffset})
 	oldPtr = oldDataPtr
 	srcByteOffset := c.root.nextReg(sema.TypeInt)
-	c.root.emit(&hir.InstrBinary{Dst: srcByteOffset, Op: hir.OpMul, L: c.root.asInt(srcOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrBinary{Dst: srcByteOffset, Op: hir.OpMul, L: c.root.asInt(c.root.decodeViewOffset(srcOffset)), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
 	srcDataPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 	c.root.emit(&hir.InstrGetElemPtr{Dst: srcDataPtr, BasePtr: srcPtr, Index: srcByteOffset})
 	srcPtr = srcDataPtr

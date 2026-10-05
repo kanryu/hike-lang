@@ -28,6 +28,7 @@ output_*.ll
 *.md5
 
 # Go Build & Test Artifacts
+bin/
 *.test
 *.prof
 /vendor/
@@ -40,6 +41,7 @@ output_*.ll
 .hike/
 bin/*.log
 bin/*.txt
+*.callgraph.dot
 
 # AI/ONNX example artifacts
 examples/ai_onnx/__pycache__/

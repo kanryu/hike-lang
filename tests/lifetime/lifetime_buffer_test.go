@@ -123,6 +123,28 @@ func main() int {
 `, ExpectedOut: "TASK=7\nTASK=9\n", ExpectedExit: 0})
 }
 
+// TestBufferLifetime_RawPointerSliceAppendDecodesOffset reproduces the
+// encoded-offset bug in slice element addressing. A pointer-backed byte view
+// uses offset=-1 as its non-owning sentinel; append must decode that offset
+// before addressing the visible slice, rather than using -1 as a raw GEP
+// index and writing one element before the view.
+func TestBufferLifetime_RawPointerSliceAppendDecodesOffset(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{Source: `
+package main
+
+func printf(format string, ...) int
+
+func main() int {
+    data := []byte{'a', 'b', 'c', 'd'}
+    ptr := &data[0]
+    view := ptr[1:3]
+    view = append(view, 'x')
+    printf("RAW-APPEND=%d,%d,%d,%d\n", view[0], view[1], view[2], len(view))
+    return 0
+}
+`, ExpectedOut: "RAW-APPEND=98,99,120,3\n", ExpectedExit: 0})
+}
+
 func TestBufferLifetime_ZeroValueStringBuilder(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{Source: `
 package main

@@ -190,6 +190,17 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 			if len(s.root.structuredStack) > 0 {
 				s.root.structuredStack[len(s.root.structuredStack)-1] = structuredCaseBody
 			}
+			// A switch without a default still needs an explicit exit from
+			// the final failed case condition.  Without this edge, the
+			// structured representation leaves the final else body attached
+			// to the preceding case chain, which can create a back-edge and
+			// loop forever when no case matches.
+			if structuredTable == nil {
+				s.root.appendStructuredNode(&hir.BrNode{
+					Target:   structuredBlock.Label,
+					TargetID: structuredBlock.Index(),
+				})
+			}
 		}
 	}
 	if s.root.curBlock.Terminator == nil {
