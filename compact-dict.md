@@ -31,6 +31,10 @@ the live entries retain that sequence.
 The implementation is available in the 64-bit native, 32-bit native, and
 Wasm32 LLVM runtimes.
 
+The compact-dict runtime owns only its hash-slot index table and dense entry
+array. It does not maintain a second hashmap-compatible bucket/index list.
+That bucket-chain representation remains exclusive to `hashmap[K]V`.
+
 ## Map and hashmap are separate built-in types
 
 `map[K]V` and `hashmap[K]V` have similar source-level operations:

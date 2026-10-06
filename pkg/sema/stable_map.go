@@ -23,9 +23,9 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 		}
 	}
 
-	keysFrom := func(lit *ast.MapLiteral) (map[string]struct{}, error) {
-		keys := make(map[string]struct{}, len(lit.Entries))
-		for _, entry := range lit.Entries {
+	keysFrom := func(lit *ast.MapLiteral) (map[string]int, error) {
+		keys := make(map[string]int, len(lit.Entries))
+		for index, entry := range lit.Entries {
 			key, ok := keyOf(entry.Key)
 			if !ok {
 				return nil, fmt.Errorf("line %d:%d: stable map keys must be compile-time literals", lit.Token.Line, lit.Token.Col)
@@ -33,12 +33,12 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 			if _, exists := keys[key]; exists {
 				return nil, fmt.Errorf("line %d:%d: duplicate key in stable map initializer", lit.Token.Line, lit.Token.Col)
 			}
-			keys[key] = struct{}{}
+			keys[key] = index
 		}
 		return keys, nil
 	}
 
-	register := func(name string, typ Type, value ast.Expression, dst map[string]map[string]struct{}) error {
+	register := func(name string, typ Type, value ast.Expression, dst map[string]map[string]int) error {
 		mp, ok := typ.(*MapType)
 		if !ok || !mp.Stable {
 			return nil
@@ -63,12 +63,12 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 		}
 	}
 
-	var checkExpr func(ast.Expression, map[string]Type, map[string]map[string]struct{}) error
-	checkExpr = func(expr ast.Expression, locals map[string]Type, localKeys map[string]map[string]struct{}) error {
+	var checkExpr func(ast.Expression, map[string]Type, map[string]map[string]int) error
+	checkExpr = func(expr ast.Expression, locals map[string]Type, localKeys map[string]map[string]int) error {
 		if expr == nil {
 			return nil
 		}
-		lookup := func(name string) (Type, map[string]struct{}) {
+		lookup := func(name string) (Type, map[string]int) {
 			typ := locals[name]
 			keys := localKeys[name]
 			if typ == nil {
@@ -121,8 +121,8 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 		return nil
 	}
 
-	var checkStmt func(ast.Statement, map[string]Type, map[string]map[string]struct{}) error
-	checkStmt = func(stmt ast.Statement, locals map[string]Type, localKeys map[string]map[string]struct{}) error {
+	var checkStmt func(ast.Statement, map[string]Type, map[string]map[string]int) error
+	checkStmt = func(stmt ast.Statement, locals map[string]Type, localKeys map[string]map[string]int) error {
 		if stmt == nil {
 			return nil
 		}
@@ -168,12 +168,12 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 	for _, decl := range prog.Decls {
 		switch n := decl.(type) {
 		case *ast.FuncDecl:
-			locals, localKeys := make(map[string]Type), make(map[string]map[string]struct{})
+			locals, localKeys := make(map[string]Type), make(map[string]map[string]int)
 			if err := checkStmt(n.Body, locals, localKeys); err != nil {
 				return err
 			}
 		case *ast.CFuncDecl:
-			locals, localKeys := make(map[string]Type), make(map[string]map[string]struct{})
+			locals, localKeys := make(map[string]Type), make(map[string]map[string]int)
 			if err := checkStmt(n.Body, locals, localKeys); err != nil {
 				return err
 			}

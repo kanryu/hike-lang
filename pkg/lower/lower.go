@@ -111,10 +111,10 @@ func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 // until all ownership paths are proven correct.
 func (l *Lowerer) SetRetainRelease(enabled bool) { l.retainRelease = enabled }
 
-// useCompactMapRuntime selects the 64-bit compact-dict ABI.  The 32-bit and
-// wasm runtimes still expose the legacy map ABI until their pointer-width
-// templates are migrated as well.
-func (l *Lowerer) useCompactMapRuntime() bool { return true }
+// useCompactMapRuntime selects the compact-dict ABI on the 64-bit runtime.
+// The WABT and wasm32 paths use the legacy hashmap ABI until their compact
+// runtime templates are available in every backend.
+func (l *Lowerer) useCompactMapRuntime() bool { return !l.is32Bit }
 
 func (l *Lowerer) mapRuntimeName(legacy, compact string) string {
 	if l.useCompactMapRuntime() {
@@ -243,6 +243,26 @@ func astIDValue(id *ast.Identifier) string {
 		return ""
 	}
 	return id.Value
+}
+
+func (l *Lowerer) stableMapIndex(base ast.Expression, key ast.Expression) (int, bool) {
+	id, ok := base.(*ast.Identifier)
+	if !ok || id == nil || l.semaCtx == nil {
+		return 0, false
+	}
+	var canonical string
+	switch k := key.(type) {
+	case *ast.StringLiteral:
+		canonical = "s:" + k.Value
+	case *ast.IntegerLiteral:
+		canonical = fmt.Sprintf("i:%d", k.Value)
+	case *ast.CharLiteral:
+		canonical = "c:" + k.Value
+	default:
+		return 0, false
+	}
+	index, ok := l.semaCtx.StableMapKeys[id.Value][canonical]
+	return index, ok
 }
 
 // Set32Bitはターゲットが32bit (wasm32等) であるかを設定します

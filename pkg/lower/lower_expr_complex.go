@@ -271,9 +271,21 @@ func annotateNestedLiteralType(expr ast.Expression, target sema.Type) {
 
 // lowerBuiltinMapIndex lowers a built-in map lookup. When wantOK is true it
 // also returns the presence bit required by Go's comma-ok assignment form.
-func (e *ExprLowerer) lowerBuiltinMapIndex(_ *ast.IndexExpr, baseVal, idxVal hir.Value, mp *sema.MapType, wantOK bool) (hir.Value, hir.Value) {
+func (e *ExprLowerer) lowerBuiltinMapIndex(node *ast.IndexExpr, baseVal, idxVal hir.Value, mp *sema.MapType, wantOK bool) (hir.Value, hir.Value) {
 	outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
 	e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
+	if mp.Stable {
+		if index, ok := e.root.stableMapIndex(node.Left, node.Index); ok {
+			var found *hir.Reg
+			if wantOK {
+				found = e.root.nextReg(sema.TypeBool)
+			}
+			e.root.emit(&hir.InstrCallStatic{Dst: found, CalleeName: "__hike_cdict_get_index", Args: []hir.Value{baseVal, &hir.ConstInt{Val: int64(index), Typ: sema.TypeInt}, outPtr}})
+			rawVal := e.root.nextReg(sema.TypeInt)
+			e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
+			return e.root.unboxMapValue(rawVal, mp.Value), found
+		}
+	}
 	var keyArgs []hir.Value
 	callee := e.root.mapRuntimeNameForType(mp, "__hike_map_get", "__hike_cdict_get")
 	isStringKey := mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string"

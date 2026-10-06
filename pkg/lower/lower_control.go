@@ -544,10 +544,177 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	}
 }
 
+// lowerCompactMapRange walks the compact map's dense entry array through the
+// runtime ABI.  The legacy hashmap range implementation below intentionally
+// remains separate because its bucket-chain layout is different.
+func (s *StmtLowerer) lowerCompactMapRange(fr *ast.ForRangeStmt, xVal hir.Value, mp *sema.MapType) bool {
+	idxPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt}, "maprange.idx")
+	s.root.emit(&hir.InstrAlloca{Dst: idxPtr, AllocType: sema.TypeInt})
+	s.root.emit(&hir.InstrStore{Val: &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, Ptr: idxPtr})
+
+	lenReg := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: "__hike_cdict_len", Args: []hir.Value{xVal}})
+
+	var oldKeySym, oldValSym hir.Value
+	var oldKeyTyp, oldValTyp sema.Type
+	var hasOldKey, hasOldVal bool
+	var keyPtr, valPtr *hir.Reg
+	if id, ok := fr.Key.(*ast.Identifier); ok && astIDValue(id) != "_" {
+		name := astIDValue(id)
+		oldKeySym, hasOldKey = s.root.symbols[name]
+		oldKeyTyp = s.root.symbolTypes[name]
+		keyPtr = s.root.nextReg(&sema.PointerType{Base: mp.Key}, name)
+		s.root.emit(&hir.InstrAlloca{Dst: keyPtr, AllocType: mp.Key})
+		s.root.symbols[name] = keyPtr
+		s.root.symbolTypes[name] = mp.Key
+	}
+	if id, ok := fr.Value.(*ast.Identifier); ok && astIDValue(id) != "_" {
+		name := astIDValue(id)
+		oldValSym, hasOldVal = s.root.symbols[name]
+		oldValTyp = s.root.symbolTypes[name]
+		valPtr = s.root.nextReg(&sema.PointerType{Base: mp.Value}, name)
+		s.root.emit(&hir.InstrAlloca{Dst: valPtr, AllocType: mp.Value})
+		s.root.symbols[name] = valPtr
+		s.root.symbolTypes[name] = mp.Value
+	}
+
+	condBB := s.root.newBlock("maprange.cond")
+	bodyBB := s.root.newBlock("maprange.body")
+	postBB := s.root.newBlock("maprange.post")
+	endBB := s.root.newBlock("maprange.end")
+
+	var structuredBlock *hir.BlockNode
+	var structuredLoop *hir.LoopNode
+	var structuredContinuation *hir.BlockNode
+	structuredParentDepth := len(s.root.structuredFrames)
+	var structuredParentBody *hir.ControlBody
+	if len(s.root.structuredStack) > 0 {
+		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
+		structuredBlock = &hir.BlockNode{Label: endBB.Label}
+		structuredLoop = &hir.LoopNode{Label: condBB.Label, Exit: structuredBlock}
+		s.root.appendStructuredNode(structuredBlock)
+		s.root.pushStructuredFrame(structuredBlock.Label)
+		s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredLoop)
+		s.root.pushStructuredFrame(structuredLoop.Label)
+		s.root.pushStructuredBody(&structuredLoop.Body)
+		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
+		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+		structuredLoop.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), structuredLoop.Index())
+		structuredLoop.Continuation = structuredContinuation
+	}
+
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: postBB,
+		structured: structuredLoop != nil,
+		breakLabel: structuredBlockLabel(structuredBlock), continueLabel: structuredLoopLabel(structuredLoop),
+		breakControlID: controlID(structuredContinuation), continueControlID: controlID(structuredLoop),
+		breakTarget: controlID(structuredContinuation), continueTarget: controlID(structuredLoop),
+	})
+	defer func() {
+		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		if structuredLoop != nil {
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			s.root.popStructuredFrame()
+		}
+	}()
+
+	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
+	s.root.setBlock(condBB)
+	idx := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrLoad{Dst: idx, Ptr: idxPtr})
+	more := s.root.nextReg(sema.TypeBool)
+	s.root.emit(&hir.InstrBinary{Dst: more, Op: hir.OpLt, L: idx, R: lenReg})
+	if structuredLoop != nil {
+		structuredLoop.Condition = more
+	}
+	var structuredCond *hir.IfNode
+	if structuredLoop != nil {
+		structuredCond = &hir.IfNode{Label: bodyBB.Label, Cond: more}
+		s.root.appendStructuredNode(structuredCond)
+		s.root.appendStructuredNodeTo(&structuredCond.Else, &hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+		s.root.pushStructuredFrame(structuredCond.Label)
+		s.root.pushStructuredBody(&structuredCond.Then)
+	}
+	s.root.terminate(&hir.InstrBranch{Cond: more, ThenTarget: bodyBB.Label, ElseTarget: endBB.Label})
+
+	s.root.setBlock(bodyBB)
+	rawKeyPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+	rawValPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
+	s.root.emit(&hir.InstrAlloca{Dst: rawKeyPtr, AllocType: sema.TypeInt})
+	s.root.emit(&hir.InstrAlloca{Dst: rawValPtr, AllocType: sema.TypeInt})
+	s.root.emit(&hir.InstrCallStatic{Dst: s.root.nextReg(sema.TypeBool), CalleeName: "__hike_cdict_entry_at", Args: []hir.Value{xVal, idx, rawKeyPtr, rawValPtr}})
+	rawKey := s.root.nextReg(sema.TypeInt)
+	rawVal := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrLoad{Dst: rawKey, Ptr: rawKeyPtr})
+	s.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: rawValPtr})
+	if keyPtr != nil {
+		var key hir.Value
+		if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+			ptr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			ln := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrCallStatic{Dst: ptr, CalleeName: s.root.BuiltinName("__hike_map_key_ptr"), Args: []hir.Value{rawKey}})
+			s.root.emit(&hir.InstrCallStatic{Dst: ln, CalleeName: s.root.BuiltinName("__hike_map_key_len"), Args: []hir.Value{rawKey}})
+			key = s.root.makeString(ptr, ln)
+		} else {
+			key = s.root.coerceFromI64(rawKey, mp.Key)
+		}
+		s.root.emit(&hir.InstrStore{Val: key, Ptr: keyPtr})
+	}
+	if valPtr != nil {
+		s.root.emit(&hir.InstrStore{Val: s.root.unboxMapValue(rawVal, mp.Value), Ptr: valPtr})
+	}
+	s.LowerStmt(fr.Body)
+	if structuredCond != nil {
+		s.root.popStructuredBody()
+		s.root.popStructuredFrame()
+	}
+	if s.root.curBlock.Terminator == nil {
+		s.root.terminate(&hir.InstrJump{Target: postBB.Label})
+	}
+
+	s.root.setBlock(postBB)
+	if structuredLoop != nil {
+		s.root.pushStructuredBody(&structuredLoop.Post)
+	}
+	next := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrBinary{Dst: next, Op: hir.OpAdd, L: idx, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+	s.root.emit(&hir.InstrStore{Val: next, Ptr: idxPtr})
+	if structuredLoop != nil {
+		s.root.appendStructuredNode(&hir.BrNode{Target: structuredLoop.Label, TargetID: structuredLoop.Index()})
+		s.root.popStructuredBody()
+	}
+	s.root.terminate(&hir.InstrJump{Target: condBB.Label})
+
+	s.root.setBlock(endBB)
+	if id, ok := fr.Key.(*ast.Identifier); ok && astIDValue(id) != "_" {
+		name := astIDValue(id)
+		if hasOldKey {
+			s.root.symbols[name], s.root.symbolTypes[name] = oldKeySym, oldKeyTyp
+		} else {
+			delete(s.root.symbols, name)
+			delete(s.root.symbolTypes, name)
+		}
+	}
+	if id, ok := fr.Value.(*ast.Identifier); ok && astIDValue(id) != "_" {
+		name := astIDValue(id)
+		if hasOldVal {
+			s.root.symbols[name], s.root.symbolTypes[name] = oldValSym, oldValTyp
+		} else {
+			delete(s.root.symbols, name)
+			delete(s.root.symbolTypes, name)
+		}
+	}
+	return true
+}
+
 func (s *StmtLowerer) lowerMapRange(fr *ast.ForRangeStmt, xVal hir.Value, xType sema.Type) bool {
 	var structuredBlock *hir.BlockNode
 	var structuredLoop *hir.LoopNode
 	var structuredContinuation *hir.BlockNode
+	if mp, isMap := xType.(*sema.MapType); isMap && s.root.useCompactMapRuntimeForType(mp) {
+		return s.lowerCompactMapRange(fr, xVal, mp)
+	}
 	// 3. 組み込み map[K]V の走査
 	if mp, isMap := xType.(*sema.MapType); isMap {
 		entryStructType := &sema.StructType{Name: "__hike_map_entry"}

@@ -664,6 +664,12 @@ func (s *StmtLowerer) LowerAssignStmt(stmt *ast.AssignStmt) {
 					val := rhsVals[i]
 					val = s.root.emitValueCoerce(val, mp.Value)
 					valI64 := s.root.boxMapValue(val, mp.Value)
+					if mp.Stable {
+						if index, ok := s.root.stableMapIndex(idxExpr.Left, idxExpr.Index); ok {
+							s.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_cdict_set_index", Args: []hir.Value{leftVal, &hir.ConstInt{Val: int64(index), Typ: sema.TypeInt}, valI64}})
+							continue
+						}
+					}
 					if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
 						keyPtr, keyLen := s.root.stringParts(keyVal)
 						callee := s.root.mapRuntimeNameForType(mp, "__hike_map_set_str", "__hike_cdict_set_str")

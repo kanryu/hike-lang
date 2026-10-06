@@ -20,7 +20,7 @@ type Context struct {
 	// define the same method for different receiver types.
 	Methods            map[string]*FuncType
 	Globals            map[string]Type
-	StableMapKeys      map[string]map[string]struct{}
+	StableMapKeys      map[string]map[string]int
 	GlobalMemoryBlocks map[string]ast.MemoryBlockKind
 	GlobalMemorySizes  map[string]int64
 	Constants          map[string]int64
@@ -59,7 +59,7 @@ func NewContext() *Context {
 		Functions:          make(map[string]*FuncType),
 		Methods:            make(map[string]*FuncType),
 		Globals:            make(map[string]Type),
-		StableMapKeys:      make(map[string]map[string]struct{}),
+		StableMapKeys:      make(map[string]map[string]int),
 		GlobalMemoryBlocks: make(map[string]ast.MemoryBlockKind),
 		GlobalMemorySizes:  make(map[string]int64),
 		Constants:          make(map[string]int64),
