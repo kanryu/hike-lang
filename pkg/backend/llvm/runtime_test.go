@@ -25,6 +25,18 @@ func TestRuntimeTemplateRendering(t *testing.T) {
 			if !strings.Contains(ir, tc.want) {
 				t.Fatalf("runtime IR does not contain %s-sized ABI types", tc.want)
 			}
+			if strings.HasPrefix(tc.name, "linux-") {
+				for _, required := range []string{
+					"declare i32 @pthread_cond_timedwait(i8*, i8*, i8*)",
+					"%ts_ptr = bitcast [16 x i8]* %ts to i8*",
+					"call i32 @pthread_cond_timedwait(i8* %c, i8* %m, i8* %ts_ptr)",
+					"call i32 @clock_gettime(i32 0, i8* %ts_ptr)",
+				} {
+					if !strings.Contains(ir, required) {
+						t.Errorf("Linux runtime is missing timeout support %q", required)
+					}
+				}
+			}
 		})
 	}
 }

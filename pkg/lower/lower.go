@@ -111,6 +111,29 @@ func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 // until all ownership paths are proven correct.
 func (l *Lowerer) SetRetainRelease(enabled bool) { l.retainRelease = enabled }
 
+// useCompactMapRuntime selects the compact-dict ABI on the 64-bit runtime.
+// The WABT and wasm32 paths use the legacy hashmap ABI until their compact
+// runtime templates are available in every backend.
+func (l *Lowerer) useCompactMapRuntime() bool { return !l.is32Bit }
+
+func (l *Lowerer) mapRuntimeName(legacy, compact string) string {
+	if l.useCompactMapRuntime() {
+		return compact
+	}
+	return legacy
+}
+
+func (l *Lowerer) mapRuntimeNameForType(mp *sema.MapType, legacy, compact string) string {
+	if mp != nil && mp.LegacyHashMap {
+		return legacy
+	}
+	return l.mapRuntimeName(legacy, compact)
+}
+
+func (l *Lowerer) useCompactMapRuntimeForType(mp *sema.MapType) bool {
+	return mp == nil || (!mp.LegacyHashMap && l.useCompactMapRuntime())
+}
+
 func (l *Lowerer) registerPanicSite() int {
 	if l.curFunc == nil {
 		return -1
@@ -201,7 +224,11 @@ func semaTypeName(typ sema.Type) string {
 	case *sema.TupleType:
 		return "tuple"
 	case *sema.MapType:
-		return "map[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
+		name := "map"
+		if t.LegacyHashMap {
+			name = "hashmap"
+		}
+		return name + "[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
 	case *sema.ChanType:
 		return "chan " + semaTypeName(t.Elem)
 	case *sema.FutureType:
@@ -209,12 +236,33 @@ func semaTypeName(typ sema.Type) string {
 	}
 	return ""
 }
+
 func semaInterfaceName(iface *sema.InterfaceType) string { return iface.Name }
 func astIDValue(id *ast.Identifier) string {
 	if id == nil {
 		return ""
 	}
 	return id.Value
+}
+
+func (l *Lowerer) stableMapIndex(base ast.Expression, key ast.Expression) (int, bool) {
+	id, ok := base.(*ast.Identifier)
+	if !ok || id == nil || l.semaCtx == nil {
+		return 0, false
+	}
+	var canonical string
+	switch k := key.(type) {
+	case *ast.StringLiteral:
+		canonical = "s:" + k.Value
+	case *ast.IntegerLiteral:
+		canonical = fmt.Sprintf("i:%d", k.Value)
+	case *ast.CharLiteral:
+		canonical = "c:" + k.Value
+	default:
+		return 0, false
+	}
+	index, ok := l.semaCtx.StableMapKeys[id.Value][canonical]
+	return index, ok
 }
 
 // Set32Bitはターゲットが32bit (wasm32等) であるかを設定します
@@ -923,15 +971,31 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 		return sc
 	}
 	label := fmt.Sprintf("str.%d", len(l.stringPool)+1)
+	internID := int64(len(l.hirProg.InternHashes))
+	hash := uint64(14695981039346656037)
+	for i := 0; i < len(raw); i++ {
+		hash ^= uint64(raw[i])
+		hash *= 1099511628211
+	}
+	l.hirProg.InternHashes = append(l.hirProg.InternHashes, hash)
 	sc := &hir.ConstString{
-		Label:  label,
-		Raw:    raw,
-		Length: len(raw) + 1,
-		Typ:    sema.TypeString,
+		Label:    label,
+		Raw:      raw,
+		Length:   len(raw) + 1,
+		InternID: internID,
+		Typ:      sema.TypeString,
 	}
 	l.stringPool[raw] = sc
 	l.hirProg.StringConstants = append(l.hirProg.StringConstants, sc)
 	return sc
+}
+
+func internIDOfString(value hir.Value) (int64, bool) {
+	sc, ok := value.(*hir.ConstString)
+	if !ok || sc.InternID < 0 {
+		return -1, false
+	}
+	return sc.InternID, true
 }
 
 // stringParts exposes the visible data pointer and length of a string view.

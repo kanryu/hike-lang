@@ -188,7 +188,15 @@ func (e *Emitter) val(v hir.Value) string {
 		}
 		return "(global.get $" + name + ")"
 	case *hir.ConstInt:
-		return fmt.Sprintf("(%s.const %d)", watType(x.Typ), x.Val)
+		literal := x.Val
+		// WABT emits all target integers as wasm i32 values.  Hashes and
+		// other compiler-generated constants may originate as int64, so
+		// normalize them to the signed textual representation of their low
+		// 32 bits before emitting an i32.const.
+		if watType(x.Typ) == "i32" {
+			literal = int64(int32(x.Val))
+		}
+		return fmt.Sprintf("(%s.const %d)", watType(x.Typ), literal)
 	case *hir.ConstBool:
 		if x.Val {
 			return "(i32.const 1)"

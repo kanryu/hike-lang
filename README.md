@@ -119,6 +119,7 @@ See the linked design documents below for the exact implementation boundaries.
 | [`encoding.md`](encoding.md) | UTF-8 rules, string and buffer layouts, shared substring views, reference counting, and copy-on-write. |
 | [`wasm.md`](wasm.md) | wasm32 target behavior, JavaScript runtime integration, exports, memory access, and testing. |
 | [`concurrency.md`](concurrency.md) | Async tasks, channels, worker synchronization, closure transfer, and generated task bridges. |
+| [`compact-dict.md`](compact-dict.md) | Compact-dict `map[K]V`, legacy `hashmap[K]V`, shared string hashing, and iteration behavior. |
 | [`thread-variables.md`](thread-variables.md) | Threadable and concurrent module variables, visibility, storage, and synchronization rules. |
 | [`external-module.md`](external-module.md) | External module declarations, `hikec get`, repository checkouts, and release source archives. |
 | [`eventloop.md`](eventloop.md) | Event-loop abstractions built on channels, task invocation, and asynchronous result handling. |
@@ -490,9 +491,11 @@ type and const-parameter specialization.
 
 ---
 
-### 7. Generic Hash Map (`std/maps`) & Indexing Sugar
+### 7. Hash Maps & Indexing Sugar
 
-Hike provides a generic hash map implementation (`std/maps`) with syntax sugar for indexing, membership testing, deletion, and `for-range` traversal.
+Hike provides two built-in map types. `map[K]V` uses the compact-dict runtime,
+while `hashmap[K]V` uses the conventional chained-bucket hash-map runtime.
+The `std/maps` import remains required for `map[K]V` syntax for compatibility.
 
 ```go
 package main
@@ -502,8 +505,8 @@ import "std/maps"
 func printf(format string, ...) int
 
 func main() int {
-    // Initialize map with initial bucket capacity
-    hmap := maps.New[string, int](8)
+    // Initialize a legacy bucketed hash map with initial capacity
+    hmap := make(hashmap[string, int], 8)
 
     // Subscript assignment sugar
     hmap["Tokyo"] = 1400

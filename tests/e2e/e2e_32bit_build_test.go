@@ -36,9 +36,22 @@ func TestE2E32BitTargetBuild(t *testing.T) {
 	objectPath := filepath.Join(tmpDir, "main.o")
 	source := `package main
 
+import "std/maps"
+
+var Metrics = map[string]int64{
+    "requests_total": 0,
+    "errors_total": 0,
+    "bytes_sent": 0,
+}
+
 func main() int {
-    value := 32
-    return value + 10
+    Metrics["requests_total"]++
+    Metrics["bytes_sent"] = Metrics["bytes_sent"] + 64
+    compact := make(map[string]int, 4)
+    compact["compact"] = int(Metrics["requests_total"])
+    legacy := make(hashmap[string]int, 4)
+    legacy["legacy"] = 10
+    return compact["compact"] + legacy["legacy"]
 }
 `
 	if err := os.WriteFile(sourcePath, []byte(source), 0644); err != nil {
@@ -65,6 +78,12 @@ func main() int {
 	}
 	if !strings.Contains(irText, "@__hike_slice_alloc32") {
 		t.Fatal("generated IR does not contain the 32-bit common runtime")
+	}
+	if !strings.Contains(irText, "@__hike_cdict_create") {
+		t.Fatal("generated IR does not use the 32-bit Compact Dict runtime for map")
+	}
+	if !strings.Contains(irText, "@__hike_map_create") {
+		t.Fatal("generated IR does not use the legacy runtime for hashmap")
 	}
 
 	compile := exec.Command(clang, "--target="+triple, "-c", irPath, "-o", objectPath)

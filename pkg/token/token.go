@@ -81,6 +81,8 @@ const (
 	INLINEASM   = "INLINEASM"
 	PASSTHROUGH = "PASSTHROUGH"
 	MAP         = "MAP"
+	HASHMAP     = "HASHMAP"
+	STABLE      = "STABLE"
 	CHAN        = "CHAN"
 	ASYNC       = "ASYNC"
 	RETURN      = "RETURN"
@@ -120,7 +122,7 @@ var GoHikeConstantNames = []string{
 	"OR", "CARET", "SHL", "SHR", "COMMA", "SEMICOLON", "COLON", "ELLIPSIS",
 	"DEFINE", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET", "RBRACKET",
 	"PACKAGE", "IMPORT", "FUNC", "CFUNC", "EXTERN", "JFUNC", "INLINEASM",
-	"PASSTHROUGH", "MAP", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
+	"PASSTHROUGH", "MAP", "HASHMAP", "STABLE", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
 	"INTERFACE", "CONST", "IOTA", "RANGE", "BREAK", "CONTINUE", "IF", "ELSE",
 	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "LOCK", "AREA", "THREADABLE", "CONCURRENT", "NIL", "VAR", "IMPLICIT_CAST",
 }
@@ -139,6 +141,7 @@ var keywords = map[string]TokenType{
 	"struct":      STRUCT,
 	"interface":   INTERFACE,
 	"map":         MAP,
+	"stable":      STABLE,
 	"chan":        CHAN,
 	"Async":       ASYNC,
 	"async":       ASYNC,
@@ -164,38 +167,72 @@ func LookupIdent(ident string) TokenType {
 	// Do not use the keyword map here: the self-hosted runtime must be able to
 	// classify strings that point into a lexer buffer without copying a map key.
 	switch ident {
-	case "package": return PACKAGE
-	case "import": return IMPORT
-	case "func": return FUNC
-	case "cfunc": return CFUNC
-	case "extern": return EXTERN
-	case "jfunc": return JFUNC
-	case "passthrough": return PASSTHROUGH
-	case "var": return VAR
-	case "const": return CONST
-	case "iota": return IOTA
-	case "type": return TYPE
-	case "struct": return STRUCT
-	case "interface": return INTERFACE
-	case "map": return MAP
-	case "chan": return CHAN
-	case "Async", "async": return ASYNC
-	case "return": return RETURN
-	case "if": return IF
-	case "else": return ELSE
-	case "for": return FOR
-	case "range": return RANGE
-	case "switch": return SWITCH
-	case "case": return CASE
-	case "default": return DEFAULT
-	case "defer": return DEFER
-	case "lock": return LOCK
-	case "area": return AREA
-	case "threadable": return THREADABLE
-	case "concurrent": return CONCURRENT
-	case "break": return BREAK
-	case "continue": return CONTINUE
-	case "nil": return NIL
+	case "package":
+		return PACKAGE
+	case "import":
+		return IMPORT
+	case "func":
+		return FUNC
+	case "cfunc":
+		return CFUNC
+	case "extern":
+		return EXTERN
+	case "jfunc":
+		return JFUNC
+	case "passthrough":
+		return PASSTHROUGH
+	case "var":
+		return VAR
+	case "const":
+		return CONST
+	case "iota":
+		return IOTA
+	case "type":
+		return TYPE
+	case "struct":
+		return STRUCT
+	case "interface":
+		return INTERFACE
+	case "map":
+		return MAP
+	case "stable":
+		return STABLE
+	case "chan":
+		return CHAN
+	case "Async", "async":
+		return ASYNC
+	case "return":
+		return RETURN
+	case "if":
+		return IF
+	case "else":
+		return ELSE
+	case "for":
+		return FOR
+	case "range":
+		return RANGE
+	case "switch":
+		return SWITCH
+	case "case":
+		return CASE
+	case "default":
+		return DEFAULT
+	case "defer":
+		return DEFER
+	case "lock":
+		return LOCK
+	case "area":
+		return AREA
+	case "threadable":
+		return THREADABLE
+	case "concurrent":
+		return CONCURRENT
+	case "break":
+		return BREAK
+	case "continue":
+		return CONTINUE
+	case "nil":
+		return NIL
 	}
 	return IDENT
 }

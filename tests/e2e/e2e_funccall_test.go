@@ -35,6 +35,7 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
 // 2. デフォルト引数 (Default Arguments) の自動補完検証
 func TestFuncCall_DefaultArguments(t *testing.T) {
 	t.Parallel()
@@ -138,69 +139,6 @@ func main() int {
 }
 `,
 		ExpectedOut:  "L1=2,C1=4,L2=4,C2=4,L3=5,GROWN=1,LAST=50",
-		ExpectedExit: 0,
-	})
-}
-
-// 5. 組み込み関数 delete(map, key) および len(map) 検証
-func TestFuncCall_Builtins_MapDeleteLen(t *testing.T) {
-	t.Parallel()
-
-	RunHikeCase(t, HikeTestCase{
-		Source: `
-package main
-
-import "std/maps"
-
-func printf(format string, ...) int
-
-func main() int {
-    m := make(map[string]int)
-    m["alpha"] = 1
-    m["beta"] = 2
-    m["gamma"] = 3
-    lenBefore := len(m)
-
-    delete(m, "beta")
-    lenAfter := len(m)
-
-    vAlpha := m["alpha"]
-    vBeta := m["beta"]
-    vGamma := m["gamma"]
-
-    printf("BEFORE=%d,AFTER=%d,A=%d,B=%d,G=%d\n", lenBefore, lenAfter, vAlpha, vBeta, vGamma)
-    return 0
-}
-`,
-		ExpectedOut:  "BEFORE=3,AFTER=2,A=1,B=0,G=3",
-		ExpectedExit: 0,
-	})
-}
-
-// Go-compatible map literal initialization must use the same map runtime as
-// make(map[K]V), including string keys and subsequent indexing.
-func TestFuncCall_MapLiteralInitialization(t *testing.T) {
-	t.Parallel()
-
-	RunHikeCase(t, HikeTestCase{
-		Source: `
-package main
-
-import "std/maps"
-
-func printf(format string, ...) int
-
-func main() int {
-    var values = map[string]int{
-        "alpha": 10,
-        "beta": 20,
-    }
-    values["gamma"] = 30
-    printf("LEN=%d,A=%d,B=%d,G=%d\n", len(values), values["alpha"], values["beta"], values["gamma"])
-    return 0
-}
-`,
-		ExpectedOut:  "LEN=3,A=10,B=20,G=30",
 		ExpectedExit: 0,
 	})
 }

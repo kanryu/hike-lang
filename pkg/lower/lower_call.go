@@ -363,7 +363,7 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 	case *sema.ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
 	case *sema.MapType:
-		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value)}
+		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value), LegacyHashMap: v.LegacyHashMap, Stable: v.Stable}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
 	}
@@ -964,7 +964,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 	if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
 		kType := c.root.semaCtx.ResolveType(mapTypeNode.Key)
 		vType := c.root.semaCtx.ResolveType(mapTypeNode.Value)
-		resMapType := &sema.MapType{Key: kType, Value: vType, IsSingleValue: sema.IsSingleValueMapValue(vType)}
+		resMapType := &sema.MapType{Key: kType, Value: vType, IsSingleValue: sema.IsSingleValueMapValue(vType), LegacyHashMap: mapTypeNode.LegacyHashMap, Stable: mapTypeNode.Stable}
 		isStr := 0
 		if kType == sema.TypeString {
 			isStr = 1
@@ -975,7 +975,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 			capVal = c.root.emitValueCoerce(capVal, sema.TypeInt)
 		}
 		dst := c.root.nextReg(resMapType)
-		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_create", Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
+		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.mapRuntimeNameForType(resMapType, "__hike_map_create", "__hike_cdict_create"), Args: []hir.Value{capVal, &hir.ConstInt{Val: int64(isStr), Typ: sema.TypeInt}}})
 		return dst
 	}
 	var resSliceType *sema.SliceType

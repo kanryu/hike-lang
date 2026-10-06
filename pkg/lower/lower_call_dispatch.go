@@ -259,10 +259,20 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			if mp, isMap := argVal.Type().(*sema.MapType); isMap {
 				if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
 					keyPtr, keyLen := c.root.stringParts(keyVal)
-					c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_delete_str", Args: []hir.Value{argVal, keyPtr, keyLen}})
+					callee := c.root.mapRuntimeNameForType(mp, "__hike_map_delete_str", "__hike_cdict_delete_str")
+					args := []hir.Value{argVal, keyPtr, keyLen}
+					if c.root.useCompactMapRuntimeForType(mp) {
+						if internID, ok := internIDOfString(keyVal); ok {
+							callee = "__hike_cdict_delete_str_hash"
+							args = []hir.Value{argVal, keyPtr, keyLen, &hir.ConstInt{Val: int64(c.root.hirProg.InternHashes[internID]), Typ: sema.TypeInt}}
+						}
+					}
+					call := &hir.InstrCallStatic{CalleeName: callee, Args: args}
+					call.InternID, call.HasInternID = internIDOfString(keyVal)
+					c.root.emit(call)
 				} else {
 					keyI64 := c.root.coerceToI64(keyVal, mp.Key)
-					c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_delete", Args: []hir.Value{argVal, keyI64}})
+					c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.mapRuntimeNameForType(mp, "__hike_map_delete", "__hike_cdict_delete"), Args: []hir.Value{argVal, keyI64}})
 				}
 				return nil
 			}
@@ -309,7 +319,7 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			}
 			if _, isMap := argVal.Type().(*sema.MapType); isMap {
 				dst := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: "__hike_map_len", Args: []hir.Value{argVal}})
+				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.mapRuntimeNameForType(argVal.Type().(*sema.MapType), "__hike_map_len", "__hike_cdict_len"), Args: []hir.Value{argVal}})
 				return dst
 			}
 

@@ -1682,4 +1682,618 @@ get_len:
 ; ------------------------------------------------------------------------------
 ; Attributes
 ; ------------------------------------------------------------------------------
+
+; Compatibility wrappers keep the source-level MapType pointer ABI stable while
+; routing 64-bit lowering through the compact representation above.
+define internal %struct.__hike_map* @__hike_cdict_create(i64 %cap, i64 %is_str) {
+entry:
+  %m = call %struct.__hike_compact_map* @__hike_compact_map_create(i64 %cap, i64 %is_str)
+  %state_raw = bitcast %struct.__hike_compact_map* %m to i8*
+  %legacy_raw = getelementptr i8, i8* %state_raw, i64 -32
+  %legacy = bitcast i8* %legacy_raw to %struct.__hike_map*
+  ret %struct.__hike_map* %legacy
+}
+
+define internal %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m) {
+entry:
+  %raw = bitcast %struct.__hike_map* %m to i8*
+  %state_raw = getelementptr i8, i8* %raw, i64 32
+  %state = bitcast i8* %state_raw to %struct.__hike_compact_map*
+  ret %struct.__hike_compact_map* %state
+}
+
+define internal void @__hike_cdict_set(%struct.__hike_map* %m, i64 %key, i64 %value) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  call void @__hike_compact_map_set(%struct.__hike_compact_map* %compact, i64 %key, i64 %key, i64 %value)
+  ret void
+}
+
+define internal i1 @__hike_cdict_get(%struct.__hike_map* %m, i64 %key, i64* %out) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %found = call i1 @__hike_compact_map_get(%struct.__hike_compact_map* %compact, i64 %key, i64 %key, i64* %out)
+  ret i1 %found
+}
+
+define internal void @__hike_cdict_set_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64 %value) {
+entry:
+  %key = call i64 @__hike_string_key(i8* %ptr, i64 %len)
+  %key_ptr = inttoptr i64 %key to i8*
+  %hash = call i64 @__hike_hash_str(i8* %key_ptr)
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  call void @__hike_compact_map_set(%struct.__hike_compact_map* %compact, i64 %key, i64 %hash, i64 %value)
+  ret void
+}
+
+define internal void @__hike_cdict_set_str_hash(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64 %hash, i64 %value) {
+entry:
+  %key = call i64 @__hike_string_key(i8* %ptr, i64 %len)
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  call void @__hike_compact_map_set(%struct.__hike_compact_map* %compact, i64 %key, i64 %hash, i64 %value)
+  ret void
+}
+
+define internal i1 @__hike_cdict_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %p_ptr = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %p_ptr
+  %p_len = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %p_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i64
+  %hash = call i64 @__hike_hash_str(i8* %key)
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %found = call i1 @__hike_compact_map_get(%struct.__hike_compact_map* %compact, i64 %token, i64 %hash, i64* %out)
+  ret i1 %found
+}
+
+%struct.__hike_compact_map_entry = type { i64, i64, i64, i64, i64 }
+%struct.__hike_compact_map = type { i64*, %struct.__hike_compact_map_entry*, i64, i64, i64, i64, i64 }
+
+define internal i1 @__hike_cdict_get_index(%struct.__hike_map* %m, i64 %index, i64* %out) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %compact, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %index
+  %p_state = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 4
+  %state = load i64, i64* %p_state
+  %live = icmp eq i64 %state, 1
+  br i1 %live, label %found, label %missing
+found:
+  %p_value = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 2
+  %value = load i64, i64* %p_value
+  store i64 %value, i64* %out
+  ret i1 true
+missing:
+  store i64 0, i64* %out
+  ret i1 false
+}
+
+define internal void @__hike_cdict_set_index(%struct.__hike_map* %m, i64 %index, i64 %value) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %compact, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %index
+  %p_value = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 2
+  store i64 %value, i64* %p_value
+  ret void
+}
+
+define internal i1 @__hike_cdict_get_boxed(%struct.__hike_map* %m, i64 %key, i64* %out, i8* %zero) {
+entry:
+  %found = call i1 @__hike_cdict_get(%struct.__hike_map* %m, i64 %key, i64* %out)
+  br i1 %found, label %done, label %missing
+missing:
+  %z = ptrtoint i8* %zero to i64
+  store i64 %z, i64* %out
+  br label %done
+done:
+  ret i1 %found
+}
+
+define internal i1 @__hike_cdict_get_boxed_ok(%struct.__hike_map* %m, i64 %key, i64* %out, i8* %zero) {
+entry:
+  %found = call i1 @__hike_cdict_get_boxed(%struct.__hike_map* %m, i64 %key, i64* %out, i8* %zero)
+  ret i1 %found
+}
+
+define internal i1 @__hike_cdict_get_boxed_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out, i8* %zero) {
+entry:
+  %found = call i1 @__hike_cdict_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out)
+  br i1 %found, label %done, label %missing
+missing:
+  %z = ptrtoint i8* %zero to i64
+  store i64 %z, i64* %out
+  br label %done
+done:
+  ret i1 %found
+}
+
+define internal i1 @__hike_cdict_get_boxed_str_ok(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out, i8* %zero) {
+entry:
+  %found = call i1 @__hike_cdict_get_boxed_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out, i8* %zero)
+  ret i1 %found
+}
+
+define internal void @__hike_cdict_delete(%struct.__hike_map* %m, i64 %key) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %ignored = call i1 @__hike_compact_map_delete(%struct.__hike_compact_map* %compact, i64 %key, i64 %key)
+  ret void
+}
+
+define internal void @__hike_cdict_delete_str(%struct.__hike_map* %m, i8* %ptr, i64 %len) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %p_ptr = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %p_ptr
+  %p_len = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %p_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i64
+  %hash = call i64 @__hike_hash_str(i8* %key)
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %ignored = call i1 @__hike_compact_map_delete(%struct.__hike_compact_map* %compact, i64 %token, i64 %hash)
+  ret void
+}
+
+define internal void @__hike_cdict_delete_str_hash(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64 %hash) {
+entry:
+  %key = alloca %struct.__hike_string_key
+  %p_ptr = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
+  store i8* %ptr, i8** %p_ptr
+  %p_len = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 1
+  store i64 %len, i64* %p_len
+  %token = ptrtoint %struct.__hike_string_key* %key to i64
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %ignored = call i1 @__hike_compact_map_delete(%struct.__hike_compact_map* %compact, i64 %token, i64 %hash)
+  ret void
+}
+
+define internal i64 @__hike_cdict_len(%struct.__hike_map* %m) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %len = call i64 @__hike_compact_map_len(%struct.__hike_compact_map* %compact)
+  ret i64 %len
+}
+
+define internal i1 @__hike_cdict_entry_at(%struct.__hike_map* %m, i64 %ordinal, i64* %out_key, i64* %out_value) {
+entry:
+  %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
+  %p_len = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %compact, i32 0, i32 3
+  %len = load i64, i64* %p_len
+  br label %entry_at_loop
+entry_at_loop:
+  %pos = phi i64 [ 0, %entry ], [ %next_pos, %entry_at_advance ], [ %next_pos_live, %entry_at_live_advance ]
+  %rank = phi i64 [ 0, %entry ], [ %rank, %entry_at_advance ], [ %next_rank, %entry_at_live_advance ]
+  %in_range = icmp ult i64 %pos, %len
+  br i1 %in_range, label %entry_at_probe, label %entry_at_not_found
+entry_at_probe:
+  %found = call i1 @__hike_compact_map_entry_at(%struct.__hike_compact_map* %compact, i64 %pos, i64* %out_key, i64* %out_value)
+  br i1 %found, label %entry_at_live, label %entry_at_advance
+entry_at_live:
+  %is_target = icmp eq i64 %rank, %ordinal
+  br i1 %is_target, label %entry_at_done, label %entry_at_live_advance
+entry_at_advance:
+  %next_pos = add i64 %pos, 1
+  br label %entry_at_loop
+entry_at_live_advance:
+  %next_pos_live = add i64 %pos, 1
+  %next_rank = add i64 %rank, 1
+  br label %entry_at_loop
+entry_at_done:
+  ret i1 true
+entry_at_not_found:
+  store i64 0, i64* %out_key
+  store i64 0, i64* %out_value
+  ret i1 false
+}
+
+; Compact Dict ABI.  indices stores entry numbers (-1 empty, -2 deleted),
+; while entries remains dense and is kept in insertion order by the lowering.
+define internal void @__hike_cdict_legacy_append(%struct.__hike_compact_map* %m, %struct.__hike_compact_map_entry* %new_entry) {
+entry:
+  %state_raw = bitcast %struct.__hike_compact_map* %m to i8*
+  %legacy_raw = getelementptr i8, i8* %state_raw, i64 -32
+  %legacy = bitcast i8* %legacy_raw to %struct.__hike_map*
+  %p_buckets = getelementptr %struct.__hike_map, %struct.__hike_map* %legacy, i32 0, i32 0
+  %buckets = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %p_buckets
+  %p_head = getelementptr %struct.__hike_map_entry*, %struct.__hike_map_entry** %buckets, i64 0
+  %head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_head
+  %entry_legacy = bitcast %struct.__hike_compact_map_entry* %new_entry to %struct.__hike_map_entry*
+  %p_entry_next = getelementptr %struct.__hike_map_entry, %struct.__hike_map_entry* %entry_legacy, i32 0, i32 3
+  store %struct.__hike_map_entry* null, %struct.__hike_map_entry** %p_entry_next
+  %has_head = icmp ne %struct.__hike_map_entry* %head, null
+  br i1 %has_head, label %find_tail, label %store_head
+store_head:
+  store %struct.__hike_map_entry* %entry_legacy, %struct.__hike_map_entry** %p_head
+  ret void
+find_tail:
+  br label %tail_loop
+tail_loop:
+  %current = phi %struct.__hike_map_entry* [ %head, %find_tail ], [ %next, %tail_next ]
+  %p_current_next = getelementptr %struct.__hike_map_entry, %struct.__hike_map_entry* %current, i32 0, i32 3
+  %next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %p_current_next
+  %has_next = icmp ne %struct.__hike_map_entry* %next, null
+  br i1 %has_next, label %tail_next, label %store_tail
+tail_next:
+  br label %tail_loop
+store_tail:
+  store %struct.__hike_map_entry* %entry_legacy, %struct.__hike_map_entry** %p_current_next
+  ret void
+}
+
+define internal i1 @__hike_compact_key_eq(%struct.__hike_compact_map* %m, i64 %left, i64 %right) {
+entry:
+  %p_str = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 5
+  %is_str = load i64, i64* %p_str
+  %same_kind = icmp ne i64 %is_str, 0
+  br i1 %same_kind, label %string_key, label %integer_key
+integer_key:
+  %same_int = icmp eq i64 %left, %right
+  ret i1 %same_int
+string_key:
+  %left_ptr = inttoptr i64 %left to i8*
+  %right_ptr = inttoptr i64 %right to i8*
+  %same_string = call i1 @__hike_map_key_eq(i64 %left, i64 %right, i64 1)
+  ret i1 %same_string
+}
+
+define internal %struct.__hike_compact_map* @__hike_compact_map_create(i64 %requested_cap, i64 %is_str) {
+entry:
+  %cap_ok = icmp uge i64 %requested_cap, 8
+  %cap = select i1 %cap_ok, i64 %requested_cap, i64 8
+  %map_raw = call i8* @malloc(i64 88)
+  %state_raw = getelementptr i8, i8* %map_raw, i64 32
+  %map = bitcast i8* %state_raw to %struct.__hike_compact_map*
+  %index_bytes = mul i64 %cap, 8
+  %index_raw = call i8* @malloc(i64 %index_bytes)
+  %indices = bitcast i8* %index_raw to i64*
+  %entry_bytes = mul i64 %cap, 40
+  %entry_raw = call i8* @malloc(i64 %entry_bytes)
+  %entries = bitcast i8* %entry_raw to %struct.__hike_compact_map_entry*
+  br label %init
+init:
+  %i = phi i64 [ 0, %entry ], [ %next, %init_body ]
+  %done = icmp uge i64 %i, %cap
+  br i1 %done, label %store_map, label %init_body
+init_body:
+  %p = getelementptr i64, i64* %indices, i64 %i
+  store i64 -1, i64* %p
+  %next = add i64 %i, 1
+  br label %init
+store_map:
+  %p_indices = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 0
+  store i64* %indices, i64** %p_indices
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 1
+  store %struct.__hike_compact_map_entry* %entries, %struct.__hike_compact_map_entry** %p_entries
+  %p_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 2
+  store i64 %cap, i64* %p_cap
+  %p_len = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 3
+  store i64 0, i64* %p_len
+  %p_live = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 4
+  store i64 0, i64* %p_live
+  %p_str = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 5
+  store i64 %is_str, i64* %p_str
+  %p_entry_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 6
+  store i64 %cap, i64* %p_entry_cap
+  ret %struct.__hike_compact_map* %map
+}
+
+define internal i1 @__hike_compact_map_get(%struct.__hike_compact_map* %m, i64 %key, i64 %hash, i64* %out) {
+entry:
+  store i64 0, i64* %out
+  %null_m = icmp eq %struct.__hike_compact_map* %m, null
+  br i1 %null_m, label %not_found, label %load_map
+load_map:
+  %p_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 2
+  %cap = load i64, i64* %p_cap
+  %p_indices = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 0
+  %indices = load i64*, i64** %p_indices
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %start = urem i64 %hash, %cap
+  br label %probe
+probe:
+  %slot = phi i64 [ %start, %load_map ], [ %next_slot, %advance ]
+  %tries = phi i64 [ 0, %load_map ], [ %next_try, %advance ]
+  %p_index = getelementptr i64, i64* %indices, i64 %slot
+  %entry_index = load i64, i64* %p_index
+  %empty = icmp eq i64 %entry_index, -1
+  br i1 %empty, label %not_found, label %check_deleted
+check_deleted:
+  %deleted = icmp eq i64 %entry_index, -2
+  br i1 %deleted, label %next, label %check_entry
+check_entry:
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %entry_index
+  %p_hash = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 0
+  %stored_hash = load i64, i64* %p_hash
+  %hash_match = icmp eq i64 %stored_hash, %hash
+  br i1 %hash_match, label %check_key, label %next
+check_key:
+  %p_key = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 1
+  %stored_key = load i64, i64* %p_key
+  %key_match = call i1 @__hike_compact_key_eq(%struct.__hike_compact_map* %m, i64 %stored_key, i64 %key)
+  br i1 %key_match, label %found, label %next
+found:
+  %p_value = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 2
+  %value = load i64, i64* %p_value
+  store i64 %value, i64* %out
+  ret i1 true
+next:
+  %next_try = add i64 %tries, 1
+  %exhausted = icmp uge i64 %next_try, %cap
+  br i1 %exhausted, label %not_found, label %advance
+advance:
+  %raw_next = add i64 %slot, 1
+  %wrapped = icmp uge i64 %raw_next, %cap
+  %next_slot = select i1 %wrapped, i64 0, i64 %raw_next
+  br label %probe
+not_found:
+  ret i1 false
+}
+
+define internal void @__hike_compact_map_grow(%struct.__hike_compact_map* %m) {
+entry:
+  %p_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 2
+  %old_cap = load i64, i64* %p_cap
+  %new_cap = mul i64 %old_cap, 2
+  %p_indices = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 0
+  %old_indices = load i64*, i64** %p_indices
+  %new_index_bytes = mul i64 %new_cap, 8
+  %new_index_raw = call i8* @malloc(i64 %new_index_bytes)
+  %new_indices = bitcast i8* %new_index_raw to i64*
+  br label %init_indices
+init_indices:
+  %ii = phi i64 [ 0, %entry ], [ %ii_next, %init_body ]
+  %ii_done = icmp uge i64 %ii, %new_cap
+  br i1 %ii_done, label %copy_entries, label %init_body
+init_body:
+  %ip = getelementptr i64, i64* %new_indices, i64 %ii
+  store i64 -1, i64* %ip
+  %ii_next = add i64 %ii, 1
+  br label %init_indices
+copy_entries:
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 1
+  %old_entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %old_entry_bytes = mul i64 %old_cap, 40
+  %new_entry_bytes = mul i64 %new_cap, 40
+  %new_entry_raw = call i8* @malloc(i64 %new_entry_bytes)
+  %new_entries = bitcast i8* %new_entry_raw to %struct.__hike_compact_map_entry*
+  %old_entries_raw = bitcast %struct.__hike_compact_map_entry* %old_entries to i8*
+  call i8* @memcpy(i8* %new_entry_raw, i8* %old_entries_raw, i64 %old_entry_bytes)
+  %p_len = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 3
+  %entry_len = load i64, i64* %p_len
+  br label %rehash
+rehash:
+  %ri = phi i64 [ 0, %copy_entries ], [ %ri_next, %rehash_next ]
+  %ri_done = icmp uge i64 %ri, %entry_len
+  br i1 %ri_done, label %finish, label %rehash_body
+rehash_body:
+  %old_ep = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %new_entries, i64 %ri
+  %state_p = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %old_ep, i32 0, i32 4
+  %state = load i64, i64* %state_p
+  %live = icmp ne i64 %state, 0
+  br i1 %live, label %rehash_live, label %rehash_next
+rehash_live:
+  %hash_p = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %old_ep, i32 0, i32 0
+  %hash = load i64, i64* %hash_p
+  %slot = urem i64 %hash, %new_cap
+  br label %find_slot
+find_slot:
+  %fs = phi i64 [ %slot, %rehash_live ], [ %fs_next, %find_next ]
+  %fsp = getelementptr i64, i64* %new_indices, i64 %fs
+  %fsv = load i64, i64* %fsp
+  %free_slot = icmp eq i64 %fsv, -1
+  br i1 %free_slot, label %store_slot, label %find_next
+find_next:
+  %fs_raw = add i64 %fs, 1
+  %fs_wrap = icmp uge i64 %fs_raw, %new_cap
+  %fs_next = select i1 %fs_wrap, i64 0, i64 %fs_raw
+  br label %find_slot
+store_slot:
+  store i64 %ri, i64* %fsp
+  br label %rehash_next
+rehash_next:
+  %ri_next = add i64 %ri, 1
+  br label %rehash
+finish:
+  %old_indices_raw = bitcast i64* %old_indices to i8*
+  call void @free(i8* %old_indices_raw)
+  call void @free(i8* %old_entries_raw)
+  store i64* %new_indices, i64** %p_indices
+  store %struct.__hike_compact_map_entry* %new_entries, %struct.__hike_compact_map_entry** %p_entries
+  store i64 %new_cap, i64* %p_cap
+  %p_entry_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 6
+  store i64 %new_cap, i64* %p_entry_cap
+  ret void
+}
+
+define internal void @__hike_compact_map_set(%struct.__hike_compact_map* %m, i64 %key, i64 %hash, i64 %value) {
+entry:
+  %null_m = icmp eq %struct.__hike_compact_map* %m, null
+  br i1 %null_m, label %done, label %load_map
+load_map:
+  %p_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 2
+  %cap = load i64, i64* %p_cap
+  %p_indices = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 0
+  %indices = load i64*, i64** %p_indices
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %p_len = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 3
+  %entry_len = load i64, i64* %p_len
+  %p_live = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 4
+  %live = load i64, i64* %p_live
+  %live4 = mul i64 %live, 4
+  %cap3 = mul i64 %cap, 3
+  %needs_load_grow = icmp uge i64 %live4, %cap3
+  %p_entry_cap_check = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 6
+  %entry_cap_check = load i64, i64* %p_entry_cap_check
+  %entry_full = icmp uge i64 %entry_len, %entry_cap_check
+  %needs_grow = or i1 %needs_load_grow, %entry_full
+  br i1 %needs_grow, label %grow, label %begin_probe
+grow:
+  call void @__hike_compact_map_grow(%struct.__hike_compact_map* %m)
+  br label %load_map
+begin_probe:
+  %start = urem i64 %hash, %cap
+  br label %probe
+probe:
+  %slot = phi i64 [ %start, %begin_probe ], [ %next_slot, %advance ]
+  %tries = phi i64 [ 0, %begin_probe ], [ %next_try, %advance ]
+  %p_index = getelementptr i64, i64* %indices, i64 %slot
+  %entry_index = load i64, i64* %p_index
+  %empty = icmp eq i64 %entry_index, -1
+  %deleted = icmp eq i64 %entry_index, -2
+  br i1 %empty, label %insert, label %check_deleted
+check_deleted:
+  br i1 %deleted, label %insert, label %check_entry
+check_entry:
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %entry_index
+  %p_hash = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 0
+  %stored_hash = load i64, i64* %p_hash
+  %hash_match = icmp eq i64 %stored_hash, %hash
+  br i1 %hash_match, label %check_key, label %next
+check_key:
+  %p_key = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 1
+  %stored_key = load i64, i64* %p_key
+  %key_match = call i1 @__hike_compact_key_eq(%struct.__hike_compact_map* %m, i64 %stored_key, i64 %key)
+  br i1 %key_match, label %update, label %next
+update:
+  %p_value = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 2
+  store i64 %value, i64* %p_value
+  br label %done
+insert:
+  %entry_ptr_new = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %entry_len
+  %p_hash_new = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr_new, i32 0, i32 0
+  store i64 %hash, i64* %p_hash_new
+  %p_key_new = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr_new, i32 0, i32 1
+  store i64 %key, i64* %p_key_new
+  %p_value_new = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr_new, i32 0, i32 2
+  store i64 %value, i64* %p_value_new
+  %p_state_new = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr_new, i32 0, i32 4
+  store i64 1, i64* %p_state_new
+  %state_raw_new = bitcast %struct.__hike_compact_map* %m to i8*
+  store i64 %entry_len, i64* %p_index
+  %next_len = add i64 %entry_len, 1
+  store i64 %next_len, i64* %p_len
+  %p_live2 = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 4
+  %live2 = load i64, i64* %p_live2
+  %next_live2 = add i64 %live2, 1
+  store i64 %next_live2, i64* %p_live2
+  br label %done
+next:
+  %next_try = add i64 %tries, 1
+  %exhausted = icmp uge i64 %next_try, %cap
+  br i1 %exhausted, label %done, label %advance
+advance:
+  %raw_next = add i64 %slot, 1
+  %wrapped = icmp uge i64 %raw_next, %cap
+  %next_slot = select i1 %wrapped, i64 0, i64 %raw_next
+  br label %probe
+done:
+  ret void
+}
+
+define internal i1 @__hike_compact_map_delete(%struct.__hike_compact_map* %m, i64 %key, i64 %hash) {
+entry:
+  %null_m = icmp eq %struct.__hike_compact_map* %m, null
+  br i1 %null_m, label %not_found, label %load_map
+load_map:
+  %p_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 2
+  %cap = load i64, i64* %p_cap
+  %p_indices = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 0
+  %indices = load i64*, i64** %p_indices
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %start = urem i64 %hash, %cap
+  br label %probe
+probe:
+  %slot = phi i64 [ %start, %load_map ], [ %next_slot, %advance ]
+  %tries = phi i64 [ 0, %load_map ], [ %next_try, %advance ]
+  %p_index = getelementptr i64, i64* %indices, i64 %slot
+  %entry_index = load i64, i64* %p_index
+  %empty = icmp eq i64 %entry_index, -1
+  br i1 %empty, label %not_found, label %check_deleted
+check_deleted:
+  %deleted = icmp eq i64 %entry_index, -2
+  br i1 %deleted, label %next, label %check_entry
+check_entry:
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %entry_index
+  %p_hash = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 0
+  %stored_hash = load i64, i64* %p_hash
+  %hash_match = icmp eq i64 %stored_hash, %hash
+  br i1 %hash_match, label %check_key, label %next
+check_key:
+  %p_key = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 1
+  %stored_key = load i64, i64* %p_key
+  %key_match = call i1 @__hike_compact_key_eq(%struct.__hike_compact_map* %m, i64 %stored_key, i64 %key)
+  br i1 %key_match, label %remove, label %next
+remove:
+  store i64 -2, i64* %p_index
+  %p_state = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 4
+  store i64 0, i64* %p_state
+  %p_live = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 4
+  %live = load i64, i64* %p_live
+  %new_live = sub i64 %live, 1
+  store i64 %new_live, i64* %p_live
+  ret i1 true
+next:
+  %next_try = add i64 %tries, 1
+  %exhausted = icmp uge i64 %next_try, %cap
+  br i1 %exhausted, label %not_found, label %advance
+advance:
+  %raw_next = add i64 %slot, 1
+  %wrapped = icmp uge i64 %raw_next, %cap
+  %next_slot = select i1 %wrapped, i64 0, i64 %raw_next
+  br label %probe
+not_found:
+  ret i1 false
+}
+
+define internal i64 @__hike_compact_map_len(%struct.__hike_compact_map* %m) {
+entry:
+  %null_m = icmp eq %struct.__hike_compact_map* %m, null
+  br i1 %null_m, label %zero, label %load_live
+load_live:
+  %p_live = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 4
+  %live = load i64, i64* %p_live
+  ret i64 %live
+zero:
+  ret i64 0
+}
+
+define internal i1 @__hike_compact_map_entry_at(%struct.__hike_compact_map* %m, i64 %ordinal, i64* %out_key, i64* %out_value) {
+entry:
+  %null_m = icmp eq %struct.__hike_compact_map* %m, null
+  br i1 %null_m, label %not_found, label %load_entries
+load_entries:
+  %p_len = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 3
+  %len = load i64, i64* %p_len
+  %out_of_range = icmp uge i64 %ordinal, %len
+  br i1 %out_of_range, label %not_found, label %scan
+scan:
+  %p_entries = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %m, i32 0, i32 1
+  %entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %p_entries
+  %entry_ptr = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entries, i64 %ordinal
+  %p_state = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 4
+  %state = load i64, i64* %p_state
+  %live = icmp ne i64 %state, 0
+  br i1 %live, label %copy, label %not_found
+copy:
+  %p_key = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 1
+  %key = load i64, i64* %p_key
+  %p_value = getelementptr %struct.__hike_compact_map_entry, %struct.__hike_compact_map_entry* %entry_ptr, i32 0, i32 2
+  %value = load i64, i64* %p_value
+  store i64 %key, i64* %out_key
+  store i64 %value, i64* %out_value
+  ret i1 true
+not_found:
+  store i64 0, i64* %out_key
+  store i64 0, i64* %out_value
+  ret i1 false
+}
+
 attributes #0 = { noinline nounwind "no-builtins" }

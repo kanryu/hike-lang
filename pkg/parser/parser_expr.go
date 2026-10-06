@@ -248,7 +248,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			p.parseStructFields(st)
 		}
 		return st
-	} else if p.curTokenIs(token.IDENT) {
+	} else if p.curTokenIs(token.IDENT) && !(p.curToken.Literal == "hashmap" && p.peekTokenIs(token.LBRACKET)) {
 		ident := p.parseIdentifier()
 
 		var pkgIdent *ast.Identifier = nil
@@ -347,8 +347,15 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			}
 		}
 		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, IsVariadic: isVariadic, ReturnTypes: returnTypes}
-	} else if p.curTokenIs(token.MAP) {
+	} else if p.curTokenIs(token.MAP) || p.curTokenIs(token.HASHMAP) || p.curTokenIs(token.STABLE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "hashmap" && p.peekTokenIs(token.LBRACKET)) {
 		tok := p.curToken
+		stable := tok.Type == token.STABLE
+		if stable {
+			if !p.expectPeek(token.MAP) {
+				return nil
+			}
+			tok = p.curToken
+		}
 		p.nextToken()
 		p.expectCurrent(token.LBRACKET)
 		p.nextToken()
@@ -356,7 +363,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		p.expectPeek(token.RBRACKET)
 		p.nextToken()
 		valType := p.parseTypeExpr()
-		return &ast.MapType{Token: tok, Key: keyType, Value: valType}
+		return &ast.MapType{Token: tok, Key: keyType, Value: valType, LegacyHashMap: tok.Type == token.HASHMAP || tok.Literal == "hashmap", Stable: stable}
 	} else if p.curTokenIs(token.CHAN) {
 		tok := p.curToken
 		p.nextToken()
@@ -375,6 +382,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	switch p.curToken.Type {
 	case token.IDENT:
+		if p.curToken.Literal == "hashmap" && p.peekTokenIs(token.LBRACKET) {
+			if typeExpr, ok := p.parseTypeExpr().(ast.Expression); ok {
+				leftExp = typeExpr
+			}
+			break
+		}
 		ident := p.parseIdentifier()
 		leftExp = p.parseIdentifierExpression(ident)
 	case token.INT:
@@ -470,7 +483,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		body := p.parseBlockStmt()
 		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, ReturnNames: returnNames, Body: body}
 
-	case token.MAP:
+	case token.MAP, token.HASHMAP, token.STABLE:
 		mapType, ok := p.parseTypeExpr().(*ast.MapType)
 		if !ok {
 			return nil
