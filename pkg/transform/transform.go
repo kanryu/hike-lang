@@ -123,7 +123,7 @@ func semaTypeToAstType(tok token.Token, typ sema.Type) ast.TypeExpr {
 	case *sema.SliceType:
 		return &ast.SliceType{Token: tok, Elem: semaTypeToAstType(tok, resolved.Elem)}
 	case *sema.MapType:
-		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value), IsSingleValue: resolved.IsSingleValue, LegacyHashMap: resolved.LegacyHashMap}
+		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value), IsSingleValue: resolved.IsSingleValue, LegacyHashMap: resolved.LegacyHashMap, Stable: resolved.Stable}
 	case *sema.StructType:
 		if resolved.Name == "" {
 			fields := make([]*ast.FieldDecl, 0, len(resolved.Fields))
@@ -1240,6 +1240,7 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 			Value:         t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
 			IsSingleValue: node.IsSingleValue,
 			LegacyHashMap: node.LegacyHashMap,
+			Stable:        node.Stable,
 		}
 
 	case *ast.ChanType:
@@ -1816,9 +1817,12 @@ func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
 		}
 	}
 	legacyHashMap := strings.HasPrefix(typeName, "hashmap[")
+	stableMap := strings.HasPrefix(typeName, "stable map[")
 	mapPrefix := "map["
 	if legacyHashMap {
 		mapPrefix = "hashmap["
+	} else if stableMap {
+		mapPrefix = "stable map["
 	}
 	if strings.HasPrefix(typeName, mapPrefix) {
 		if end := strings.Index(typeName, "]"); end > len(mapPrefix) && end+1 < len(typeName) {
@@ -1827,6 +1831,7 @@ func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
 				Key:           parseSimpleTypeExpr(tok, typeName[len(mapPrefix):end]),
 				Value:         parseSimpleTypeExpr(tok, typeName[end+1:]),
 				LegacyHashMap: legacyHashMap,
+				Stable:        stableMap,
 			}
 		}
 	}

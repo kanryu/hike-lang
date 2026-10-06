@@ -368,7 +368,7 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 			// example func([]byte). Treat an unambiguously type-shaped token as
 			// an unnamed parameter instead of trying to parse it as an identifier.
 			if p.curTokenIs(token.ASTERISK) || p.curTokenIs(token.LBRACKET) ||
-				p.curTokenIs(token.MAP) || p.curTokenIs(token.HASHMAP) || p.curTokenIs(token.CHAN) || p.curTokenIs(token.FUNC) ||
+				p.curTokenIs(token.MAP) || p.curTokenIs(token.HASHMAP) || p.curTokenIs(token.STABLE) || p.curTokenIs(token.CHAN) || p.curTokenIs(token.FUNC) ||
 				p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) &&
 				(p.peekTokenIs(token.RPAREN) || (p.peekTokenIs(token.COMMA) && !p.hasNamedParameterGroup()) || p.peekTokenIs(token.DOT))) {
 				pType := p.parseTypeExpr()
@@ -570,7 +570,7 @@ func (p *Parser) parseReturnTypeListWithNames() ([]ast.TypeExpr, []string) {
 
 func isTypeStartToken(t token.TokenType) bool {
 	switch t {
-	case token.IDENT, token.ASTERISK, token.LBRACKET, token.MAP, token.HASHMAP, token.CHAN, token.INTERFACE, token.FUNC, token.ELLIPSIS:
+	case token.IDENT, token.ASTERISK, token.LBRACKET, token.MAP, token.HASHMAP, token.STABLE, token.CHAN, token.INTERFACE, token.FUNC, token.ELLIPSIS:
 		return true
 	default:
 		return false

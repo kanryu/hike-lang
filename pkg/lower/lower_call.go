@@ -363,7 +363,7 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 	case *sema.ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
 	case *sema.MapType:
-		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value), LegacyHashMap: v.LegacyHashMap}
+		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value), LegacyHashMap: v.LegacyHashMap, Stable: v.Stable}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
 	}
@@ -964,7 +964,7 @@ func (c *CallLowerer) lowerMakeCall(call *ast.CallExpr) hir.Value {
 	if mapTypeNode, okMap := call.Args[0].(*ast.MapType); okMap {
 		kType := c.root.semaCtx.ResolveType(mapTypeNode.Key)
 		vType := c.root.semaCtx.ResolveType(mapTypeNode.Value)
-		resMapType := &sema.MapType{Key: kType, Value: vType, IsSingleValue: sema.IsSingleValueMapValue(vType), LegacyHashMap: mapTypeNode.LegacyHashMap}
+		resMapType := &sema.MapType{Key: kType, Value: vType, IsSingleValue: sema.IsSingleValueMapValue(vType), LegacyHashMap: mapTypeNode.LegacyHashMap, Stable: mapTypeNode.Stable}
 		isStr := 0
 		if kType == sema.TypeString {
 			isStr = 1

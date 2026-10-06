@@ -38,9 +38,17 @@ func TestE2E32BitTargetBuild(t *testing.T) {
 
 import "std/maps"
 
+var Metrics = map[string]int64{
+    "requests_total": 0,
+    "errors_total": 0,
+    "bytes_sent": 0,
+}
+
 func main() int {
+    Metrics["requests_total"]++
+    Metrics["bytes_sent"] = Metrics["bytes_sent"] + 64
     compact := make(map[string]int, 4)
-    compact["compact"] = 32
+    compact["compact"] = int(Metrics["requests_total"])
     legacy := make(hashmap[string]int, 4)
     legacy["legacy"] = 10
     return compact["compact"] + legacy["legacy"]

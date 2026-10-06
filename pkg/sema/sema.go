@@ -57,6 +57,8 @@ func typeNameOf(typ Type) string {
 		name := "map"
 		if t.LegacyHashMap {
 			name = "hashmap"
+		} else if t.Stable {
+			name = "stable map"
 		}
 		return fmt.Sprintf("%s[%s]%s", name, typeNameOf(t.Key), typeNameOf(t.Value))
 	case *ChanType:
@@ -664,6 +666,7 @@ type MapType struct {
 	Value         Type
 	IsSingleValue bool
 	LegacyHashMap bool
+	Stable        bool
 }
 
 // IsSingleValueMapValue reports whether a map value fits the scalar map ABI.
@@ -918,7 +921,7 @@ func typeToTypeExpr(t Type) ast.TypeExpr {
 	case *ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: typeToTypeExpr(v.Elem)}
 	case *MapType:
-		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value), IsSingleValue: v.IsSingleValue, LegacyHashMap: v.LegacyHashMap}
+		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value), IsSingleValue: v.IsSingleValue, LegacyHashMap: v.LegacyHashMap, Stable: v.Stable}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: typeNameOf(v)}}
 	}
@@ -1126,6 +1129,9 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 
 	// Pass 2: 定数、グローバル変数、非ジェネリック関数の確定
 	resolveDeclarationTypes(prog, ctx)
+	if err := validateStableMaps(prog, ctx); err != nil {
+		return nil, err
+	}
 
 	// Pass 3: エスケープ解析
 	runEscapeAnalysis(prog)

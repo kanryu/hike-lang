@@ -390,7 +390,7 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 		}
 		mapLiteral := &ast.MapLiteral{
 			Token:   node.Token,
-			Type:    &ast.MapType{Token: node.Type.Token, Key: semaTypeToTypeExpr(mapType.Key), Value: semaTypeToTypeExpr(mapType.Value), LegacyHashMap: mapType.LegacyHashMap},
+			Type:    &ast.MapType{Token: node.Type.Token, Key: semaTypeToTypeExpr(mapType.Key), Value: semaTypeToTypeExpr(mapType.Value), LegacyHashMap: mapType.LegacyHashMap, Stable: mapType.Stable},
 			Entries: entries,
 		}
 		mapValue := e.lowerMapLiteral(mapLiteral)

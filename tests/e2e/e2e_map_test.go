@@ -399,3 +399,26 @@ func main() int {
 `
 	runMapValueCase(t, source, "first=one\nsecond=two\nthird=three")
 }
+
+func TestE2EGlobalMapLiteralIncrement(t *testing.T) {
+	const source = `package main
+
+import "std/maps"
+
+var Metrics = map[string]int64{
+    "requests_total": 0,
+    "errors_total": 0,
+    "bytes_sent": 0,
+}
+
+func printf(format string, ...) int
+
+func main() int {
+    Metrics["requests_total"]++
+    Metrics["bytes_sent"] = Metrics["bytes_sent"] + 64
+    printf("REQUESTS=%d,ERRORS=%d,BYTES=%d\n", Metrics["requests_total"], Metrics["errors_total"], Metrics["bytes_sent"])
+    return 0
+}
+`
+	runMapValueCase(t, source, "REQUESTS=1,ERRORS=0,BYTES=64")
+}

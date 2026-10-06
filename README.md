@@ -119,6 +119,7 @@ See the linked design documents below for the exact implementation boundaries.
 | [`encoding.md`](encoding.md) | UTF-8 rules, string and buffer layouts, shared substring views, reference counting, and copy-on-write. |
 | [`wasm.md`](wasm.md) | wasm32 target behavior, JavaScript runtime integration, exports, memory access, and testing. |
 | [`concurrency.md`](concurrency.md) | Async tasks, channels, worker synchronization, closure transfer, and generated task bridges. |
+| [`compact-dict.md`](compact-dict.md) | Compact-dict `map[K]V`, legacy `hashmap[K]V`, shared string hashing, and iteration behavior. |
 | [`thread-variables.md`](thread-variables.md) | Threadable and concurrent module variables, visibility, storage, and synchronization rules. |
 | [`external-module.md`](external-module.md) | External module declarations, `hikec get`, repository checkouts, and release source archives. |
 | [`eventloop.md`](eventloop.md) | Event-loop abstractions built on channels, task invocation, and asynchronous result handling. |

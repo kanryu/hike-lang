@@ -612,6 +612,9 @@ type MapType struct {
 	// LegacyHashMap selects the traditional bucketed hashmap ABI. Plain map
 	// types use the Compact Dict ABI on 64-bit targets.
 	LegacyHashMap bool
+	// Stable selects the fixed-key stable-map form. Stable maps must be
+	// initialized with a complete map literal and cannot change their key set.
+	Stable bool
 }
 
 func (mt *MapType) typeExprNode()        {}

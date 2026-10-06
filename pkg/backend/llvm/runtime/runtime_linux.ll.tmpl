@@ -6,6 +6,7 @@ declare i32 @pthread_mutex_lock(i8*)
 declare i32 @pthread_mutex_unlock(i8*)
 declare i32 @pthread_cond_init(i8*, i8*)
 declare i32 @pthread_cond_wait(i8*, i8*)
+declare i32 @pthread_cond_timedwait(i8*, i8*, i8*)
 declare i32 @pthread_cond_signal(i8*)
 declare i32 @pthread_mutex_destroy(i8*)
 declare i32 @pthread_cond_destroy(i8*)
@@ -72,15 +73,48 @@ entry:
   %m = bitcast [{{.LinuxMutexBytes}} x i8]* %mp to i8*
   %c = bitcast [{{.LinuxCondBytes}} x i8]* %cp to i8*
   %state = getelementptr %struct.__hike_linux_event, %struct.__hike_linux_event* %ev, i32 0, i32 2
+  %ts = alloca [16 x i8], align 8
+  %ts_ptr = bitcast [16 x i8]* %ts to i8*
   call i32 @pthread_mutex_lock(i8* %m)
+  %infinite = icmp eq i32 %timeout, -1
+  br i1 %infinite, label %check, label %prepare_deadline
+prepare_deadline:
+  %sec = bitcast [16 x i8]* %ts to i64*
+  %nsec = getelementptr i64, i64* %sec, i32 1
+  %clock_result = call i32 @clock_gettime(i32 0, i8* %ts_ptr)
+  %now_sec = load i64, i64* %sec
+  %now_nsec = load i64, i64* %nsec
+  %timeout_sec = udiv i32 %timeout, 1000
+  %timeout_ms = urem i32 %timeout, 1000
+  %timeout_sec64 = zext i32 %timeout_sec to i64
+  %timeout_ns = mul i32 %timeout_ms, 1000000
+  %timeout_ns64 = zext i32 %timeout_ns to i64
+  %deadline_sec_raw = add i64 %now_sec, %timeout_sec64
+  %deadline_nsec_raw = add i64 %now_nsec, %timeout_ns64
+  %needs_normalize = icmp uge i64 %deadline_nsec_raw, 1000000000
+  %deadline_nsec_normalized = sub i64 %deadline_nsec_raw, 1000000000
+  %deadline_sec_normalized = add i64 %deadline_sec_raw, 1
+  %deadline_nsec = select i1 %needs_normalize, i64 %deadline_nsec_normalized, i64 %deadline_nsec_raw
+  %deadline_sec = select i1 %needs_normalize, i64 %deadline_sec_normalized, i64 %deadline_sec_raw
+  store i64 %deadline_sec, i64* %sec
+  store i64 %deadline_nsec, i64* %nsec
   br label %check
 check:
   %ready = load i32, i32* %state
   %has = icmp ne i32 %ready, 0
   br i1 %has, label %done, label %wait
 wait:
-  call i32 @pthread_cond_wait(i8* %c, i8* %m)
+  br i1 %infinite, label %wait_infinite, label %wait_timed
+wait_infinite:
+  %wait_result = call i32 @pthread_cond_wait(i8* %c, i8* %m)
   br label %check
+wait_timed:
+  %timed_result = call i32 @pthread_cond_timedwait(i8* %c, i8* %m, i8* %ts_ptr)
+  %timed_ok = icmp eq i32 %timed_result, 0
+  br i1 %timed_ok, label %check, label %timed_done
+timed_done:
+  call i32 @pthread_mutex_unlock(i8* %m)
+  ret i32 %timed_result
 done:
   store i32 0, i32* %state
   call i32 @pthread_mutex_unlock(i8* %m)
