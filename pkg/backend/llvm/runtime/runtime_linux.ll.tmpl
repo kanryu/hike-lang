@@ -15,7 +15,11 @@ declare {{.SizeType}} @write(i32, i8*, {{.SizeType}})
 
 define void @__hike_stderr_write(i8* %data, i32 %length) {
 entry:
+  {{if eq .SizeType "i64"}}
   %length_native = zext i32 %length to {{.SizeType}}
+  {{else}}
+  %length_native = add i32 %length, 0
+  {{end}}
   call {{.SizeType}} @write(i32 2, i8* %data, {{.SizeType}} %length_native)
   ret void
 }

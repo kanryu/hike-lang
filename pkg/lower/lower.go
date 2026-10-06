@@ -114,7 +114,7 @@ func (l *Lowerer) SetRetainRelease(enabled bool) { l.retainRelease = enabled }
 // useCompactMapRuntime selects the 64-bit compact-dict ABI.  The 32-bit and
 // wasm runtimes still expose the legacy map ABI until their pointer-width
 // templates are migrated as well.
-func (l *Lowerer) useCompactMapRuntime() bool { return !l.is32Bit }
+func (l *Lowerer) useCompactMapRuntime() bool { return true }
 
 func (l *Lowerer) mapRuntimeName(legacy, compact string) string {
 	if l.useCompactMapRuntime() {
