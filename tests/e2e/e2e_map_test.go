@@ -334,3 +334,68 @@ func main() int {
 		})
 	}
 }
+
+func TestE2EMapDeleteAndLen(t *testing.T) {
+	const source = `package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    m := make(map[string]int)
+    m["alpha"] = 1
+    m["beta"] = 2
+    m["gamma"] = 3
+    lenBefore := len(m)
+
+    delete(m, "beta")
+    lenAfter := len(m)
+
+    printf("BEFORE=%d,AFTER=%d,A=%d,B=%d,G=%d\n", lenBefore, lenAfter, m["alpha"], m["beta"], m["gamma"])
+    return 0
+}
+`
+	runMapValueCase(t, source, "BEFORE=3,AFTER=2,A=1,B=0,G=3")
+}
+
+func TestE2EMapLiteralInitialization(t *testing.T) {
+	const source = `package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    var values = map[string]int{
+        "alpha": 10,
+        "beta": 20,
+    }
+    values["gamma"] = 30
+    printf("LEN=%d,A=%d,B=%d,G=%d\n", len(values), values["alpha"], values["beta"], values["gamma"])
+    return 0
+}
+`
+	runMapValueCase(t, source, "LEN=3,A=10,B=20,G=30")
+}
+
+func TestE2EMapStringRangePreservesInsertionOrder(t *testing.T) {
+	const source = `package main
+
+import "std/maps"
+
+func printf(format string, ...) int
+
+func main() int {
+    values := make(map[string]string)
+    values["first"] = "one"
+    values["second"] = "two"
+    values["third"] = "three"
+    for key, value := range values {
+        printf("%s=%s\n", key, value)
+    }
+    return 0
+}
+`
+	runMapValueCase(t, source, "first=one\nsecond=two\nthird=three")
+}

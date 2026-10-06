@@ -1046,7 +1046,7 @@ func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
 	mapVal := e.root.nextReg(mp)
 	e.root.emit(&hir.InstrCallStatic{
 		Dst:        mapVal,
-		CalleeName: "__hike_map_create",
+		CalleeName: e.root.mapRuntimeNameForType(mp, "__hike_map_create", "__hike_cdict_create"),
 		Args:       []hir.Value{capVal, &hir.ConstInt{Val: isStr, Typ: sema.TypeInt}},
 	})
 
@@ -1068,10 +1068,20 @@ func (e *ExprLowerer) lowerMapLiteral(node *ast.MapLiteral) hir.Value {
 		valueI64 := e.root.boxMapValue(valueVal, mp.Value)
 		if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
 			keyPtr, keyLen := e.root.stringParts(keyVal)
-			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set_str", Args: []hir.Value{mapVal, keyPtr, keyLen, valueI64}})
+			callee := e.root.mapRuntimeNameForType(mp, "__hike_map_set_str", "__hike_cdict_set_str")
+			args := []hir.Value{mapVal, keyPtr, keyLen, valueI64}
+			if e.root.useCompactMapRuntimeForType(mp) {
+				if internID, ok := internIDOfString(keyVal); ok {
+					callee = "__hike_cdict_set_str_hash"
+					args = []hir.Value{mapVal, keyPtr, keyLen, &hir.ConstInt{Val: int64(e.root.hirProg.InternHashes[internID]), Typ: sema.TypeInt}, valueI64}
+				}
+			}
+			call := &hir.InstrCallStatic{CalleeName: callee, Args: args}
+			call.InternID, call.HasInternID = internIDOfString(keyVal)
+			e.root.emit(call)
 		} else {
 			keyI64 := e.root.coerceToI64(keyVal, mp.Key)
-			e.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_map_set", Args: []hir.Value{mapVal, keyI64, valueI64}})
+			e.root.emit(&hir.InstrCallStatic{CalleeName: e.root.mapRuntimeNameForType(mp, "__hike_map_set", "__hike_cdict_set"), Args: []hir.Value{mapVal, keyI64, valueI64}})
 		}
 	}
 	return mapVal

@@ -609,6 +609,9 @@ type MapType struct {
 	Key           TypeExpr
 	Value         TypeExpr
 	IsSingleValue bool
+	// LegacyHashMap selects the traditional bucketed hashmap ABI. Plain map
+	// types use the Compact Dict ABI on 64-bit targets.
+	LegacyHashMap bool
 }
 
 func (mt *MapType) typeExprNode()        {}

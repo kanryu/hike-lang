@@ -223,4 +223,10 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_iface_typeid": true,
 	"__hike_map_delete":   true,
 	"__hike_map_len":      true,
+	"__hike_cdict_create": true, "__hike_cdict_state": true, "__hike_cdict_set": true, "__hike_cdict_get": true,
+	"__hike_cdict_set_str": true, "__hike_cdict_set_str_hash": true,
+	"__hike_cdict_get_str": true, "__hike_cdict_get_boxed": true, "__hike_cdict_get_boxed_ok": true,
+	"__hike_cdict_get_boxed_str": true, "__hike_cdict_get_boxed_str_ok": true,
+	"__hike_cdict_delete": true, "__hike_cdict_delete_str": true, "__hike_cdict_delete_str_hash": true,
+	"__hike_cdict_len": true,
 }

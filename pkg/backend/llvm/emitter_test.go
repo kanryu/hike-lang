@@ -195,6 +195,22 @@ func TestEmitBinaryStringOrderingUsesLengthAwareRuntime(t *testing.T) {
 	}
 }
 
+func TestEmitConstantsIncludesInternHashTable(t *testing.T) {
+	emitter := &Emitter{
+		prog: &hir.Program{
+			InternHashes: []uint64{14695981039346656037, 1099511628211},
+		},
+	}
+	emitter.emitConstants()
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "@__hike_intern_hashes = private unnamed_addr constant [2 x i64]") {
+		t.Fatalf("missing intern hash table: %s", ir)
+	}
+	if !strings.Contains(ir, "i64 14695981039346656037, i64 1099511628211") {
+		t.Fatalf("intern hash table has unexpected contents: %s", ir)
+	}
+}
+
 func TestEmitBinaryDispatchesEveryFatBinaryType(t *testing.T) {
 	tests := []struct {
 		name string

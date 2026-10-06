@@ -111,6 +111,29 @@ func (l *Lowerer) SetRegionMode(enabled bool) { l.regionMode = enabled }
 // until all ownership paths are proven correct.
 func (l *Lowerer) SetRetainRelease(enabled bool) { l.retainRelease = enabled }
 
+// useCompactMapRuntime selects the 64-bit compact-dict ABI.  The 32-bit and
+// wasm runtimes still expose the legacy map ABI until their pointer-width
+// templates are migrated as well.
+func (l *Lowerer) useCompactMapRuntime() bool { return !l.is32Bit }
+
+func (l *Lowerer) mapRuntimeName(legacy, compact string) string {
+	if l.useCompactMapRuntime() {
+		return compact
+	}
+	return legacy
+}
+
+func (l *Lowerer) mapRuntimeNameForType(mp *sema.MapType, legacy, compact string) string {
+	if mp != nil && mp.LegacyHashMap {
+		return legacy
+	}
+	return l.mapRuntimeName(legacy, compact)
+}
+
+func (l *Lowerer) useCompactMapRuntimeForType(mp *sema.MapType) bool {
+	return mp == nil || (!mp.LegacyHashMap && l.useCompactMapRuntime())
+}
+
 func (l *Lowerer) registerPanicSite() int {
 	if l.curFunc == nil {
 		return -1
@@ -201,7 +224,11 @@ func semaTypeName(typ sema.Type) string {
 	case *sema.TupleType:
 		return "tuple"
 	case *sema.MapType:
-		return "map[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
+		name := "map"
+		if t.LegacyHashMap {
+			name = "hashmap"
+		}
+		return name + "[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
 	case *sema.ChanType:
 		return "chan " + semaTypeName(t.Elem)
 	case *sema.FutureType:
@@ -209,6 +236,7 @@ func semaTypeName(typ sema.Type) string {
 	}
 	return ""
 }
+
 func semaInterfaceName(iface *sema.InterfaceType) string { return iface.Name }
 func astIDValue(id *ast.Identifier) string {
 	if id == nil {
@@ -923,15 +951,31 @@ func (l *Lowerer) getStringConst(raw string) *hir.ConstString {
 		return sc
 	}
 	label := fmt.Sprintf("str.%d", len(l.stringPool)+1)
+	internID := int64(len(l.hirProg.InternHashes))
+	hash := uint64(14695981039346656037)
+	for i := 0; i < len(raw); i++ {
+		hash ^= uint64(raw[i])
+		hash *= 1099511628211
+	}
+	l.hirProg.InternHashes = append(l.hirProg.InternHashes, hash)
 	sc := &hir.ConstString{
-		Label:  label,
-		Raw:    raw,
-		Length: len(raw) + 1,
-		Typ:    sema.TypeString,
+		Label:    label,
+		Raw:      raw,
+		Length:   len(raw) + 1,
+		InternID: internID,
+		Typ:      sema.TypeString,
 	}
 	l.stringPool[raw] = sc
 	l.hirProg.StringConstants = append(l.hirProg.StringConstants, sc)
 	return sc
+}
+
+func internIDOfString(value hir.Value) (int64, bool) {
+	sc, ok := value.(*hir.ConstString)
+	if !ok || sc.InternID < 0 {
+		return -1, false
+	}
+	return sc.InternID, true
 }
 
 // stringParts exposes the visible data pointer and length of a string view.

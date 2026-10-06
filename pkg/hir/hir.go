@@ -67,7 +67,10 @@ type ConstString struct {
 	Label  string
 	Raw    string
 	Length int
-	Typ    sema.Type
+	// InternID identifies this module's canonical string literal.  IDs are
+	// stable for the lifetime of the HIR program and -1 means not interned.
+	InternID int64
+	Typ      sema.Type
 }
 
 func (c *ConstString) Type() sema.Type { return c.Typ }
@@ -419,6 +422,10 @@ type InstrCallStatic struct {
 	Args              []Value
 	OwnershipTarget   string
 	OwnershipVariable string
+	// InternID carries compile-time string-key metadata for map runtime calls.
+	// Backends that do not yet have the compact-map ABI can ignore it safely.
+	InternID    int64
+	HasInternID bool
 }
 
 func (i *InstrCallStatic) Result() *Reg { return i.Dst }
@@ -832,8 +839,11 @@ func (f *Function) String() string {
 }
 
 type Program struct {
-	ModuleName           string
-	StringConstants      []*ConstString
+	ModuleName      string
+	StringConstants []*ConstString
+	// InternHashes is indexed by ConstString.InternID.  It is emitted as a
+	// read-only table so literal map lookups can skip runtime hashing.
+	InternHashes         []uint64
 	Globals              []*GlobalVar
 	Itabs                []*ItabDef
 	Functions            []*Function

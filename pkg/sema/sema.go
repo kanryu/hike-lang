@@ -54,7 +54,11 @@ func typeNameOf(typ Type) string {
 	case *TupleType:
 		return "tuple"
 	case *MapType:
-		return fmt.Sprintf("map[%s]%s", typeNameOf(t.Key), typeNameOf(t.Value))
+		name := "map"
+		if t.LegacyHashMap {
+			name = "hashmap"
+		}
+		return fmt.Sprintf("%s[%s]%s", name, typeNameOf(t.Key), typeNameOf(t.Value))
 	case *ChanType:
 		return "chan " + typeNameOf(t.Elem)
 	case *FutureType:
@@ -659,6 +663,7 @@ type MapType struct {
 	Key           Type
 	Value         Type
 	IsSingleValue bool
+	LegacyHashMap bool
 }
 
 // IsSingleValueMapValue reports whether a map value fits the scalar map ABI.
@@ -913,7 +918,7 @@ func typeToTypeExpr(t Type) ast.TypeExpr {
 	case *ArrayType:
 		return &ast.ArrayType{Len: int64(v.Len), Elem: typeToTypeExpr(v.Elem)}
 	case *MapType:
-		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value), IsSingleValue: v.IsSingleValue}
+		return &ast.MapType{Key: typeToTypeExpr(v.Key), Value: typeToTypeExpr(v.Value), IsSingleValue: v.IsSingleValue, LegacyHashMap: v.LegacyHashMap}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: typeNameOf(v)}}
 	}
@@ -1913,7 +1918,7 @@ func configureAnalyzeMode(ctx *Context, prog *ast.Program, goHikeMode bool) {
 		ctx.Constants["runtime_GOARCH"] = 0
 	}
 	for _, imp := range prog.Imports {
-		if imp.Path == "std/map" || imp.Path == "map" || imp.Path == "std/maps" || imp.Path == "maps" {
+		if isMapPackagePath(imp.Path) {
 			ctx.HasMapImport = true
 		}
 	}
@@ -2700,7 +2705,7 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 			return nil
 		}
 		if mt, ok := t.(*ast.MapType); ok {
-			if !ctx.HasMapImport {
+			if !mt.LegacyHashMap && !ctx.HasMapImport {
 				return fmt.Errorf("line %d:%d: map type 'map[%s]%s' requires importing 'std/maps'",
 					mt.Token.Line, mt.Token.Col, mt.Key.TokenLiteral(), mt.Value.TokenLiteral())
 			}
@@ -2785,7 +2790,7 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 		case *ast.CallExpr:
 			if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "make" || id.Value == "delete") {
 				if len(n.Args) > 0 {
-					if _, isMap := n.Args[0].(*ast.MapType); isMap && !ctx.HasMapImport {
+					if mt, isMap := n.Args[0].(*ast.MapType); isMap && !mt.LegacyHashMap && !ctx.HasMapImport {
 						return fmt.Errorf("line %d:%d: '%s(map...)' requires importing 'std/maps'",
 							n.Token.Line, n.Token.Col, id.Value)
 					}
@@ -2824,7 +2829,7 @@ func validateMapUsage(node ast.Node, ctx *Context) error {
 				}
 			}
 		case *ast.MapLiteral:
-			if !ctx.HasMapImport {
+			if !n.Type.LegacyHashMap && !ctx.HasMapImport {
 				return fmt.Errorf("line %d:%d: map literals require importing 'std/maps'",
 					n.Token.Line, n.Token.Col)
 			}

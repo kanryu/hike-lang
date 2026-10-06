@@ -225,7 +225,15 @@ func (e *Emitter) emitConstants() {
 		e.b.WriteString(fmt.Sprintf("@%s = private unnamed_addr constant [%d x i8] c\"%s%s\", align 1\n",
 			sc.Label, sc.Length+8, header, escaped))
 	}
-	if len(e.prog.StringConstants) > 0 {
+	if len(e.prog.InternHashes) > 0 {
+		hashes := make([]string, len(e.prog.InternHashes))
+		for i, hash := range e.prog.InternHashes {
+			hashes[i] = fmt.Sprintf("i64 %d", hash)
+		}
+		e.b.WriteString(fmt.Sprintf("@__hike_intern_hashes = private unnamed_addr constant [%d x i64] [%s], align 8\n",
+			len(hashes), strings.Join(hashes, ", ")))
+	}
+	if len(e.prog.StringConstants) > 0 || len(e.prog.InternHashes) > 0 {
 		e.b.WriteString("\n")
 	}
 }

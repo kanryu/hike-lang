@@ -275,16 +275,17 @@ func (e *ExprLowerer) lowerBuiltinMapIndex(_ *ast.IndexExpr, baseVal, idxVal hir
 	outPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeInt})
 	e.root.emit(&hir.InstrAlloca{Dst: outPtr, AllocType: sema.TypeInt})
 	var keyArgs []hir.Value
-	callee := "__hike_map_get"
+	callee := e.root.mapRuntimeNameForType(mp, "__hike_map_get", "__hike_cdict_get")
 	isStringKey := mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string"
 	if isStringKey {
 		keyPtr, keyLen := e.root.stringParts(idxVal)
 		keyArgs = []hir.Value{baseVal, keyPtr, keyLen, outPtr}
-		callee = "__hike_map_get_str"
+		callee = e.root.mapRuntimeNameForType(mp, "__hike_map_get_str", "__hike_cdict_get_str")
 	} else {
 		keyI64 := e.root.coerceToI64(idxVal, mp.Key)
 		keyArgs = []hir.Value{baseVal, keyI64, outPtr}
 	}
+	internID, hasInternID := internIDOfString(idxVal)
 
 	var found *hir.Reg
 	if wantOK {
@@ -296,19 +297,21 @@ func (e *ExprLowerer) lowerBuiltinMapIndex(_ *ast.IndexExpr, baseVal, idxVal hir
 		e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(mp.Value), Ptr: zeroValuePtr})
 		zeroPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 		e.root.emit(&hir.InstrCast{Dst: zeroPtr, Val: zeroValuePtr, ToType: zeroPtr.Type()})
-		boxedCallee := "__hike_map_get_boxed"
+		boxedCallee := e.root.mapRuntimeNameForType(mp, "__hike_map_get_boxed", "__hike_cdict_get_boxed")
 		if isStringKey {
-			boxedCallee = "__hike_map_get_boxed_str"
+			boxedCallee = e.root.mapRuntimeNameForType(mp, "__hike_map_get_boxed_str", "__hike_cdict_get_boxed_str")
 		}
 		if wantOK {
-			boxedCallee = "__hike_map_get_boxed_ok"
+			boxedCallee = e.root.mapRuntimeNameForType(mp, "__hike_map_get_boxed_ok", "__hike_cdict_get_boxed_ok")
 			if isStringKey {
-				boxedCallee = "__hike_map_get_boxed_str_ok"
+				boxedCallee = e.root.mapRuntimeNameForType(mp, "__hike_map_get_boxed_str_ok", "__hike_cdict_get_boxed_str_ok")
 			}
 		}
-		e.root.emit(&hir.InstrCallStatic{Dst: found, CalleeName: boxedCallee, Args: append(keyArgs, zeroPtr)})
+		call := &hir.InstrCallStatic{Dst: found, CalleeName: boxedCallee, Args: append(keyArgs, zeroPtr), InternID: internID, HasInternID: hasInternID}
+		e.root.emit(call)
 	} else {
-		e.root.emit(&hir.InstrCallStatic{Dst: found, CalleeName: callee, Args: keyArgs})
+		call := &hir.InstrCallStatic{Dst: found, CalleeName: callee, Args: keyArgs, InternID: internID, HasInternID: hasInternID}
+		e.root.emit(call)
 	}
 	rawVal := e.root.nextReg(sema.TypeInt)
 	e.root.emit(&hir.InstrLoad{Dst: rawVal, Ptr: outPtr})
@@ -387,7 +390,7 @@ func (e *ExprLowerer) lowerStructLiteralPtr(node *ast.StructLiteral) hir.Value {
 		}
 		mapLiteral := &ast.MapLiteral{
 			Token:   node.Token,
-			Type:    &ast.MapType{Token: node.Type.Token, Key: semaTypeToTypeExpr(mapType.Key), Value: semaTypeToTypeExpr(mapType.Value)},
+			Type:    &ast.MapType{Token: node.Type.Token, Key: semaTypeToTypeExpr(mapType.Key), Value: semaTypeToTypeExpr(mapType.Value), LegacyHashMap: mapType.LegacyHashMap},
 			Entries: entries,
 		}
 		mapValue := e.lowerMapLiteral(mapLiteral)

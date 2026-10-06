@@ -92,7 +92,11 @@ func semaTypeName(typ sema.Type) string {
 	case *sema.TupleType:
 		return "tuple"
 	case *sema.MapType:
-		return "map[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
+		name := "map"
+		if t.LegacyHashMap {
+			name = "hashmap"
+		}
+		return name + "[" + semaTypeName(t.Key) + "]" + semaTypeName(t.Value)
 	case *sema.ChanType:
 		return "chan " + semaTypeName(t.Elem)
 	case *sema.FutureType:
@@ -119,7 +123,7 @@ func semaTypeToAstType(tok token.Token, typ sema.Type) ast.TypeExpr {
 	case *sema.SliceType:
 		return &ast.SliceType{Token: tok, Elem: semaTypeToAstType(tok, resolved.Elem)}
 	case *sema.MapType:
-		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value), IsSingleValue: resolved.IsSingleValue}
+		return &ast.MapType{Token: tok, Key: semaTypeToAstType(tok, resolved.Key), Value: semaTypeToAstType(tok, resolved.Value), IsSingleValue: resolved.IsSingleValue, LegacyHashMap: resolved.LegacyHashMap}
 	case *sema.StructType:
 		if resolved.Name == "" {
 			fields := make([]*ast.FieldDecl, 0, len(resolved.Fields))
@@ -1235,6 +1239,7 @@ func (t *Transformer) substituteAstType(typ ast.TypeExpr, typeMap map[string]ast
 			Key:           t.substituteAstType(node.Key, typeMap, orderedTypeArgs),
 			Value:         t.substituteAstType(node.Value, typeMap, orderedTypeArgs),
 			IsSingleValue: node.IsSingleValue,
+			LegacyHashMap: node.LegacyHashMap,
 		}
 
 	case *ast.ChanType:
@@ -1810,12 +1815,18 @@ func parseSimpleTypeExpr(tok token.Token, typeName string) ast.TypeExpr {
 			}
 		}
 	}
-	if strings.HasPrefix(typeName, "map[") {
-		if end := strings.Index(typeName, "]"); end > len("map[") && end+1 < len(typeName) {
+	legacyHashMap := strings.HasPrefix(typeName, "hashmap[")
+	mapPrefix := "map["
+	if legacyHashMap {
+		mapPrefix = "hashmap["
+	}
+	if strings.HasPrefix(typeName, mapPrefix) {
+		if end := strings.Index(typeName, "]"); end > len(mapPrefix) && end+1 < len(typeName) {
 			return &ast.MapType{
-				Token: tok,
-				Key:   parseSimpleTypeExpr(tok, typeName[len("map["):end]),
-				Value: parseSimpleTypeExpr(tok, typeName[end+1:]),
+				Token:         tok,
+				Key:           parseSimpleTypeExpr(tok, typeName[len(mapPrefix):end]),
+				Value:         parseSimpleTypeExpr(tok, typeName[end+1:]),
+				LegacyHashMap: legacyHashMap,
 			}
 		}
 	}

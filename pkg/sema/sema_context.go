@@ -725,13 +725,18 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			elemName := strings.TrimPrefix(name, "chan ")
 			return &ChanType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
 		}
-		if strings.HasPrefix(name, "map[") {
-			if end := strings.Index(name, "]"); end > len("map[") && end+1 < len(name) {
-				keyName := name[len("map["):end]
+		legacyHashMap := strings.HasPrefix(name, "hashmap[")
+		mapPrefix := "map["
+		if legacyHashMap {
+			mapPrefix = "hashmap["
+		}
+		if strings.HasPrefix(name, mapPrefix) {
+			if end := strings.Index(name, "]"); end > len(mapPrefix) && end+1 < len(name) {
+				keyName := name[len(mapPrefix):end]
 				valueName := name[end+1:]
 				key := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: keyName}})
 				value := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: valueName}})
-				return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value)}
+				return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value), LegacyHashMap: legacyHashMap}
 			}
 		}
 
@@ -895,7 +900,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		key, value := c.ResolveType(t.Key), c.ResolveType(t.Value)
 		isSingleValue := IsSingleValueMapValue(value)
 		t.IsSingleValue = isSingleValue
-		return &MapType{Key: key, Value: value, IsSingleValue: isSingleValue}
+		return &MapType{Key: key, Value: value, IsSingleValue: isSingleValue, LegacyHashMap: t.LegacyHashMap}
 	case *ast.ChanType:
 		return &ChanType{Elem: c.ResolveType(t.Elem)}
 	case *ast.FutureType:
@@ -1162,7 +1167,7 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 	case *ast.MapType:
 		key := c.ResolveTypeWithSubst(node.Key, subst)
 		value := c.ResolveTypeWithSubst(node.Value, subst)
-		return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value)}
+		return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value), LegacyHashMap: node.LegacyHashMap}
 	case *ast.ChanType:
 		return &ChanType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
 	}
@@ -2249,6 +2254,10 @@ func (c *Context) CheckAsyncIterable(t Type) (Type, *FuncType, *FuncType) {
 // -------------------------------------------------------------
 // マップビヘイビア・インデックス & スライス解決
 // -------------------------------------------------------------
+
+func isMapPackagePath(path string) bool {
+	return path == "std/map" || path == "map" || path == "std/maps" || path == "maps"
+}
 
 func (c *Context) EnsureMapSupported(line, col int) error {
 	if !c.HasMapImport {
