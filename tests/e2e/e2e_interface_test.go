@@ -391,3 +391,69 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// Type switches over an interface parameter must preserve the concrete
+// pointer in each case so fields and methods remain accessible after the
+// downcast.
+func TestInterface_TypeSwitchDowncastsConcretePointers(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Shape interface {
+    Describe() string
+}
+
+type Circle struct {
+    label string
+}
+
+func (c *Circle) Describe() string {
+    return c.label
+}
+
+type Square struct {
+    amount float64
+}
+
+func (s *Square) Describe() string {
+    return "square"
+}
+
+func inspect(shape Shape) string {
+    switch concrete := shape.(type) {
+    case *Circle:
+        return concrete.label + concrete.Describe()
+    case *Square:
+        return concrete.Describe()
+    default:
+        return "unknown"
+    }
+}
+
+func truncatedArea(shape Shape) int {
+    switch concrete := shape.(type) {
+    case *Square:
+        return int(concrete.amount)
+    default:
+        return -1
+    }
+}
+
+func main() int {
+    circle := Circle{}
+    circle.label = "circle"
+    square := Square{}
+    square.amount = 5.75
+    printf("SHAPES=%s,%s;TRUNCATED=%d\n", inspect(&circle), inspect(&square), truncatedArea(&square))
+    return 0
+}
+`,
+		ExpectedOut:  "SHAPES=circlecircle,square;TRUNCATED=5",
+		ExpectedExit: 0,
+	})
+}
