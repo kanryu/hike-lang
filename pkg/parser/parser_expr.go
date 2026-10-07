@@ -349,8 +349,8 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		return &ast.FuncType{Token: tok, ParamTypes: paramTypes, IsVariadic: isVariadic, ReturnTypes: returnTypes}
 	} else if p.curTokenIs(token.MAP) || p.curTokenIs(token.HASHMAP) || p.curTokenIs(token.STABLE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "hashmap" && p.peekTokenIs(token.LBRACKET)) {
 		tok := p.curToken
-		stable := tok.Type == token.STABLE
-		if stable {
+		isStableMap := tok.Type == token.STABLE
+		if isStableMap {
 			if !p.expectPeek(token.MAP) {
 				return nil
 			}
@@ -363,7 +363,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		p.expectPeek(token.RBRACKET)
 		p.nextToken()
 		valType := p.parseTypeExpr()
-		return &ast.MapType{Token: tok, Key: keyType, Value: valType, LegacyHashMap: tok.Type == token.HASHMAP || tok.Literal == "hashmap", Stable: stable}
+		return &ast.MapType{Token: tok, Key: keyType, Value: valType, LegacyHashMap: tok.Type == token.HASHMAP || tok.Literal == "hashmap", Stable: isStableMap}
 	} else if p.curTokenIs(token.CHAN) {
 		tok := p.curToken
 		p.nextToken()

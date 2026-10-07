@@ -717,15 +717,15 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 
 		if strings.HasPrefix(name, "*") {
 			baseName := strings.TrimPrefix(name, "*")
-			return &PointerType{Base: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: baseName}})}
+			return newSemanticPointerType(c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: baseName}}))
 		}
 		if strings.HasPrefix(name, "[]") {
 			elemName := strings.TrimPrefix(name, "[]")
-			return &SliceType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
+			return newSemanticSliceType(c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}}))
 		}
 		if strings.HasPrefix(name, "chan ") {
 			elemName := strings.TrimPrefix(name, "chan ")
-			return &ChanType{Elem: c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}})}
+			return newSemanticChanType(c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: elemName}}))
 		}
 		legacyHashMap := strings.HasPrefix(name, "hashmap[")
 		stableMap := strings.HasPrefix(name, "stable map[")
@@ -741,7 +741,13 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				valueName := name[end+1:]
 				key := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: keyName}})
 				value := c.ResolveType(&ast.NamedType{Token: t.Token, Name: &ast.Identifier{Value: valueName}})
-				return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value), LegacyHashMap: legacyHashMap, Stable: stableMap}
+				mapType := newSemanticMapType()
+				mapType.Key = key
+				mapType.Value = value
+				mapType.IsSingleValue = IsSingleValueMapValue(value)
+				mapType.LegacyHashMap = legacyHashMap
+				mapType.Stable = stableMap
+				return mapType
 			}
 		}
 
@@ -756,13 +762,13 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			return builtinT
 		}
 		if name == "any" {
-			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+			return newSemanticNamedInterfaceType("any")
 		}
 		if name == "interface" {
-			return &InterfaceType{Name: "interface", Specializations: make(map[string]*InterfaceType)}
+			return newSemanticNamedInterfaceType("interface")
 		}
 		if name == "path" && c.GoHikeMode {
-			return &InterfaceType{Name: "path", Specializations: make(map[string]*InterfaceType)}
+			return newSemanticNamedInterfaceType("path")
 		}
 		if name == "error" {
 			return c.Interfaces["error"]
@@ -874,11 +880,10 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 
 	// ★追加: *ast.StructType の解決ハンドラ
 	case *ast.StructType:
-		st := &StructType{
-			Fields:              []Field{},
-			Specializations:     make(map[string]*StructType),
-			BuiltinCapabilities: make(map[string]*FuncType),
-		}
+		st := newSemanticStructType()
+		st.Fields = []Field{}
+		st.Specializations = make(map[string]*StructType)
+		st.BuiltinCapabilities = make(map[string]*FuncType)
 		for _, f := range t.Fields {
 			fType := c.ResolveType(f.Type)
 			name := ""
@@ -894,26 +899,32 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		return st
 
 	case *ast.PointerType:
-		return &PointerType{Base: c.ResolveType(t.Base)}
+		return newSemanticPointerType(c.ResolveType(t.Base))
 	case *ast.SliceType:
-		return &SliceType{Elem: c.ResolveType(t.Elem)}
+		return newSemanticSliceType(c.ResolveType(t.Elem))
 	case *ast.EllipsisType:
-		return &SliceType{Elem: c.ResolveType(t.Elem)}
+		return newSemanticSliceType(c.ResolveType(t.Elem))
 	case *ast.ArrayType:
-		return &ArrayType{Len: int(t.Len), Elem: c.ResolveType(t.Elem)}
+		return newSemanticArrayType(int(t.Len), c.ResolveType(t.Elem))
 	case *ast.MapType:
 		key, value := c.ResolveType(t.Key), c.ResolveType(t.Value)
 		isSingleValue := IsSingleValueMapValue(value)
 		t.IsSingleValue = isSingleValue
-		return &MapType{Key: key, Value: value, IsSingleValue: isSingleValue, LegacyHashMap: t.LegacyHashMap, Stable: t.Stable}
+		mapType := newSemanticMapType()
+		mapType.Key = key
+		mapType.Value = value
+		mapType.IsSingleValue = isSingleValue
+		mapType.LegacyHashMap = t.LegacyHashMap
+		mapType.Stable = t.Stable
+		return mapType
 	case *ast.ChanType:
-		return &ChanType{Elem: c.ResolveType(t.Elem)}
+		return newSemanticChanType(c.ResolveType(t.Elem))
 	case *ast.FutureType:
 		rts := make([]Type, len(t.ReturnTypes))
 		for i, rt := range t.ReturnTypes {
 			rts[i] = c.ResolveType(rt)
 		}
-		return &FutureType{ReturnTypes: rts}
+		return newSemanticFutureType(rts)
 	case *ast.InterfaceType:
 		methods := []Method{}
 		for _, embedded := range t.Embedded {
@@ -928,7 +939,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				resolved := c.ResolveType(p)
 				if m.IsVariadic && i == len(m.ParamTypes)-1 {
 					if _, isSl := resolved.(*SliceType); !isSl {
-						resolved = &SliceType{Elem: resolved}
+						resolved = newSemanticSliceType(resolved)
 					}
 					varElem = resolved.(*SliceType).Elem
 				}
@@ -946,7 +957,11 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 				ReturnTypes:  rts,
 			})
 		}
-		return &InterfaceType{Name: "", Methods: methods, Specializations: make(map[string]*InterfaceType)}
+		iface := newSemanticInterfaceType()
+		iface.Name = ""
+		iface.Methods = methods
+		iface.Specializations = make(map[string]*InterfaceType)
+		return iface
 	case *ast.FuncType:
 		fnType := newSemanticFuncType()
 		fnType.ParamTypes = []Type{}
@@ -957,7 +972,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 			resolved := c.ResolveType(pt)
 			if t.IsVariadic && i == len(t.ParamTypes)-1 {
 				if _, isSl := resolved.(*SliceType); !isSl {
-					resolved = &SliceType{Elem: resolved}
+					resolved = newSemanticSliceType(resolved)
 				}
 				setFuncVariadicElem(fnType, resolved.(*SliceType).Elem)
 			}
@@ -1151,7 +1166,7 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 			resolved := c.ResolveTypeWithSubst(pt, subst)
 			if node.IsVariadic && i == len(node.ParamTypes)-1 {
 				if _, isSl := resolved.(*SliceType); !isSl {
-					resolved = &SliceType{Elem: resolved}
+					resolved = newSemanticSliceType(resolved)
 				}
 				setFuncVariadicElem(fnType, resolved.(*SliceType).Elem)
 			}
@@ -1162,19 +1177,25 @@ func (c *Context) ResolveTypeWithSubst(t ast.TypeExpr, subst map[string]Type) Ty
 		}
 		return fnType
 	case *ast.PointerType:
-		return &PointerType{Base: c.ResolveTypeWithSubst(node.Base, subst)}
+		return newSemanticPointerType(c.ResolveTypeWithSubst(node.Base, subst))
 	case *ast.SliceType:
-		return &SliceType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+		return newSemanticSliceType(c.ResolveTypeWithSubst(node.Elem, subst))
 	case *ast.EllipsisType:
-		return &SliceType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+		return newSemanticSliceType(c.ResolveTypeWithSubst(node.Elem, subst))
 	case *ast.ArrayType:
-		return &ArrayType{Len: int(node.Len), Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+		return newSemanticArrayType(int(node.Len), c.ResolveTypeWithSubst(node.Elem, subst))
 	case *ast.MapType:
 		key := c.ResolveTypeWithSubst(node.Key, subst)
 		value := c.ResolveTypeWithSubst(node.Value, subst)
-		return &MapType{Key: key, Value: value, IsSingleValue: IsSingleValueMapValue(value), LegacyHashMap: node.LegacyHashMap, Stable: node.Stable}
+		mapType := newSemanticMapType()
+		mapType.Key = key
+		mapType.Value = value
+		mapType.IsSingleValue = IsSingleValueMapValue(value)
+		mapType.LegacyHashMap = node.LegacyHashMap
+		mapType.Stable = node.Stable
+		return mapType
 	case *ast.ChanType:
-		return &ChanType{Elem: c.ResolveTypeWithSubst(node.Elem, subst)}
+		return newSemanticChanType(c.ResolveTypeWithSubst(node.Elem, subst))
 	}
 	return c.ResolveType(t)
 }
@@ -1225,7 +1246,7 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 		case "void":
 			return TypeVoid
 		case "any":
-			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+			return newSemanticNamedInterfaceType("any")
 		}
 		if st, _ := c.LookupStruct(astIdentifierValue(id)); st != nil {
 			return st
@@ -1312,7 +1333,7 @@ func (c *Context) resolveTypeFromExpr(e ast.Expression) Type {
 	if pref, ok := e.(*ast.PrefixExpr); ok && pref.Operator == "*" {
 		base := c.resolveTypeFromExpr(pref.Right)
 		if base != nil && base != TypeVoid {
-			return &PointerType{Base: base}
+			return newSemanticPointerType(base)
 		}
 	}
 	return nil
@@ -1494,7 +1515,7 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 			}
 			return TypeBad
 		case "recover", "recover_cause":
-			return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+			return newSemanticNamedInterfaceType("any")
 		case "recover_site":
 			return TypeInt
 		case "panic":
@@ -1583,7 +1604,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.StringLiteral:
 		return TypeString
 	case *ast.NilLiteral:
-		return &PointerType{Base: TypeByte}
+		return newSemanticPointerType(TypeByte)
 	case *ast.Identifier:
 		if astIdentifierValue(e) == "..." {
 			return TypeVoid
@@ -1621,9 +1642,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 	case *ast.AsyncExpr:
 		fnType := c.InferExprType(e.Fn, locals)
 		if ft, ok := asSemanticFuncType(fnType); ok {
-			return &FutureType{ReturnTypes: ft.ReturnTypes}
+			return newSemanticFutureType(ft.ReturnTypes)
 		}
-		return &FutureType{ReturnTypes: []Type{TypeVoid}}
+		return newSemanticFutureType([]Type{TypeVoid})
 
 	case *ast.ReceiveExpr:
 		innerType := c.InferExprType(e.Expr, locals)
@@ -1644,7 +1665,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		base := c.InferExprType(e.Right, locals)
 		switch e.Operator {
 		case "&":
-			return &PointerType{Base: base}
+			return newSemanticPointerType(base)
 		case "*":
 			if pt, ok := base.(*PointerType); ok {
 				return pt.Base
@@ -1679,7 +1700,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		if e.Target != nil {
 			return c.ResolveType(e.Target)
 		}
-		return &InterfaceType{Name: "any", Specializations: make(map[string]*InterfaceType)}
+		return newSemanticNamedInterfaceType("any")
 
 	case *ast.CallExpr:
 		return c.inferCallExprType(e, locals)
@@ -1718,7 +1739,7 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 			pType := c.ResolveType(p.Type)
 			if p.IsVariadic || (e.IsVariadic && i == len(e.Params)-1) {
 				if _, isSlice := pType.(*SliceType); !isSlice {
-					pType = &SliceType{Elem: pType}
+					pType = newSemanticSliceType(pType)
 				}
 				variadicElem = pType.(*SliceType).Elem
 			}
@@ -2380,10 +2401,10 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 		return sl, nil
 	}
 	if ar, ok := leftType.(*ArrayType); ok {
-		return &SliceType{Elem: ar.Elem}, nil
+		return newSemanticSliceType(ar.Elem), nil
 	}
 	if pt, ok := leftType.(*PointerType); ok {
-		return &SliceType{Elem: pt.Base}, nil
+		return newSemanticSliceType(pt.Base), nil
 	}
 
 	// ユーザー定義構造体の Sliceable 能力判定 (Slice メソッド)
@@ -2413,7 +2434,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 	case *ast.StringLiteral:
 		return TypeString
 	case *ast.NilLiteral:
-		return &PointerType{Base: TypeByte}
+		return newSemanticPointerType(TypeByte)
 	case *ast.Identifier:
 		if t, ok := locals[astIdentifierValue(e)]; ok {
 			return t
@@ -2475,7 +2496,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 			}
 		}
 		if e.Operator == "&" {
-			return &PointerType{Base: right}
+			return newSemanticPointerType(right)
 		}
 		return right
 

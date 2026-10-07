@@ -81,7 +81,7 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 		case *ast.IndexExpr:
 			if id, ok := n.Left.(*ast.Identifier); ok {
 				if typ, keys := lookup(id.Value); typ != nil {
-					if mp, stable := typ.(*MapType); stable && mp.Stable {
+					if mp, isStableMap := typ.(*MapType); isStableMap && mp.Stable {
 						key, literal := keyOf(n.Index)
 						if !literal {
 							return fmt.Errorf("line %d:%d: stable map access requires a declared compile-time key", n.Token.Line, n.Token.Col)
@@ -97,7 +97,7 @@ func validateStableMaps(prog *ast.Program, ctx *Context) error {
 			if id, ok := n.Function.(*ast.Identifier); ok && (id.Value == "delete" || id.Value == "insert") && len(n.Args) > 0 {
 				if arg, ok := n.Args[0].(*ast.Identifier); ok {
 					if typ, _ := lookup(arg.Value); typ != nil {
-						if mp, stable := typ.(*MapType); stable && mp.Stable {
+						if mp, isStableMap := typ.(*MapType); isStableMap && mp.Stable {
 							return fmt.Errorf("line %d:%d: %s is not allowed for stable map %q", n.Token.Line, n.Token.Col, id.Value, arg.Value)
 						}
 					}

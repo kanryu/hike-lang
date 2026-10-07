@@ -1191,16 +1191,16 @@ func (e *Emitter) emitStore(x *hir.InstrStore) {
 			// Global string values must outlive main's temporary stack frame.
 			// Allocate a stable 12-byte string view on the heap instead of
 			// storing the address of a stack materialization in the global.
-			stable := "(global.get $" + globalVarName(global) + ")"
+			stableGlobalExpr := "(global.get $" + globalVarName(global) + ")"
 			e.b.WriteString(fmt.Sprintf("    (global.set $%s (call $malloc (i32.const 12)))\n", globalVarName(global)))
 			if s, isConst := x.Val.(*hir.ConstString); isConst {
-				e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", stable, e.val(s)))
-				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", stable))
-				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", stable, len(s.Raw)))
+				e.b.WriteString(fmt.Sprintf("    (i32.store %s %s)\n", stableGlobalExpr, e.val(s)))
+				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 4)) (i32.const -1))\n", stableGlobalExpr))
+				e.b.WriteString(fmt.Sprintf("    (i32.store (i32.add %s (i32.const 8)) (i32.const %d))\n", stableGlobalExpr, len(s.Raw)))
 			} else {
-				e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const 12))\n", stable, e.val(x.Val)))
+				e.b.WriteString(fmt.Sprintf("    (memory.copy %s %s (i32.const 12))\n", stableGlobalExpr, e.val(x.Val)))
 			}
-			e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), stable))
+			e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), stableGlobalExpr))
 			return
 		}
 		e.b.WriteString(fmt.Sprintf("    (global.set $%s %s)\n", globalVarName(global), e.val(x.Val)))

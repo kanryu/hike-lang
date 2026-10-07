@@ -37,8 +37,9 @@ func compactDictHash(key string) uint64 {
 	return h
 }
 
-func (d *compactDict) lookup(hash uint64, internID int64, key string) (entry, slot int, found bool) {
+func (d *compactDict) lookup(hash uint64, internID int64, key string) (int, int, bool) {
 	firstDeleted := -1
+	slot := 0
 	for n := 0; n < len(d.indices); n++ {
 		slot = int((hash + uint64(n)) % uint64(len(d.indices)))
 		idx := d.indices[slot]

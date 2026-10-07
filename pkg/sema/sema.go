@@ -19,6 +19,24 @@ type Type interface {
 	TypeID(*Context) int64
 }
 
+// Keep the semantic type names distinct in source-level type switches. The
+// self-hosting compiler also sees ast types such as ast.StructType and
+// ast.MapType; using package-local aliases here prevents those names from
+// being confused while lowering interface type switches.
+type semanticBasicType = BasicType
+type semanticTypeParamType = TypeParamType
+type semanticConstValueType = ConstValueType
+type semanticPointerType = PointerType
+type semanticSliceType = SliceType
+type semanticArrayType = ArrayType
+type semanticStructType = StructType
+type semanticInterfaceType = InterfaceType
+type semanticFuncType = FuncType
+type semanticTupleType = TupleType
+type semanticMapType = MapType
+type semanticChanType = ChanType
+type semanticFutureType = FutureType
+
 func typeIDOf(ctx *Context, t Type) int64 {
 	if ctx == nil || t == nil {
 		return 0
@@ -33,27 +51,27 @@ func typeNameOf(typ Type) string {
 		return ""
 	}
 	switch t := typ.(type) {
-	case *BasicType:
+	case *semanticBasicType:
 		return t.Name
-	case *TypeParamType:
+	case *semanticTypeParamType:
 		return t.Name
-	case *ConstValueType:
+	case *semanticConstValueType:
 		return fmt.Sprintf("const<%d>", t.Value)
-	case *PointerType:
+	case *semanticPointerType:
 		return "*" + typeNameOf(t.Base)
-	case *SliceType:
+	case *semanticSliceType:
 		return "[]" + typeNameOf(t.Elem)
-	case *ArrayType:
+	case *semanticArrayType:
 		return fmt.Sprintf("[%d]%s", t.Len, typeNameOf(t.Elem))
-	case *StructType:
+	case *semanticStructType:
 		return t.TypeName()
-	case *InterfaceType:
+	case *semanticInterfaceType:
 		return t.TypeName()
-	case *FuncType:
+	case *semanticFuncType:
 		return "func"
-	case *TupleType:
+	case *semanticTupleType:
 		return "tuple"
-	case *MapType:
+	case *semanticMapType:
 		name := "map"
 		if t.LegacyHashMap {
 			name = "hashmap"
@@ -61,9 +79,9 @@ func typeNameOf(typ Type) string {
 			name = "stable map"
 		}
 		return fmt.Sprintf("%s[%s]%s", name, typeNameOf(t.Key), typeNameOf(t.Value))
-	case *ChanType:
+	case *semanticChanType:
 		return "chan " + typeNameOf(t.Elem)
-	case *FutureType:
+	case *semanticFutureType:
 		parts := make([]string, len(t.ReturnTypes))
 		for i, rt := range t.ReturnTypes {
 			parts[i] = typeNameOf(rt)
@@ -83,25 +101,25 @@ func SizeOf(typ Type) int {
 		return 0
 	}
 	switch t := typ.(type) {
-	case *BasicType:
+	case *semanticBasicType:
 		return t.ByteSize
-	case *TypeParamType:
+	case *semanticTypeParamType:
 		return PointerSize
-	case *ConstValueType:
+	case *semanticConstValueType:
 		return 0
-	case *PointerType, *ChanType, *FutureType, *MapType:
+	case *semanticPointerType, *semanticChanType, *semanticFutureType, *semanticMapType:
 		return PointerSize
-	case *FuncType:
+	case *semanticFuncType:
 		return PointerSize * 2
-	case *SliceType:
+	case *semanticSliceType:
 		return PointerSize + SizeOf(TypeInt32)*2
-	case *ArrayType:
+	case *semanticArrayType:
 		return t.Len * SizeOf(t.Elem)
-	case *StructType:
+	case *semanticStructType:
 		return structSize(t)
-	case *InterfaceType:
+	case *semanticInterfaceType:
 		return PointerSize * 2
-	case *TupleType:
+	case *semanticTupleType:
 		sz := 0
 		for _, el := range t.Types {
 			sz += SizeOf(el)
@@ -123,15 +141,15 @@ func deepCopyError(typ Type, visiting map[Type]bool) string {
 		return "cannot deep-copy an untyped value"
 	}
 	switch t := typ.(type) {
-	case *PointerType:
+	case *semanticPointerType:
 		return deepCopyError(t.Base, visiting)
-	case *FuncType:
+	case *semanticFuncType:
 		return "cannot deep-copy function value"
-	case *SliceType:
+	case *semanticSliceType:
 		return deepCopyError(t.Elem, visiting)
-	case *ArrayType:
+	case *semanticArrayType:
 		return deepCopyError(t.Elem, visiting)
-	case *StructType:
+	case *semanticStructType:
 		if visiting[t] {
 			return fmt.Sprintf("cannot deep-copy recursive type %s", typeNameOf(t))
 		}
@@ -152,21 +170,21 @@ func typeLLVMOf(typ Type) string {
 		return ""
 	}
 	switch t := typ.(type) {
-	case *BasicType:
+	case *semanticBasicType:
 		return t.LLVM
-	case *TypeParamType:
+	case *semanticTypeParamType:
 		return "i8*"
-	case *ConstValueType:
+	case *semanticConstValueType:
 		return "void"
-	case *PointerType:
+	case *semanticPointerType:
 		return typeLLVMOf(t.Base) + "*"
-	case *SliceType:
+	case *semanticSliceType:
 		return fmt.Sprintf("{ i8*, %s, %s }", typeLLVMOf(TypeInt32), typeLLVMOf(TypeInt32))
-	case *ArrayType:
+	case *semanticArrayType:
 		return fmt.Sprintf("[%d x %s]", t.Len, typeLLVMOf(t.Elem))
-	case *StructType:
+	case *semanticStructType:
 		return t.LLVMType()
-	case *InterfaceType:
+	case *semanticInterfaceType:
 		if t.IsAny() {
 			// any values use a target-independent 32-bit runtime type ID.
 			// The layout is {typeID, dataPtr}; this is also the layout used
@@ -174,19 +192,19 @@ func typeLLVMOf(typ Type) string {
 			return "{ i32, i8* }"
 		}
 		return "{ i8*, i8* }"
-	case *FuncType:
+	case *semanticFuncType:
 		return "{ i8*, i8* }"
-	case *TupleType:
+	case *semanticTupleType:
 		parts := make([]string, len(t.Types))
 		for i, el := range t.Types {
 			parts[i] = typeLLVMOf(el)
 		}
 		return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
-	case *MapType:
+	case *semanticMapType:
 		return "%struct.__hike_map*"
-	case *ChanType:
+	case *semanticChanType:
 		return "i8*"
-	case *FutureType:
+	case *semanticFutureType:
 		return "i8*"
 	}
 	return ""
@@ -1206,12 +1224,43 @@ func newSemanticInterfaceType() *InterfaceType {
 	return &InterfaceType{}
 }
 
+func newSemanticNamedInterfaceType(name string) *InterfaceType {
+	iface := newSemanticInterfaceType()
+	iface.Name = name
+	iface.Specializations = make(map[string]*InterfaceType)
+	return iface
+}
+
 func newSemanticStructType() *StructType {
 	return &StructType{}
 }
 
 func newSemanticFuncType() *FuncType {
 	return &FuncType{}
+}
+
+func newSemanticMapType() *MapType {
+	return &MapType{}
+}
+
+func newSemanticPointerType(base Type) *PointerType {
+	return &PointerType{Base: base}
+}
+
+func newSemanticSliceType(elem Type) *SliceType {
+	return &SliceType{Elem: elem}
+}
+
+func newSemanticArrayType(length int, elem Type) *ArrayType {
+	return &ArrayType{Len: length, Elem: elem}
+}
+
+func newSemanticChanType(elem Type) *ChanType {
+	return &ChanType{Elem: elem}
+}
+
+func newSemanticFutureType(returnTypes []Type) *FutureType {
+	return &FutureType{ReturnTypes: returnTypes}
 }
 
 func asSemanticStructType(t Type) (*StructType, bool) {
