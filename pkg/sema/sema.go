@@ -1638,8 +1638,15 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 	}
 	fnName := decl.Name.Value
 	origRecvName := ""
+	var fnType *FuncType
 	if decl.Receiver != nil {
 		origRecvName = getBaseTypeName(decl.Receiver.Type)
+		// Methods are registered under their source receiver name before alias
+		// types are fully resolved. Prefer that exact entry so an incomplete
+		// alias is never inspected merely to recover the method signature.
+		fnType, _ = ctx.LookupMethod(origRecvName, decl.Name.Value)
+	}
+	if fnType == nil && decl.Receiver != nil {
 		recvTypeName := origRecvName
 		if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
 			if st.IsGeneric() {
@@ -1654,7 +1661,9 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 		}
 	}
 
-	fnType := ctx.Functions[fnName]
+	if fnType == nil {
+		fnType = ctx.Functions[fnName]
+	}
 	if fnType == nil && decl.Receiver != nil {
 		// Receiver methods can be registered under the source alias before the
 		// alias's underlying type is resolved. Recover that exact method entry

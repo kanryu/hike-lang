@@ -2,7 +2,6 @@ package lower
 
 import (
 	"fmt"
-	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
@@ -246,8 +245,29 @@ func (c *CallLowerer) resolveFunctionIdentity(fn *ast.FuncDecl) (string, sema.Ty
 		return fnName, recvType
 	}
 	recvType = c.root.semaCtx.ResolveType(fn.Receiver.Type)
-	recvName := strings.TrimPrefix(semaTypeName(recvType), "*")
+	// Keep method identity tied to the receiver spelling in the declaration.
+	// Resolving an alias here can expose an incomplete underlying type while
+	// the semantic context is still being consumed by the lowerer.
+	recvName := receiverTypeName(fn.Receiver.Type)
+	if method, _ := c.root.semaCtx.LookupMethod(recvName, fnName); method != nil {
+		return method.Name, recvType
+	}
 	return sema.CanonicalMethodName(recvName, fnName), recvType
+}
+
+func receiverTypeName(expr ast.TypeExpr) string {
+	switch t := expr.(type) {
+	case *ast.PointerType:
+		return receiverTypeName(t.Base)
+	case *ast.NamedType:
+		name := t.Name.Value
+		if t.Package != nil {
+			name = t.Package.Value + "_" + name
+		}
+		return name
+	default:
+		return ""
+	}
 }
 
 func (c *CallLowerer) isUntypedVariadicBody(fn *ast.FuncDecl) bool {
