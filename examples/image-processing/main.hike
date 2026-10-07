@@ -1,0 +1,67 @@
+package main
+
+import "github.com/kanryu/hike-images-vips/vips"
+// Blank-import shared to drive the native build pipeline and copy the
+// required libvips DLLs beside the executable automatically.
+import _ "github.com/kanryu/hike-images-vips/shared"
+
+extern func printf(format cstring, ...) int
+
+func main() int {
+    if !vips.Initialize("resample.exe") {
+        printf("libvips initialization failed\n")
+        return 1
+    }
+    defer vips.Shutdown()
+
+    source := vips.LoadRGB(
+        "source_720p.svg",
+        vips.VipsInterpretationSRGB,
+        vips.PixelLayoutRGB,
+        vips.VipsBandFormatUChar,
+    )
+    if source == nil {
+        printf("could not load source_720p.svg\n")
+        return 1
+    }
+    defer source.Close()
+
+    // 1280x720 -> 1920x1080, using a high-quality reduction/enlargement path.
+    fullHD := source.Resize(1.5, vips.VipsKernelLanczos3)
+    if fullHD == nil || !vips.Save(fullHD, "output_1080p.png") {
+        printf("could not create output_1080p.png\n")
+        return 1
+    }
+    defer fullHD.Close()
+
+    // height > 0 enables a centered crop, producing an exact 64x64 frame.
+    thumbnail := source.Thumbnail(
+        64, 64,
+        vips.VipsSizeDown,
+        vips.VipsInterpretationSRGB,
+        vips.PixelLayoutRGB,
+        vips.VipsBandFormatUChar,
+    )
+    if thumbnail == nil || !vips.Save(thumbnail, "output_thumbnail_64.png") {
+        printf("could not create output_thumbnail_64.png\n")
+        return 1
+    }
+    defer thumbnail.Close()
+
+    transform := vips.TransformRotate90(vips.VipsInterpolationBicubic)
+    transform = transform.Then(
+        vips.TransformFlipHorizontal(vips.VipsInterpolationBicubic),
+    )
+    rotated := source.Transform(transform)
+    if rotated == nil || !vips.Save(rotated, "output_rotate_flip.png") {
+        printf("could not create output_rotate_flip.png\n")
+        return 1
+    }
+    defer rotated.Close()
+
+    printf("source: %dx%d\n", source.Width, source.Height)
+    printf("1080p: %dx%d\n", fullHD.Width, fullHD.Height)
+    printf("thumbnail: %dx%d\n", thumbnail.Width, thumbnail.Height)
+    printf("rotate+flip: %dx%d\n", rotated.Width, rotated.Height)
+    return 0
+}

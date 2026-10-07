@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#102a43"/>
+      <stop offset="0.55" stop-color="#1f7a8c"/>
+      <stop offset="1" stop-color="#f4a261"/>
+    </linearGradient>
+    <radialGradient id="sun">
+      <stop offset="0" stop-color="#fff3b0"/>
+      <stop offset="1" stop-color="#f4a261"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#sky)"/>
+  <circle cx="1010" cy="170" r="120" fill="url(#sun)" opacity="0.95"/>
+  <path d="M0 535 L245 330 L455 535 L690 265 L990 535 L1160 390 L1280 500 V720 H0Z"
+        fill="#16324f" opacity="0.9"/>
+  <path d="M0 610 L270 440 L510 610 L770 410 L1080 610 L1280 485 V720 H0Z"
+        fill="#0b1f33" opacity="0.9"/>
+  <circle cx="180" cy="570" r="38" fill="#e9c46a"/>
+  <path d="M180 570 L180 420 M180 475 L125 430 M180 505 L235 455"
+        stroke="#e9c46a" stroke-width="14" stroke-linecap="round"/>
+  <text x="64" y="90" fill="white" font-family="sans-serif" font-size="54"
+        font-weight="bold">HIKE IMAGES VIPS</text>
+  <text x="68" y="160" fill="#d9f0f2" font-family="sans-serif" font-size="30">
+    720p resample source</text>
+</svg>
