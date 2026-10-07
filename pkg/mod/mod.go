@@ -9,12 +9,25 @@ import (
 )
 
 type Module struct {
-	Name         string            // モジュール名 (例: hike-lang)
-	Version      string            // Hikeバージョン
-	RootDir      string            // hike.mod が存在する絶対パス
-	Replaces     map[string]string // replace ディレクティブ (例: "std/json" => "../../std/json")
-	Requires     map[string]string // require ディレクティブ (例: "github.com/example/lib" => "v0.1.0")
-	RequireOrder []string          // require ディレクティブの宣言順
+	Name           string            // モジュール名 (例: hike-lang)
+	Version        string            // Hikeバージョン
+	RootDir        string            // hike.mod が存在する絶対パス
+	Replaces       map[string]string // replace ディレクティブ (例: "std/json" => "../../std/json")
+	Requires       map[string]string // require ディレクティブ (例: "github.com/example/lib" => "v0.1.0")
+	RequireOrder   []string          // require ディレクティブの宣言順
+	NativePackages map[string]map[string]NativeTarget
+}
+
+type NativeTarget struct {
+	Links  []string
+	Assets []string
+}
+
+type NativeDependency struct {
+	ModuleRoot  string
+	PackagePath string
+	Links       []string
+	Assets      []string
 }
 
 // cloneModuleString detaches persisted module metadata from scanner-backed
@@ -64,10 +77,11 @@ func FindModuleRoot(startDir string) (*Module, error) {
 
 func newSyntheticModule(rootDir string) *Module {
 	return &Module{
-		Name:     filepath.Base(rootDir),
-		RootDir:  rootDir,
-		Replaces: make(map[string]string),
-		Requires: make(map[string]string),
+		Name:           filepath.Base(rootDir),
+		RootDir:        rootDir,
+		Replaces:       make(map[string]string),
+		Requires:       make(map[string]string),
+		NativePackages: make(map[string]map[string]NativeTarget),
 	}
 }
 
@@ -79,12 +93,15 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 	defer f.Close()
 
 	mod := &Module{
-		RootDir:  rootDir,
-		Replaces: make(map[string]string),
-		Requires: make(map[string]string),
+		RootDir:        rootDir,
+		Replaces:       make(map[string]string),
+		Requires:       make(map[string]string),
+		NativePackages: make(map[string]map[string]NativeTarget),
 	}
 
 	hasModuleName := false
+	packagePath := ""
+	targetName := ""
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -96,6 +113,13 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 		if len(parts) < 2 {
 			if parts[0] == "module" {
 				return mod, fmt.Errorf("invalid module directive in %s", modPath)
+			}
+			if line == "}" {
+				if targetName != "" {
+					targetName = ""
+				} else if packagePath != "" {
+					packagePath = ""
+				}
 			}
 			continue
 		}
@@ -124,6 +148,46 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 				mod.Replaces[cloneModuleString(parts[1])] = cloneModuleString(parts[2])
 			}
 		}
+
+		// Native package configuration is intentionally parsed in addition to
+		// the line-oriented module directives above. Unknown nested directives
+		// remain harmless for older module files.
+		if strings.HasPrefix(line, "package ") {
+			packagePath = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "package ")), "{")
+			packagePath = strings.TrimSpace(packagePath)
+			if _, ok := mod.NativePackages[packagePath]; !ok {
+				mod.NativePackages[packagePath] = make(map[string]NativeTarget)
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "target ") && packagePath != "" {
+			targetName = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "target ")), "{")
+			targetName = strings.TrimSpace(targetName)
+			if _, ok := mod.NativePackages[packagePath][targetName]; !ok {
+				mod.NativePackages[packagePath][targetName] = NativeTarget{}
+			}
+			continue
+		}
+		if targetName != "" && (strings.HasPrefix(line, "link:") || strings.HasPrefix(line, "assets:")) {
+			value := quotedModuleValue(line)
+			if value != "" {
+				config := mod.NativePackages[packagePath][targetName]
+				if strings.HasPrefix(line, "link:") {
+					config.Links = append(config.Links, value)
+				} else {
+					config.Assets = append(config.Assets, value)
+				}
+				mod.NativePackages[packagePath][targetName] = config
+			}
+			continue
+		}
+		if line == "}" {
+			if targetName != "" {
+				targetName = ""
+			} else if packagePath != "" {
+				packagePath = ""
+			}
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -134,6 +198,35 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 	}
 
 	return mod, nil
+}
+
+func quotedModuleValue(line string) string {
+	first := strings.IndexByte(line, '"')
+	if first < 0 {
+		return ""
+	}
+	last := strings.LastIndexByte(line, '"')
+	if last <= first {
+		return ""
+	}
+	return line[first+1 : last]
+}
+
+func (m *Module) NativeConfig(packagePath, targetName string) (NativeTarget, bool) {
+	if m == nil {
+		return NativeTarget{}, false
+	}
+	packagePath = filepath.ToSlash(filepath.Clean(packagePath))
+	packagePath = strings.TrimPrefix(packagePath, "./")
+	for key, targets := range m.NativePackages {
+		cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(key)), "./")
+		if cleanKey != packagePath {
+			continue
+		}
+		config, ok := targets[targetName]
+		return config, ok
+	}
+	return NativeTarget{}, false
 }
 
 // ResolvePackagePath はインポートパスをファイルシステム上の絶対パスディレクトリに解決します

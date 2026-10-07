@@ -16,6 +16,7 @@ import (
 	"hikec-go/pkg/loader"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/lower"
+	"hikec-go/pkg/mod"
 	"hikec-go/pkg/parser"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
@@ -35,6 +36,7 @@ type Compiler struct {
 	lineTablesOnly bool
 	wabtDebug      *wabt.DebugInfo
 	reporter       *diag.Reporter
+	nativeDeps     []mod.NativeDependency
 }
 
 func logFunctionInventory(stage string, names []string) {
@@ -205,6 +207,14 @@ func (c *Compiler) Reporter() *diag.Reporter {
 	return c.reporter
 }
 
+// NativeDependencies returns the native link and runtime asset declarations
+// activated by imported Hike packages during the last compilation.
+func (c *Compiler) NativeDependencies() []mod.NativeDependency {
+	result := make([]mod.NativeDependency, len(c.nativeDeps))
+	copy(result, c.nativeDeps)
+	return result
+}
+
 // safeExecute は各コンパイルフェーズを安全に実行し、パニックが発生した場合も捕捉してエラー情報へ正規化する
 func (c *Compiler) safeExecute(defaultFile string, fn func() error) (err error) {
 	c.traceVV("phase begin " + defaultFile)
@@ -272,6 +282,7 @@ func (c *Compiler) CompileToHIR(entryPaths ...string) (*hir.Program, *sema.Conte
 			return fmt.Errorf("loader returned nil program")
 		}
 		rawProg = p
+		c.nativeDeps = ld.NativeDependencies()
 		c.traceVV(fmt.Sprintf("load result decls=%d imports=%d", len(p.Decls), len(p.Imports)))
 		logFunctionInventory("AST", astFunctionNames(p))
 		return nil

@@ -24,6 +24,7 @@ func defaultBuildTags() map[string]bool {
 
 // SetTarget enables Go-style GOOS/GOARCH/cgo tags for the compiler target.
 func (l *Loader) SetTarget(tgt *target.Target) {
+	l.target = tgt
 	tags := defaultBuildTags()
 	if tgt == nil {
 		l.buildTags = tags

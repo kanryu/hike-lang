@@ -12,6 +12,7 @@ import (
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/mod"
 	"hikec-go/pkg/parser"
+	"hikec-go/pkg/target"
 )
 
 type Loader struct {
@@ -26,6 +27,9 @@ type Loader struct {
 	mu           sync.Mutex
 	packageJobs  map[string]*packageJob
 	packageOrder []string
+	target       *target.Target
+	nativeDeps   []mod.NativeDependency
+	nativeMu     sync.Mutex
 }
 
 // packageJob represents an imported package that is being parsed in a
@@ -73,6 +77,63 @@ func New(rootDir string) *Loader {
 
 func (l *Loader) SetVerbose(v bool) {
 	l.verbose = v
+}
+
+func (l *Loader) NativeDependencies() []mod.NativeDependency {
+	l.nativeMu.Lock()
+	defer l.nativeMu.Unlock()
+	result := make([]mod.NativeDependency, len(l.nativeDeps))
+	copy(result, l.nativeDeps)
+	return result
+}
+
+func (l *Loader) recordNativePackage(pkgDir string) {
+	if l == nil || l.target == nil {
+		return
+	}
+	dependencyModule, err := mod.FindModuleRoot(pkgDir)
+	if err != nil || dependencyModule == nil {
+		return
+	}
+	relative, err := filepath.Rel(dependencyModule.RootDir, pkgDir)
+	if err != nil {
+		return
+	}
+	targetName := nativeTargetName(l.target)
+	config, ok := dependencyModule.NativeConfig(relative, targetName)
+	if !ok || (len(config.Links) == 0 && len(config.Assets) == 0) {
+		return
+	}
+	dependency := mod.NativeDependency{
+		ModuleRoot:  dependencyModule.RootDir,
+		PackagePath: filepath.ToSlash(filepath.Clean(relative)),
+		Links:       append([]string(nil), config.Links...),
+		Assets:      append([]string(nil), config.Assets...),
+	}
+	l.nativeMu.Lock()
+	defer l.nativeMu.Unlock()
+	for _, existing := range l.nativeDeps {
+		if existing.ModuleRoot == dependency.ModuleRoot && existing.PackagePath == dependency.PackagePath {
+			return
+		}
+	}
+	l.nativeDeps = append(l.nativeDeps, dependency)
+}
+
+func nativeTargetName(tgt *target.Target) string {
+	if tgt == nil {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(tgt.Name, "windows"):
+		return "windows"
+	case strings.HasPrefix(tgt.Name, "linux"):
+		return "linux"
+	case tgt.Name == "darwin":
+		return "darwin"
+	default:
+		return tgt.Name
+	}
 }
 
 // SetCompileFork enables concurrent parsing of imported packages. The default
@@ -335,6 +396,7 @@ func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 				}
 				continue
 			}
+			l.recordNativePackage(pkgDir)
 			if pkgDir != "" && !l.visitedPkgs[pkgDir] {
 				l.visitedPkgs[pkgDir] = true
 				hikeFiles, err := l.findHikeFilesInDir(pkgDir)
@@ -467,6 +529,7 @@ func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) error {
 			return fmt.Errorf("cannot resolve import %q from %s: %w", imp.Path, fromDir, err)
 		}
 		pkgDir = filepath.Clean(pkgDir)
+		l.recordNativePackage(pkgDir)
 		l.mu.Lock()
 		if _, exists := l.packageJobs[pkgDir]; exists {
 			l.mu.Unlock()

@@ -15,6 +15,7 @@ import (
 	"hikec-go/pkg/codegen/symbols"
 	"hikec-go/pkg/compiler"
 	"hikec-go/pkg/logger"
+	"hikec-go/pkg/mod"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/target"
 	"hikec-go/pkg/toolchain"
@@ -534,6 +535,7 @@ func runBuild(args []string) {
 	// emit-ir path remains authoritative for LLVM output; this frontend pass
 	// only supplies source-owned JavaScript bindings to runtime.js.
 	var runtimeProgram *ast.Program
+	var nativeDeps []mod.NativeDependency
 	var wabtCompiler *compiler.Compiler
 	var wabtWAT string
 	if tgt.IsWasm {
@@ -583,7 +585,42 @@ func runBuild(args []string) {
 			os.Exit(1)
 		}
 	} else {
-		runEmitIR(emitArgs)
+		// Compile in-process so package-level native dependency declarations
+		// discovered by the loader can be forwarded to the native linker.
+		nativeCompiler := compiler.New(tgt)
+		nativeCompiler.SetVerbose(verbose)
+		nativeCompiler.SetVerboseLevel(logger.GetLevel())
+		nativeCompiler.SetWasmMode(wasmMode)
+		nativeCompiler.SetRegionMode(regionMode)
+		nativeCompiler.SetRetainRelease(retainRelease)
+		nativeCompiler.SetGoHikeMode(goHikeMode)
+		nativeCompiler.SetCompileFork(compileFork)
+		nativeCompiler.SetDebugInfo(debugInfo)
+		nativeCompiler.SetDebugLineTablesOnly(lineTablesOnly)
+		llvmIR, semaCtx, program, compileErr := nativeCompiler.CompileToLLVM(sourceFiles...)
+		if compileErr != nil {
+			reportCompilationError(nativeCompiler, compileErr)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(tempLL, []byte(llvmIR), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "LLVM write failed: %v\n", err)
+			os.Exit(1)
+		}
+		if exportSymbolsPath != "" {
+			file, writeErr := os.Create(exportSymbolsPath)
+			if writeErr == nil {
+				writeErr = symbols.WriteJSON(file, program, semaCtx)
+				closeErr := file.Close()
+				if writeErr == nil {
+					writeErr = closeErr
+				}
+			}
+			if writeErr != nil {
+				fmt.Fprintf(os.Stderr, "Symbol export error: %v\n", writeErr)
+				os.Exit(1)
+			}
+		}
+		nativeDeps = nativeCompiler.NativeDependencies()
 	}
 
 	srcBase := strings.TrimSuffix(filepath.Base(sourceFiles[0]), filepath.Ext(sourceFiles[0]))
@@ -696,12 +733,21 @@ func runBuild(args []string) {
 				args = append(args, strings.Fields(extraCflags)...)
 			}
 		}
+		for _, dependency := range nativeDeps {
+			for _, link := range dependency.Links {
+				args = append(args, resolveNativeLink(dependency.ModuleRoot, link))
+			}
+		}
 
 		cmd := exec.Command(command, args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "%s build failed: %v\n", command, err)
+			os.Exit(1)
+		}
+		if err := copyNativeAssets(outputBin, nativeDeps); err != nil {
+			fmt.Fprintf(os.Stderr, "Native assets copy failed: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -719,6 +765,56 @@ func runBuild(args []string) {
 	if !strings.Contains(outputBin, "hike_run_") {
 		fmt.Printf("Build completed -> %s\n", outputBin)
 	}
+}
+
+func resolveNativeLink(moduleRoot, link string) string {
+	if strings.HasPrefix(link, "-") || filepath.IsAbs(link) {
+		return link
+	}
+	return filepath.Join(moduleRoot, filepath.FromSlash(link))
+}
+
+func copyNativeAssets(outputBin string, dependencies []mod.NativeDependency) error {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	outputDir := filepath.Dir(outputBin)
+	if outputDir == "." || outputDir == "" {
+		outputDir = "."
+	}
+	for _, dependency := range dependencies {
+		for _, pattern := range dependency.Assets {
+			absolutePattern := pattern
+			if !filepath.IsAbs(absolutePattern) {
+				absolutePattern = filepath.Join(dependency.ModuleRoot, filepath.FromSlash(pattern))
+			}
+			matches, err := filepath.Glob(absolutePattern)
+			if err != nil {
+				return fmt.Errorf("invalid asset pattern %q: %w", pattern, err)
+			}
+			if len(matches) == 0 {
+				return fmt.Errorf("asset pattern %q matched no files", pattern)
+			}
+			for _, source := range matches {
+				info, err := os.Stat(source)
+				if err != nil || info.IsDir() {
+					continue
+				}
+				destination := filepath.Join(outputDir, filepath.Base(source))
+				if filepath.Clean(source) == filepath.Clean(destination) {
+					continue
+				}
+				data, err := os.ReadFile(source)
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
+					return fmt.Errorf("copy %s to %s: %w", source, destination, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func nativeToolchainProfile(tgt *target.Target) string {

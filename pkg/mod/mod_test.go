@@ -88,3 +88,41 @@ func TestFindModuleRootRejectsMalformedModFile(t *testing.T) {
 		t.Fatalf("error result did not preserve module root: %#v", m)
 	}
 }
+
+func TestParseNativePackageTargets(t *testing.T) {
+	root := t.TempDir()
+	content := `module example/images
+hike 1.0
+
+package ./shared {
+    target windows {
+        link: "deps/vips/lib/libvips.lib"
+        assets: "deps/vips/bin/*.dll"
+    }
+    target linux {
+        link: "-lvips"
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(root, "hike.mod"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := FindModuleRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows, ok := m.NativeConfig("./shared", "windows")
+	if !ok {
+		t.Fatal("windows native package config was not found")
+	}
+	if len(windows.Links) != 1 || windows.Links[0] != "deps/vips/lib/libvips.lib" {
+		t.Fatalf("windows links = %#v", windows.Links)
+	}
+	if len(windows.Assets) != 1 || windows.Assets[0] != "deps/vips/bin/*.dll" {
+		t.Fatalf("windows assets = %#v", windows.Assets)
+	}
+	linux, ok := m.NativeConfig("shared", "linux")
+	if !ok || len(linux.Links) != 1 || linux.Links[0] != "-lvips" {
+		t.Fatalf("linux native config = %#v, %v", linux, ok)
+	}
+}
