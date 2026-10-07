@@ -97,6 +97,23 @@ func TestLookupMethodFromReceiverFQDN(t *testing.T) {
 	}
 }
 
+func TestLookupMethodPrefersExactReceiverBeforeAliases(t *testing.T) {
+	ctx := NewContext()
+	direct := &FuncType{Name: "int#Format", InternalKey: "builtin/int@Format", IsMethod: true}
+	// An unresolved alias can temporarily contain an incomplete map type while
+	// declarations are being resolved. Exact method matches must not inspect it.
+	var incompleteValue *BasicType
+	incompleteAlias := &MapType{Key: TypeString, Value: incompleteValue}
+
+	ctx.Aliases["Number"] = incompleteAlias
+	ctx.RegisterMethod("int", "Format", direct)
+
+	got, key := ctx.LookupMethod("int", "Format")
+	if got != direct || key != direct.InternalKey {
+		t.Fatalf("LookupMethod(int, Format) = (%p, %q), want direct method (%p, %q)", got, key, direct, direct.InternalKey)
+	}
+}
+
 func TestNestedIndexResolutionThroughIndexableReceivers(t *testing.T) {
 	ctx := NewContext()
 	horizontal := &StructType{Name: "Horizontal", Fields: []Field{{Name: "data", Type: &PointerType{Base: TypeInt}}}}

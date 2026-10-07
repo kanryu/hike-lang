@@ -221,12 +221,18 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 	// resolved name first, then its package-local spelling, preserving pointer
 	// qualification in every candidate.
 	candidates := receiverTypeCandidates(recvTypeName)
+	for _, candidate := range candidates {
+		if fn, ok := c.Methods[methodLookupKey(candidate, methodName)]; ok {
+			return fn, fn.InternalKey
+		}
+	}
 	// Type aliases are registered before their underlying types are resolved,
 	// so a method may be keyed by the alias name (for example T#String) while
 	// a later expression has the underlying type (uint8). Include aliases that
 	// resolve to the same concrete type in the lookup candidates.
 	isPtr := strings.HasPrefix(recvTypeName, "*")
 	rawName := strings.TrimPrefix(recvTypeName, "*")
+	aliasCandidates := make([]string, 0)
 	for aliasName, aliasType := range c.Aliases {
 		if aliasType == nil || typeNameOf(aliasType) != rawName {
 			continue
@@ -234,9 +240,9 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 		if isPtr {
 			aliasName = "*" + aliasName
 		}
-		candidates = append(candidates, aliasName)
+		aliasCandidates = append(aliasCandidates, aliasName)
 	}
-	for _, candidate := range candidates {
+	for _, candidate := range aliasCandidates {
 		if fn, ok := c.Methods[methodLookupKey(candidate, methodName)]; ok {
 			return fn, fn.InternalKey
 		}
@@ -907,7 +913,8 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	case *ast.ArrayType:
 		return newSemanticArrayType(int(t.Len), c.ResolveType(t.Elem))
 	case *ast.MapType:
-		key, value := c.ResolveType(t.Key), c.ResolveType(t.Value)
+		key := c.ResolveType(t.Key)
+		value := c.ResolveType(t.Value)
 		isSingleValue := IsSingleValueMapValue(value)
 		t.IsSingleValue = isSingleValue
 		mapType := newSemanticMapType()
