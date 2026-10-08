@@ -385,7 +385,7 @@ func (c *Compiler) CompileToLLVM(entryPaths ...string) (string, *sema.Context, *
 	primaryFile := entryPaths[0]
 	var llvmIR string
 	if err := c.safeExecute(primaryFile, func() error {
-		emitter := llvm.New(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
+		emitter := llvm.NewEmitter(hirProg, semaCtx, targetTriple, primaryFile, c.debugInfo)
 		emitter.SetCompileFork(c.compileFork)
 		if c.target != nil {
 			emitter.SetPointerBits(c.target.PointerBits)

@@ -78,7 +78,7 @@ func defaultTargetTriple() string {
 	}
 }
 
-func New(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath string, debugEnabled bool) *Emitter {
+func NewEmitter(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePath string, debugEnabled bool) *Emitter {
 	if targetTriple == "" {
 		targetTriple = defaultTargetTriple()
 	}
@@ -573,7 +573,7 @@ func (e *Emitter) emitFunctionsFork(referencedExterns map[string]bool) {
 }
 
 func (e *Emitter) newForkFunctionEmitter() *Emitter {
-	child := New(e.prog, e.semaCtx, e.targetTriple, "", false)
+	child := NewEmitter(e.prog, e.semaCtx, e.targetTriple, "", false)
 	child.pointerBits = e.pointerBits
 	child.userSymbols = make(map[string]string, len(e.userSymbols))
 	for name, symbol := range e.userSymbols {

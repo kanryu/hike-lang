@@ -404,8 +404,8 @@ type ConstValueType struct {
 }
 
 func (t *ConstValueType) TypeName() string          { return fmt.Sprintf("const<%d>", t.Value) }
-func (t *ConstValueType) LLVMType() string          { return "void" }
-func (t *ConstValueType) Size() int                 { return 0 }
+func (t *ConstValueType) LLVMType() string          { return "i64" }
+func (t *ConstValueType) Size() int                 { return 8 }
 func (t *ConstValueType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 type PointerType struct {
@@ -746,6 +746,15 @@ func BuildInternalKey(pkg string, ident string, structName string) string {
 		base = pkg + "/" + ident
 	}
 	if structName != "" {
+		pointer := strings.HasPrefix(structName, "*")
+		rawStruct := strings.TrimPrefix(structName, "*")
+		if pkg != "" && pkg != "main" {
+			rawStruct = strings.TrimPrefix(rawStruct, pkg+"_")
+		}
+		structName = rawStruct
+		if pointer {
+			structName = "*" + structName
+		}
 		if strings.HasPrefix(structName, "*") {
 			return base + "@@" + strings.TrimPrefix(structName, "*")
 		}
@@ -949,7 +958,7 @@ func DetermineCast(from, to Type) (ast.CastKind, bool) {
 	if from == nil || to == nil {
 		return 0, false
 	}
-	if from == to || typeNameOf(from) == typeNameOf(to) {
+	if from == to {
 		return 0, false
 	}
 
@@ -1446,8 +1455,18 @@ func registerFuncDecl(decl ast.Decl, pkg string, ctx *Context) error {
 }
 
 func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
-	fnName := fn.Name.Value
+	methodName := fn.Name.Value
 	isMethod := fn.Receiver != nil
+	if isMethod {
+		receiverName := strings.TrimPrefix(getBaseTypeName(fn.Receiver.Type), "*")
+		if separator := strings.IndexByte(receiverName, '_'); separator > 0 {
+			methodName = strings.TrimPrefix(methodName, receiverName[:separator]+"_")
+		} else if pkg != "" && pkg != "main" {
+			methodName = strings.TrimPrefix(methodName, pkg+"_")
+		}
+	}
+	fnName := methodName
+	receiverIsPtr := false
 	tpSet := make(map[string]bool)
 	for _, tp := range fn.TypeParams {
 		tpSet[tp.Name.Value] = true
@@ -1461,6 +1480,8 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 		// explicit receiver type arguments (for example Box[T]).
 		collectReceiverTypeArgs(fn.Receiver.Type, tpSet)
 		origRecvName = getBaseTypeName(fn.Receiver.Type)
+		receiverIsPtr = strings.HasPrefix(origRecvName, "*") || isPointerReceiverType(fn.Receiver.Type)
+		origRecvName = strings.TrimPrefix(origRecvName, "*")
 		recvTypeName := origRecvName
 		if st, canonical := ctx.LookupStruct(recvTypeName); st != nil {
 			recvTypeName = canonical
@@ -1471,7 +1492,7 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 			fnName = CanonicalMethodName(recvTypeName, fnName)
 		}
 		structNameWithPtr = recvTypeName
-		if _, isPtr := fn.Receiver.Type.(*ast.PointerType); isPtr {
+		if receiverIsPtr {
 			structNameWithPtr = "*" + recvTypeName
 		}
 	}
@@ -1497,7 +1518,7 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 		}
 	}
 
-	internalKey := BuildInternalKey(pkg, fn.Name.Value, structNameWithPtr)
+	internalKey := BuildInternalKey(pkg, methodName, structNameWithPtr)
 	fn.InternalKey = internalKey
 	irName := MangleInternalKeyToIR(internalKey)
 	if !isMethod && (pkg == "" || pkg == "main") {
@@ -1517,13 +1538,13 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 	fnType.Specializations = make(map[string]*FuncType)
 	ctx.Functions[fnName] = fnType
 	if isMethod {
-		ctx.RegisterMethod(structNameWithPtr, fn.Name.Value, fnType)
+		ctx.RegisterMethod(structNameWithPtr, methodName, fnType)
 		if !strings.HasPrefix(structNameWithPtr, "*") && origRecvName != structNameWithPtr {
-			ctx.RegisterMethod(origRecvName, fn.Name.Value, fnType)
+			ctx.RegisterMethod(origRecvName, methodName, fnType)
 		}
 	}
 	if origRecvName != "" {
-		aliasMethodName := CanonicalMethodName(origRecvName, fn.Name.Value)
+		aliasMethodName := CanonicalMethodName(origRecvName, methodName)
 		if aliasMethodName != fnName {
 			ctx.Functions[aliasMethodName] = fnType
 		}
@@ -1532,6 +1553,16 @@ func registerHikeFunc(fn *ast.FuncDecl, pkg string, ctx *Context) {
 		ctx.GenericFuncs[fnName] = fn
 		ctx.GenericFuncs[fn.Name.Value] = fn
 	}
+}
+
+func isPointerReceiverType(expr ast.TypeExpr) bool {
+	if _, ok := expr.(*ast.PointerType); ok {
+		return true
+	}
+	if named, ok := expr.(*ast.NamedType); ok && named.Name != nil {
+		return strings.HasPrefix(named.Name.Value, "*")
+	}
+	return false
 }
 
 func collectReceiverTypeArgs(t ast.TypeExpr, out map[string]bool) {
@@ -1636,15 +1667,17 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 	if IsGenericFuncDecl(decl) {
 		return
 	}
-	fnName := decl.Name.Value
+	methodName := decl.Name.Value
+	fnName := methodName
 	origRecvName := ""
 	var fnType *FuncType
 	if decl.Receiver != nil {
 		origRecvName = getBaseTypeName(decl.Receiver.Type)
+		methodName = receiverMethodName(origRecvName, methodName)
 		// Methods are registered under their source receiver name before alias
 		// types are fully resolved. Prefer that exact entry so an incomplete
 		// alias is never inspected merely to recover the method signature.
-		fnType, _ = ctx.LookupMethod(origRecvName, decl.Name.Value)
+		fnType, _ = ctx.LookupMethod(origRecvName, methodName)
 	}
 	if fnType == nil && decl.Receiver != nil {
 		recvTypeName := origRecvName
@@ -1668,7 +1701,7 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 		// Receiver methods can be registered under the source alias before the
 		// alias's underlying type is resolved. Recover that exact method entry
 		// instead of leaving its signature unresolved.
-		fnType, _ = ctx.LookupMethod(origRecvName, decl.Name.Value)
+		fnType, _ = ctx.LookupMethod(origRecvName, methodName)
 	}
 	if fnType == nil {
 		fnType = ctx.Functions[decl.Name.Value]
@@ -1685,7 +1718,14 @@ func resolveFuncDeclType(decl *ast.FuncDecl, ctx *Context) {
 	fnType.ReturnTypes = returnTypes
 	fnType.IsVariadic = decl.IsVariadic
 	setFuncVariadicElem(fnType, variadicElem)
-	registerBuiltinCapabilities(origRecvName, decl.Name.Value, paramTypes, returnTypes, fnType, ctx)
+	registerBuiltinCapabilities(origRecvName, methodName, paramTypes, returnTypes, fnType, ctx)
+}
+
+func receiverMethodName(receiverName, methodName string) string {
+	if separator := strings.IndexByte(receiverName, '_'); separator > 0 {
+		return strings.TrimPrefix(methodName, receiverName[:separator]+"_")
+	}
+	return methodName
 }
 
 func resolveExternFuncType(decl *ast.ExternFuncDecl, ctx *Context) {

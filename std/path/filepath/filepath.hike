@@ -102,3 +102,37 @@ func Join(parts ...string) string {
 	}
 	return joined
 }
+
+// Glob returns the paths in the directory portion of pattern whose names
+// match the final wildcard component. Filesystem errors are treated like the
+// standard library's filepath.Glob: an unreadable directory produces no
+// matches, while the pattern itself remains valid.
+func Glob(pattern string) ([]string, error) {
+	dir := Dir(pattern)
+	name := Base(pattern)
+	readDir := dir
+	if readDir == "." { readDir = "" }
+	entries, err := os.ReadDir(readDir)
+	if err != nil { return []string{}, nil }
+	matches := make([]string, 0)
+	for i := 0; i < len(entries); i = i + 1 {
+		entryName := entries[i].Name()
+		if filepathMatch(name, entryName) {
+			if dir == "." { matches = append(matches, entryName) } else { matches = append(matches, Join(dir, entryName)) }
+		}
+	}
+	return matches, nil
+}
+
+func filepathMatch(pattern string, value string) bool {
+	if len(pattern) == 0 { return len(value) == 0 }
+	if pattern[0] == '*' {
+		for i := 0; i <= len(value); i = i + 1 {
+			if filepathMatch(pattern[1:len(pattern)], value[i:len(value)]) { return true }
+		}
+		return false
+	}
+	if len(value) == 0 { return false }
+	if pattern[0] != '?' && pattern[0] != value[0] { return false }
+	return filepathMatch(pattern[1:len(pattern)], value[1:len(value)])
+}

@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
@@ -18,6 +19,11 @@ func (c *CallLowerer) LowerFunc(fn *ast.FuncDecl) {
 	c.resetFunctionState(fn)
 	fnName, recvType := c.resolveFunctionIdentity(fn)
 	irName := c.resolveFuncIRName(fnName)
+	if fn.Receiver != nil {
+		if method, _ := c.root.semaCtx.LookupMethod(receiverLookupName(fn.Receiver.Type), receiverMethodName(fn.Receiver.Type, fn.Name.Value)); method != nil && semaFuncIRName(method) != "" {
+			irName = semaFuncIRName(method)
+		}
+	}
 
 	isMain := (fn.Name.Value == "main" && fn.Receiver == nil)
 	returnTypes := c.resolveFunctionReturnTypes(fn, fnName, recvType, isMain)
@@ -249,7 +255,7 @@ func (c *CallLowerer) resolveFunctionIdentity(fn *ast.FuncDecl) (string, sema.Ty
 	// Resolving an alias here can expose an incomplete underlying type while
 	// the semantic context is still being consumed by the lowerer.
 	recvName := receiverTypeName(fn.Receiver.Type)
-	if method, _ := c.root.semaCtx.LookupMethod(recvName, fnName); method != nil {
+	if method, _ := c.root.semaCtx.LookupMethod(receiverLookupName(fn.Receiver.Type), fnName); method != nil {
 		return method.Name, recvType
 	}
 	return sema.CanonicalMethodName(recvName, fnName), recvType
@@ -268,6 +274,25 @@ func receiverTypeName(expr ast.TypeExpr) string {
 	default:
 		return ""
 	}
+}
+
+func receiverMethodName(expr ast.TypeExpr, methodName string) string {
+	receiver := receiverTypeName(expr)
+	if separator := strings.IndexByte(receiver, '_'); separator > 0 {
+		return strings.TrimPrefix(methodName, receiver[:separator]+"_")
+	}
+	return methodName
+}
+
+func receiverLookupName(expr ast.TypeExpr) string {
+	name := receiverTypeName(expr)
+	if _, ok := expr.(*ast.PointerType); ok {
+		return "*" + name
+	}
+	if named, ok := expr.(*ast.NamedType); ok && named.Name != nil && strings.HasPrefix(named.Name.Value, "*") {
+		return "*" + name
+	}
+	return name
 }
 
 func (c *CallLowerer) isUntypedVariadicBody(fn *ast.FuncDecl) bool {

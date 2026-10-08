@@ -226,28 +226,6 @@ func (c *Context) LookupMethod(recvTypeName string, methodName string) (*FuncTyp
 			return fn, fn.InternalKey
 		}
 	}
-	// Type aliases are registered before their underlying types are resolved,
-	// so a method may be keyed by the alias name (for example T#String) while
-	// a later expression has the underlying type (uint8). Include aliases that
-	// resolve to the same concrete type in the lookup candidates.
-	isPtr := strings.HasPrefix(recvTypeName, "*")
-	rawName := strings.TrimPrefix(recvTypeName, "*")
-	aliasCandidates := make([]string, 0)
-	for aliasName, aliasType := range c.Aliases {
-		if aliasType == nil || typeNameOf(aliasType) != rawName {
-			continue
-		}
-		if isPtr {
-			aliasName = "*" + aliasName
-		}
-		aliasCandidates = append(aliasCandidates, aliasName)
-	}
-	for _, candidate := range aliasCandidates {
-		if fn, ok := c.Methods[methodLookupKey(candidate, methodName)]; ok {
-			return fn, fn.InternalKey
-		}
-	}
-
 	// 旧形式で構築されたコンテキストとの互換性。こちらも完全一致のみ。
 	if fn, name := c.lookupLegacyMethod(recvTypeName, methodName); fn != nil {
 		return fn, name
@@ -1767,11 +1745,14 @@ func (c *Context) CoerceExpr(expr ast.Expression, targetType Type, locals map[st
 		return expr
 	}
 
-	if cl, ok := expr.(*ast.CharLiteral); ok && isIntType(targetType) {
+	if cl, ok := expr.(*ast.CharLiteral); ok {
 		return &ast.IntegerLiteral{
 			Token: cl.Token,
 			Value: int64(cl.CodePoint),
 		}
+	}
+	if _, ok := expr.(*ast.IntegerLiteral); ok {
+		return expr
 	}
 
 	actualType := c.InferExprType(expr, locals)
