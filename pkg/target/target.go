@@ -28,6 +28,13 @@ var (
 		IsWasm:      false,
 		Cflags:      "",
 	}
+	TargetX86WindowsMSVC = Target{
+		Name:        "windows-x86-msvc",
+		Triple:      "i686-pc-windows-msvc",
+		PointerBits: 32,
+		IsWasm:      false,
+		Cflags:      "-llegacy_stdio_definitions -Wno-override-module",
+	}
 	TargetX86_64WindowsMSVC = Target{
 		Name:        "windows-msvc",
 		Triple:      "x86_64-pc-windows-msvc",
@@ -129,6 +136,8 @@ func ParseTarget(name string) (*Target, error) {
 		return &TargetX86_64Windows, nil
 	case "windows-x86", "windows-386", "x86-windows", "386-windows", "i686-windows", "i686-windows-gnu", "i686-w64-windows-gnu":
 		return &TargetX86Windows, nil
+	case "windows-x86-msvc", "x86-windows-msvc", "i686-windows-msvc", "i686-pc-windows-msvc":
+		return &TargetX86WindowsMSVC, nil
 	case "windows-msvc", "x86_64-windows-msvc", "x86_64-pc-windows-msvc":
 		return &TargetX86_64WindowsMSVC, nil
 	case "linux", "x86_64-linux", "x86_64-linux-gnu", "x86_64-unknown-linux-gnu":

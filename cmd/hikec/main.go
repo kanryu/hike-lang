@@ -822,8 +822,12 @@ func nativeToolchainProfile(tgt *target.Target) string {
 		return ""
 	}
 	switch tgt.Name {
+	case target.TargetX86WindowsMSVC.Name:
+		return "windows-x86-msvc"
 	case target.TargetX86_64WindowsMSVC.Name:
 		return "windows-msvc"
+	case target.TargetX86Windows.Name:
+		return "windows-gnu-x86"
 	case target.TargetX86_64Windows.Name:
 		return "windows-gnu"
 	default:

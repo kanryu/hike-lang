@@ -8,16 +8,16 @@ import "std/errors"
 // public HTTP API remains UTF-8/string based.
 extern func WinHttpOpen(agent *uint16, accessType uint32, proxy *uint16, bypass *uint16, flags uint32) *byte
 extern func WinHttpConnect(session *byte, server *uint16, port uint16, reserved uint32) *byte
-extern func WinHttpOpenRequest(connect *byte, verb *uint16, objectName *uint16, version *uint16, referrer *uint16, acceptTypes *uint16, flags uint32) *byte
-extern func WinHttpAddRequestHeaders(request *byte, headers *uint16, length int, modifiers uint32) int
-extern func WinHttpSendRequest(request *byte, headers *uint16, length int, optionalData *byte, optionalLength int, totalLength int, context uint64) int
-extern func WinHttpReceiveResponse(request *byte, reserved *byte) int
-extern func WinHttpSetTimeouts(request *byte, resolve int, connect int, send int, receive int) int
-extern func WinHttpQueryHeaders(request *byte, level uint32, name *uint16, buffer *byte, bufferLength *uint32, index *uint32) int
-extern func WinHttpQueryDataAvailable(request *byte, available *uint32) int
-extern func WinHttpReadData(request *byte, buffer *byte, length int, read *uint32) int
-extern func WinHttpCloseHandle(handle *byte) int
-extern func GetLastError() int
+extern func WinHttpOpenRequest(connect *byte, verb *uint16, objectName *uint16, version *uint16, referrer *uint16, acceptTypes **uint16, flags uint32) *byte
+extern func WinHttpAddRequestHeaders(request *byte, headers *uint16, length uint32, modifiers uint32) uint32
+extern func WinHttpSendRequest(request *byte, headers *uint16, length uint32, optionalData *byte, optionalLength uint32, totalLength uint32, context uint) uint32
+extern func WinHttpReceiveResponse(request *byte, reserved *byte) uint32
+extern func WinHttpSetTimeouts(request *byte, resolve uint32, connect uint32, send uint32, receive uint32) uint32
+extern func WinHttpQueryHeaders(request *byte, level uint32, name *uint16, buffer *byte, bufferLength *uint32, index *uint32) uint32
+extern func WinHttpQueryDataAvailable(request *byte, available *uint32) uint32
+extern func WinHttpReadData(request *byte, buffer *byte, length uint32, read *uint32) uint32
+extern func WinHttpCloseHandle(handle *byte) uint32
+extern func GetLastError() uint32
 
 const (
 	winHttpAccessDefaultProxy uint32 = 0
@@ -25,7 +25,21 @@ const (
 	winHttpOptionRawHeaders uint32 = 22
 	winHttpQueryContentLength uint32 = 5
 	winHttpHeaderAdd uint32 = 536870912
+	winHttpLengthNullTerminated uint32 = 4294967295
 )
+
+// WinHTTP uses DWORD for byte counts. Keep the public Hike API int-based, but
+// reject values that cannot be represented by the native ABI on either width.
+func httpDWORD(value int) (uint32, bool) {
+	if value < 0 || uint64(value) > uint64(4294967295) { return 0, false }
+	return uint32(value), true
+}
+
+func httpIntFromDWORD(value uint32) (int, bool) {
+	converted := int(value)
+	if converted < 0 { return 0, false }
+	return converted, true
+}
 
 func httpUTF16(text string) []uint16 {
 	result := make([]uint16, len(text)+1)
@@ -69,7 +83,9 @@ func httpQueryRawHeaders(handle *byte) string {
 	size := uint32(0)
 	WinHttpQueryHeaders(handle, winHttpOptionRawHeaders, nil, nil, &size, nil)
 	if size == 0 { return "" }
-	buffer := make([]byte, int(size)+2)
+	convertedSize, ok := httpIntFromDWORD(size)
+	if !ok || convertedSize+2 < convertedSize { return "" }
+	buffer := make([]byte, convertedSize+2)
 	if WinHttpQueryHeaders(handle, winHttpOptionRawHeaders, nil, &buffer[0], &size, nil) == 0 { return "" }
 	// WinHTTP returns UTF-16.  This deliberately handles the ASCII header
 	// grammar; non-ASCII header values are preserved by the low byte.
@@ -84,10 +100,15 @@ func httpResponseBody(handle *byte) ([]byte, error) {
 		available := uint32(0)
 		if WinHttpQueryDataAvailable(handle, &available) == 0 { return nil, errors.New("http: query response size failed") }
 		if available == 0 { return result, nil }
-		buffer := make([]byte, int(available))
+		availableInt, ok := httpIntFromDWORD(available)
+		if !ok { return nil, errors.New("http: response chunk is too large for this target") }
+		if len(result)+availableInt < len(result) { return nil, errors.New("http: response size overflow") }
+		buffer := make([]byte, availableInt)
 		read := uint32(0)
-		if WinHttpReadData(handle, &buffer[0], int(available), &read) == 0 { return nil, errors.New("http: read response failed") }
-		for i := 0; i < int(read); i = i + 1 { result = append(result, buffer[i]) }
+		if WinHttpReadData(handle, &buffer[0], available, &read) == 0 { return nil, errors.New("http: read response failed") }
+		readInt, ok := httpIntFromDWORD(read)
+		if !ok || len(result)+readInt < len(result) { return nil, errors.New("http: response size overflow") }
+		for i := 0; i < readInt; i = i + 1 { result = append(result, buffer[i]) }
 	}
 }
 
@@ -122,15 +143,21 @@ func doRequest(client *Client, req *Request) (*Response, error) {
 	handle := WinHttpOpenRequest(connection, &verb16[0], &path16[0], nil, nil, nil, flags)
 	if handle == nil { return nil, errors.New("http: WinHttpOpenRequest failed") }
 	defer WinHttpCloseHandle(handle)
-	if client != nil && client.Timeout > 0 { WinHttpSetTimeouts(handle, client.Timeout, client.Timeout, client.Timeout, client.Timeout) }
+	if client != nil && client.Timeout > 0 {
+		timeout, ok := httpDWORD(client.Timeout)
+		if !ok { return nil, errors.New("http: timeout is too large") }
+		if WinHttpSetTimeouts(handle, timeout, timeout, timeout, timeout) == 0 { return nil, errors.New("http: invalid timeout") }
+	}
 	headerText := httpHeadersText(req.Header)
 	if headerText != "" {
 		headers16 := httpUTF16(headerText)
-		if WinHttpAddRequestHeaders(handle, &headers16[0], -1, winHttpHeaderAdd) == 0 { return nil, errors.New("http: invalid request headers") }
+		if WinHttpAddRequestHeaders(handle, &headers16[0], winHttpLengthNullTerminated, winHttpHeaderAdd) == 0 { return nil, errors.New("http: invalid request headers") }
 	}
 	var body *byte
 	if len(req.Body) > 0 { body = &req.Body[0] }
-	if WinHttpSendRequest(handle, nil, 0, body, len(req.Body), len(req.Body), 0) == 0 { return nil, errors.New("http: WinHttpSendRequest failed") }
+	bodyLength, ok := httpDWORD(len(req.Body))
+	if !ok { return nil, errors.New("http: request body is too large for WinHTTP") }
+	if WinHttpSendRequest(handle, nil, 0, body, bodyLength, bodyLength, uint(0)) == 0 { return nil, errors.New("http: WinHttpSendRequest failed") }
 	if WinHttpReceiveResponse(handle, nil) == 0 { return nil, errors.New("http: WinHttpReceiveResponse failed") }
 	raw := httpQueryRawHeaders(handle)
 	responseHeaders := httpParseHeaders(raw)

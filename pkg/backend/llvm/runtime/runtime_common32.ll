@@ -477,6 +477,13 @@ exit:
   ret i8* %dst
 }
 
+; Keep the source-level native extern names stable while selecting the
+; pointer-width implementation for 32-bit targets.
+define internal i8* @memcpy(i8* %dst, i8* %src, i32 %n) #0 {
+  %result = call i8* @memcpy32(i8* %dst, i8* %src, i32 %n)
+  ret i8* %result
+}
+
 ; メモリブロックの比較 (32-bit)
 define internal i32 @memcmp32(i8* %s1, i8* %s2, i32 %n) #0 {
 entry:
@@ -503,6 +510,11 @@ ret_zero:
   ret i32 0
 }
 
+define internal i32 @memcmp(i8* %s1, i8* %s2, i32 %n) #0 {
+  %result = call i32 @memcmp32(i8* %s1, i8* %s2, i32 %n)
+  ret i32 %result
+}
+
 ; 文字列長の算出 (32-bit)
 define internal i32 @strlen32(i8* %s) #0 {
 entry:
@@ -519,6 +531,11 @@ ret_len:
   ret i32 %len
 ret_zero:
   ret i32 0
+}
+
+define internal i32 @strlen(i8* %s) #0 {
+  %result = call i32 @strlen32(i8* %s)
+  ret i32 %result
 }
 
 ; 文字列の辞書順比較 (32-bit)
@@ -560,6 +577,11 @@ calc_diff:
   %u2 = zext i8 %c2 to i32
   %res = sub i32 %u1, %u2
   ret i32 %res
+}
+
+define internal i32 @strcmp(i8* %s1, i8* %s2) #0 {
+  %result = call i32 @strcmp32(i8* %s1, i8* %s2)
+  ret i32 %result
 }
 
 ; ------------------------------------------------------------------------------

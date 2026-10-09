@@ -1122,8 +1122,10 @@ func (e *Emitter) emitGetElemPtr(i *hir.InstrGetElemPtr, intLLVM string) {
 
 	if pt, ok := baseType.(*sema.PointerType); ok {
 		if ar, okArr := pt.Base.(*sema.ArrayType); okArr {
-			e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, i64 %s\n",
-				i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), idxVal))
+			indexType := "i64"
+			if e.pointerBits == 32 { indexType = "i32" }
+			e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, %s %s\n",
+				i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), indexType, idxVal))
 			return
 		}
 	}
@@ -1147,6 +1149,12 @@ func (e *Emitter) emitGetElemPtr(i *hir.InstrGetElemPtr, intLLVM string) {
 	} else if elemLLVM != "i8" {
 		// Non-byte backing storage is addressed with pointer-width indices even
 		// when the source-level index is represented as int in legacy HIR.
+		idxLLVM = "i64"
+	}
+	if e.pointerBits == 32 && (idxLLVM == "i64" || idxLLVM == "i32") {
+		idxLLVM = "i32"
+	} else if e.pointerBits != 32 && idxLLVM == "i32" && elemLLVM != "i8" {
+		// Keep non-byte indexing pointer-width based on 64-bit targets too.
 		idxLLVM = "i64"
 	}
 
