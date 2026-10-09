@@ -106,7 +106,7 @@ func SizeOf(typ Type) int {
 	case *semanticTypeParamType:
 		return PointerSize
 	case *semanticConstValueType:
-		return 0
+		return 8
 	case *semanticPointerType, *semanticChanType, *semanticFutureType, *semanticMapType:
 		return PointerSize
 	case *semanticFuncType:
@@ -175,7 +175,7 @@ func typeLLVMOf(typ Type) string {
 	case *semanticTypeParamType:
 		return "i8*"
 	case *semanticConstValueType:
-		return "void"
+		return "i64"
 	case *semanticPointerType:
 		return typeLLVMOf(t.Base) + "*"
 	case *semanticSliceType:
@@ -483,7 +483,16 @@ func (t *StructType) LLVMType() string {
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
 func StructType_TypeName(t *StructType) string { return t.Name }
-func StructType_LLVMType(t *StructType) string { return t.LLVMType() }
+// StructType_LLVMType is the Go-Hike-visible helper for the concrete
+// StructType implementation. Keep the body concrete: calling t.LLVMType()
+// here is lowered by the self-hosted compiler back to this helper and recurses.
+func StructType_LLVMType(t *StructType) string {
+	parts := make([]string, 0, len(t.Fields))
+	for _, f := range t.Fields {
+		parts = append(parts, typeLLVMOf(f.Type))
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
+}
 func (t *StructType) IsGeneric() bool          { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 func (t *StructType) Align() int {
@@ -526,7 +535,9 @@ func (t *StructType) Size() int {
 	return (offset + maxAlign - 1) &^ (maxAlign - 1)
 }
 
-func StructType_Size(t *StructType) int { return t.Size() }
+func StructType_Size(t *StructType) int {
+	return structSize(t)
+}
 
 func (t *StructType) TypeID(ctx *Context) int64           { return typeIDOf(ctx, t) }
 func StructType_TypeID(t *StructType, ctx *Context) int64 { return typeIDOf(ctx, t) }
