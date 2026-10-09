@@ -285,6 +285,29 @@ func main() int {
 	})
 }
 
+func TestE2EStdURLMultibyteEscaping(t *testing.T) {
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/net/url"
+
+func printf(format string, ...) int
+
+func main() int {
+    path := url.PathEscape("あ😀 /")
+    query := url.QueryEscape("あ😀 /")
+    decoded, err := url.PathUnescape(path)
+    printf("PATH=%s,QUERY=%s,ROUNDTRIP=%s:%d\n", path, query, decoded, err == nil)
+    return 0
+}
+`,
+		ExpectedOut:  "PATH=%E3%81%82%F0%9F%98%80%20%2F,QUERY=%E3%81%82%F0%9F%98%80+%2F,ROUNDTRIP=あ😀 /:1",
+		ExpectedExit: 0,
+	})
+}
+
 func TestE2EStdNetParsing(t *testing.T) {
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,

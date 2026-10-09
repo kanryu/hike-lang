@@ -359,6 +359,10 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 	var elemType sema.Type = sema.TypeByte
 	var lenVal hir.Value = nil
 	var dataPtr hir.Value = nil
+	// A string's two-value range form is Unicode-aware: the key remains the
+	// byte offset, while the value is the decoded UTF-8 code point (rune).
+	// The one-value form intentionally keeps Go's byte-index semantics.
+	isStringRuneRange := false
 
 	if sl, isSlice := xType.(*sema.SliceType); isSlice {
 		elemType = sl.Elem
@@ -376,7 +380,12 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		dataPtr = s.root.Expr.LowerLValue(fr.X)
 	} else if xType == sema.TypeString || semaTypeName(xType) == "string" {
 		dataPtr, lenVal = s.root.stringParts(xVal)
-		elemType = sema.TypeByte
+		if fr.Value != nil {
+			elemType = sema.TypeInt32
+			isStringRuneRange = true
+		} else {
+			elemType = sema.TypeByte
+		}
 	} else {
 		lenReg := s.root.nextReg(sema.TypeInt)
 		s.root.emit(&hir.InstrCallStatic{Dst: lenReg, CalleeName: s.root.BuiltinName("strlen"), Args: []hir.Value{xVal}})
@@ -490,10 +499,23 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		s.root.emit(&hir.InstrStore{Val: curIdx, Ptr: kPtr})
 	}
 	if vPtr != nil {
-		elemPtrReg := s.root.nextReg(&sema.PointerType{Base: elemType})
-		s.root.emit(&hir.InstrGetElemPtr{Dst: elemPtrReg, BasePtr: dataPtr, Index: curIdx})
-		elemValReg := s.root.nextReg(elemType)
-		s.root.emit(&hir.InstrLoad{Dst: elemValReg, Ptr: elemPtrReg})
+		var elemValReg *hir.Reg
+		if isStringRuneRange {
+			// The runtime treats the input as valid UTF-8.  It returns RuneError
+			// and a one-byte width for malformed/truncated input, matching Go's
+			// range behavior without making the lowering depend on NUL termination.
+			remaining := s.root.nextReg(sema.TypeInt)
+			s.root.emit(&hir.InstrBinary{Dst: remaining, Op: hir.OpSub, L: lenVal, R: curIdx})
+			bytePtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			s.root.emit(&hir.InstrGetElemPtr{Dst: bytePtr, BasePtr: dataPtr, Index: curIdx})
+			elemValReg = s.root.nextReg(sema.TypeInt32)
+			s.root.emit(&hir.InstrCallStatic{Dst: elemValReg, CalleeName: s.root.BuiltinName("__hike_utf8_decode_rune"), Args: []hir.Value{bytePtr, s.root.asInt(remaining)}})
+		} else {
+			elemPtrReg := s.root.nextReg(&sema.PointerType{Base: elemType})
+			s.root.emit(&hir.InstrGetElemPtr{Dst: elemPtrReg, BasePtr: dataPtr, Index: curIdx})
+			elemValReg = s.root.nextReg(elemType)
+			s.root.emit(&hir.InstrLoad{Dst: elemValReg, Ptr: elemPtrReg})
+		}
 		s.root.emit(&hir.InstrStore{Val: elemValReg, Ptr: vPtr})
 	}
 
@@ -511,7 +533,17 @@ func (s *StmtLowerer) LowerForRangeStmt(fr *ast.ForRangeStmt) {
 		s.root.pushStructuredBody(&structuredLoop.Post)
 	}
 	incIdx := s.root.nextReg(sema.TypeInt)
-	s.root.emit(&hir.InstrBinary{Dst: incIdx, Op: hir.OpAdd, L: curIdx, R: &hir.ConstInt{Val: 1, Typ: sema.TypeInt}})
+	step := hir.Value(&hir.ConstInt{Val: 1, Typ: sema.TypeInt})
+	if isStringRuneRange {
+		bytePtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		s.root.emit(&hir.InstrGetElemPtr{Dst: bytePtr, BasePtr: dataPtr, Index: curIdx})
+		remaining := s.root.nextReg(sema.TypeInt)
+		s.root.emit(&hir.InstrBinary{Dst: remaining, Op: hir.OpSub, L: lenVal, R: curIdx})
+		width := s.root.nextReg(sema.TypeInt32)
+		s.root.emit(&hir.InstrCallStatic{Dst: width, CalleeName: s.root.BuiltinName("__hike_utf8_rune_size"), Args: []hir.Value{bytePtr, s.root.asInt(remaining)}})
+		step = s.root.asInt(width)
+	}
+	s.root.emit(&hir.InstrBinary{Dst: incIdx, Op: hir.OpAdd, L: curIdx, R: step})
 	s.root.emit(&hir.InstrStore{Val: incIdx, Ptr: idxAlloca})
 	if structuredLoop != nil {
 		s.root.appendStructuredNode(&hir.BrNode{Target: structuredLoop.Label, TargetID: structuredLoop.Index()})

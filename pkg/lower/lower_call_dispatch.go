@@ -57,6 +57,19 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return c.lowerCStringToString(argVal)
 				}
 
+				// Go-compatible conversion from a rune (int32 alias) to a string
+				// encodes exactly one Unicode code point as UTF-8.
+				if targetType == sema.TypeString && isIntegerType(argVal.Type()) &&
+					sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(sema.TypeInt32) {
+					runeVal := argVal
+					if argVal.Type() != sema.TypeInt32 {
+						runeVal = c.root.asInt32(argVal)
+					}
+					encoded := c.root.nextReg(sema.TypeString)
+					c.root.emit(&hir.InstrCallStatic{Dst: encoded, CalleeName: c.root.BuiltinName("__hike_utf8_rune_to_string"), Args: []hir.Value{runeVal}})
+					return encoded
+				}
+
 				if _, isSlice := argVal.Type().(*sema.SliceType); isSlice && targetType == sema.TypeString {
 					rawPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
 					offset := c.root.nextReg(sema.TypeInt32)

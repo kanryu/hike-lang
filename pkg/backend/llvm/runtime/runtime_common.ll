@@ -2296,4 +2296,158 @@ not_found:
   ret i1 false
 }
 
+define internal i32 @__hike_utf8_rune_size(i8* %ptr, i64 %len) #0 {
+entry:
+  %empty = icmp eq i64 %len, 0
+  br i1 %empty, label %zero, label %read
+zero:
+  ret i32 0
+read:
+  %p = load i8, i8* %ptr
+  %b = zext i8 %p to i32
+  %ascii = icmp ult i32 %b, 128
+  br i1 %ascii, label %one, label %check2
+check2:
+  %b_lt224 = icmp ult i32 %b, 224
+  %len_ge2 = icmp uge i64 %len, 2
+  %two_ok = and i1 %b_lt224, %len_ge2
+  br i1 %two_ok, label %two, label %check3
+check3:
+  %b_lt240 = icmp ult i32 %b, 240
+  %len_ge3 = icmp uge i64 %len, 3
+  %three_ok = and i1 %b_lt240, %len_ge3
+  br i1 %three_ok, label %three, label %check4
+check4:
+  %four_ok = icmp uge i64 %len, 4
+  br i1 %four_ok, label %four, label %one
+one: ret i32 1
+two: ret i32 2
+three: ret i32 3
+four: ret i32 4
+}
+
+define internal i32 @__hike_utf8_decode_rune(i8* %ptr, i64 %len) #0 {
+entry:
+  %n = call i32 @__hike_utf8_rune_size(i8* %ptr, i64 %len)
+  %p0 = load i8, i8* %ptr
+  %b0 = zext i8 %p0 to i32
+  %is_ascii = icmp eq i32 %n, 1
+  br i1 %is_ascii, label %ascii, label %multi
+ascii:
+  %ascii_ok = icmp ult i32 %b0, 128
+  %ascii_r = select i1 %ascii_ok, i32 %b0, i32 65533
+  ret i32 %ascii_r
+multi:
+  %p1p = getelementptr i8, i8* %ptr, i64 1
+  %p1 = load i8, i8* %p1p
+  %b1 = zext i8 %p1 to i32
+  %c1 = and i32 %b1, 63
+  %is2 = icmp eq i32 %n, 2
+  br i1 %is2, label %two, label %three_or_four
+two:
+  %x2a = and i32 %b0, 31
+  %x2b = shl i32 %x2a, 6
+  %x2 = or i32 %x2b, %c1
+  ret i32 %x2
+three_or_four:
+  %p2p = getelementptr i8, i8* %ptr, i64 2
+  %p2 = load i8, i8* %p2p
+  %b2 = zext i8 %p2 to i32
+  %c2 = and i32 %b2, 63
+  %is3 = icmp eq i32 %n, 3
+  br i1 %is3, label %three, label %four
+three:
+  %x3a0 = and i32 %b0, 15
+  %x3a = shl i32 %x3a0, 12
+  %x3b = shl i32 %c1, 6
+  %x3ab = or i32 %x3a, %x3b
+  %x3 = or i32 %x3ab, %c2
+  ret i32 %x3
+four:
+  %p3p = getelementptr i8, i8* %ptr, i64 3
+  %p3 = load i8, i8* %p3p
+  %b3 = zext i8 %p3 to i32
+  %c3 = and i32 %b3, 63
+  %x4a0 = and i32 %b0, 7
+  %x4a = shl i32 %x4a0, 18
+  %x4b = shl i32 %c1, 12
+  %x4c = shl i32 %c2, 6
+  %x4ab = or i32 %x4a, %x4b
+  %x4abc = or i32 %x4ab, %x4c
+  %x4 = or i32 %x4abc, %c3
+  ret i32 %x4
+}
+
+define internal { i8*, i32, i32 } @__hike_utf8_rune_to_string(i32 %r) #0 {
+entry:
+  %bad_low = icmp slt i32 %r, 0
+  %bad_high = icmp ugt i32 %r, 1114111
+  %bad = or i1 %bad_low, %bad_high
+  %safe = select i1 %bad, i32 65533, i32 %r
+  %sur_low = icmp uge i32 %safe, 55296
+  %sur_high = icmp ule i32 %safe, 57343
+  %sur = and i1 %sur_low, %sur_high
+  %r2 = select i1 %sur, i32 65533, i32 %safe
+  %lt1 = icmp ult i32 %r2, 128
+  %lt2 = icmp ult i32 %r2, 2048
+  %lt3 = icmp ult i32 %r2, 65536
+  %n1 = select i1 %lt1, i32 1, i32 0
+  %n2 = select i1 %lt2, i32 2, i32 0
+  %n3 = select i1 %lt3, i32 3, i32 4
+  %n12 = select i1 %lt1, i32 %n1, i32 %n2
+  %n = select i1 %lt2, i32 %n12, i32 %n3
+  %n64 = zext i32 %n to i64
+  %size = add i64 %n64, 9
+  %raw = call i8* @malloc(i64 %size)
+  %cap = bitcast i8* %raw to i32*
+  store i32 %n, i32* %cap
+  %refp = getelementptr i8, i8* %raw, i64 4
+  %ref = bitcast i8* %refp to i32*
+  store i32 1, i32* %ref
+  %buf = getelementptr i8, i8* %raw, i64 8
+  %e1 = trunc i32 %r2 to i8
+  %r6 = lshr i32 %r2, 6
+  %e2a0 = or i32 192, %r6
+  %e2 = trunc i32 %e2a0 to i8
+  %e2b0 = and i32 %r2, 63
+  %e2b1 = or i32 128, %e2b0
+  %e2b = trunc i32 %e2b1 to i8
+  %r12 = lshr i32 %r2, 12
+  %e3a0 = or i32 224, %r12
+  %e3a = trunc i32 %e3a0 to i8
+  %e3b0 = and i32 %r6, 63
+  %e3b1 = or i32 128, %e3b0
+  %e3b = trunc i32 %e3b1 to i8
+  %e3c1 = or i32 128, %e2b0
+  %e3c = trunc i32 %e3c1 to i8
+  %r18 = lshr i32 %r2, 18
+  %e4a0 = or i32 240, %r18
+  %e4a = trunc i32 %e4a0 to i8
+  %e4b0 = and i32 %r12, 63
+  %e4b1 = or i32 128, %e4b0
+  %e4b = trunc i32 %e4b1 to i8
+  %e4c0 = and i32 %r6, 63
+  %e4c1 = or i32 128, %e4c0
+  %e4c = trunc i32 %e4c1 to i8
+  %e4d1 = or i32 128, %e2b0
+  %e4d = trunc i32 %e4d1 to i8
+  %first34 = select i1 %lt3, i8 %e3a, i8 %e4a
+  %first24 = select i1 %lt2, i8 %e2, i8 %first34
+  %first = select i1 %lt1, i8 %e1, i8 %first24
+  store i8 %first, i8* %buf
+  %pout1 = getelementptr i8, i8* %buf, i64 1
+  %second34 = select i1 %lt3, i8 %e3b, i8 %e4b
+  %second = select i1 %lt2, i8 %e2b, i8 %second34
+  store i8 %second, i8* %pout1
+  %pout2 = getelementptr i8, i8* %buf, i64 2
+  %third = select i1 %lt3, i8 %e3c, i8 %e4c
+  store i8 %third, i8* %pout2
+  %pout3 = getelementptr i8, i8* %buf, i64 3
+  store i8 %e4d, i8* %pout3
+  %out = insertvalue { i8*, i32, i32 } { i8* null, i32 0, i32 0 }, i8* %buf, 0
+  %out2 = insertvalue { i8*, i32, i32 } %out, i32 0, 1
+  %out3 = insertvalue { i8*, i32, i32 } %out2, i32 %n, 2
+  ret { i8*, i32, i32 } %out3
+}
+
 attributes #0 = { noinline nounwind "no-builtins" }

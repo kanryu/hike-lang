@@ -192,6 +192,8 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_strcat":         true,
 	"hike_strcat_len":     true,
 	"__hike_slice_to_str": true,
+	"__hike_utf8_decode_rune": true, "__hike_utf8_rune_size": true,
+	"__hike_utf8_rune_to_string": true,
 	"__hike_slice_alloc":  true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
 
@@ -204,6 +206,8 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_strcat32":         true,
 	"hike_strcat_len32":     true,
 	"__hike_slice_to_str32": true,
+	"__hike_utf8_decode_rune32": true, "__hike_utf8_rune_size32": true,
+	"__hike_utf8_rune_to_string32": true,
 	"__hike_slice_alloc32":  true, "__hike_slice_cap32": true,
 	"__hike_slice_retain32": true, "__hike_slice_release32": true,
 

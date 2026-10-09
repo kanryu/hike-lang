@@ -3,6 +3,7 @@
 package http
 
 import "std/errors"
+import "std/unicode/utf16"
 
 // WinHTTP exports Unicode entry points only.  Keep the conversion here so the
 // public HTTP API remains UTF-8/string based.
@@ -42,9 +43,8 @@ func httpIntFromDWORD(value uint32) (int, bool) {
 }
 
 func httpUTF16(text string) []uint16 {
-	result := make([]uint16, len(text)+1)
-	for i := 0; i < len(text); i = i + 1 { result[i] = uint16(text[i]) }
-	result[len(text)] = 0
+	result := utf16.Encode(text)
+	result = append(result, 0)
 	return result
 }
 
