@@ -1,10 +1,52 @@
 package net
 
 import "std/errors"
-import "std/syscall"
 
 type IP struct { data []byte }
 type IPMask []byte
+
+func (ip IP) String() string {
+    if len(ip.data) == 4 {
+        return intToDec(int(ip.data[0])) + "." + intToDec(int(ip.data[1])) + "." + intToDec(int(ip.data[2])) + "." + intToDec(int(ip.data[3]))
+    }
+    if len(ip.data) != 16 { return "<nil>" }
+    result := ""
+    for i := 0; i < 8; i = i + 1 {
+        if i > 0 { result += ":" }
+        result += hexWord(int(ip.data[i*2])<<8 | int(ip.data[i*2+1]))
+    }
+    return result
+}
+
+func intToDec(value int) string {
+    if value == 0 { return "0" }
+    result := ""
+    for value > 0 { result = string([]byte{byte(48 + value%10)}) + result; value = value / 10 }
+    return result
+}
+
+func hexWord(value int) string {
+    if value == 0 { return "0" }
+    digits := "0123456789abcdef"
+    result := ""
+    for value > 0 { result = digits[value&15:value&15+1] + result; value = value >> 4 }
+    return result
+}
+
+func (ip IP) Equal(other IP) bool {
+    if len(ip.data) != len(other.data) { return false }
+    for i := 0; i < len(ip.data); i = i + 1 { if ip.data[i] != other.data[i] { return false } }
+    return true
+}
+
+type IPAddr struct { IP IP; Zone string }
+func (a *IPAddr) Network() string { return "ip" }
+func (a *IPAddr) String() string { if a == nil { return "<nil>" }; if a.Zone == "" { return a.IP.String() }; return a.IP.String() + "%" + a.Zone }
+func (ip IP) IsMulticast() bool { return (len(ip.data) == 4 && ip.data[0] >= 224 && ip.data[0] <= 239) || (len(ip.data) == 16 && ip.data[0] == 255) }
+func (ip IP) IsPrivate() bool {
+    return len(ip.data) == 4 && (ip.data[0] == 10 || (ip.data[0] == 172 && ip.data[1] >= 16 && ip.data[1] <= 31) || (ip.data[0] == 192 && ip.data[1] == 168))
+}
+func (ip IP) IsGlobalUnicast() bool { return len(ip.data) == 4 && !ip.IsMulticast() && !ip.IsUnspecified() && !ip.IsLoopback() }
 
 type Addr interface {
     Network() string
@@ -167,8 +209,8 @@ func ParseIP(address string) IP {
     return IP{data: data}
 }
 
-func InterfaceAddrs() ([]Addr, error) { return nil, syscall.ENOSYS }
-func Listen(network string, address string) (Listener, error) { return nil, syscall.ENOSYS }
+func InterfaceAddrs() ([]Addr, error) { return nil, errors.New("network interface enumeration is not supported") }
+func Listen(network string, address string) (Listener, error) { return nil, errors.New("network listeners are not supported on the Windows WinHTTP backend") }
 
 func (ip IP) To4() IP {
     if len(ip.data) == 4 { return ip }

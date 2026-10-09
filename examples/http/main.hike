@@ -1,0 +1,26 @@
+package main
+
+import (
+    "std/net/http"
+)
+
+extern func printf(format cstring, ...) int
+
+func main() int {
+    target := "http://127.0.0.1:18080/"
+
+    printf(cstring("HTTP smoke test: GET %s\n"), cstring(target))
+    response, _ := http.Get(target)
+    if response == nil {
+        printf(cstring("FAIL: GET returned no response\n"))
+        return 1
+    }
+
+    printf(cstring("status=%d %s\n"), response.StatusCode, cstring(response.StatusString()))
+    printf(cstring("content-type=%s\n"), cstring(response.Header.Get("Content-Type")))
+    printf(cstring("body-bytes=%d\n"), len(response.Body))
+
+    if response.StatusCode < 200 || response.StatusCode >= 300 { return 1 }
+    if len(response.Body) == 0 { return 1 }
+    return 0
+}

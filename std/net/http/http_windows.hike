@@ -1,0 +1,144 @@
+//hike:build windows
+
+package http
+
+import "std/errors"
+
+// WinHTTP exports Unicode entry points only.  Keep the conversion here so the
+// public HTTP API remains UTF-8/string based.
+extern func WinHttpOpen(agent *uint16, accessType uint32, proxy *uint16, bypass *uint16, flags uint32) *byte
+extern func WinHttpConnect(session *byte, server *uint16, port uint16, reserved uint32) *byte
+extern func WinHttpOpenRequest(connect *byte, verb *uint16, objectName *uint16, version *uint16, referrer *uint16, acceptTypes *uint16, flags uint32) *byte
+extern func WinHttpAddRequestHeaders(request *byte, headers *uint16, length int, modifiers uint32) int
+extern func WinHttpSendRequest(request *byte, headers *uint16, length int, optionalData *byte, optionalLength int, totalLength int, context uint64) int
+extern func WinHttpReceiveResponse(request *byte, reserved *byte) int
+extern func WinHttpSetTimeouts(request *byte, resolve int, connect int, send int, receive int) int
+extern func WinHttpQueryHeaders(request *byte, level uint32, name *uint16, buffer *byte, bufferLength *uint32, index *uint32) int
+extern func WinHttpQueryDataAvailable(request *byte, available *uint32) int
+extern func WinHttpReadData(request *byte, buffer *byte, length int, read *uint32) int
+extern func WinHttpCloseHandle(handle *byte) int
+extern func GetLastError() int
+
+const (
+	winHttpAccessDefaultProxy uint32 = 0
+	winHttpFlagSecure uint32 = 8388608
+	winHttpOptionRawHeaders uint32 = 22
+	winHttpQueryContentLength uint32 = 5
+	winHttpHeaderAdd uint32 = 536870912
+)
+
+func httpUTF16(text string) []uint16 {
+	result := make([]uint16, len(text)+1)
+	for i := 0; i < len(text); i = i + 1 { result[i] = uint16(text[i]) }
+	result[len(text)] = 0
+	return result
+}
+
+func httpHeadersText(h Header) string {
+	result := ""
+	for j := 0; j < len(h.entries); j = j + 1 {
+		key := h.entries[j].Key
+		values := h.entries[j].Values
+		for i := 0; i < len(values); i = i + 1 { result += key + ": " + values[i] + "\r\n" }
+	}
+	return result
+}
+
+func httpParseHeaders(raw string) Header {
+	result := Header{}
+	start := 0
+	for start < len(raw) {
+		end := start
+		for end < len(raw) && raw[end] != byte(10) { end = end + 1 }
+		line := raw[start:end]
+		if len(line) > 0 && line[len(line)-1] == byte(13) { line = line[:len(line)-1] }
+		colon := -1
+		for i := 0; i < len(line); i = i + 1 { if line[i] == byte(58) { colon = i; break } }
+		if colon > 0 {
+			key := line[:colon]
+			value := line[colon+1:]
+			for len(value) > 0 && (value[0] == byte(32) || value[0] == byte(9)) { value = value[1:] }
+			result.Add(key, value)
+		}
+		start = end + 1
+	}
+	return result
+}
+
+func httpQueryRawHeaders(handle *byte) string {
+	size := uint32(0)
+	WinHttpQueryHeaders(handle, winHttpOptionRawHeaders, nil, nil, &size, nil)
+	if size == 0 { return "" }
+	buffer := make([]byte, int(size)+2)
+	if WinHttpQueryHeaders(handle, winHttpOptionRawHeaders, nil, &buffer[0], &size, nil) == 0 { return "" }
+	// WinHTTP returns UTF-16.  This deliberately handles the ASCII header
+	// grammar; non-ASCII header values are preserved by the low byte.
+	result := ""
+	for i := 0; i+1 < int(size); i = i + 2 { if buffer[i] == 0 { break }; result += string([]byte{buffer[i]}) }
+	return result
+}
+
+func httpResponseBody(handle *byte) ([]byte, error) {
+	result := make([]byte, 0)
+	for {
+		available := uint32(0)
+		if WinHttpQueryDataAvailable(handle, &available) == 0 { return nil, errors.New("http: query response size failed") }
+		if available == 0 { return result, nil }
+		buffer := make([]byte, int(available))
+		read := uint32(0)
+		if WinHttpReadData(handle, &buffer[0], int(available), &read) == 0 { return nil, errors.New("http: read response failed") }
+		for i := 0; i < int(read); i = i + 1 { result = append(result, buffer[i]) }
+	}
+}
+
+func doRequest(client *Client, req *Request) (*Response, error) {
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" { return nil, errors.New("http: unsupported protocol scheme") }
+	host := req.URL.Host
+	port := uint16(80)
+	if req.URL.Scheme == "https" { port = 443 }
+	// URL.Host may contain a port. WinHTTP receives host and port separately.
+	colon := -1
+	for i := len(host)-1; i >= 0; i = i - 1 { if host[i] == byte(58) { colon = i; break } }
+	if colon > 0 {
+		n := 0
+		for i := colon+1; i < len(host); i = i + 1 { n = n*10 + int(host[i]-byte(48)) }
+		port = uint16(n); host = host[:colon]
+	}
+	agent := httpUTF16("hike-http/1.0")
+	host16 := httpUTF16(host)
+	verb16 := httpUTF16(req.Method)
+	path := req.URL.Path
+	if path == "" { path = "/" }
+	if req.URL.RawQuery != "" { path += "?" + req.URL.RawQuery }
+	path16 := httpUTF16(path)
+	session := WinHttpOpen(&agent[0], winHttpAccessDefaultProxy, nil, nil, 0)
+	if session == nil { return nil, errors.New("http: WinHttpOpen failed") }
+	defer WinHttpCloseHandle(session)
+	connection := WinHttpConnect(session, &host16[0], port, 0)
+	if connection == nil { return nil, errors.New("http: WinHttpConnect failed") }
+	defer WinHttpCloseHandle(connection)
+	flags := uint32(0)
+	if req.URL.Scheme == "https" { flags = winHttpFlagSecure }
+	handle := WinHttpOpenRequest(connection, &verb16[0], &path16[0], nil, nil, nil, flags)
+	if handle == nil { return nil, errors.New("http: WinHttpOpenRequest failed") }
+	defer WinHttpCloseHandle(handle)
+	if client != nil && client.Timeout > 0 { WinHttpSetTimeouts(handle, client.Timeout, client.Timeout, client.Timeout, client.Timeout) }
+	headerText := httpHeadersText(req.Header)
+	if headerText != "" {
+		headers16 := httpUTF16(headerText)
+		if WinHttpAddRequestHeaders(handle, &headers16[0], -1, winHttpHeaderAdd) == 0 { return nil, errors.New("http: invalid request headers") }
+	}
+	var body *byte
+	if len(req.Body) > 0 { body = &req.Body[0] }
+	if WinHttpSendRequest(handle, nil, 0, body, len(req.Body), len(req.Body), 0) == 0 { return nil, errors.New("http: WinHttpSendRequest failed") }
+	if WinHttpReceiveResponse(handle, nil) == 0 { return nil, errors.New("http: WinHttpReceiveResponse failed") }
+	raw := httpQueryRawHeaders(handle)
+	responseHeaders := httpParseHeaders(raw)
+	bodyData, _ := httpResponseBody(handle)
+	if bodyData == nil { return nil, errors.New("http: read response failed") }
+	statusCode := 0
+	if len(raw) >= 12 {
+		for i := 9; i < len(raw) && raw[i] >= byte(48) && raw[i] <= byte(57); i = i + 1 { statusCode = statusCode*10 + int(raw[i]-byte(48)) }
+	}
+	return &Response{Status: string([]byte{byte(statusCode/100+48), byte((statusCode/10)%10+48), byte(statusCode%10+48)}) + " " + statusText(statusCode), StatusCode: statusCode, Proto: "HTTP/1.1", Header: responseHeaders, Body: bodyData, ContentLength: int64(len(bodyData)), Request: req}, nil
+}

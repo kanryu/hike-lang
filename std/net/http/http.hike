@@ -1,5 +1,143 @@
 package http
 
+import (
+	"std/errors"
+	"std/net/url"
+)
+
+const (
+	MethodGet string = "GET"
+	MethodHead string = "HEAD"
+	MethodPost string = "POST"
+	MethodPut string = "PUT"
+	MethodPatch string = "PATCH"
+	MethodDelete string = "DELETE"
+	MethodConnect string = "CONNECT"
+	MethodOptions string = "OPTIONS"
+	MethodTrace string = "TRACE"
+
+	StatusOK int = 200
+	StatusCreated int = 201
+	StatusNoContent int = 204
+	StatusMovedPermanently int = 301
+	StatusFound int = 302
+	StatusBadRequest int = 400
+	StatusUnauthorized int = 401
+	StatusForbidden int = 403
+	StatusNotFound int = 404
+	StatusInternalServerError int = 500
+)
+
+// Header follows net/http's canonical string-to-list representation.
+type HeaderEntry struct { Key string; Values []string }
+type Header struct { entries []HeaderEntry }
+
+func (h *Header) Add(key string, value string) {
+	for i := 0; i < len(h.entries); i = i + 1 { if h.entries[i].Key == key { h.entries[i].Values = append(h.entries[i].Values, value); return } }
+	h.entries = append(h.entries, HeaderEntry{Key: key, Values: []string{value}})
+}
+
+func (h *Header) Set(key string, value string) {
+	for i := 0; i < len(h.entries); i = i + 1 { if h.entries[i].Key == key { h.entries[i].Values = []string{value}; return } }
+	h.entries = append(h.entries, HeaderEntry{Key: key, Values: []string{value}})
+}
+
+func (h Header) Get(key string) string {
+	for i := 0; i < len(h.entries); i = i + 1 { if h.entries[i].Key == key && len(h.entries[i].Values) > 0 { return h.entries[i].Values[0] } }
+	return ""
+}
+
+func (h Header) Values(key string) []string { for i := 0; i < len(h.entries); i = i + 1 { if h.entries[i].Key == key { return h.entries[i].Values } }; return nil }
+func (h *Header) Del(key string) { for i := 0; i < len(h.entries); i = i + 1 { if h.entries[i].Key == key { h.entries = append(h.entries[:i], h.entries[i+1:]...); return } } }
+
+type Request struct {
+	Method string
+	URL *url.URL
+	Header Header
+	Body []byte
+	Host string
+}
+
+type Response struct {
+	Status string
+	StatusCode int
+	Proto string
+	Header Header
+	Body []byte
+	ContentLength int64
+	Request *Request
+}
+
+type Client struct { Timeout int }
+var DefaultClient *Client = &Client{}
+
+func NewRequest(method string, target string, body []byte) (*Request, error) {
+	if method == "" { method = MethodGet }
+	u := &url.URL{}
+	separator := -1
+	for i := 0; i+2 < len(target); i = i + 1 { if target[i] == byte(58) && target[i+1] == byte(47) && target[i+2] == byte(47) { separator = i; break } }
+	if separator >= 0 {
+		u.Scheme = target[:separator]
+		rest := target[separator+3:]
+		slash := -1
+		for i := 0; i < len(rest); i = i + 1 { if rest[i] == byte(47) { slash = i; break } }
+		if slash < 0 { u.Host = rest } else { u.Host = rest[:slash]; u.Path = rest[slash:] }
+		question := -1
+		for i := 0; i < len(u.Path); i = i + 1 { if u.Path[i] == byte(63) { question = i; break } }
+		if question >= 0 { u.RawQuery = u.Path[question+1:]; u.Path = u.Path[:question] }
+	}
+	if u.Scheme == "" || u.Host == "" { return nil, errors.New("http: invalid URL") }
+	header := Header{}
+	return &Request{Method: method, URL: u, Header: header, Body: body, Host: u.Host}, nil
+}
+
+func (c *Client) Do(req *Request) (*Response, error) {
+	if c == nil { c = DefaultClient }
+	if req == nil || req.URL == nil { return nil, errors.New("http: nil Request or URL") }
+	return doRequest(c, req)
+}
+
+func (c *Client) Get(target string) (*Response, error) {
+	req, _ := NewRequest(MethodGet, target, nil)
+	if req == nil { return nil, errors.New("http: invalid URL") }
+	return c.Do(req)
+}
+
+func Get(target string) (*Response, error) { return DefaultClient.Get(target) }
+
+func Post(target string, contentType string, body []byte) (*Response, error) {
+	req, _ := NewRequest(MethodPost, target, body)
+	if req == nil { return nil, errors.New("http: invalid URL") }
+	req.Header.Set("Content-Type", contentType)
+	return DefaultClient.Do(req)
+}
+
+func (r *Response) Close() error { return nil }
+func (r *Response) Read(p []byte) (int, error) {
+	if r == nil || len(r.Body) == 0 { return 0, errors.New("EOF") }
+	n := len(p)
+	if n > len(r.Body) { n = len(r.Body) }
+	for i := 0; i < n; i = i + 1 { p[i] = r.Body[i] }
+	r.Body = r.Body[n:]
+	return n, nil
+}
+
+func statusText(code int) string {
+	if code == 200 { return "OK" }
+	if code == 201 { return "Created" }
+	if code == 204 { return "No Content" }
+	if code == 301 { return "Moved Permanently" }
+	if code == 302 { return "Found" }
+	if code == 400 { return "Bad Request" }
+	if code == 401 { return "Unauthorized" }
+	if code == 403 { return "Forbidden" }
+	if code == 404 { return "Not Found" }
+	if code == 500 { return "Internal Server Error" }
+	return ""
+}
+
+func (r *Response) StatusString() string { if r == nil { return "" }; return r.Status }
+
 // DetectContentType provides the small MIME sniffing surface used by the
 // compiler's file-serving and data-URL paths.
 func DetectContentType(data []byte) string {

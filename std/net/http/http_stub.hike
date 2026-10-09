@@ -1,0 +1,7 @@
+//hike:build !windows
+
+package http
+
+import "std/errors"
+
+func doRequest(client *Client, req *Request) (*Response, error) { return nil, errors.New("http: Windows WinHTTP implementation is required") }
