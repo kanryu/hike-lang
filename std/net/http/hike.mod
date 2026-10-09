@@ -7,4 +7,7 @@ package . {
     target windows {
         link: "-lwinhttp"
     }
+    target linux {
+        link: "-l:libcurl.so.4"
+    }
 }

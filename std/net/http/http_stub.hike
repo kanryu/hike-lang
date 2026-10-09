@@ -1,4 +1,4 @@
-//hike:build !windows
+//hike:build !windows && !linux
 
 package http
 

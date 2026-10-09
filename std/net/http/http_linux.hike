@@ -1,0 +1,231 @@
+//hike:build linux
+
+package http
+
+import "std/errors"
+
+extern func curl_easy_init() *byte
+extern func curl_easy_cleanup(handle *byte)
+extern func curl_easy_perform(handle *byte) int32
+extern func curl_easy_setopt(handle *byte, option int32, ...) int32
+extern func curl_easy_getinfo(handle *byte, info int32, ...) int32
+extern func curl_easy_strerror(code int32) cstring
+extern func curl_slist_append(list *byte, value cstring) *byte
+extern func curl_slist_free_all(list *byte)
+extern func realloc(ptr *byte, size int) *byte
+extern func free(ptr *byte)
+
+const (
+	curlOptWriteData int32 = 10001
+	curlOptURL int32 = 10002
+	curlOptPostFields int32 = 10015
+	curlOptHTTPHeaders int32 = 10023
+	curlOptHeaderData int32 = 10029
+	curlOptCustomRequest int32 = 10036
+	curlOptPostFieldSize int32 = 60
+	curlOptFollowLocation int32 = 52
+	curlOptNoSignal int32 = 99
+	curlOptTimeoutMS int32 = 155
+	curlOptWriteFunction int32 = 20011
+	curlOptHeaderFunction int32 = 20079
+	curlOptHTTPVersion int32 = 84
+	curlHTTPVersion11 int32 = 2
+	curlInfoResponseCode int32 = 0x200002
+)
+
+type httpCurlBuffer struct {
+	data *byte
+	length int
+	capacity int
+	failed bool
+}
+
+cfunc httpCurlBodyCallback(data *byte, size int, count int, userdata *httpCurlBuffer) int {
+	if userdata == nil || size < 0 || count < 0 { return 0 }
+	if size != 0 && count > 9223372036854775807/size {
+		userdata.failed = true
+		return 0
+	}
+	length := size * count
+	if length == 0 { return 0 }
+	if userdata.length > 9223372036854775807-length {
+		userdata.failed = true
+		return 0
+	}
+	required := userdata.length + length
+	if required > userdata.capacity {
+		capacity := userdata.capacity
+		if capacity == 0 { capacity = 4096 }
+		for capacity < required {
+			if capacity > 9223372036854775807/2 {
+				capacity = required
+				break
+			}
+			capacity = capacity * 2
+		}
+		grown := realloc(userdata.data, capacity)
+		if grown == nil {
+			userdata.failed = true
+			return 0
+		}
+		userdata.data = grown
+		userdata.capacity = capacity
+	}
+	for i := 0; i < length; i = i + 1 {
+		userdata.data[userdata.length+i] = data[i]
+	}
+	userdata.length = required
+	return length
+}
+
+cfunc httpCurlHeaderCallback(data *byte, size int, count int, userdata *httpCurlBuffer) int {
+	if userdata == nil || size < 0 || count < 0 { return 0 }
+	if size != 0 && count > 9223372036854775807/size {
+		userdata.failed = true
+		return 0
+	}
+	length := size * count
+	if length == 0 { return 0 }
+	if userdata.length > 9223372036854775807-length {
+		userdata.failed = true
+		return 0
+	}
+	required := userdata.length + length
+	if length >= 5 && data[0] == byte(72) && data[1] == byte(84) && data[2] == byte(84) && data[3] == byte(80) && data[4] == byte(47) {
+		userdata.length = 0
+		required = length
+	}
+	if required > userdata.capacity {
+		capacity := userdata.capacity
+		if capacity == 0 { capacity = 1024 }
+		for capacity < required {
+			if capacity > 9223372036854775807/2 {
+				capacity = required
+				break
+			}
+			capacity = capacity * 2
+		}
+		grown := realloc(userdata.data, capacity)
+		if grown == nil {
+			userdata.failed = true
+			return 0
+		}
+		userdata.data = grown
+		userdata.capacity = capacity
+	}
+	for i := 0; i < length; i = i + 1 {
+		userdata.data[userdata.length+i] = data[i]
+	}
+	userdata.length = required
+	return length
+}
+
+func httpCurlBufferFree(buffer *httpCurlBuffer) {
+	if buffer.data != nil { free(buffer.data) }
+	buffer.data = nil
+	buffer.length = 0
+	buffer.capacity = 0
+}
+
+func httpParseCurlHeaders(raw string) Header {
+	result := Header{}
+	start := 0
+	for start < len(raw) {
+		end := start
+		for end < len(raw) && raw[end] != byte(10) { end = end + 1 }
+		line := raw[start:end]
+		if len(line) > 0 && line[len(line)-1] == byte(13) { line = line[:len(line)-1] }
+		colon := -1
+		for i := 0; i < len(line); i = i + 1 {
+			if line[i] == byte(58) { colon = i; break }
+		}
+		if colon > 0 {
+			key := line[:colon]
+			value := line[colon+1:]
+			for len(value) > 0 && (value[0] == byte(32) || value[0] == byte(9)) { value = value[1:] }
+			result.Add(key, value)
+		}
+		start = end + 1
+	}
+	return result
+}
+
+func httpCurlBufferBytes(buffer *httpCurlBuffer) []byte {
+	result := make([]byte, buffer.length)
+	for i := 0; i < buffer.length; i = i + 1 { result[i] = buffer.data[i] }
+	return result
+}
+
+func httpCurlError(code int32) error {
+	return errors.New("http: libcurl: " + string(curl_easy_strerror(code)))
+}
+
+func doRequest(client *Client, req *Request) (*Response, error) {
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" { return nil, errors.New("http: unsupported protocol scheme") }
+
+	easy := curl_easy_init()
+	if easy == nil { return nil, errors.New("http: libcurl initialization failed") }
+
+	body := httpCurlBuffer{}
+	headersData := httpCurlBuffer{}
+	defer httpCurlBufferFree(&body)
+	defer httpCurlBufferFree(&headersData)
+	var requestHeaders *byte
+	defer func() {
+		curl_easy_cleanup(easy)
+		if requestHeaders != nil { curl_slist_free_all(requestHeaders) }
+	}()
+
+	if code := curl_easy_setopt(easy, curlOptURL, cstring(req.URL.String())); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptWriteFunction, httpCurlBodyCallback); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptWriteData, &body); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptHeaderFunction, httpCurlHeaderCallback); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptHeaderData, &headersData); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptFollowLocation, 1); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptHTTPVersion, curlHTTPVersion11); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptNoSignal, 1); code != 0 { return nil, httpCurlError(code) }
+	if client != nil && client.Timeout > 0 {
+		if code := curl_easy_setopt(easy, curlOptTimeoutMS, client.Timeout); code != 0 { return nil, httpCurlError(code) }
+	}
+
+	for j := 0; j < len(req.Header.entries); j = j + 1 {
+		entry := req.Header.entries[j]
+		for i := 0; i < len(entry.Values); i = i + 1 {
+			line := entry.Key + ": " + entry.Values[i]
+			next := curl_slist_append(requestHeaders, cstring(line))
+			if next == nil {
+				return nil, errors.New("http: could not allocate request headers")
+			}
+			requestHeaders = next
+		}
+	}
+	if requestHeaders != nil {
+		if code := curl_easy_setopt(easy, curlOptHTTPHeaders, requestHeaders); code != 0 { return nil, httpCurlError(code) }
+	}
+
+	var emptyBody [1]byte
+	var bodyPointer *byte = &emptyBody[0]
+	if len(req.Body) > 0 { bodyPointer = &req.Body[0] }
+	if code := curl_easy_setopt(easy, curlOptPostFields, bodyPointer); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptPostFieldSize, len(req.Body)); code != 0 { return nil, httpCurlError(code) }
+	if code := curl_easy_setopt(easy, curlOptCustomRequest, cstring(req.Method)); code != 0 { return nil, httpCurlError(code) }
+
+	if code := curl_easy_perform(easy); code != 0 { return nil, httpCurlError(code) }
+	if body.failed { return nil, errors.New("http: response body allocation failed") }
+	if headersData.failed { return nil, errors.New("http: response headers allocation failed") }
+
+	statusCode := int64(0)
+	if code := curl_easy_getinfo(easy, curlInfoResponseCode, &statusCode); code != 0 { return nil, httpCurlError(code) }
+	bodyBytes := httpCurlBufferBytes(&body)
+	headerBytes := httpCurlBufferBytes(&headersData)
+	headerText := string(headerBytes)
+	return &Response{
+		Status: string([]byte{byte(statusCode/100+48), byte((statusCode/10)%10+48), byte(statusCode%10+48)}) + " " + statusText(int(statusCode)),
+		StatusCode: int(statusCode),
+		Proto: "HTTP/1.1",
+		Header: httpParseCurlHeaders(headerText),
+		Body: bodyBytes,
+		ContentLength: int64(len(bodyBytes)),
+		Request: req,
+	}, nil
+}
