@@ -140,6 +140,62 @@ Direct array indexing (`s[i]`) and slice operations (`s[low:high]`) on the `stri
 * **Recommended Practice:** For character-by-character traversal or boundary-aware slicing, strings should be decoded into runes (`[]rune`) or traversed using standard library iterator constructs.
 
 
+### 2.1 Unicode-aware string `for range`
+
+The value produced by the two-variable form of `for range` over a `string` is
+one Unicode scalar value decoded from UTF-8, not one raw byte:
+
+```hike
+for byteOffset, r := range text {
+    // byteOffset is a UTF-8 byte offset; r is one rune.
+}
+```
+
+The index is therefore a byte offset and may advance by one to four bytes.
+The range value has type `rune`, and `rune` is an alias for `int32`; it is not
+a distinct runtime representation. A one-variable range retains the index
+form, which is useful when byte offsets are required.
+
+Conversion from a `rune` to `string` is a standard language conversion. It
+produces the UTF-8 encoding of exactly one Unicode scalar value. Values
+outside the Unicode range and surrogate code points are converted to
+`U+FFFD`.
+
+The UTF-8 range and rune conversion paths are implemented for the LLVM native
+backend, native 32-bit targets, WASM32, and the WABT backend. This keeps the
+language-level behavior consistent across the supported execution targets.
+
+### 2.2 UTF-16 interoperability
+
+UTF-16 data is not stored in the `string` type. Hike `string` values remain
+UTF-8 even at operating-system and protocol boundaries. The
+`std/unicode/utf16` package provides:
+
+```hike
+units := utf16.Encode(text)       // []uint16, endian-neutral code units
+text = utf16.Decode(units)
+le := utf16.EncodeLE(text)        // UTF-16LE bytes, without a BOM
+be := utf16.EncodeBE(text)        // UTF-16BE bytes, without a BOM
+text = utf16.DecodeLE(le)
+text = utf16.DecodeBE(be)
+```
+
+Code points above `U+FFFF` are encoded as high/low surrogate pairs. Unpaired
+surrogates encountered during decoding, and invalid scalar values encountered
+during encoding, are replaced by `U+FFFD`. The endian-neutral `[]uint16`
+representation is intended for APIs such as Windows wide-character calls;
+the LE/BE byte functions are intended for serialized files and protocols.
+
+### 2.3 Multibyte URLs
+
+URL escaping operates on the UTF-8 bytes of a string, never on UTF-16 units or
+Unicode code-point numbers. `std/net/url.PathEscape` and `QueryEscape`
+percent-encode every non-ASCII UTF-8 byte, and the corresponding unescape
+functions reconstruct the original UTF-8 byte sequence. This includes
+three-byte characters such as Japanese text and four-byte non-BMP characters
+such as emoji.
+
+
 
 ---
 
