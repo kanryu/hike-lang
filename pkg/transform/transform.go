@@ -81,6 +81,8 @@ func semaTypeName(typ sema.Type) string {
 		return "*" + semaTypeName(t.Base)
 	case *sema.SliceType:
 		return "[]" + semaTypeName(t.Elem)
+	case *sema.CBufferType:
+		return "cbuffer"
 	case *sema.ArrayType:
 		return fmt.Sprintf("[%d]%s", t.Len, semaTypeName(t.Elem))
 	case *sema.StructType:

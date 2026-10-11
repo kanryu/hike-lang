@@ -32,7 +32,10 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_utf8_rune_to_string": true,
 	"__hike_slice_alloc":         true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
-	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_fatal": true,
+	"__hike_cbuffer_new": true, "__hike_cbuffer_close": true,
+	"__hike_cbuffer_length": true, "__hike_cbuffer_data": true,
+	"__hike_cbuffer_slice": true,
+	"__hike_panic_set":     true, "__hike_panic_get": true, "__hike_panic_fatal": true,
 	"__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true,
 	"__hike_lock": true, "__hike_unlock": true,
 	"llvm.trap":           true,
@@ -86,6 +89,16 @@ func normalizeWabtRuntimeName(name string) string {
 		return "__hike_slice_retain"
 	case "__hike_slice_release32":
 		return "__hike_slice_release"
+	case "__hike_cbuffer_new32":
+		return "__hike_cbuffer_new"
+	case "__hike_cbuffer_close32":
+		return "__hike_cbuffer_close"
+	case "__hike_cbuffer_length32":
+		return "__hike_cbuffer_length"
+	case "__hike_cbuffer_data32":
+		return "__hike_cbuffer_data"
+	case "__hike_cbuffer_slice32":
+		return "__hike_cbuffer_slice"
 	case "__hike_slice_to_str32":
 		return "__hike_slice_to_str"
 	case "__hike_utf8_decode_rune32":
@@ -106,6 +119,51 @@ func normalizeWabtRuntimeName(name string) string {
 }
 
 var wasmRuntime = map[string]runtimeFunc{
+	// A cbuffer value is a pointer to a runtime record. The record layout is
+	// {data:i32, length:i64, release:{code:i32, env:i32}, closed:i32}.
+	// The WABT backend currently treats the callback as non-owning; this is
+	// appropriate for the ordinary Hike slice source used by this E2E test.
+	"__hike_cbuffer_new": {deps: []string{"malloc"}, body: `(func $__hike_cbuffer_new (param $data i32) (param $length i32) (param $release i32) (result i32)
+    (local $record i32)
+    (local.set $record (call $malloc (i32.const 28)))
+    (i32.store (local.get $record) (local.get $data))
+    (i64.store offset=8 (local.get $record) (i64.extend_i32_u (local.get $length)))
+    (i32.store offset=16 (local.get $record) (i32.load (local.get $release)))
+    (i32.store offset=20 (local.get $record) (i32.load offset=4 (local.get $release)))
+    (i32.store offset=24 (local.get $record) (i32.const 0))
+    (local.get $record))`},
+	"__hike_cbuffer_close": {body: `(func $__hike_cbuffer_close (param $buffer i32)
+    (local $record i32)
+    (local.set $record (i32.load (local.get $buffer)))
+    (if (i32.eqz (i32.load offset=24 (local.get $record)))
+      (then (i32.store offset=24 (local.get $record) (i32.const 1)))))`},
+	"__hike_cbuffer_length": {body: `(func $__hike_cbuffer_length (param $buffer i32) (result i64)
+    (local $record i32)
+    (local.set $record (i32.load (local.get $buffer)))
+    (if (result i64) (i32.eqz (i32.load offset=24 (local.get $record)))
+      (then (i64.load offset=8 (local.get $record)))
+      (else (i64.const 0))))`},
+	"__hike_cbuffer_data": {body: `(func $__hike_cbuffer_data (param $buffer i32) (result i32)
+    (local $record i32)
+    (local.set $record (i32.load (local.get $buffer)))
+    (if (result i32) (i32.eqz (i32.load offset=24 (local.get $record)))
+      (then (i32.load (local.get $record)))
+      (else (i32.const 0))))`},
+	"__hike_cbuffer_slice": {deps: []string{"calloc", "memcpy"}, body: `(func $__hike_cbuffer_slice (param $buffer i32) (param $low i32) (param $high i32) (result i32)
+    (local $record i32) (local $count i32) (local $result i32) (local $data i32) (local $length i64)
+    (local.set $record (i32.load (local.get $buffer)))
+    (local.set $length (i64.load offset=8 (local.get $record)))
+    (if (i32.or (i32.ne (i32.load offset=24 (local.get $record)) (i32.const 0))
+                (i64.gt_u (i64.extend_i32_u (local.get $high)) (local.get $length)))
+      (then (return (i32.const 0))))
+    (if (i32.gt_u (local.get $low) (local.get $high)) (then (return (i32.const 0))))
+    (local.set $count (i32.sub (local.get $high) (local.get $low)))
+    (local.set $result (call $calloc (i32.const 1) (i32.const 12)))
+    (local.set $data (i32.load (local.get $record)))
+    (i32.store (local.get $result) (i32.add (local.get $data) (local.get $low)))
+    (i32.store offset=4 (local.get $result) (i32.const 0))
+    (i32.store offset=8 (local.get $result) (local.get $count))
+    (local.get $result))`},
 	"__hike_slice_alloc": runtimeFunc{deps: []string{"calloc"}, body: `(func $__hike_slice_alloc (param $size i32) (param $capacity i32) (result i32)
     (local $raw i32)
     (local.set $raw (call $calloc (i32.const 1) (i32.add (local.get $size) (i32.const 16))))
@@ -656,7 +714,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_cbuffer_new", "__hike_cbuffer_close", "__hike_cbuffer_length", "__hike_cbuffer_data", "__hike_cbuffer_slice", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

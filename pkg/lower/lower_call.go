@@ -388,6 +388,9 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 		targetName := canonical
 		if semaFuncIRName(fn) != "" {
 			targetName = semaFuncIRName(fn)
+			if strings.HasPrefix(targetName, "__hike_cbuffer_") {
+				targetName = c.root.BuiltinName(targetName)
+			}
 		}
 		return targetName, fn, curPtr, true
 	}
@@ -396,6 +399,9 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 			targetName := canonical
 			if semaFuncIRName(fn) != "" {
 				targetName = semaFuncIRName(fn)
+				if strings.HasPrefix(targetName, "__hike_cbuffer_") {
+					targetName = c.root.BuiltinName(targetName)
+				}
 			}
 			return targetName, fn, curPtr, true
 		}

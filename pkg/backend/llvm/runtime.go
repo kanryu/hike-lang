@@ -196,6 +196,12 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_utf8_rune_to_string": true,
 	"__hike_slice_alloc":  true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
+	"__hike_cbuffer_new": true, "__hike_cbuffer_close": true,
+	"__hike_cbuffer_length": true, "__hike_cbuffer_data": true,
+	"__hike_cbuffer_slice": true,
+	"__hike_cbuffer_new32": true, "__hike_cbuffer_close32": true,
+	"__hike_cbuffer_length32": true, "__hike_cbuffer_data32": true,
+	"__hike_cbuffer_slice32": true,
 
 	// 文字列ランタイム (32-bit / wasm32) (define internal)
 	"hike_streq32":           true,

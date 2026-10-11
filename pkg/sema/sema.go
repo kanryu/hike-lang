@@ -61,6 +61,8 @@ func typeNameOf(typ Type) string {
 		return "*" + typeNameOf(t.Base)
 	case *semanticSliceType:
 		return "[]" + typeNameOf(t.Elem)
+	case *CBufferType:
+		return "cbuffer"
 	case *semanticArrayType:
 		return fmt.Sprintf("[%d]%s", t.Len, typeNameOf(t.Elem))
 	case *semanticStructType:
@@ -113,6 +115,8 @@ func SizeOf(typ Type) int {
 		return PointerSize * 2
 	case *semanticSliceType:
 		return PointerSize + SizeOf(TypeInt32)*2
+	case *CBufferType:
+		return PointerSize + 8 + PointerSize*2 + 1
 	case *semanticArrayType:
 		return t.Len * SizeOf(t.Elem)
 	case *semanticStructType:
@@ -180,6 +184,8 @@ func typeLLVMOf(typ Type) string {
 		return typeLLVMOf(t.Base) + "*"
 	case *semanticSliceType:
 		return fmt.Sprintf("{ i8*, %s, %s }", typeLLVMOf(TypeInt32), typeLLVMOf(TypeInt32))
+	case *CBufferType:
+		return "{ i8*, i64, { i8*, i8* }, i1 }"
 	case *semanticArrayType:
 		return fmt.Sprintf("[%d x %s]", t.Len, typeLLVMOf(t.Elem))
 	case *semanticStructType:
@@ -248,6 +254,7 @@ var (
 	// immediately before the owning allocation when present.
 	TypeString  = &BasicType{Name: "string", ByteSize: 16, LLVM: "{ i8*, i32, i32 }"}
 	TypeCString = &BasicType{Name: "cstring", ByteSize: 8, LLVM: "i8*"}
+	TypeCBuffer = &CBufferType{}
 	TypeVoid    = &BasicType{Name: "void", ByteSize: 0, LLVM: "void"}
 )
 
@@ -271,6 +278,7 @@ var BuiltinTypes = map[string]Type{
 	"bool":    TypeBool,
 	"string":  TypeString,
 	"cstring": TypeCString,
+	"cbuffer": TypeCBuffer,
 	"void":    TypeVoid,
 }
 
@@ -372,6 +380,9 @@ func LookupBuiltinType(name string) (Type, bool) {
 	if builtinNameEqual(name, "cstring") {
 		return TypeCString, true
 	}
+	if builtinNameEqual(name, "cbuffer") {
+		return TypeCBuffer, true
+	}
 	if builtinNameEqual(name, "void") {
 		return TypeVoid, true
 	}
@@ -420,6 +431,16 @@ func (t *PointerType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 type SliceType struct {
 	Elem Type
 }
+
+// CBufferType is an owned native byte buffer. It deliberately has no Hike
+// slice reference count. Slicing a cbuffer produces an ordinary Hike slice
+// copy, while Close owns the foreign allocation's release operation.
+type CBufferType struct{}
+
+func (t *CBufferType) TypeName() string          { return "cbuffer" }
+func (t *CBufferType) LLVMType() string          { return "{ i8*, i64, { i8*, i8* }, i1 }" }
+func (t *CBufferType) Size() int                 { return PointerSize + 8 + PointerSize*2 + 1 }
+func (t *CBufferType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
 
 func (t *SliceType) TypeName() string { return typeNameOf(t) }
 func (t *SliceType) LLVMType() string {

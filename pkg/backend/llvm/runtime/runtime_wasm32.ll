@@ -7,6 +7,110 @@ declare noalias i8* @malloc(i32)
 declare noalias i8* @calloc(i32, i32)
 declare void @free(i8*)
 
+; Explicitly-owned cbuffer ABI for wasm32. The release value is a Hike
+; func(): {code pointer, environment pointer}; no cbuffer reference count.
+define internal { i8*, i64, { i8*, i8* }, i1 } @__hike_cbuffer_new32(i8* %data, i32 %length, { i8*, i8* } %release) #0 {
+entry:
+  %length64 = zext i32 %length to i64
+  %v0 = insertvalue { i8*, i64, { i8*, i8* }, i1 } zeroinitializer, i8* %data, 0
+  %v1 = insertvalue { i8*, i64, { i8*, i8* }, i1 } %v0, i64 %length64, 1
+  %v2 = insertvalue { i8*, i64, { i8*, i8* }, i1 } %v1, { i8*, i8* } %release, 2
+  %v3 = insertvalue { i8*, i64, { i8*, i8* }, i1 } %v2, i1 false, 3
+  ret { i8*, i64, { i8*, i8* }, i1 } %v3
+}
+
+define internal void @__hike_cbuffer_close32({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %done, label %release
+release:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  %rv = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 2
+  %code = extractvalue { i8*, i8* } %rv, 0
+  %env = extractvalue { i8*, i8* } %rv, 1
+  %has = icmp ne i8* %code, null
+  br i1 %has, label %dispatch, label %default_free
+dispatch:
+  %plain = icmp eq i8* %env, null
+  br i1 %plain, label %call_plain, label %call_closure
+call_plain:
+  %plain_fn = bitcast i8* %code to void ()*
+  call void %plain_fn()
+  br label %mark
+call_closure:
+  %closure_fn = bitcast i8* %code to void (i8*)*
+  call void %closure_fn(i8* %env)
+  br label %mark
+default_free:
+  call void @free(i8* %data)
+  br label %mark
+mark:
+  %closed_value = insertvalue { i8*, i64, { i8*, i8* }, i1 } %current, i1 true, 3
+  store { i8*, i64, { i8*, i8* }, i1 } %closed_value, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  br label %done
+done:
+  ret void
+}
+
+define internal i64 @__hike_cbuffer_length32({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %zero, label %read
+zero:
+  ret i64 0
+read:
+  %length = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 1
+  ret i64 %length
+}
+
+define internal i8* @__hike_cbuffer_data32({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %zero, label %read
+zero:
+  ret i8* null
+read:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  ret i8* %data
+}
+
+define internal { i8*, i32, i32 } @__hike_cbuffer_slice32({ i8*, i64, { i8*, i8* }, i1 }* %buffer, i32 %low, i32 %high) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %empty, label %check
+check:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  %length = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 1
+  %low64 = zext i32 %low to i64
+  %high64 = zext i32 %high to i64
+  %valid_high = icmp ule i64 %high64, %length
+  %valid_low = icmp ule i64 %low64, %high64
+  %valid = and i1 %valid_high, %valid_low
+  br i1 %valid, label %copy, label %empty
+copy:
+  %count = sub i32 %high, %low
+  %total = add i32 %count, 16
+  %raw = call i8* @calloc(i32 1, i32 %total)
+  %cap_ptr = bitcast i8* %raw to i32*
+  store i32 %count, i32* %cap_ptr
+  %ref_raw = getelementptr inbounds i8, i8* %raw, i32 4
+  %ref_ptr = bitcast i8* %ref_raw to i32*
+  store i32 1, i32* %ref_ptr
+  %destination = getelementptr inbounds i8, i8* %raw, i32 16
+  %source = getelementptr inbounds i8, i8* %data, i32 %low
+  call i8* @memcpy32(i8* %destination, i8* %source, i32 %count)
+  %result0 = insertvalue { i8*, i32, i32 } zeroinitializer, i8* %destination, 0
+  %result1 = insertvalue { i8*, i32, i32 } %result0, i32 0, 1
+  %result2 = insertvalue { i8*, i32, i32 } %result1, i32 %count, 2
+  ret { i8*, i32, i32 } %result2
+empty:
+  ret { i8*, i32, i32 } zeroinitializer
+}
+
 define internal i8* @__hike_slice_alloc32(i32 %size, i32 %capacity) #0 {
 entry:
   %total = add i32 %size, 16

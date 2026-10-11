@@ -28,6 +28,20 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 
 	baseType := baseVal.Type()
 
+	if baseType == sema.TypeCBuffer {
+		idxVal = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+		bufferPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeCBuffer})
+		e.root.emit(&hir.InstrAlloca{Dst: bufferPtr, AllocType: sema.TypeCBuffer})
+		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: bufferPtr})
+		dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrCallStatic{Dst: dataPtr, CalleeName: e.root.BuiltinName("__hike_cbuffer_data"), Args: []hir.Value{bufferPtr}})
+		elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: dataPtr, Index: idxVal})
+		elem := e.root.nextReg(sema.TypeByte)
+		e.root.emit(&hir.InstrLoad{Dst: elem, Ptr: elemPtr})
+		return elem
+	}
+
 	// 配列インデックス [N]T。組み込みコレクションのレシーバー解決より
 	// 前に処理し、配列全体を一時領域へコピーしない。
 	if ar, isArr := baseType.(*sema.ArrayType); isArr {

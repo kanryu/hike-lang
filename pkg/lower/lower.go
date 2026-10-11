@@ -210,6 +210,8 @@ func semaTypeName(typ sema.Type) string {
 		return "*" + semaTypeName(t.Base)
 	case *sema.SliceType:
 		return "[]" + semaTypeName(t.Elem)
+	case *sema.CBufferType:
+		return "cbuffer"
 	case *sema.ArrayType:
 		return fmt.Sprintf("[%d]%s", t.Len, semaTypeName(t.Elem))
 	case *sema.StructType:
@@ -1338,6 +1340,9 @@ func (l *Lowerer) defaultConstValue(t sema.Type) hir.Value {
 		return &hir.ConstNil{Typ: t}
 	}
 	if _, isSlice := t.(*sema.SliceType); isSlice {
+		return &hir.ConstZero{Typ: t}
+	}
+	if _, isCBuffer := t.(*sema.CBufferType); isCBuffer {
 		return &hir.ConstZero{Typ: t}
 	}
 	if _, isStruct := t.(*sema.StructType); isStruct {

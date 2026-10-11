@@ -9,6 +9,111 @@ declare noalias i8* @malloc(i64)
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)
 
+; cbuffer is an explicitly-owned foreign buffer. It has no Hike-side
+; reference count: {data, length, hike_func_value, closed}.
+; The release callback is a Hike func() value: {code pointer, environment}.
+define internal { i8*, i64, { i8*, i8* }, i1 } @__hike_cbuffer_new(i8* %data, i64 %length, { i8*, i8* } %release) #0 {
+entry:
+  %zero = insertvalue { i8*, i64, { i8*, i8* }, i1 } zeroinitializer, i8* %data, 0
+  %with_len = insertvalue { i8*, i64, { i8*, i8* }, i1 } %zero, i64 %length, 1
+  %with_release = insertvalue { i8*, i64, { i8*, i8* }, i1 } %with_len, { i8*, i8* } %release, 2
+  %result = insertvalue { i8*, i64, { i8*, i8* }, i1 } %with_release, i1 false, 3
+  ret { i8*, i64, { i8*, i8* }, i1 } %result
+}
+
+define internal void @__hike_cbuffer_close({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %done, label %release
+release:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  %release_value = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 2
+  %release_code = extractvalue { i8*, i8* } %release_value, 0
+  %release_env = extractvalue { i8*, i8* } %release_value, 1
+  %has_release = icmp ne i8* %release_code, null
+  br i1 %has_release, label %call_release, label %default_free
+call_release:
+  %is_plain = icmp eq i8* %release_env, null
+  br i1 %is_plain, label %call_plain, label %call_closure
+call_plain:
+  %plain_fn = bitcast i8* %release_code to void ()*
+  call void %plain_fn()
+  br label %mark_closed
+call_closure:
+  %closure_fn = bitcast i8* %release_code to void (i8*)*
+  call void %closure_fn(i8* %release_env)
+  br label %mark_closed
+default_free:
+  call void @free(i8* %data)
+  br label %mark_closed
+mark_closed:
+  %closed_value = insertvalue { i8*, i64, { i8*, i8* }, i1 } %current, i1 true, 3
+  store { i8*, i64, { i8*, i8* }, i1 } %closed_value, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  br label %done
+done:
+  ret void
+}
+
+define internal i64 @__hike_cbuffer_length({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %zero, label %read
+zero:
+  ret i64 0
+read:
+  %length = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 1
+  ret i64 %length
+}
+
+define internal i8* @__hike_cbuffer_data({ i8*, i64, { i8*, i8* }, i1 }* %buffer) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %zero, label %read
+zero:
+  ret i8* null
+read:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  ret i8* %data
+}
+
+; Copy a cbuffer range into a normal, Hike-owned []byte slice. The cbuffer
+; itself is never retained by this operation.
+define internal { i8*, i32, i32 } @__hike_cbuffer_slice({ i8*, i64, { i8*, i8* }, i1 }* %buffer, i64 %low, i64 %high) #0 {
+entry:
+  %current = load { i8*, i64, { i8*, i8* }, i1 }, { i8*, i64, { i8*, i8* }, i1 }* %buffer
+  %closed = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 3
+  br i1 %closed, label %empty, label %check
+check:
+  %data = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 0
+  %length = extractvalue { i8*, i64, { i8*, i8* }, i1 } %current, 1
+  %valid_high = icmp ule i64 %high, %length
+  %valid_low = icmp ule i64 %low, %high
+  %valid = and i1 %valid_high, %valid_low
+  br i1 %valid, label %copy, label %empty
+copy:
+  %count = sub i64 %high, %low
+  %total = add i64 %count, 16
+  %raw = call i8* @calloc(i64 1, i64 %total)
+  %cap_ptr = bitcast i8* %raw to i32*
+  %cap32 = trunc i64 %count to i32
+  store i32 %cap32, i32* %cap_ptr
+  %ref_raw = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref_ptr = bitcast i8* %ref_raw to i32*
+  store i32 1, i32* %ref_ptr
+  %destination = getelementptr inbounds i8, i8* %raw, i64 16
+  %source = getelementptr inbounds i8, i8* %data, i64 %low
+  call i8* @memcpy(i8* %destination, i8* %source, i64 %count)
+  %result0 = insertvalue { i8*, i32, i32 } zeroinitializer, i8* %destination, 0
+  %result1 = insertvalue { i8*, i32, i32 } %result0, i32 0, 1
+  %result2 = insertvalue { i8*, i32, i32 } %result1, i32 %cap32, 2
+  ret { i8*, i32, i32 } %result2
+empty:
+  ret { i8*, i32, i32 } zeroinitializer
+}
+
 ; Slice backing storage. The returned pointer addresses the first payload byte;
 ; capacity is stored as i32 at owner-16. calloc keeps make([]T,n) zeroed while
 ; giving all slice allocation paths one header layout.

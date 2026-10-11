@@ -436,6 +436,27 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 	baseVal := e.LowerExpr(node.Left)
 	baseType := baseVal.Type()
 
+	if baseType == sema.TypeCBuffer {
+		bufferPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeCBuffer})
+		e.root.emit(&hir.InstrAlloca{Dst: bufferPtr, AllocType: sema.TypeCBuffer})
+		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: bufferPtr})
+		low := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+		if node.Low != nil { low = e.LowerExpr(node.Low); low = e.root.emitValueCoerce(low, sema.TypeInt) }
+		high := hir.Value(nil)
+		if node.High != nil {
+			high = e.LowerExpr(node.High)
+			high = e.root.emitValueCoerce(high, sema.TypeInt)
+		} else {
+			highReg := e.root.nextReg(sema.TypeInt)
+			high = highReg
+			e.root.emit(&hir.InstrCallStatic{Dst: highReg, CalleeName: e.root.BuiltinName("__hike_cbuffer_length"), Args: []hir.Value{bufferPtr}})
+		}
+		resultType := &sema.SliceType{Elem: sema.TypeByte}
+		result := e.root.nextReg(resultType)
+		e.root.emit(&hir.InstrCallStatic{Dst: result, CalleeName: e.root.BuiltinName("__hike_cbuffer_slice"), Args: []hir.Value{bufferPtr, low, high}})
+		return result
+	}
+
 	if value, handled := e.lowerStringSliceExpr(node, baseVal, baseType); handled {
 		return value
 	}

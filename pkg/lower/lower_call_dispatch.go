@@ -232,6 +232,17 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 		case "make":
 			return c.lowerMakeCall(call)
 
+		case "cbuffer":
+			if len(call.Args) != 3 {
+				panic(fmt.Sprintf("[Lower Error] cbuffer expects data, length, and release, got %d arguments", len(call.Args)))
+			}
+			args := c.lowerArgs(call.Args,
+				[]sema.Type{&sema.PointerType{Base: sema.TypeByte}, sema.TypeInt, &sema.FuncType{}},
+				false, false, nil, false)
+			result := c.root.nextReg(sema.TypeCBuffer)
+			c.root.emit(&hir.InstrCallStatic{Dst: result, CalleeName: c.root.BuiltinName("__hike_cbuffer_new"), Args: args})
+			return result
+
 		case "copy":
 			// The Go-Hike self-hosting path currently uses copy only while
 			// rearranging compiler-owned slices. Keep the intrinsic lowering

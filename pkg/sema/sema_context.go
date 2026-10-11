@@ -84,7 +84,44 @@ func NewContext() *Context {
 	ctx.typeIDs["float32"] = 5
 	ctx.typeIDs["float64"] = 6
 	ctx.typeIDs["cstring"] = 7
-	ctx.nextTypeID = 8
+	ctx.typeIDs["cbuffer"] = 8
+	ctx.nextTypeID = 9
+
+	// cbuffer is a compiler intrinsic rather than a standard-library type.
+	// Its special indexing, slicing, and foreign-memory lifetime semantics are
+	// implemented by the lowerer and LLVM runtime.
+	ctx.Functions["cbuffer"] = &FuncType{
+		Name:            "cbuffer",
+		IRName:          "__hike_cbuffer_new",
+		ParamTypes:      []Type{&PointerType{Base: TypeByte}, TypeInt, &FuncType{}},
+		ReturnTypes:     []Type{TypeCBuffer},
+		IsExtern:        true,
+		Specializations: make(map[string]*FuncType),
+	}
+	cbufferPtr := &PointerType{Base: TypeCBuffer}
+	ctx.RegisterMethod("*cbuffer", "Close", &FuncType{
+		Name:            "Close",
+		IRName:          "__hike_cbuffer_close",
+		ParamTypes:      []Type{cbufferPtr},
+		Specializations: make(map[string]*FuncType),
+		IsExtern:        true,
+	})
+	ctx.RegisterMethod("*cbuffer", "Len", &FuncType{
+		Name:            "Len",
+		IRName:          "__hike_cbuffer_length",
+		ParamTypes:      []Type{cbufferPtr},
+		ReturnTypes:     []Type{TypeInt64},
+		Specializations: make(map[string]*FuncType),
+		IsExtern:        true,
+	})
+	ctx.RegisterMethod("*cbuffer", "Ptr", &FuncType{
+		Name:            "Ptr",
+		IRName:          "__hike_cbuffer_data",
+		ParamTypes:      []Type{cbufferPtr},
+		ReturnTypes:     []Type{&PointerType{Base: TypeByte}},
+		Specializations: make(map[string]*FuncType),
+		IsExtern:        true,
+	})
 
 	errorIface := &InterfaceType{
 		Name:            "error",
