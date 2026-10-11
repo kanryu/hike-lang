@@ -82,6 +82,20 @@ func watType(t sema.Type) string {
 	}
 }
 
+// externalABIType describes the WABT boundary representation of a type.
+// Unlike the native LLVM backend, WAT has no byval/sret attributes: aggregate
+// values cross an external boundary as pointers into linear memory.
+func externalABIType(t sema.Type) string {
+	if aggregateType(t) {
+		return "i32"
+	}
+	return watType(t)
+}
+
+func externalABIParamType(t sema.Type) string { return externalABIType(t) }
+
+func externalABIReturnType(t sema.Type) string { return externalABIType(t) }
+
 func memoryOp(t sema.Type, load bool) string {
 	prefix := watType(t)
 	if prefix == "i32" {
@@ -542,10 +556,10 @@ func (e *Emitter) Emit() string {
 		}
 		fmt.Fprintf(&e.b, "  (import \"env\" \"%s\" (func $%s", fn.Name, fn.Name)
 		for _, p := range fn.Params {
-			fmt.Fprintf(&e.b, " (param %s)", watType(p.Typ))
+			fmt.Fprintf(&e.b, " (param %s)", externalABIParamType(p.Typ))
 		}
 		if len(fn.ReturnTypes) == 1 {
-			fmt.Fprintf(&e.b, " (result %s)", watType(fn.ReturnTypes[0]))
+			fmt.Fprintf(&e.b, " (result %s)", externalABIReturnType(fn.ReturnTypes[0]))
 		} else {
 			for _, rt := range fn.ReturnTypes {
 				fmt.Fprintf(&e.b, " (result %s)", watType(rt))

@@ -432,8 +432,14 @@ func (e *Emitter) emitFunctions() {
 			e.declaredSymbols[fn.Name] = true
 
 			retTypeStr := "void"
+			returnStruct := ""
 			if len(fn.ReturnTypes) == 1 {
-				retTypeStr = e.externalABIType(fn.ReturnTypes[0])
+				if st, ok := fn.ReturnTypes[0].(*sema.StructType); ok {
+					retTypeStr = "void"
+					returnStruct = e.externalABISRetParam(st)
+				} else {
+					retTypeStr = e.externalABIType(fn.ReturnTypes[0])
+				}
 			} else if len(fn.ReturnTypes) > 1 {
 				types := make([]string, len(fn.ReturnTypes))
 				for i, rt := range fn.ReturnTypes {
@@ -444,13 +450,16 @@ func (e *Emitter) emitFunctions() {
 
 			paramTypes := make([]string, len(fn.Params))
 			for i, p := range fn.Params {
-				paramTypes[i] = e.externalABIType(p.Typ)
+				paramTypes[i] = e.externalABIParamType(p.Typ)
 			}
 			// Hike variadic functions receive one typed slice parameter.  Only
 			// C variadic functions use LLVM's native varargs ABI; marking a Hike
 			// function as LLVM-vararg breaks aggregate arguments on Win64.
 			if fn.IsVariadic && (fn.IsCFunc || fn.IsExtern) {
 				paramTypes = append(paramTypes, "...")
+			}
+			if returnStruct != "" {
+				paramTypes = append([]string{returnStruct}, paramTypes...)
 			}
 			e.b.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retTypeStr, fn.Name, strings.Join(paramTypes, ", ")))
 			logger.LogVerbose2("[Verbose2] LLVM emit HIR function end index=%d/%d name=%s mode=declaration\n", fnID, len(e.prog.Functions), fn.Name)
@@ -590,8 +599,13 @@ func (e *Emitter) newForkFunctionEmitter() *Emitter {
 func (e *Emitter) emitExternalDeclaration(fn *hir.Function) {
 	e.declaredSymbols[fn.Name] = true
 	retTypeStr := "void"
+	returnStruct := ""
 	if len(fn.ReturnTypes) == 1 {
-		retTypeStr = e.externalABIType(fn.ReturnTypes[0])
+		if st, ok := fn.ReturnTypes[0].(*sema.StructType); ok {
+			returnStruct = e.externalABISRetParam(st)
+		} else {
+			retTypeStr = e.externalABIType(fn.ReturnTypes[0])
+		}
 	} else if len(fn.ReturnTypes) > 1 {
 		types := make([]string, len(fn.ReturnTypes))
 		for i, rt := range fn.ReturnTypes {
@@ -601,10 +615,13 @@ func (e *Emitter) emitExternalDeclaration(fn *hir.Function) {
 	}
 	paramTypes := make([]string, len(fn.Params))
 	for i, p := range fn.Params {
-		paramTypes[i] = e.externalABIType(p.Typ)
+		paramTypes[i] = e.externalABIParamType(p.Typ)
 	}
 	if fn.IsVariadic && (fn.IsCFunc || fn.IsExtern) {
 		paramTypes = append(paramTypes, "...")
+	}
+	if returnStruct != "" {
+		paramTypes = append([]string{returnStruct}, paramTypes...)
 	}
 	e.b.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retTypeStr, fn.Name, strings.Join(paramTypes, ", ")))
 }
@@ -632,6 +649,44 @@ func (e *Emitter) externalABIType(t sema.Type) string {
 		return sema.TypeCString.LLVMType()
 	}
 	return t.LLVMType()
+}
+
+// externalABIParamType describes a parameter as it must appear in an LLVM
+// declaration for a C ABI function.  LLVM's textual aggregate parameter form
+// is not equivalent to the platform C ABI for non-trivial aggregates on
+// Windows x64.  For example, a 24-byte C struct is passed as a pointer to a
+// caller-owned temporary with the byval attribute, not as an LLVM struct value.
+func (e *Emitter) externalABIParamType(t sema.Type) string {
+	if st, ok := t.(*sema.StructType); ok {
+		llvmType := st.LLVMType()
+		align := st.Align()
+		if align <= 0 {
+			align = 1
+		}
+		return fmt.Sprintf("%s* byval(%s) align %d", llvmType, llvmType, align)
+	}
+	return e.externalABIType(t)
+}
+
+func (e *Emitter) externalABISRetParam(st *sema.StructType) string {
+	llvmType := st.LLVMType()
+	align := st.Align()
+	if align <= 0 {
+		align = 1
+	}
+	return fmt.Sprintf("%s* sret(%s) align %d", llvmType, llvmType, align)
+}
+
+// externalFunctionForCall finds the HIR declaration used by a static call.
+// Calls to extern functions need their aggregate arguments lowered to the
+// same byval form as the declaration.
+func (e *Emitter) externalFunctionForCall(name string) (*hir.Function, bool) {
+	for _, fn := range e.prog.Functions {
+		if fn != nil && fn.Name == name && (fn.IsExtern || fn.IsCFunc) {
+			return fn, true
+		}
+	}
+	return nil, false
 }
 
 // llvmIntrinsicName maps the portable scalar math operations exposed by
@@ -1039,23 +1094,70 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 		calleeName = e.functionSymbol(calleeName)
 	}
 	args := make([]string, len(i.Args))
+	externalFn, isExternal := e.externalFunctionForCall(i.CalleeName)
+	var structReturn *sema.StructType
+	if isExternal && len(externalFn.ReturnTypes) == 1 {
+		structReturn, _ = externalFn.ReturnTypes[0].(*sema.StructType)
+	}
+	var structReturnTemp string
+	if structReturn != nil {
+		llvmType := structReturn.LLVMType()
+		align := structReturn.Align()
+		if align <= 0 {
+			align = 1
+		}
+		structReturnTemp = e.nextTmp()
+		e.b.WriteString(fmt.Sprintf("  %s = alloca %s, align %d\n", structReturnTemp, llvmType, align))
+		args = append(args, "")
+		copy(args[1:], args[:len(args)-1])
+		args[0] = fmt.Sprintf("%s* sret(%s) align %d %s", llvmType, llvmType, align, structReturnTemp)
+	}
 	for idx, a := range i.Args {
+		argIndex := idx
+		if structReturn != nil {
+			argIndex++
+		}
 		if a == nil {
 			logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] is nil!\n", i.CalleeName, idx)
-			args[idx] = "i8* null"
+			args[argIndex] = "i8* null"
 			continue
 		}
 		if a.Type() == nil {
 			logger.LogVerbose2("[Verbose2] WARNING: InstrCallStatic '%s' arg[%d] has nil Type()! Val=%v\n", i.CalleeName, idx, a)
-			args[idx] = fmt.Sprintf("i64 %s", e.formatVal(a))
+			args[argIndex] = fmt.Sprintf("i64 %s", e.formatVal(a))
 			continue
 		}
-		args[idx] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
+		// A C ABI struct parameter is represented in LLVM as a pointer with
+		// byval(type), while HIR still carries the source-level struct value.
+		// Materialize the value in a temporary so LLVM can lower the call using
+		// the target ABI (not the generic aggregate-value convention).
+		if isExternal && idx < len(externalFn.Params) {
+			if st, ok := externalFn.Params[idx].Typ.(*sema.StructType); ok {
+				llvmType := st.LLVMType()
+				align := st.Align()
+				if align <= 0 {
+					align = 1
+				}
+				tmp := e.nextTmp()
+				e.b.WriteString(fmt.Sprintf("  %s = alloca %s, align %d\n", tmp, llvmType, align))
+				e.b.WriteString(fmt.Sprintf("  store %s %s, %s* %s, align %d\n",
+					llvmType, e.formatVal(a), llvmType, tmp, align))
+				args[argIndex] = fmt.Sprintf("%s* byval(%s) align %d %s", llvmType, llvmType, align, tmp)
+				continue
+			}
+		}
+		args[argIndex] = fmt.Sprintf("%s %s", a.Type().LLVMType(), e.formatVal(a))
 	}
 
 	isVar, varSig := e.isVariadicFunc(i.CalleeName)
 	if isVar {
-		if i.Dst != nil {
+		if structReturn != nil {
+			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
+			if i.Dst != nil {
+				e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s, align %d\n",
+					i.Dst, structReturn.LLVMType(), structReturn.LLVMType(), structReturnTemp, structReturn.Align()))
+			}
+		} else if i.Dst != nil {
 			e.b.WriteString(fmt.Sprintf("  %s = call %s %s @%s(%s)\n",
 				i.Dst, i.Dst.Typ.LLVMType(), varSig, calleeName, strings.Join(args, ", ")))
 		} else {
@@ -1063,7 +1165,17 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 				varSig, calleeName, strings.Join(args, ", ")))
 		}
 	} else {
-		if i.Dst != nil {
+		if structReturn != nil {
+			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
+			if i.Dst != nil {
+				align := structReturn.Align()
+				if align <= 0 {
+					align = 1
+				}
+				e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s, align %d\n",
+					i.Dst, structReturn.LLVMType(), structReturn.LLVMType(), structReturnTemp, align))
+			}
+		} else if i.Dst != nil {
 			e.b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n",
 				i.Dst, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
 		} else {
