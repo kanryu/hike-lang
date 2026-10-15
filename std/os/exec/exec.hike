@@ -10,6 +10,7 @@ func fread(ptr *byte, size int, count int, stream *byte) int
 
 type Cmd struct { Path string; Args []string; Dir string; Stdin *byte; Stdout *byte; Stderr *byte }
 type ExitError struct { Code int }
+func (e *ExitError) Error() string { if e == nil { return "" }; return "exit error" }
 func (e *ExitError) ExitCode() int { if e == nil { return -1 }; return e.Code }
 func Command(name string, args ...string) *Cmd { return &Cmd{Path: name, Args: args} }
 

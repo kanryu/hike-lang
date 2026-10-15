@@ -288,6 +288,15 @@ func expressionToken(expr ast.Expression) token.Token {
 func (e *ExprLowerer) lowerMemberExpr(node *ast.MemberExpr) hir.Value {
 	if pkgId, okPkg := node.Object.(*ast.Identifier); okPkg {
 		qualified := pkgId.Value + "_" + node.Field.Value
+		// Imported semantic objects such as sema.TypeBool and sema.TypeString
+		// are runtime globals even when their names also participate in the
+		// Go-Hike type-ID namespace. Resolve the global first so interface
+		// conversions receive the object pointer and can build a real itab.
+		if g, ok := e.root.semaCtx.Globals[qualified]; ok {
+			dst := e.root.nextReg(g)
+			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: qualified, Typ: &sema.PointerType{Base: g}}})
+			return dst
+		}
 		if c, ok := e.root.semaCtx.LookupStringConstant(qualified); ok {
 			return e.root.getStringConst(c)
 		}
@@ -296,11 +305,6 @@ func (e *ExprLowerer) lowerMemberExpr(node *ast.MemberExpr) hir.Value {
 		}
 		if c, ok := e.root.semaCtx.LookupFloatConstant(qualified); ok {
 			return &hir.ConstFloat{Val: c, Typ: sema.TypeFloat64}
-		}
-		if g, ok := e.root.semaCtx.Globals[qualified]; ok {
-			dst := e.root.nextReg(g)
-			e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: qualified, Typ: &sema.PointerType{Base: g}}})
-			return dst
 		}
 		if fn, canonical := e.root.semaCtx.LookupFunction(qualified); fn != nil {
 			fatType := fn
@@ -830,6 +834,14 @@ func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {
 	if name == "false" {
 		return &hir.ConstBool{Val: false, Typ: sema.TypeBool}
 	}
+	// Semantic globals such as TypeBool and TypeString may share names with
+	// Go-Hike's type-ID constants. Resolve the runtime global first so values
+	// returned through sema.Type keep their object pointer and itab.
+	if gName, g, ok := e.lookupGlobal(name); ok {
+		dst := e.root.nextReg(g)
+		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
+		return dst
+	}
 	if c, ok := e.root.semaCtx.LookupStringConstant(name); ok {
 		return e.root.getStringConst(c)
 	}
@@ -845,12 +857,6 @@ func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {
 		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
 		return dst
 	}
-	if gName, g, ok := e.lookupGlobal(name); ok {
-		dst := e.root.nextReg(g)
-		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
-		return dst
-	}
-
 	lookupFn := func(name string) (*sema.FuncType, string) {
 		if fn, ok := e.root.semaCtx.Functions[name]; ok {
 			return fn, name

@@ -2091,6 +2091,9 @@ func (e *Emitter) formatBinaryOperand(v hir.Value, target sema.Type) string {
 	if v == nil || target == nil {
 		return e.formatVal(v)
 	}
+	if _, isNil := v.(*hir.ConstNil); isNil && isIntegerLLVMType(sema.LLVMTypeOf(target)) {
+		return "0"
+	}
 	if _, isPointer := target.(*sema.PointerType); isPointer {
 		switch value := v.(type) {
 		case *hir.ConstInt:
@@ -2251,7 +2254,12 @@ func isUnsignedIntegerType(typ sema.Type) bool {
 }
 
 func isIntegerLLVMType(llvmType string) bool {
-	return strings.HasPrefix(llvmType, "i") && len(llvmType) > 1
+	switch llvmType {
+	case "i1", "i8", "i16", "i32", "i64":
+		return true
+	default:
+		return false
+	}
 }
 
 func isShiftIntegerType(typ sema.Type) bool {

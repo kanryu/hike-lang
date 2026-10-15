@@ -77,6 +77,24 @@ func TestEmitBoxInterfacePreservesSourceItab(t *testing.T) {
 	}
 }
 
+func TestEmitIntegerComparisonWithNilUsesZero(t *testing.T) {
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBinary(&hir.InstrBinary{
+		Dst: &hir.Reg{ID: 1, Typ: sema.TypeBool},
+		Op:  hir.OpNeq,
+		L:   &hir.Reg{ID: 2, Typ: sema.TypeInt},
+		R:   &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}},
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "icmp ne i64 %v2, 0") {
+		t.Fatalf("integer comparison with nil must use zero: %s", ir)
+	}
+	if strings.Contains(ir, "icmp ne i64 %v2, null") {
+		t.Fatalf("integer comparison emitted pointer null: %s", ir)
+	}
+}
+
 func TestEmitCastDoesNotTreatSliceAsString(t *testing.T) {
 	sliceType := &sema.SliceType{Elem: sema.TypeByte}
 	emitter := &Emitter{renderedTypes: make(map[string]string)}
