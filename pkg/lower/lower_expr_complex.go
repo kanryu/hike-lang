@@ -126,64 +126,7 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 	}
 
 	if found && getFnName != "" {
-		if finalRecv == nil {
-			finalRecv = objPtr
-		}
-		if getFn != nil && len(getFn.ParamTypes) > 0 {
-			_, isPtrExpected := getFn.ParamTypes[0].(*sema.PointerType)
-			_, isPtrActual := finalRecv.Type().(*sema.PointerType)
-			if isPtrExpected && !isPtrActual {
-				allocaTmp := e.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
-				e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
-				e.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
-				finalRecv = allocaTmp
-			} else if !isPtrExpected && isPtrActual {
-				ptrType := finalRecv.Type().(*sema.PointerType)
-				loadReg := e.root.nextReg(ptrType.Base)
-				e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
-				finalRecv = loadReg
-			}
-		}
-
-		var keyArg hir.Value
-		if getFn != nil && len(getFn.ParamTypes) >= 2 {
-			kIdx := 1
-			if !getFn.IsMethod && len(getFn.ParamTypes) == 1 {
-				kIdx = 0
-			}
-			keyArg = e.root.emitValueCoerce(idxVal, getFn.ParamTypes[kIdx])
-		} else {
-			keyArg = e.root.emitValueCoerce(idxVal, sema.TypeInt)
-		}
-
-		var retType sema.Type = sema.TypeInt
-		if getFn != nil {
-			if len(getFn.ReturnTypes) == 1 {
-				retType = getFn.ReturnTypes[0]
-			} else if len(getFn.ReturnTypes) > 1 {
-				retType = &sema.TupleType{Types: getFn.ReturnTypes}
-			}
-		}
-
-		resReg := e.root.nextReg(retType)
-		e.root.emit(&hir.InstrCallStatic{
-			Dst:        resReg,
-			CalleeName: getFnName,
-			Args:       []hir.Value{finalRecv, keyArg},
-		})
-
-		// 戻り値がタプル (T, bool) の場合、式コンテキストでは第0要素 (T) を抽出
-		if tup, isTup := retType.(*sema.TupleType); isTup && len(tup.Types) > 0 {
-			valReg := e.root.nextReg(tup.Types[0])
-			e.root.emit(&hir.InstrExtractValue{
-				Dst:   valReg,
-				Agg:   resReg,
-				Index: 0,
-			})
-			return valReg
-		}
-
-		return resReg
+		return e.lowerCollectionGetIndex(getFnName, getFn, finalRecv, objPtr, idxVal)
 	}
 
 	// 3. 従来の MapBehavior (後方互換性)
@@ -226,6 +169,53 @@ func (e *ExprLowerer) LowerIndexExpr(node *ast.IndexExpr) hir.Value {
 		file = "input.hike"
 	}
 	panic(fmt.Sprintf("%s:%d:%d: unsupported index target type: %s", file, node.Token.Line, node.Token.Col, semaTypeName(baseType)))
+}
+
+func (e *ExprLowerer) lowerCollectionGetIndex(getFnName string, getFn *sema.FuncType, finalRecv, objPtr, idxVal hir.Value) hir.Value {
+	if finalRecv == nil {
+		finalRecv = objPtr
+	}
+	if getFn != nil && len(getFn.ParamTypes) > 0 {
+		_, isPtrExpected := getFn.ParamTypes[0].(*sema.PointerType)
+		_, isPtrActual := finalRecv.Type().(*sema.PointerType)
+		if isPtrExpected && !isPtrActual {
+			allocaTmp := e.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+			e.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+			e.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+			finalRecv = allocaTmp
+		} else if !isPtrExpected && isPtrActual {
+			ptrType := finalRecv.Type().(*sema.PointerType)
+			loadReg := e.root.nextReg(ptrType.Base)
+			e.root.emit(&hir.InstrLoad{Dst: loadReg, Ptr: finalRecv})
+			finalRecv = loadReg
+		}
+	}
+	var keyArg hir.Value
+	if getFn != nil && len(getFn.ParamTypes) >= 2 {
+		kIdx := 1
+		if !getFn.IsMethod && len(getFn.ParamTypes) == 1 {
+			kIdx = 0
+		}
+		keyArg = e.root.emitValueCoerce(idxVal, getFn.ParamTypes[kIdx])
+	} else {
+		keyArg = e.root.emitValueCoerce(idxVal, sema.TypeInt)
+	}
+	var retType sema.Type = sema.TypeInt
+	if getFn != nil {
+		if len(getFn.ReturnTypes) == 1 {
+			retType = getFn.ReturnTypes[0]
+		} else if len(getFn.ReturnTypes) > 1 {
+			retType = &sema.TupleType{Types: getFn.ReturnTypes}
+		}
+	}
+	resReg := e.root.nextReg(retType)
+	e.root.emit(&hir.InstrCallStatic{Dst: resReg, CalleeName: getFnName, Args: []hir.Value{finalRecv, keyArg}})
+	if tup, isTup := retType.(*sema.TupleType); isTup && len(tup.Types) > 0 {
+		valReg := e.root.nextReg(tup.Types[0])
+		e.root.emit(&hir.InstrExtractValue{Dst: valReg, Agg: resReg, Index: 0})
+		return valReg
+	}
+	return resReg
 }
 
 func isNilNamedType(typ ast.TypeExpr) bool {

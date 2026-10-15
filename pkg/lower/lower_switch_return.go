@@ -25,41 +25,7 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	if len(s.root.structuredStack) > 0 {
 		structuredParentBody = s.root.structuredStack[len(s.root.structuredStack)-1]
 	}
-	if len(s.root.structuredStack) > 0 {
-		structuredBlock = &hir.BlockNode{Label: endBB.Label}
-		var tableIndex hir.Value
-		if numericSwitch {
-			tableIndex = switchVal
-			if tableMin != 0 {
-				reg := s.root.nextReg(switchVal.Type())
-				tableIndex = reg
-				// The table index is an ordinary instruction and must be
-				// emitted before the TableNode. Otherwise structuredDestination
-				// places it in the table continuation, after dispatch.
-				s.root.emit(&hir.InstrBinary{Dst: reg, Op: hir.OpSub, L: switchVal, R: &hir.ConstInt{Val: tableMin, Typ: sema.TypeInt}})
-			}
-		}
-		s.root.appendStructuredNode(structuredBlock)
-		if numericSwitch {
-			tableTargets := make([]int, int(tableMax-tableMin+1))
-			for i := range tableTargets {
-				tableTargets[i] = -1
-			}
-			structuredTable = &hir.TableNode{Label: endBB.Label + ".table", IndexValue: tableIndex, Min: tableMin, Targets: tableTargets, DefaultTarget: -1}
-			for caseIndex, values := range numericValues {
-				structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{Values: values})
-				for _, value := range values {
-					structuredTable.Targets[value-tableMin] = caseIndex
-				}
-			}
-			s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredTable)
-		}
-		structuredContinuation = s.root.appendContinuationAfter(structuredParentBody, structuredBlock, structuredParentDepth)
-		structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
-		s.root.pushStructuredFrame(structuredBlock.Label)
-		s.root.pushStructuredBody(&structuredBlock.Body)
-		structuredCaseBody = &structuredBlock.Body
-	}
+	structuredBlock, structuredTable, structuredContinuation, structuredCaseBody = s.setupStructuredSwitch(endBB, switchVal, numericValues, tableMin, tableMax, numericSwitch, structuredParentBody, structuredParentDepth)
 
 	s.root.loopStack = append(s.root.loopStack, loopContext{
 		breakBlock: endBB, continueBlock: endBB,
@@ -208,6 +174,43 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	}
 
 	s.root.setBlock(endBB)
+}
+
+func (s *StmtLowerer) setupStructuredSwitch(endBB *basicBlock, switchVal hir.Value, numericValues [][]int64, tableMin, tableMax int64, numericSwitch bool, parentBody *hir.ControlBody, parentDepth int) (*hir.BlockNode, *hir.TableNode, *hir.BlockNode, *hir.ControlBody) {
+	if len(s.root.structuredStack) == 0 {
+		return nil, nil, nil, nil
+	}
+	structuredBlock := &hir.BlockNode{Label: endBB.Label}
+	var tableIndex hir.Value
+	if numericSwitch {
+		tableIndex = switchVal
+		if tableMin != 0 {
+			reg := s.root.nextReg(switchVal.Type())
+			tableIndex = reg
+			s.root.emit(&hir.InstrBinary{Dst: reg, Op: hir.OpSub, L: switchVal, R: &hir.ConstInt{Val: tableMin, Typ: sema.TypeInt}})
+		}
+	}
+	s.root.appendStructuredNode(structuredBlock)
+	var structuredTable *hir.TableNode
+	if numericSwitch {
+		tableTargets := make([]int, int(tableMax-tableMin+1))
+		for i := range tableTargets {
+			tableTargets[i] = -1
+		}
+		structuredTable = &hir.TableNode{Label: endBB.Label + ".table", IndexValue: tableIndex, Min: tableMin, Targets: tableTargets, DefaultTarget: -1}
+		for caseIndex, values := range numericValues {
+			structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{Values: values})
+			for _, value := range values {
+				structuredTable.Targets[value-tableMin] = caseIndex
+			}
+		}
+		s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredTable)
+	}
+	structuredContinuation := s.root.appendContinuationAfter(parentBody, structuredBlock, parentDepth)
+	structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+	s.root.pushStructuredFrame(structuredBlock.Label)
+	s.root.pushStructuredBody(&structuredBlock.Body)
+	return structuredBlock, structuredTable, structuredContinuation, &structuredBlock.Body
 }
 
 func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {

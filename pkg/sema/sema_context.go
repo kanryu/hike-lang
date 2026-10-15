@@ -722,6 +722,39 @@ func (c *Context) resolveGenericStructType(t *ast.NamedType, name, canonicalName
 	return newSt
 }
 
+func (c *Context) resolveInterfaceType(t *ast.InterfaceType) Type {
+	methods := []Method{}
+	for _, embedded := range t.Embedded {
+		if embeddedIface, ok := c.ResolveType(embedded).(*InterfaceType); ok {
+			methods = appendInterfaceMethods(methods, embeddedIface.Methods)
+		}
+	}
+	for _, m := range t.Methods {
+		pts := []Type{}
+		var varElem Type
+		for i, p := range m.ParamTypes {
+			resolved := c.ResolveType(p)
+			if m.IsVariadic && i == len(m.ParamTypes)-1 {
+				if _, isSl := resolved.(*SliceType); !isSl {
+					resolved = newSemanticSliceType(resolved)
+				}
+				varElem = resolved.(*SliceType).Elem
+			}
+			pts = append(pts, resolved)
+		}
+		rts := []Type{}
+		for _, r := range m.ReturnTypes {
+			rts = append(rts, c.ResolveType(r))
+		}
+		methods = append(methods, Method{Name: m.Name.Value, ParamTypes: pts, IsVariadic: m.IsVariadic, VariadicElem: varElem, ReturnTypes: rts})
+	}
+	iface := newSemanticInterfaceType()
+	iface.Name = ""
+	iface.Methods = methods
+	iface.Specializations = make(map[string]*InterfaceType)
+	return iface
+}
+
 func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 	if expr == nil {
 		return TypeVoid
@@ -948,42 +981,7 @@ func (c *Context) ResolveType(expr ast.TypeExpr) Type {
 		}
 		return newSemanticFutureType(rts)
 	case *ast.InterfaceType:
-		methods := []Method{}
-		for _, embedded := range t.Embedded {
-			if embeddedIface, ok := c.ResolveType(embedded).(*InterfaceType); ok {
-				methods = appendInterfaceMethods(methods, embeddedIface.Methods)
-			}
-		}
-		for _, m := range t.Methods {
-			pts := []Type{}
-			var varElem Type = nil
-			for i, p := range m.ParamTypes {
-				resolved := c.ResolveType(p)
-				if m.IsVariadic && i == len(m.ParamTypes)-1 {
-					if _, isSl := resolved.(*SliceType); !isSl {
-						resolved = newSemanticSliceType(resolved)
-					}
-					varElem = resolved.(*SliceType).Elem
-				}
-				pts = append(pts, resolved)
-			}
-			rts := []Type{}
-			for _, r := range m.ReturnTypes {
-				rts = append(rts, c.ResolveType(r))
-			}
-			methods = append(methods, Method{
-				Name:         m.Name.Value,
-				ParamTypes:   pts,
-				IsVariadic:   m.IsVariadic,
-				VariadicElem: varElem,
-				ReturnTypes:  rts,
-			})
-		}
-		iface := newSemanticInterfaceType()
-		iface.Name = ""
-		iface.Methods = methods
-		iface.Specializations = make(map[string]*InterfaceType)
-		return iface
+		return c.resolveInterfaceType(t)
 	case *ast.FuncType:
 		fnType := newSemanticFuncType()
 		fnType.ParamTypes = []Type{}
@@ -2440,6 +2438,46 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 	return TypeVoid, fmt.Errorf("type '%s' does not support slicing (implement 'Sliceable' with Slice(low, high int) to enable)", typeNameOf(leftType))
 }
 
+func (c *Context) inferIdentifierTypeWithDiag(e *ast.Identifier, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
+	name := astIdentifierValue(e)
+	if t, ok := locals[name]; ok {
+		return t
+	}
+	if t, ok := c.Globals[name]; ok {
+		return t
+	}
+	if _, ok := c.LookupConstant(name); ok {
+		return TypeInt
+	}
+	if _, ok := c.LookupStringConstant(name); ok {
+		return TypeString
+	}
+	if _, ok := c.LookupFloatConstant(name); ok {
+		return TypeFloat64
+	}
+	if t, ok := c.Functions[name]; ok {
+		return t
+	}
+	switch name {
+	case "true", "false":
+		return TypeBool
+	case "len", "cap", "append", "delete", "make", "sizeof":
+		return newSemanticFuncSignature(name, nil, []Type{TypeInt})
+	case "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte":
+		return newSemanticFuncSignature(name, nil, []Type{TypeInt})
+	case "string", "cstring":
+		return newSemanticFuncSignature(name, nil, []Type{TypeString})
+	case "deepcopy":
+		return newSemanticFuncSignature("deepcopy", nil, nil)
+	case "bool":
+		return newSemanticFuncSignature(name, nil, []Type{TypeBool})
+	case "float32", "float64":
+		return newSemanticFuncSignature(name, nil, []Type{TypeFloat64})
+	}
+	reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", name)
+	return TypeBad
+}
+
 func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
 	if expr == nil {
 		return TypeBad
@@ -2461,44 +2499,7 @@ func (c *Context) InferExprTypeWithDiag(expr ast.Expression, locals map[string]T
 	case *ast.NilLiteral:
 		return newSemanticPointerType(TypeByte)
 	case *ast.Identifier:
-		if t, ok := locals[astIdentifierValue(e)]; ok {
-			return t
-		}
-		if t, ok := c.Globals[astIdentifierValue(e)]; ok {
-			return t
-		}
-		if _, ok := c.LookupConstant(astIdentifierValue(e)); ok {
-			return TypeInt
-		}
-		if _, ok := c.LookupStringConstant(astIdentifierValue(e)); ok {
-			return TypeString
-		}
-		if _, ok := c.LookupFloatConstant(astIdentifierValue(e)); ok {
-			return TypeFloat64
-		}
-		if t, ok := c.Functions[astIdentifierValue(e)]; ok {
-			return t
-		}
-		switch astIdentifierValue(e) {
-		case "true", "false":
-			return TypeBool
-		case "len", "cap", "append", "delete", "make", "sizeof":
-			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeInt})
-		case "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8", "uintptr", "byte":
-			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeInt})
-		case "string", "cstring":
-			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeString})
-		case "deepcopy":
-			return newSemanticFuncSignature("deepcopy", nil, nil)
-		case "bool":
-			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeBool})
-		case "float32", "float64":
-			return newSemanticFuncSignature(astIdentifierValue(e), nil, []Type{TypeFloat64})
-		}
-
-		// 未定義識別子: エラーを記録して TypeBad を返却
-		reporter.Errorf(filename, e.Token.Line, e.Token.Col, "undefined: %s", astIdentifierValue(e))
-		return TypeBad
+		return c.inferIdentifierTypeWithDiag(e, locals, reporter, filename)
 
 	case *ast.PrefixExpr:
 		right := c.InferExprTypeWithDiag(e.Right, locals, reporter, filename)

@@ -375,129 +375,7 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 			}
 		}
 	case *ast.AssignStmt:
-		for i, l := range stmt.Left {
-			stmt.Left[i] = t.transformExpr(l)
-		}
-		for i, r := range stmt.Right {
-			stmt.Right[i] = t.transformExpr(r)
-		}
-
-		// 添字代入 (obj[key] = val) による暗黙の Set メソッド特殊化トリガー
-		for _, l := range stmt.Left {
-			if idxExpr, ok := l.(*ast.IndexExpr); ok {
-				leftType := t.inferExprTypeExpr(idxExpr.Left)
-				if leftType != nil {
-					structName, typeArgs, _ := extractStructAndTypeArgs(leftType)
-					if structName != "" && len(typeArgs) > 0 {
-						var semaTypeArgs []sema.Type
-						for _, ta := range typeArgs {
-							if r := t.semaCtx.ResolveType(ta); r != nil && r != sema.TypeVoid {
-								semaTypeArgs = append(semaTypeArgs, r)
-							}
-						}
-						if len(semaTypeArgs) == len(typeArgs) {
-							t.triggerMethodSpecialization(structName, "Set", semaTypeArgs)
-						}
-					}
-				}
-			}
-		}
-
-		if len(stmt.Left) == 1 && len(stmt.Right) == 1 {
-			if id, ok := stmt.Left[0].(*ast.Identifier); ok {
-				if inferred := t.inferExprTypeExpr(stmt.Right[0]); inferred != nil {
-					t.localTypes[identifierValue(id)] = inferred
-				}
-			}
-		} else if len(stmt.Left) > 1 && len(stmt.Right) == 1 {
-			// 多値返却関数のアンパック代入
-			if call, ok := stmt.Right[0].(*ast.CallExpr); ok {
-				var retTypes []sema.Type
-
-				if fnMeta, okResolved := t.semaCtx.ResolvedCalls[call]; okResolved && fnMeta != nil {
-					retTypes = fnMeta.ReturnTypes
-				} else if id, okId := call.Function.(*ast.Identifier); okId {
-					if fnMeta, okFn := t.semaCtx.Functions[identifierValue(id)]; okFn && fnMeta != nil {
-						retTypes = fnMeta.ReturnTypes
-					}
-				} else if mem, okMem := call.Function.(*ast.MemberExpr); okMem {
-					objT := t.semaCtx.InferExprType(mem.Object, nil)
-					if objT != nil {
-						rawT := objT
-						if pt, okPt := objT.(*sema.PointerType); okPt {
-							rawT = pt.Base
-						}
-						if iface, okIface := rawT.(*sema.InterfaceType); okIface {
-							if m, _ := sema.InterfaceType_GetMethod(iface, mem.Field.Value); m != nil {
-								retTypes = m.ReturnTypes
-							}
-						} else if fn, _ := t.semaCtx.LookupMethod(semaTypeName(objT), mem.Field.Value); fn != nil {
-							retTypes = fn.ReturnTypes
-						}
-					}
-				}
-
-				if len(retTypes) == len(stmt.Left) {
-					for idx, l := range stmt.Left {
-						if id, okIdent := l.(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-							t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, semaTypeName(retTypes[idx]))
-						}
-					}
-				}
-			} else if idxExpr, okIdx := stmt.Right[0].(*ast.IndexExpr); okIdx {
-				leftT := t.inferExprTypeExpr(idxExpr.Left)
-				if leftT != nil {
-					resolvedLeft := t.semaCtx.ResolveType(leftT)
-					if resolvedLeft != nil {
-						if mp, isMap := resolvedLeft.(*sema.MapType); isMap {
-							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, semaTypeName(mp.Value))
-								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
-								}
-							}
-						} else if _, valT, hasOk, fn := t.semaCtx.CheckIndexable(resolvedLeft); fn != nil && hasOk && valT != nil {
-							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, semaTypeName(valT))
-								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
-								}
-							}
-						}
-					}
-				}
-			} else if sliceExpr, okSlice := stmt.Right[0].(*ast.SliceExpr); okSlice {
-				leftT := t.inferExprTypeExpr(sliceExpr.Left)
-				if leftT != nil {
-					resolvedLeft := t.semaCtx.ResolveType(leftT)
-					if resolvedLeft != nil {
-						if resT, hasOk, fn := t.semaCtx.CheckSliceable(resolvedLeft); fn != nil && hasOk && resT != nil {
-							if len(stmt.Left) >= 2 {
-								if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, semaTypeName(resT))
-								}
-								if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-									t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
-								}
-							}
-						}
-					}
-				}
-			} else if typeAssert, okAssert := stmt.Right[0].(*ast.TypeAssertExpr); okAssert {
-				if len(stmt.Left) >= 2 && typeAssert.Target != nil {
-					if id, okIdent := stmt.Left[0].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-						t.localTypes[identifierValue(id)] = typeAssert.Target
-					}
-					if id, okIdent := stmt.Left[1].(*ast.Identifier); okIdent && identifierValue(id) != "_" {
-						t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
-					}
-				}
-			}
-		}
+		t.transformAssignStmt(stmt)
 
 	case *ast.ExprStmt:
 		stmt.Expr = t.transformExpr(stmt.Expr)
@@ -638,6 +516,144 @@ func (t *Transformer) transformStmt(s ast.Statement) {
 		for i, val := range stmt.Values {
 			stmt.Values[i] = t.transformExpr(val)
 		}
+	}
+}
+
+func (t *Transformer) transformAssignStmt(stmt *ast.AssignStmt) {
+	for i, l := range stmt.Left {
+		stmt.Left[i] = t.transformExpr(l)
+	}
+	for i, r := range stmt.Right {
+		stmt.Right[i] = t.transformExpr(r)
+	}
+	for _, l := range stmt.Left {
+		idx, ok := l.(*ast.IndexExpr)
+		if !ok {
+			continue
+		}
+		leftType := t.inferExprTypeExpr(idx.Left)
+		if leftType == nil {
+			continue
+		}
+		structName, typeArgs, _ := extractStructAndTypeArgs(leftType)
+		if structName == "" || len(typeArgs) == 0 {
+			continue
+		}
+		var args []sema.Type
+		for _, ta := range typeArgs {
+			if r := t.semaCtx.ResolveType(ta); r != nil && r != sema.TypeVoid {
+				args = append(args, r)
+			}
+		}
+		if len(args) == len(typeArgs) {
+			t.triggerMethodSpecialization(structName, "Set", args)
+		}
+	}
+	if len(stmt.Left) == 1 && len(stmt.Right) == 1 {
+		if id, ok := stmt.Left[0].(*ast.Identifier); ok {
+			if inferred := t.inferExprTypeExpr(stmt.Right[0]); inferred != nil {
+				t.localTypes[identifierValue(id)] = inferred
+			}
+		}
+		return
+	}
+	if len(stmt.Left) <= 1 || len(stmt.Right) != 1 {
+		return
+	}
+	if call, ok := stmt.Right[0].(*ast.CallExpr); ok {
+		var retTypes []sema.Type
+		if meta, found := t.semaCtx.ResolvedCalls[call]; found && meta != nil {
+			retTypes = meta.ReturnTypes
+		} else if id, ok := call.Function.(*ast.Identifier); ok {
+			if meta, found := t.semaCtx.Functions[identifierValue(id)]; found && meta != nil {
+				retTypes = meta.ReturnTypes
+			}
+		} else if mem, ok := call.Function.(*ast.MemberExpr); ok {
+			objT := t.semaCtx.InferExprType(mem.Object, nil)
+			if objT != nil {
+				rawT := objT
+				if pt, ok := objT.(*sema.PointerType); ok {
+					rawT = pt.Base
+				}
+				if iface, ok := rawT.(*sema.InterfaceType); ok {
+					if m, _ := sema.InterfaceType_GetMethod(iface, mem.Field.Value); m != nil {
+						retTypes = m.ReturnTypes
+					}
+				} else if fn, _ := t.semaCtx.LookupMethod(semaTypeName(objT), mem.Field.Value); fn != nil {
+					retTypes = fn.ReturnTypes
+				}
+			}
+		}
+		if len(retTypes) == len(stmt.Left) {
+			for i, l := range stmt.Left {
+				if id, ok := l.(*ast.Identifier); ok && identifierValue(id) != "_" {
+					t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, semaTypeName(retTypes[i]))
+				}
+			}
+		}
+		return
+	}
+	if idx, ok := stmt.Right[0].(*ast.IndexExpr); ok {
+		t.transformIndexAssignmentTypes(stmt, idx)
+		return
+	}
+	if slice, ok := stmt.Right[0].(*ast.SliceExpr); ok {
+		t.transformSliceAssignmentTypes(stmt, slice)
+		return
+	}
+	if assertion, ok := stmt.Right[0].(*ast.TypeAssertExpr); ok && len(stmt.Left) >= 2 && assertion.Target != nil {
+		if id, ok := stmt.Left[0].(*ast.Identifier); ok && identifierValue(id) != "_" {
+			t.localTypes[identifierValue(id)] = assertion.Target
+		}
+		if id, ok := stmt.Left[1].(*ast.Identifier); ok && identifierValue(id) != "_" {
+			t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
+		}
+	}
+}
+
+func (t *Transformer) transformIndexAssignmentTypes(stmt *ast.AssignStmt, idx *ast.IndexExpr) {
+	leftT := t.inferExprTypeExpr(idx.Left)
+	if leftT == nil {
+		return
+	}
+	resolved := t.semaCtx.ResolveType(leftT)
+	if resolved == nil {
+		return
+	}
+	var valueType sema.Type
+	if mp, ok := resolved.(*sema.MapType); ok {
+		valueType = mp.Value
+	} else if _, valT, hasOK, fn := t.semaCtx.CheckIndexable(resolved); fn != nil && hasOK {
+		valueType = valT
+	}
+	if valueType != nil {
+		t.setTwoValueAssignmentTypes(stmt, semaTypeName(valueType))
+	}
+}
+
+func (t *Transformer) transformSliceAssignmentTypes(stmt *ast.AssignStmt, slice *ast.SliceExpr) {
+	leftT := t.inferExprTypeExpr(slice.Left)
+	if leftT == nil {
+		return
+	}
+	resolved := t.semaCtx.ResolveType(leftT)
+	if resolved == nil {
+		return
+	}
+	if valueType, hasOK, fn := t.semaCtx.CheckSliceable(resolved); fn != nil && hasOK && valueType != nil {
+		t.setTwoValueAssignmentTypes(stmt, semaTypeName(valueType))
+	}
+}
+
+func (t *Transformer) setTwoValueAssignmentTypes(stmt *ast.AssignStmt, typeName string) {
+	if len(stmt.Left) < 2 {
+		return
+	}
+	if id, ok := stmt.Left[0].(*ast.Identifier); ok && identifierValue(id) != "_" {
+		t.localTypes[identifierValue(id)] = parseSimpleTypeExpr(id.Token, typeName)
+	}
+	if id, ok := stmt.Left[1].(*ast.Identifier); ok && identifierValue(id) != "_" {
+		t.localTypes[identifierValue(id)] = &ast.NamedType{Token: id.Token, Name: &ast.Identifier{Token: id.Token, Value: "bool"}}
 	}
 }
 

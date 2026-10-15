@@ -195,39 +195,7 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	if fnId, ok := call.Function.(*ast.Identifier); ok {
 		switch fnId.Value {
 		case "panic":
-			if len(call.Args) != 1 && len(call.Args) != 2 {
-				panic(fmt.Sprintf("[Lower Error] panic expects one value or a message and cause, got %d arguments", len(call.Args)))
-			}
-			// Preserve the dynamic operand evaluation now. The panic record and
-			// defer unwinding are added by the next lowering phase; the source
-			// site is already stable in HIR for both backends.
-			var value hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
-			if len(call.Args) > 0 {
-				value = c.root.Expr.LowerExpr(call.Args[0])
-			}
-			panicType := &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
-			value = c.root.emitValueCoerce(value, panicType)
-			var cause hir.Value
-			if len(call.Args) == 2 {
-				cause = c.root.Expr.LowerExpr(call.Args[1])
-				cause = c.root.emitValueCoerce(cause, panicType)
-			}
-			siteID := c.root.registerPanicSite()
-			// Store the boxed value before running deferred calls so a deferred
-			// recover() observes the panic that caused the unwind.
-			c.root.emit(&hir.InstrCallStatic{
-				CalleeName: "__hike_panic_set",
-				Args: []hir.Value{
-					value,
-					&hir.ConstZero{Typ: panicType},
-					&hir.ConstInt{Val: int64(siteID), Typ: sema.TypeInt32},
-				},
-			})
-			for i := len(c.root.deferStack) - 1; i >= 0; i-- {
-				c.LowerCall(c.root.deferStack[i])
-			}
-			c.root.terminate(&hir.InstrPanic{Value: value, Cause: cause, SiteID: siteID})
-			return nil
+			return c.lowerPanicCall(call)
 
 		case "make":
 			return c.lowerMakeCall(call)
@@ -278,74 +246,10 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			}
 
 		case "delete":
-			argVal := c.root.Expr.LowerExpr(call.Args[0])
-			keyVal := c.root.Expr.LowerExpr(call.Args[1])
-			if mp, isMap := argVal.Type().(*sema.MapType); isMap {
-				if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
-					keyPtr, keyLen := c.root.stringParts(keyVal)
-					callee := c.root.mapRuntimeNameForType(mp, "__hike_map_delete_str", "__hike_cdict_delete_str")
-					args := []hir.Value{argVal, keyPtr, keyLen}
-					if c.root.useCompactMapRuntimeForType(mp) {
-						if internID, ok := internIDOfString(keyVal); ok {
-							callee = "__hike_cdict_delete_str_hash"
-							args = []hir.Value{argVal, keyPtr, keyLen, &hir.ConstInt{Val: int64(c.root.hirProg.InternHashes[internID]), Typ: sema.TypeInt}}
-						}
-					}
-					call := &hir.InstrCallStatic{CalleeName: callee, Args: args}
-					call.InternID, call.HasInternID = internIDOfString(keyVal)
-					c.root.emit(call)
-				} else {
-					keyI64 := c.root.coerceToI64(keyVal, mp.Key)
-					c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.mapRuntimeNameForType(mp, "__hike_map_delete", "__hike_cdict_delete"), Args: []hir.Value{argVal, keyI64}})
-				}
-				return nil
-			}
+			return c.lowerDeleteCall(call)
 
 		case "len", "cap":
-			argVal := c.root.Expr.LowerExpr(call.Args[0])
-			if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
-				owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
-				c.root.emit(&hir.InstrExtractValue{Dst: owner, Agg: argVal, Index: 0})
-				if fnId.Value == "cap" {
-					return c.root.sliceCapacity(owner)
-				}
-				length32 := c.root.nextReg(sema.TypeInt32)
-				c.root.emit(&hir.InstrExtractValue{Dst: length32, Agg: argVal, Index: 2})
-				return c.root.asInt(length32)
-			}
-			// Arrays have a fixed length, so len and cap are compile-time
-			// constants.  Without this case len([N]T) falls through to the
-			// ordinary call path and is incorrectly emitted as an indirect
-			// function call with the array value as its argument.
-			if arrayType, isArray := argVal.Type().(*sema.ArrayType); isArray {
-				return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
-			}
-			if ptrType, isPointer := argVal.Type().(*sema.PointerType); isPointer {
-				if arrayType, isArray := ptrType.Base.(*sema.ArrayType); isArray {
-					return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
-				}
-			}
-			if fnId.Value == "len" && (argVal.Type() == sema.TypeString || argVal.Type() == sema.TypeCString) {
-				if argVal.Type() == sema.TypeString {
-					_, length := c.root.stringParts(argVal)
-					return length
-				}
-				dst := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
-				return dst
-			}
-			if fnId.Value == "len" {
-				if ptr, ok := argVal.Type().(*sema.PointerType); ok && ptr.Base == sema.TypeByte {
-					dst := c.root.nextReg(sema.TypeInt)
-					c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
-					return dst
-				}
-			}
-			if _, isMap := argVal.Type().(*sema.MapType); isMap {
-				dst := c.root.nextReg(sema.TypeInt)
-				c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.mapRuntimeNameForType(argVal.Type().(*sema.MapType), "__hike_map_len", "__hike_cdict_len"), Args: []hir.Value{argVal}})
-				return dst
-			}
+			return c.lowerLenCapCall(fnId.Value, call)
 
 		case "append":
 			return c.LowerAppend(call)
@@ -369,185 +273,7 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 
 	// 3. メンバー式経由の呼び出し (パッケージ関数呼び出し、またはオブジェクトメソッド呼び出し)
 	if mem, ok := call.Function.(*ast.MemberExpr); ok {
-		// 3A. パッケージ名修飾による関数呼び出し (例: fmt.Printf, time.Now, japanese.NewShiftJIS)
-		if pkgIdent, isIdent := mem.Object.(*ast.Identifier); isIdent {
-			isPackage := c.isPackageName(pkgIdent.Value)
-			if !isPackage {
-				fn, _ := c.root.semaCtx.LookupFunction(pkgIdent.Value + "_" + mem.Field.Value)
-				isPackage = fn != nil
-			}
-			if isPackage {
-				return c.lowerPackageMemberCall(call, mem, pkgIdent)
-			}
-		}
-
-		// 3B. インターフェースまたは構造体/基本型のメソッド呼び出し
-		objPtr := c.root.Expr.LowerStructPtr(mem.Object)
-		objType := objPtr.Type().(*sema.PointerType).Base
-
-		// インターフェースメソッド呼び出し (動的ディスパッチ)
-		if iface, isIface := objType.(*sema.InterfaceType); isIface && !sema.InterfaceType_IsAny(iface) {
-			return c.lowerInterfaceMethodCall(call, mem, objPtr, iface)
-		}
-
-		// 静的型メソッド呼び出し (構造体および基本型エイリアス)
-		targetFnName, targetFn, finalRecv, found := c.ResolveMethod(objType, mem.Field.Value, objPtr)
-		if found && targetFn != nil {
-			// Method tables assembled from imported packages may contain a
-			// receiver-only FuncType while the canonical function entry has the
-			// complete signature. Prefer that complete entry when available.
-			// Otherwise the call below would silently omit method arguments.
-			if len(targetFn.ParamTypes) <= 1 {
-				var fallback *sema.FuncType
-				fallbackName := ""
-				rawRecvName := strings.TrimPrefix(semaTypeName(objType), "*")
-				for functionName, candidate := range c.root.semaCtx.Functions {
-					if candidate == nil || len(candidate.ParamTypes) <= 1 {
-						continue
-					}
-					if candidate.IRName == targetFnName || candidate.Name == targetFnName {
-						fallback, fallbackName = candidate, functionName
-						break
-					}
-					// Imported Go-Hike method metadata can retain only the
-					// receiver in the lookup entry, while the complete function
-					// is registered under its package-qualified name.
-					if candidate.Name == mem.Field.Value && strings.Contains(functionName, rawRecvName) {
-						fallback, fallbackName = candidate, functionName
-					}
-				}
-				if fallback != nil {
-					targetFn = fallback
-					if targetFn.IRName != "" {
-						targetFnName = targetFn.IRName
-					} else if fallbackName != "" {
-						targetFnName = fallbackName
-					}
-				}
-			}
-			isPtrRecv := false
-			if len(targetFn.ParamTypes) > 0 {
-				_, isPtrRecv = targetFn.ParamTypes[0].(*sema.PointerType)
-			}
-
-			recvArg := finalRecv
-			if !isPtrRecv {
-				if ptrType, ok := finalRecv.Type().(*sema.PointerType); ok {
-					loaded := c.root.nextReg(ptrType.Base)
-					c.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: finalRecv})
-					recvArg = loaded
-				}
-			} else {
-				if _, ok := finalRecv.Type().(*sema.PointerType); !ok {
-					allocaTmp := c.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
-					c.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
-					c.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
-					recvArg = allocaTmp
-				}
-			}
-
-			params := c.getFuncParams(targetFn, targetFnName)
-			// Some imported method entries expose the receiver as the first
-			// template parameter even though method arguments are stored
-			// separately. Do not treat that receiver as the callback argument.
-			if len(params) > 0 && len(call.Args) > 0 {
-				firstType := c.root.semaCtx.ResolveType(params[0].Type)
-				recvName := semaTypeName(objType)
-				firstName := semaTypeName(firstType)
-				if firstName == recvName || strings.TrimPrefix(firstName, "*") == strings.TrimPrefix(recvName, "*") {
-					params = params[1:]
-				}
-			}
-			callArgs := c.fillDefaultArgs(call.Args, params)
-
-			methodParamTypes := []sema.Type{}
-			if len(targetFn.ParamTypes) > 1 {
-				methodParamTypes = targetFn.ParamTypes[1:]
-			}
-			// Imported Go-Hike methods can arrive with only their receiver
-			// signature resolved, even though the declaration is available in
-			// Template. Recover the parameter types from that declaration before
-			// lowering arguments. Without this, a call such as
-			// Once.Do(initLevel) is emitted with only the receiver and the
-			// callback fat pointer becomes the zero value in native self-hosting.
-			if len(methodParamTypes) < len(params) {
-				methodParamTypes = make([]sema.Type, 0, len(params))
-				for _, param := range params {
-					paramType := c.root.semaCtx.ResolveType(param.Type)
-					if param.IsVariadic {
-						if _, isSlice := paramType.(*sema.SliceType); !isSlice {
-							paramType = &sema.SliceType{Elem: paramType}
-						}
-					}
-					methodParamTypes = append(methodParamTypes, paramType)
-				}
-			}
-			// Sema may attach the receiver type to an explicit method argument
-			// when an imported method signature is incomplete.  If the resolved
-			// parameter is a function value, discard that stale implicit cast and
-			// let lowerArgs coerce the original expression to the actual function
-			// type.  This preserves the function-value ABI without making the LLVM
-			// emitter guess from the aggregate layout.
-			for i, arg := range callArgs {
-				if i >= len(methodParamTypes) {
-					break
-				}
-				if _, expectsFunction := methodParamTypes[i].(*sema.FuncType); !expectsFunction {
-					continue
-				}
-				if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
-					callArgs[i] = cast.Expr
-				}
-			}
-			isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
-			var callArgVals []hir.Value
-			if len(methodParamTypes) == 0 && len(callArgs) > 0 {
-				// A partially resolved imported method may have no parameter
-				// metadata at all. Preserve the actual argument values rather than
-				// dropping them; the static callee's ABI still describes the
-				// expected types. This is especially important for function values.
-				callArgVals = make([]hir.Value, 0, len(callArgs))
-				for _, arg := range callArgs {
-					callArgVals = append(callArgVals, c.root.Expr.LowerExpr(arg))
-				}
-			} else {
-				callArgVals = c.lowerArgs(callArgs, methodParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
-			}
-			args := append([]hir.Value{recvArg}, callArgVals...)
-
-			var retType sema.Type = sema.TypeVoid
-			if len(targetFn.ReturnTypes) == 1 {
-				retType = targetFn.ReturnTypes[0]
-			} else if len(targetFn.ReturnTypes) > 1 {
-				retType = &sema.TupleType{Types: targetFn.ReturnTypes}
-			}
-
-			var dst *hir.Reg = nil
-			if retType != sema.TypeVoid {
-				dst = c.root.nextReg(retType)
-			}
-			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: targetFnName, Args: args})
-			return dst
-		}
-
-		// 3C. 構造体フィールドに関数ポインタが格納されている場合
-		st, sName := c.root.findStruct(objType)
-		if st != nil {
-			fieldPtr, fieldType, _, fieldFound := c.root.Expr.ResolveFieldPath(st, sName, objPtr, mem.Field.Value)
-			if fieldFound {
-				if ft, ok := fieldType.(*sema.FuncType); ok {
-					loadedFn := c.root.nextReg(ft)
-					c.root.emit(&hir.InstrLoad{Dst: loadedFn, Ptr: fieldPtr})
-					return c.lowerIndirectCall(loadedFn, call.Args, call.HasEllipsis)
-				}
-			}
-		}
-
-		file := c.root.sourceFile
-		if file == "" {
-			file = "input.hike"
-		}
-		panic(fmt.Sprintf("%s:%d:%d: method or function field '%s' not found on type '%s'", file, mem.Field.Token.Line, mem.Field.Token.Col, mem.Field.Value, semaTypeName(objType)))
+		return c.lowerMemberCall(call, mem)
 	}
 
 	// 4. 単一識別子によるトップレベル関数呼び出し (例: myFunc())
@@ -623,6 +349,243 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	// 5. 間接関数ポインタ / クロージャ呼び出し (例: act())
 	fnFatPtr := c.root.Expr.LowerExpr(call.Function)
 	return c.lowerIndirectCall(fnFatPtr, call.Args, call.HasEllipsis)
+}
+
+func (c *CallLowerer) lowerMemberCall(call *ast.CallExpr, mem *ast.MemberExpr) hir.Value {
+	if pkgIdent, ok := mem.Object.(*ast.Identifier); ok {
+		isPackage := c.isPackageName(pkgIdent.Value)
+		if !isPackage {
+			fn, _ := c.root.semaCtx.LookupFunction(pkgIdent.Value + "_" + mem.Field.Value)
+			isPackage = fn != nil
+		}
+		if isPackage {
+			return c.lowerPackageMemberCall(call, mem, pkgIdent)
+		}
+	}
+	objPtr := c.root.Expr.LowerStructPtr(mem.Object)
+	objType := objPtr.Type().(*sema.PointerType).Base
+	if iface, ok := objType.(*sema.InterfaceType); ok && !sema.InterfaceType_IsAny(iface) {
+		return c.lowerInterfaceMethodCall(call, mem, objPtr, iface)
+	}
+	targetFnName, targetFn, finalRecv, found := c.ResolveMethod(objType, mem.Field.Value, objPtr)
+	if found && targetFn != nil {
+		return c.lowerStaticMethodCall(call, objType, mem.Field.Value, targetFnName, targetFn, finalRecv)
+	}
+	if st, sName := c.root.findStruct(objType); st != nil {
+		fieldPtr, fieldType, _, fieldFound := c.root.Expr.ResolveFieldPath(st, sName, objPtr, mem.Field.Value)
+		if fieldFound {
+			if ft, ok := fieldType.(*sema.FuncType); ok {
+				loadedFn := c.root.nextReg(ft)
+				c.root.emit(&hir.InstrLoad{Dst: loadedFn, Ptr: fieldPtr})
+				return c.lowerIndirectCall(loadedFn, call.Args, call.HasEllipsis)
+			}
+		}
+	}
+	file := c.root.sourceFile
+	if file == "" {
+		file = "input.hike"
+	}
+	panic(fmt.Sprintf("%s:%d:%d: method or function field '%s' not found on type '%s'", file, mem.Field.Token.Line, mem.Field.Token.Col, mem.Field.Value, semaTypeName(objType)))
+}
+
+func (c *CallLowerer) resolveCompleteMethodSignature(name string, fn *sema.FuncType, objType sema.Type, methodName string) (string, *sema.FuncType) {
+	if len(fn.ParamTypes) > 1 {
+		return name, fn
+	}
+	rawRecvName := strings.TrimPrefix(semaTypeName(objType), "*")
+	var fallback *sema.FuncType
+	fallbackName := ""
+	for functionName, candidate := range c.root.semaCtx.Functions {
+		if candidate == nil || len(candidate.ParamTypes) <= 1 {
+			continue
+		}
+		if candidate.IRName == name || candidate.Name == name {
+			fallback, fallbackName = candidate, functionName
+			break
+		}
+		if candidate.Name == methodName && strings.Contains(functionName, rawRecvName) {
+			fallback, fallbackName = candidate, functionName
+		}
+	}
+	if fallback == nil {
+		return name, fn
+	}
+	if fallback.IRName != "" {
+		return fallback.IRName, fallback
+	}
+	if fallbackName != "" {
+		return fallbackName, fallback
+	}
+	return name, fallback
+}
+
+func (c *CallLowerer) lowerStaticMethodCall(call *ast.CallExpr, objType sema.Type, methodName, targetFnName string, targetFn *sema.FuncType, finalRecv hir.Value) hir.Value {
+	targetFnName, targetFn = c.resolveCompleteMethodSignature(targetFnName, targetFn, objType, methodName)
+	isPtrRecv := len(targetFn.ParamTypes) > 0 && func() bool { _, ok := targetFn.ParamTypes[0].(*sema.PointerType); return ok }()
+	recvArg := finalRecv
+	if !isPtrRecv {
+		if ptrType, ok := finalRecv.Type().(*sema.PointerType); ok {
+			loaded := c.root.nextReg(ptrType.Base)
+			c.root.emit(&hir.InstrLoad{Dst: loaded, Ptr: finalRecv})
+			recvArg = loaded
+		}
+	} else if _, ok := finalRecv.Type().(*sema.PointerType); !ok {
+		allocaTmp := c.root.nextReg(&sema.PointerType{Base: finalRecv.Type()})
+		c.root.emit(&hir.InstrAlloca{Dst: allocaTmp, AllocType: finalRecv.Type()})
+		c.root.emit(&hir.InstrStore{Val: finalRecv, Ptr: allocaTmp})
+		recvArg = allocaTmp
+	}
+	params := c.getFuncParams(targetFn, targetFnName)
+	if len(params) > 0 && len(call.Args) > 0 {
+		firstName := semaTypeName(c.root.semaCtx.ResolveType(params[0].Type))
+		recvName := semaTypeName(objType)
+		if firstName == recvName || strings.TrimPrefix(firstName, "*") == strings.TrimPrefix(recvName, "*") {
+			params = params[1:]
+		}
+	}
+	callArgs := c.fillDefaultArgs(call.Args, params)
+	methodParamTypes := []sema.Type{}
+	if len(targetFn.ParamTypes) > 1 {
+		methodParamTypes = targetFn.ParamTypes[1:]
+	}
+	if len(methodParamTypes) < len(params) {
+		for _, param := range params {
+			paramType := c.root.semaCtx.ResolveType(param.Type)
+			if param.IsVariadic {
+				if _, ok := paramType.(*sema.SliceType); !ok {
+					paramType = &sema.SliceType{Elem: paramType}
+				}
+			}
+			methodParamTypes = append(methodParamTypes, paramType)
+		}
+	}
+	for i, arg := range callArgs {
+		if i >= len(methodParamTypes) {
+			break
+		}
+		if _, ok := methodParamTypes[i].(*sema.FuncType); !ok {
+			continue
+		}
+		if cast, ok := arg.(*ast.ImplicitCastExpr); ok {
+			callArgs[i] = cast.Expr
+		}
+	}
+	isCVarArg := semaFuncCFunc(targetFn) || semaFuncExtern(targetFn) || (semaFuncIsVariadic(targetFn) && semaFuncVariadicElem(targetFn) == nil)
+	var callArgVals []hir.Value
+	if len(methodParamTypes) == 0 && len(callArgs) > 0 {
+		for _, arg := range callArgs {
+			callArgVals = append(callArgVals, c.root.Expr.LowerExpr(arg))
+		}
+	} else {
+		callArgVals = c.lowerArgs(callArgs, methodParamTypes, semaFuncIsVariadic(targetFn), isCVarArg, semaFuncVariadicElem(targetFn), call.HasEllipsis)
+	}
+	var retType sema.Type = sema.TypeVoid
+	if len(targetFn.ReturnTypes) == 1 {
+		retType = targetFn.ReturnTypes[0]
+	} else if len(targetFn.ReturnTypes) > 1 {
+		retType = &sema.TupleType{Types: targetFn.ReturnTypes}
+	}
+	var dst *hir.Reg
+	if retType != sema.TypeVoid {
+		dst = c.root.nextReg(retType)
+	}
+	c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: targetFnName, Args: append([]hir.Value{recvArg}, callArgVals...)})
+	return dst
+}
+
+func (c *CallLowerer) lowerDeleteCall(call *ast.CallExpr) hir.Value {
+	argVal := c.root.Expr.LowerExpr(call.Args[0])
+	keyVal := c.root.Expr.LowerExpr(call.Args[1])
+	mp, isMap := argVal.Type().(*sema.MapType)
+	if !isMap {
+		return nil
+	}
+	if mp.Key == sema.TypeString || semaTypeName(mp.Key) == "string" {
+		keyPtr, keyLen := c.root.stringParts(keyVal)
+		callee := c.root.mapRuntimeNameForType(mp, "__hike_map_delete_str", "__hike_cdict_delete_str")
+		args := []hir.Value{argVal, keyPtr, keyLen}
+		if c.root.useCompactMapRuntimeForType(mp) {
+			if internID, ok := internIDOfString(keyVal); ok {
+				callee = "__hike_cdict_delete_str_hash"
+				args = []hir.Value{argVal, keyPtr, keyLen, &hir.ConstInt{Val: int64(c.root.hirProg.InternHashes[internID]), Typ: sema.TypeInt}}
+			}
+		}
+		call := &hir.InstrCallStatic{CalleeName: callee, Args: args}
+		call.InternID, call.HasInternID = internIDOfString(keyVal)
+		c.root.emit(call)
+		return nil
+	}
+	keyI64 := c.root.coerceToI64(keyVal, mp.Key)
+	c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.mapRuntimeNameForType(mp, "__hike_map_delete", "__hike_cdict_delete"), Args: []hir.Value{argVal, keyI64}})
+	return nil
+}
+
+func (c *CallLowerer) lowerLenCapCall(name string, call *ast.CallExpr) hir.Value {
+	argVal := c.root.Expr.LowerExpr(call.Args[0])
+	if _, isSlice := argVal.Type().(*sema.SliceType); isSlice {
+		owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		c.root.emit(&hir.InstrExtractValue{Dst: owner, Agg: argVal, Index: 0})
+		if name == "cap" {
+			return c.root.sliceCapacity(owner)
+		}
+		length32 := c.root.nextReg(sema.TypeInt32)
+		c.root.emit(&hir.InstrExtractValue{Dst: length32, Agg: argVal, Index: 2})
+		return c.root.asInt(length32)
+	}
+	if arrayType, ok := argVal.Type().(*sema.ArrayType); ok {
+		return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
+	}
+	if ptrType, ok := argVal.Type().(*sema.PointerType); ok {
+		if arrayType, ok := ptrType.Base.(*sema.ArrayType); ok {
+			return &hir.ConstInt{Val: int64(arrayType.Len), Typ: sema.TypeInt}
+		}
+	}
+	if name == "len" && (argVal.Type() == sema.TypeString || argVal.Type() == sema.TypeCString) {
+		if argVal.Type() == sema.TypeString {
+			_, length := c.root.stringParts(argVal)
+			return length
+		}
+		dst := c.root.nextReg(sema.TypeInt)
+		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
+		return dst
+	}
+	if name == "len" {
+		if ptr, ok := argVal.Type().(*sema.PointerType); ok && ptr.Base == sema.TypeByte {
+			dst := c.root.nextReg(sema.TypeInt)
+			c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.BuiltinName("strlen"), Args: []hir.Value{argVal}})
+			return dst
+		}
+	}
+	if mp, ok := argVal.Type().(*sema.MapType); ok {
+		dst := c.root.nextReg(sema.TypeInt)
+		c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: c.root.mapRuntimeNameForType(mp, "__hike_map_len", "__hike_cdict_len"), Args: []hir.Value{argVal}})
+		return dst
+	}
+	return nil
+}
+
+func (c *CallLowerer) lowerPanicCall(call *ast.CallExpr) hir.Value {
+	if len(call.Args) != 1 && len(call.Args) != 2 {
+		panic(fmt.Sprintf("[Lower Error] panic expects one value or a message and cause, got %d arguments", len(call.Args)))
+	}
+	var value hir.Value = &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}
+	if len(call.Args) > 0 {
+		value = c.root.Expr.LowerExpr(call.Args[0])
+	}
+	panicType := &sema.InterfaceType{Name: "any", Specializations: make(map[string]*sema.InterfaceType)}
+	value = c.root.emitValueCoerce(value, panicType)
+	var cause hir.Value
+	if len(call.Args) == 2 {
+		cause = c.root.Expr.LowerExpr(call.Args[1])
+		cause = c.root.emitValueCoerce(cause, panicType)
+	}
+	siteID := c.root.registerPanicSite()
+	c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_panic_set", Args: []hir.Value{value, &hir.ConstZero{Typ: panicType}, &hir.ConstInt{Val: int64(siteID), Typ: sema.TypeInt32}}})
+	for i := len(c.root.deferStack) - 1; i >= 0; i-- {
+		c.LowerCall(c.root.deferStack[i])
+	}
+	c.root.terminate(&hir.InstrPanic{Value: value, Cause: cause, SiteID: siteID})
+	return nil
 }
 
 func (c *CallLowerer) isPackageName(name string) bool {

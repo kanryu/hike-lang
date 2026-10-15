@@ -161,6 +161,73 @@ func isTypeLikeExpr(e ast.Expression) bool {
 // 型式パース (TypeExpr)
 // -----------------------------------------------------------------------------
 
+func (p *Parser) parseInterfaceTypeExpr() ast.TypeExpr {
+	tok := p.curToken
+	if p.peekTokenIs(token.LBRACE) {
+		p.nextToken()
+	}
+	it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}, Embedded: []ast.TypeExpr{}}
+	for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+		p.nextToken()
+		if p.curTokenIs(token.SEMICOLON) {
+			continue
+		}
+		if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.LPAREN) {
+			it.Embedded = append(it.Embedded, p.parseTypeExpr())
+			continue
+		}
+		methodName := p.parseIdentifier()
+		p.expectPeek(token.LPAREN)
+		paramTypes := []ast.TypeExpr{}
+		isVariadic := false
+		if !p.peekTokenIs(token.RPAREN) {
+			p.nextToken()
+			for {
+				if p.curTokenIs(token.ELLIPSIS) {
+					isVariadic = true
+					p.nextToken()
+					elem := p.parseTypeExpr()
+					paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
+					break
+				}
+				if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
+					p.nextToken()
+				}
+				if p.curTokenIs(token.ELLIPSIS) {
+					isVariadic = true
+					p.nextToken()
+					elem := p.parseTypeExpr()
+					paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
+					break
+				}
+				paramTypes = append(paramTypes, p.parseTypeExpr())
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+				} else {
+					break
+				}
+			}
+		}
+		p.expectPeek(token.RPAREN)
+		returnTypes := []ast.TypeExpr{}
+		if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
+			if p.peekTokenIs(token.LPAREN) {
+				returnTypes, _ = p.parseReturnTypeListWithNames()
+			} else {
+				p.nextToken()
+				returnTypes = append(returnTypes, p.parseTypeExpr())
+			}
+		}
+		it.Methods = append(it.Methods, &ast.MethodSig{Token: methodName.Token, Name: methodName, ParamTypes: paramTypes, IsVariadic: isVariadic, ReturnTypes: returnTypes})
+	}
+	p.expectPeek(token.RBRACE)
+	return it
+}
+
 func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	if p.curTokenIs(token.ELLIPSIS) {
 		tok := p.curToken
@@ -168,76 +235,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		elem := p.parseTypeExpr()
 		return &ast.EllipsisType{Token: tok, Elem: elem}
 	} else if p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) && p.curToken.Literal == "interface" && p.peekTokenIs(token.LBRACE)) {
-		tok := p.curToken
-		if p.peekTokenIs(token.LBRACE) {
-			p.nextToken()
-		}
-		it := &ast.InterfaceType{Token: tok, Methods: []*ast.MethodSig{}, Embedded: []ast.TypeExpr{}}
-		for !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-			p.nextToken()
-			if p.curTokenIs(token.SEMICOLON) {
-				continue
-			}
-			if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.LPAREN) {
-				it.Embedded = append(it.Embedded, p.parseTypeExpr())
-				continue
-			}
-			methodName := p.parseIdentifier()
-			p.expectPeek(token.LPAREN)
-			paramTypes := []ast.TypeExpr{}
-			isVariadic := false
-			if !p.peekTokenIs(token.RPAREN) {
-				p.nextToken()
-				for {
-					if p.curTokenIs(token.ELLIPSIS) {
-						isVariadic = true
-						p.nextToken()
-						elem := p.parseTypeExpr()
-						paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
-						break
-					}
-					if p.curTokenIs(token.IDENT) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.DOT) {
-						p.nextToken()
-					}
-					if p.curTokenIs(token.ELLIPSIS) {
-						isVariadic = true
-						p.nextToken()
-						elem := p.parseTypeExpr()
-						paramTypes = append(paramTypes, &ast.EllipsisType{Token: p.curToken, Elem: elem})
-						break
-					}
-					paramTypes = append(paramTypes, p.parseTypeExpr())
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						if p.peekTokenIs(token.RPAREN) {
-							break
-						}
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-			}
-			p.expectPeek(token.RPAREN)
-			returnTypes := []ast.TypeExpr{}
-			if !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.EOF) {
-				if p.peekTokenIs(token.LPAREN) {
-					returnTypes, _ = p.parseReturnTypeListWithNames()
-				} else {
-					p.nextToken()
-					returnTypes = append(returnTypes, p.parseTypeExpr())
-				}
-			}
-			it.Methods = append(it.Methods, &ast.MethodSig{
-				Token:       methodName.Token,
-				Name:        methodName,
-				ParamTypes:  paramTypes,
-				IsVariadic:  isVariadic,
-				ReturnTypes: returnTypes,
-			})
-		}
-		p.expectPeek(token.RBRACE)
-		return it
+		return p.parseInterfaceTypeExpr()
 	} else if p.curTokenIs(token.STRUCT) {
 		// Anonymous struct types are common in Go's marker patterns, such as
 		// `chan struct{}` and `map[string]struct{}`. Reuse the regular field
@@ -447,76 +445,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.AsyncExpr{Token: tok, Fn: fn}
 
 	case token.FUNC:
-		tok := p.curToken
-		if !p.expectPeek(token.LPAREN) {
-			return nil
-		}
-
-		params, isVariadic := p.parseParameterList(false)
-
-		returnTypes := []ast.TypeExpr{}
-		returnNames := []string{}
-		if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
-			if p.peekTokenIs(token.LPAREN) {
-				returnTypes, returnNames = p.parseReturnTypeListWithNames()
-			} else {
-				p.nextToken()
-				returnTypes = append(returnTypes, p.parseTypeExpr())
-			}
-		}
-
-		// 波括弧が続かない場合は関数型（FuncType）として受理 (例: sizeof(func(int) bool))
-		if !p.peekTokenIs(token.LBRACE) {
-			paramTypeExprs := make([]ast.TypeExpr, len(params))
-			for i, param := range params {
-				paramTypeExprs[i] = param.Type
-			}
-			return &ast.FuncType{
-				Token:       tok,
-				ParamTypes:  paramTypeExprs,
-				IsVariadic:  isVariadic,
-				ReturnTypes: returnTypes,
-			}
-		}
-
-		p.expectPeek(token.LBRACE)
-		body := p.parseBlockStmt()
-		leftExp = &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, ReturnNames: returnNames, Body: body}
+		leftExp = p.parseFuncExpression()
 
 	case token.MAP, token.HASHMAP, token.STABLE:
-		mapType, ok := p.parseTypeExpr().(*ast.MapType)
-		if !ok {
-			return nil
-		}
-		if p.peekTokenIs(token.LBRACE) {
-			p.nextToken()
-			entries := []*ast.MapEntry{}
-			if !p.peekTokenIs(token.RBRACE) {
-				p.nextToken()
-				for {
-					key := p.parseExpression(LOWEST)
-					if !p.expectPeek(token.COLON) {
-						break
-					}
-					p.nextToken()
-					value := p.parseExpression(LOWEST)
-					entries = append(entries, &ast.MapEntry{Key: key, Value: value})
-					if p.peekTokenIs(token.COMMA) {
-						p.nextToken()
-						if p.peekTokenIs(token.RBRACE) {
-							break
-						}
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-			}
-			p.expectPeek(token.RBRACE)
-			leftExp = &ast.MapLiteral{Token: mapType.Token, Type: mapType, Entries: entries}
-		} else {
-			leftExp = mapType
-		}
+		leftExp = p.parseMapExpression()
 
 	case token.CHAN:
 		if expr, ok := p.parseTypeExpr().(ast.Expression); ok {
@@ -527,101 +459,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.Identifier{Token: p.curToken, Value: "..."}
 
 	case token.LBRACKET:
-		tok := p.curToken
-		if p.peekTokenIs(token.INT) {
-			p.nextToken()
-			arrLen, _ := strconv.ParseInt(p.curToken.Literal, 0, 64)
-			p.expectPeek(token.RBRACKET)
-			p.nextToken()
-			elem := p.parseTypeExpr()
-			arrT := &ast.ArrayType{Token: tok, Len: arrLen, Elem: elem}
-
-			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
-				p.nextToken()
-				elements := []ast.Expression{}
-				if !p.peekTokenIs(token.RBRACE) {
-					p.nextToken()
-					for {
-						elements = append(elements, p.parseExpression(LOWEST))
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-							if p.peekTokenIs(token.RBRACE) {
-								break
-							}
-							p.nextToken()
-						} else {
-							break
-						}
-					}
-				}
-				p.expectPeek(token.RBRACE)
-				leftExp = &ast.ArrayLiteral{Token: tok, Type: arrT, Elements: elements}
-			} else {
-				leftExp = arrT
-			}
-		} else if p.peekTokenIs(token.ELLIPSIS) {
-			p.nextToken()
-			p.expectPeek(token.RBRACKET)
-			p.nextToken()
-			elem := p.parseTypeExpr()
-			arrT := &ast.ArrayType{Token: tok, Len: -1, Elem: elem}
-			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
-				p.nextToken()
-				elements := []ast.Expression{}
-				if !p.peekTokenIs(token.RBRACE) {
-					p.nextToken()
-					for {
-						elements = append(elements, p.parseExpression(LOWEST))
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-							if p.peekTokenIs(token.RBRACE) {
-								break
-							}
-							p.nextToken()
-						} else {
-							break
-						}
-					}
-				}
-				p.expectPeek(token.RBRACE)
-				leftExp = &ast.ArrayLiteral{Token: tok, Type: arrT, Elements: elements}
-			} else {
-				leftExp = arrT
-			}
-		} else {
-			if p.peekTokenIs(token.RBRACKET) {
-				p.expectPeek(token.RBRACKET)
-				p.nextToken()
-			} else {
-				p.nextToken()
-			}
-			elem := p.parseTypeExpr()
-			sliceT := &ast.SliceType{Token: tok, Elem: elem}
-
-			if p.allowStructLit && p.peekTokenIs(token.LBRACE) {
-				p.nextToken()
-				elements := []ast.Expression{}
-				if !p.peekTokenIs(token.RBRACE) {
-					p.nextToken()
-					for {
-						elements = append(elements, p.parseExpression(LOWEST))
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-							if p.peekTokenIs(token.RBRACE) {
-								break
-							}
-							p.nextToken()
-						} else {
-							break
-						}
-					}
-				}
-				p.expectPeek(token.RBRACE)
-				leftExp = &ast.SliceLiteral{Token: tok, Type: sliceT, Elements: elements}
-			} else {
-				leftExp = sliceT
-			}
-		}
+		leftExp = p.parseBracketExpression()
 
 	case token.DOT:
 		p.nextToken()
@@ -673,6 +511,128 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	}
 
 	return leftExp
+}
+
+func (p *Parser) parseFuncExpression() ast.Expression {
+	tok := p.curToken
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+	params, isVariadic := p.parseParameterList(false)
+	returnTypes := []ast.TypeExpr{}
+	returnNames := []string{}
+	if !p.peekTokenIs(token.LBRACE) && !p.peekTokenIs(token.SEMICOLON) && !p.peekTokenIs(token.EOF) {
+		if p.peekTokenIs(token.LPAREN) {
+			returnTypes, returnNames = p.parseReturnTypeListWithNames()
+		} else {
+			p.nextToken()
+			returnTypes = append(returnTypes, p.parseTypeExpr())
+		}
+	}
+	if !p.peekTokenIs(token.LBRACE) {
+		paramTypeExprs := make([]ast.TypeExpr, len(params))
+		for i, param := range params {
+			paramTypeExprs[i] = param.Type
+		}
+		return &ast.FuncType{Token: tok, ParamTypes: paramTypeExprs, IsVariadic: isVariadic, ReturnTypes: returnTypes}
+	}
+	p.expectPeek(token.LBRACE)
+	body := p.parseBlockStmt()
+	return &ast.FuncLit{Token: tok, Params: params, IsVariadic: isVariadic, ReturnTypes: returnTypes, ReturnNames: returnNames, Body: body}
+}
+
+func (p *Parser) parseBracketExpression() ast.Expression {
+	tok := p.curToken
+	if p.peekTokenIs(token.INT) || p.peekTokenIs(token.ELLIPSIS) {
+		length := int64(-1)
+		if p.peekTokenIs(token.INT) {
+			p.nextToken()
+			length, _ = strconv.ParseInt(p.curToken.Literal, 0, 64)
+		}
+		if p.peekTokenIs(token.ELLIPSIS) {
+			p.nextToken()
+		}
+		p.expectPeek(token.RBRACKET)
+		p.nextToken()
+		typ := &ast.ArrayType{Token: tok, Len: length, Elem: p.parseTypeExpr()}
+		if !p.allowStructLit || !p.peekTokenIs(token.LBRACE) {
+			return typ
+		}
+		return p.parseArrayLiteral(tok, typ)
+	}
+	if p.peekTokenIs(token.RBRACKET) {
+		p.expectPeek(token.RBRACKET)
+		p.nextToken()
+	} else {
+		p.nextToken()
+	}
+	typ := &ast.SliceType{Token: tok, Elem: p.parseTypeExpr()}
+	if !p.allowStructLit || !p.peekTokenIs(token.LBRACE) {
+		return typ
+	}
+	p.nextToken()
+	return &ast.SliceLiteral{Token: tok, Type: typ, Elements: p.parseExpressionList(token.RBRACE)}
+}
+
+func (p *Parser) parseArrayLiteral(tok token.Token, typ *ast.ArrayType) ast.Expression {
+	p.nextToken()
+	return &ast.ArrayLiteral{Token: tok, Type: typ, Elements: p.parseExpressionList(token.RBRACE)}
+}
+
+func (p *Parser) parseExpressionList(end token.TokenType) []ast.Expression {
+	elements := []ast.Expression{}
+	if !p.peekTokenIs(end) {
+		p.nextToken()
+		for {
+			elements = append(elements, p.parseExpression(LOWEST))
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(end) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(end)
+	return elements
+}
+
+func (p *Parser) parseMapExpression() ast.Expression {
+	mapType, ok := p.parseTypeExpr().(*ast.MapType)
+	if !ok {
+		return nil
+	}
+	if !p.peekTokenIs(token.LBRACE) {
+		return mapType
+	}
+	p.nextToken()
+	entries := []*ast.MapEntry{}
+	if !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()
+		for {
+			key := p.parseExpression(LOWEST)
+			if !p.expectPeek(token.COLON) {
+				break
+			}
+			p.nextToken()
+			value := p.parseExpression(LOWEST)
+			entries = append(entries, &ast.MapEntry{Key: key, Value: value})
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+				if p.peekTokenIs(token.RBRACE) {
+					break
+				}
+				p.nextToken()
+			} else {
+				break
+			}
+		}
+	}
+	p.expectPeek(token.RBRACE)
+	return &ast.MapLiteral{Token: mapType.Token, Type: mapType, Entries: entries}
 }
 
 func (p *Parser) parseIdentifierExpression(ident *ast.Identifier) ast.Expression {
