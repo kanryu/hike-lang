@@ -67,3 +67,7 @@ oooo.log
 selfhost/
 # Private compiler self-hosting investigation notes
 コンパイラーチューニングタスク.md
+hike-rdb-sqlite/
+hike-gui-slint/
+renga-ai/
+

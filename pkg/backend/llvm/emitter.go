@@ -2304,10 +2304,25 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 		return
 	}
 	if i.ItabName == "" {
-		// Interface-to-interface conversions preserve the dynamic itab in the
-		// source value.  A missing name can also occur for a bootstrap-only
-		// interface alias; keep the generated value well-formed instead of
-		// emitting an invalid reference to `@`.
+		// Interface-to-interface conversions preserve the dynamic data and itab
+		// from the source value.  Re-boxing the aggregate itself would create a
+		// pointer to the pair and lose its itab, which later makes interface
+		// dispatch read a NULL itab from an otherwise non-NULL value.
+		if _, sourceIsInterface := i.Val.Type().(*sema.InterfaceType); sourceIsInterface && !sema.InterfaceType_IsAny(i.Iface) {
+			source := e.formatVal(i.Val)
+			dataPtr := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 0\n", dataPtr, source))
+			itabPtr := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = extractvalue { i8*, i8* } %s, 1\n", itabPtr, source))
+			t1 := e.nextTmp()
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } zeroinitializer, i8* %s, 0\n", t1, dataPtr))
+			e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", i.Dst, t1, itabPtr))
+			return
+		}
+
+		// A missing name can also occur for a bootstrap-only interface alias;
+		// keep the generated value well-formed instead of emitting an invalid
+		// reference to `@`.
 		t1 := e.nextTmp()
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", t1, dataPtr))
 		e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* null, 1\n", i.Dst, t1))

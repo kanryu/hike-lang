@@ -50,6 +50,33 @@ func TestEmitCastDoesNotTreatInterfaceLayoutAsFunctionValue(t *testing.T) {
 	}
 }
 
+func TestEmitBoxInterfacePreservesSourceItab(t *testing.T) {
+	sourceType := &sema.InterfaceType{
+		Name:    "Source",
+		Methods: []sema.Method{{Name: "Read"}},
+	}
+	targetType := &sema.InterfaceType{
+		Name:    "Target",
+		Methods: []sema.Method{{Name: "Read"}},
+	}
+	emitter := &Emitter{renderedTypes: make(map[string]string)}
+	emitter.emitBoxInterface(&hir.InstrBoxInterface{
+		Dst:      &hir.Reg{ID: 1, Typ: targetType},
+		Val:      &hir.Reg{ID: 2, Typ: sourceType},
+		Iface:    targetType,
+		ItabName: "",
+	})
+
+	ir := emitter.b.String()
+	if !strings.Contains(ir, "extractvalue { i8*, i8* } %v2, 0") ||
+		!strings.Contains(ir, "extractvalue { i8*, i8* } %v2, 1") {
+		t.Fatalf("interface-to-interface conversion must preserve both source fields: %s", ir)
+	}
+	if strings.Contains(ir, "i8* null, 1") {
+		t.Fatalf("interface-to-interface conversion discarded the source itab: %s", ir)
+	}
+}
+
 func TestEmitCastDoesNotTreatSliceAsString(t *testing.T) {
 	sliceType := &sema.SliceType{Elem: sema.TypeByte}
 	emitter := &Emitter{renderedTypes: make(map[string]string)}

@@ -15,6 +15,8 @@ type Module struct {
 	Replaces       map[string]string // replace ディレクティブ (例: "std/json" => "../../std/json")
 	Requires       map[string]string // require ディレクティブ (例: "github.com/example/lib" => "v0.1.0")
 	RequireOrder   []string          // require ディレクティブの宣言順
+	Tools          map[string]string // tool 名からツールパッケージのパスへの対応
+	ToolOrder      []string          // tool ディレクティブの宣言順
 	NativePackages map[string]map[string]NativeTarget
 }
 
@@ -81,6 +83,7 @@ func newSyntheticModule(rootDir string) *Module {
 		RootDir:        rootDir,
 		Replaces:       make(map[string]string),
 		Requires:       make(map[string]string),
+		Tools:          make(map[string]string),
 		NativePackages: make(map[string]map[string]NativeTarget),
 	}
 }
@@ -96,6 +99,7 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 		RootDir:        rootDir,
 		Replaces:       make(map[string]string),
 		Requires:       make(map[string]string),
+		Tools:          make(map[string]string),
 		NativePackages: make(map[string]map[string]NativeTarget),
 	}
 
@@ -139,6 +143,22 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 				}
 				mod.Requires[path] = version
 			}
+		case "tool":
+			if len(parts) < 2 {
+				return mod, fmt.Errorf("invalid tool directive in %s", modPath)
+			}
+			path := cloneModuleString(parts[1])
+			name := filepath.Base(filepath.FromSlash(strings.TrimSuffix(path, "/")))
+			if name == "." || name == string(filepath.Separator) || name == "" {
+				return mod, fmt.Errorf("invalid tool directive in %s: %q", modPath, path)
+			}
+			if previous, exists := mod.Tools[name]; exists && previous != path {
+				return mod, fmt.Errorf("duplicate tool name %q in %s", name, modPath)
+			}
+			if _, exists := mod.Tools[name]; !exists {
+				mod.ToolOrder = append(mod.ToolOrder, name)
+			}
+			mod.Tools[name] = path
 		case "replace", "GoReplace":
 			// 形式1: replace std/json => ../../std/json
 			// 形式2: replace std/json ../../std/json
@@ -227,6 +247,103 @@ func (m *Module) NativeConfig(packagePath, targetName string) (NativeTarget, boo
 		return config, ok
 	}
 	return NativeTarget{}, false
+}
+
+// ResolveToolPath resolves a tool declaration from hike.mod to its package
+// directory. A tool may be declared as a relative directory (for example
+// ./cmd/bds) or as an import path inside the current module/dependency graph.
+func (m *Module) ResolveToolPath(name string) (string, error) {
+	if m == nil || m.Tools == nil {
+		return "", fmt.Errorf("tool %q is not declared", name)
+	}
+	toolPath, ok := m.Tools[name]
+	if !ok {
+		return "", fmt.Errorf("tool %q is not declared in module %q", name, m.Name)
+	}
+	if filepath.IsAbs(toolPath) {
+		if fi, err := os.Stat(toolPath); err == nil && fi.IsDir() {
+			return filepath.Clean(toolPath), nil
+		}
+		return "", fmt.Errorf("tool package directory not found: %s", toolPath)
+	}
+	if strings.HasPrefix(toolPath, "./") || strings.HasPrefix(toolPath, "../") {
+		target := filepath.Clean(filepath.Join(m.RootDir, filepath.FromSlash(toolPath)))
+		if fi, err := os.Stat(target); err == nil && fi.IsDir() {
+			return target, nil
+		}
+		return "", fmt.Errorf("tool package directory not found: %s", target)
+	}
+	return m.ResolvePackagePath(m.RootDir, toolPath)
+}
+
+// RequiredToolReference searches the directly required modules for a tool
+// with the given command name and returns the canonical package reference that
+// can be passed to `hikec get -tool`.
+func (m *Module) RequiredToolReference(name string) (string, bool) {
+	if m == nil || m.RootDir == "" {
+		return "", false
+	}
+	order := m.RequireOrder
+	if len(order) == 0 {
+		for path := range m.Requires {
+			order = append(order, path)
+		}
+	}
+	for _, modulePath := range order {
+		dependencyRoot, err := m.ResolvePackagePath(m.RootDir, modulePath)
+		if err != nil {
+			continue
+		}
+		dependency, err := FindModuleRoot(dependencyRoot)
+		if err != nil || dependency.Tools == nil {
+			continue
+		}
+		for declaredName, toolPath := range dependency.Tools {
+			if declaredName != name {
+				continue
+			}
+			return canonicalToolReference(modulePath, toolPath), true
+		}
+	}
+	return "", false
+}
+
+// IsDeclaredToolPackage reports whether packageDir is the package directory
+// named by a tool directive in its owning module.
+func IsDeclaredToolPackage(packageDir string) bool {
+	root, err := FindModuleRoot(packageDir)
+	if err != nil || root == nil {
+		return false
+	}
+	packageDir, err = filepath.Abs(packageDir)
+	if err != nil {
+		return false
+	}
+	for name := range root.Tools {
+		resolved, resolveErr := root.ResolveToolPath(name)
+		if resolveErr != nil {
+			continue
+		}
+		resolved, resolveErr = filepath.Abs(resolved)
+		if resolveErr == nil && filepath.Clean(resolved) == filepath.Clean(packageDir) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalToolReference(modulePath, toolPath string) string {
+	toolPath = strings.TrimSuffix(filepath.ToSlash(toolPath), "/")
+	if strings.HasPrefix(toolPath, "./") {
+		return strings.TrimSuffix(modulePath, "/") + "/" + strings.TrimPrefix(toolPath, "./")
+	}
+	if strings.HasPrefix(toolPath, "../") || filepath.IsAbs(toolPath) {
+		return toolPath
+	}
+	if strings.HasPrefix(toolPath, modulePath+"/") || toolPath == modulePath {
+		return toolPath
+	}
+	return strings.TrimSuffix(modulePath, "/") + "/" + toolPath
 }
 
 // ResolvePackagePath はインポートパスをファイルシステム上の絶対パスディレクトリに解決します

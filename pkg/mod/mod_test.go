@@ -126,3 +126,60 @@ package ./shared {
 		t.Fatalf("linux native config = %#v, %v", linux, ok)
 	}
 }
+
+func TestParseAndResolveTools(t *testing.T) {
+	root := t.TempDir()
+	toolDir := filepath.Join(root, "cmd", "bds")
+	if err := os.MkdirAll(toolDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "module example/tools\nhike 1.0\ntool ./cmd/bds\n"
+	if err := os.WriteFile(filepath.Join(root, "hike.mod"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := FindModuleRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Tools["bds"]; got != "./cmd/bds" {
+		t.Fatalf("tool path = %q, want ./cmd/bds", got)
+	}
+	if len(m.ToolOrder) != 1 || m.ToolOrder[0] != "bds" {
+		t.Fatalf("tool order = %#v", m.ToolOrder)
+	}
+	got, err := m.ResolveToolPath("bds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != toolDir {
+		t.Fatalf("tool directory = %q, want %q", got, toolDir)
+	}
+	if !IsDeclaredToolPackage(toolDir) {
+		t.Fatal("declared tool package was not recognized")
+	}
+}
+
+func TestRequiredToolReference(t *testing.T) {
+	root := t.TempDir()
+	dependencyRoot := filepath.Join(root, ".hike", "deps", "example.com", "tools")
+	if err := os.MkdirAll(filepath.Join(dependencyRoot, "cmd", "bds"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hike.mod"), []byte("module example/app\nhike 1.0\nrequire example.com/tools v1.0.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dependencyRoot, "hike.mod"), []byte("module example.com/tools\nhike 1.0\ntool ./cmd/bds\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := FindModuleRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := m.RequiredToolReference("bds")
+	if !ok || got != "example.com/tools/cmd/bds" {
+		t.Fatalf("required tool = %q, %v", got, ok)
+	}
+	if _, ok := m.RequiredToolReference("missing"); ok {
+		t.Fatal("missing tool was reported as declared")
+	}
+}

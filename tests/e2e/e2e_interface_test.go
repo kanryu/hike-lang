@@ -2,6 +2,36 @@ package e2e_test
 
 import "testing"
 
+func TestShortCircuitSkipsNilPointerMethodCall(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+func printf(format string, ...) int
+
+type Marker struct{}
+
+func (m *Marker) IsGeneric() bool {
+    return true
+}
+
+func main() int {
+    var marker *Marker = nil
+    if marker != nil && marker.IsGeneric() {
+        printf("BAD\n")
+        return 1
+    }
+    printf("OK\n")
+    return 0
+}
+`,
+		ExpectedOut:  "OK",
+		ExpectedExit: 0,
+	})
+}
+
 // 1. 静的直接呼び出しと、インターフェース変数を介した動的ディスパッチ（多態性）のテスト
 func TestInterface_StaticAndDynamicDispatch(t *testing.T) {
 	t.Parallel()

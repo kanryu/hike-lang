@@ -40,7 +40,9 @@ func printUsage() {
 	fmt.Println("  emit-js     Generate the WebAssembly JavaScript runtime")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary (Wabt uses wat2wasm)")
 	fmt.Println("  run         Build and immediately execute the Hike program (supports native and Wasm via Node.js)")
+	fmt.Println("  tool        Build and execute a tool declared by hike.mod")
 	fmt.Println("  get         Download modules listed in hike.mod into .hike/deps")
+	fmt.Println("              use `get -tool <package>` to build a declared tool into .hike/bin")
 	fmt.Println("\nOptions for go:")
 	fmt.Println("  -o <path>        Output .syso file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wabt)")
@@ -120,6 +122,9 @@ func main() {
 	case "run":
 		cmdArgs = os.Args[2:]
 		runRun(cmdArgs)
+	case "tool":
+		cmdArgs = os.Args[2:]
+		runTool(cmdArgs)
 	case "get":
 		cmdArgs = os.Args[2:]
 		runGet(cmdArgs)
@@ -922,6 +927,71 @@ rt.load(%q).then(exports => {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "failed to run executable: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// runTool implements the Hike equivalent of `go tool`. The tool package is
+// declared by a `tool <package>` line in the current module's hike.mod. The
+// package is compiled as a normal package main and all arguments after the
+// tool name are passed to the resulting executable unchanged.
+func runTool(args []string) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Println("Usage: hikec tool <name> [args]")
+		fmt.Println("Runs the installed command from .hike/bin")
+		if len(args) == 0 {
+			os.Exit(1)
+		}
+		return
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to determine working directory: %v\n", err)
+		os.Exit(1)
+	}
+	module, err := mod.FindModuleRoot(workingDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load hike.mod: %v\n", err)
+		os.Exit(1)
+	}
+	toolName := args[0]
+	if toolName == "." || toolName == ".." || strings.ContainsAny(toolName, `/\\`) {
+		fmt.Fprintf(os.Stderr, "invalid tool command name %q\n", toolName)
+		os.Exit(1)
+	}
+	_, declaredInModule := module.Tools[toolName]
+	_, declaredInRequired := module.RequiredToolReference(toolName)
+	if !declaredInModule && !declaredInRequired {
+		fmt.Fprintf(os.Stderr, "tool command %q is not declared in this module or its required packages\n", toolName)
+		os.Exit(1)
+	}
+	installed := filepath.Join(module.RootDir, ".hike", "bin", toolName)
+	if runtime.GOOS == "windows" {
+		installed += ".exe"
+	}
+	info, statErr := os.Stat(installed)
+	if statErr != nil || info.IsDir() {
+		if reference, found := module.RequiredToolReference(toolName); found {
+			fmt.Fprintf(os.Stderr, "tool command %q is not installed: %s\n", toolName, installed)
+			fmt.Fprintf(os.Stderr, "the required package declares this tool; run `hikec get -tool %s` first\n", reference)
+		} else {
+			fmt.Fprintf(os.Stderr, "tool command %q does not exist and is not declared by a required package\n", toolName)
+		}
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(installed, args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Dir = workingDir
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "failed to run tool command %q: %v\n", toolName, err)
 		os.Exit(1)
 	}
 	os.Exit(0)

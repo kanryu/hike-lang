@@ -1,34 +1,33 @@
 package json
 
 import "std/io"
-import "std/strconv"
 import "std/errors"
 
 // Encoder is the minimal streaming JSON surface required by compiler tools.
 // The native self-hosting path can replace the body with the full encoder
 // implementation later without changing callers.
 type Encoder struct {
-	w io.Writer
-	prefix string
-	indent string
+    w io.Writer
+    prefix string
+    indent string
 }
 
 func NewEncoder(w io.Writer) *Encoder {
-	return &Encoder{w: w}
+    return &Encoder{w: w}
 }
 
 func (e *Encoder) SetIndent(prefix string, indent string) {
-	e.prefix = prefix
-	e.indent = indent
+    e.prefix = prefix
+    e.indent = indent
 }
 
 func (e *Encoder) Encode(v any) error {
-	if e == nil || e.w == nil { return errors.New("json: nil encoder") }
-	value, ok := v.(*JSONValue)
-	if !ok { return errors.New("json: unsupported value") }
-	text := Stringify(value) + "\n"
-	_, err := e.w.Write([]byte(text))
-	return err
+    if e == nil || e.w == nil { return errors.New("json: nil encoder") }
+    value, ok := v.(*JSONValue)
+    if !ok { return errors.New("json: unsupported value") }
+    text := Stringify(value) + "\n"
+    _, err := e.w.Write([]byte(text))
+    return err
 }
 
 // C-ABI 標準ライブラリ宣言
@@ -54,6 +53,33 @@ const (
     TypeObject int = 5
 )
 
+func jsonItoa(n int) string {
+    if n == 0 { return "0" }
+    neg := n < 0
+    if neg { n = -n }
+    digits := ""
+    for n > 0 {
+        digit := n % 10
+        digits = "0123456789"[digit:digit+1] + digits
+        n = n / 10
+    }
+    if neg { return "-" + digits }
+    return digits
+}
+
+func jsonFormatNumber(n float64) string {
+    if n != n { return "0" }
+    if n == float64(int(n)) { return jsonItoa(int(n)) }
+    negative := n < 0.0
+    if negative { n = -n }
+    whole := int(n)
+    fraction := int((n - float64(whole)) * float64(1000000) + 0.5)
+    result := jsonItoa(whole) + "." + jsonItoa(fraction)
+    for len(result) > 0 && result[len(result)-1] == byte(48) { result = result[:len(result)-1] }
+    if negative { return "-" + result }
+    return result
+}
+
 // JSON ノード構造体
 type JSONValue struct {
     Type      int
@@ -70,41 +96,41 @@ type JSONValue struct {
 // -------------------------------------------------------------
 
 func NewNull() *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeNull
     return v
 }
 
 func NewBool(b bool) *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeBool
     v.BoolVal = b
     return v
 }
 
 func NewNumber(n float64) *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeNumber
     v.NumVal = n
     return v
 }
 
 func NewString(s string) *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeString
     v.StrVal = s
     return v
 }
 
 func NewArray() *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeArray
     v.ArrVal = make([]*JSONValue, 0, 8)
     return v
 }
 
 func NewObject() *JSONValue {
-    v := (*JSONValue)(malloc(128))
+    v := (*JSONValue)(malloc(16384))
     v.Type = TypeObject
     v.ObjKeys = make([]string, 0, 8)
     v.ObjVals = make([]*JSONValue, 0, 8)
@@ -176,6 +202,16 @@ func (v *JSONValue) Append(elem *JSONValue) {
     v.ArrVal = append(v.ArrVal, elem)
 }
 
+func AppendValue(v *JSONValue, elem *JSONValue) {
+    if v == nil || v.Type != TypeArray { return }
+    v.ArrVal = append(v.ArrVal, elem)
+}
+
+func ArrayValue(v *JSONValue, idx int) *JSONValue {
+    if v == nil || v.Type != TypeArray || idx < 0 || idx >= len(v.ArrVal) { return nil }
+    return v.ArrVal[idx]
+}
+
 func (v *JSONValue) At(idx int) *JSONValue {
     if v.Type != TypeArray || idx < 0 || idx >= len(v.ArrVal) {
         return nil
@@ -222,19 +258,26 @@ func (p *Parser) skipWhitespace() {
 
 func (p *Parser) parseString() string {
     p.pos = p.pos + 1
-    start := p.pos
+    result := ""
     for p.pos < p.len && p.src[p.pos] != 34 {
         if p.src[p.pos] == 92 && p.pos+1 < p.len {
-            p.pos = p.pos + 2
+            p.pos = p.pos + 1
+            escaped := p.src[p.pos]
+            if escaped == 110 { result = result + "\n" }
+            if escaped == 114 { result = result + "\r" }
+            if escaped == 116 { result = result + "\t" }
+            if escaped == 34 { result = result + "\"" }
+            if escaped == 92 { result = result + "\\" }
+            p.pos = p.pos + 1
         } else {
+            result = result + p.src[p.pos:p.pos+1]
             p.pos = p.pos + 1
         }
     }
-    s := p.src[start:p.pos]
     if p.pos < p.len {
         p.pos = p.pos + 1
     }
-    return s
+    return result
 }
 
 func (p *Parser) parseNumber() *JSONValue {
@@ -364,6 +407,20 @@ func Parse(jsonStr string) *JSONValue {
 // JSON シリアライザー実装
 // -------------------------------------------------------------
 
+func jsonQuote(s string) string {
+    result := "\""
+    for i := 0; i < len(s); i = i + 1 {
+        ch := s[i]
+        if ch == 92 { result = result + "\\\\" }
+        if ch == 34 { result = result + "\\\"" }
+        if ch == 10 { result = result + "\\n" }
+        if ch == 13 { result = result + "\\r" }
+        if ch == 9 { result = result + "\\t" }
+        if ch != 92 && ch != 34 && ch != 10 && ch != 13 && ch != 9 { result = result + s[i:i+1] }
+    }
+    return result + "\""
+}
+
 func Stringify(v *JSONValue) string {
     if v == nil || v.Type == TypeNull {
         return "null"
@@ -376,12 +433,12 @@ func Stringify(v *JSONValue) string {
     }
     if v.Type == TypeNumber {
         if v.NumVal == float64(int(v.NumVal)) {
-            return strconv.Itoa(int(v.NumVal))
+            return jsonItoa(int(v.NumVal))
         }
-        return strconv.FormatFloat(v.NumVal, byte(102), -1, 64)
+        return jsonFormatNumber(v.NumVal)
     }
     if v.Type == TypeString {
-        return "\"" + v.StrVal + "\""
+        return jsonQuote(v.StrVal)
     }
     if v.Type == TypeArray {
         res := "["
@@ -399,11 +456,19 @@ func Stringify(v *JSONValue) string {
             if i > 0 {
                 res = res + ", "
             }
-            res = res + "\"" + v.ObjKeys[i] + "\": " + Stringify(v.ObjVals[i])
+            res = res + jsonQuote(v.ObjKeys[i]) + ": " + Stringify(v.ObjVals[i])
         }
         return res + "}"
     }
     return "null"
+}
+
+func MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
+    value, ok := v.(*JSONValue)
+    if !ok {
+        return nil, errors.New("json: unsupported value")
+    }
+    return []byte(prefix + Stringify(value)), nil
 }
 
 // -------------------------------------------------------------
@@ -438,8 +503,3 @@ func WriteFile(filename string, content string) bool {
     return wrote == size
 }
 
-func MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
-	value, ok := v.(*JSONValue)
-	if !ok { return nil, errors.New("json: unsupported value") }
-	return []byte(prefix + Stringify(value)), nil
-}

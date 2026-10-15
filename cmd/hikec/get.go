@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -16,6 +17,10 @@ import (
 // convention as `go get`: the module path determines both the clone URL and
 // the local dependency path.
 func runGet(args []string) {
+	if len(args) > 0 && (args[0] == "-tool" || args[0] == "--tool") {
+		runGetTools(args[1:])
+		return
+	}
 	module, err := mod.FindModuleRoot(".")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: find module root: %v\n", err)
@@ -73,6 +78,123 @@ func runGet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: update hike.mod: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runGetTools resolves tool package paths, obtains their containing modules
+// when necessary, and builds the resulting commands in the caller module's
+// .hike/bin directory. This is the Hike equivalent of installing a Go tool
+// from a tool directive before invoking `go tool <name>`.
+func runGetTools(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: hikec get-tools <tool-package> [...]")
+		os.Exit(1)
+	}
+
+	module, err := mod.FindModuleRoot(".")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: find module root: %v\n", err)
+		os.Exit(1)
+	}
+	binDir := filepath.Join(module.RootDir, ".hike", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: create tool directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, reference := range args {
+		packageDir, err := resolveToolReference(module, reference)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: resolve tool %q: %v\n", reference, err)
+			os.Exit(1)
+		}
+		if !mod.IsDeclaredToolPackage(packageDir) {
+			fmt.Fprintf(os.Stderr, "Error: tool package %q is not declared by a tool directive\n", reference)
+			os.Exit(1)
+		}
+		toolSource := filepath.Join(packageDir, "main.hike")
+		if info, statErr := os.Stat(toolSource); statErr != nil || info.IsDir() {
+			fmt.Fprintf(os.Stderr, "Error: tool %q must contain main.hike: %s\n", reference, toolSource)
+			os.Exit(1)
+		}
+
+		toolName := filepath.Base(filepath.FromSlash(strings.TrimSuffix(reference, "/")))
+		if toolName == "." || toolName == "" || toolName == string(filepath.Separator) {
+			fmt.Fprintf(os.Stderr, "Error: invalid tool package name %q\n", reference)
+			os.Exit(1)
+		}
+		output := filepath.Join(binDir, toolName)
+		if runtime.GOOS == "windows" {
+			output += ".exe"
+		}
+
+		fmt.Printf("Building Hike tool %s -> %s\n", reference, output)
+		runBuild([]string{"-o", output, toolSource})
+	}
+}
+
+// resolveToolReference accepts the exact string used by a tool directive.
+// Relative references are resolved from the caller module, while import paths
+// are resolved from replacements or downloaded dependencies. If the module is
+// not present yet, a GitHub-style module prefix is downloaded first.
+func resolveToolReference(module *mod.Module, reference string) (string, error) {
+	if strings.HasPrefix(reference, "./") || strings.HasPrefix(reference, "../") || filepath.IsAbs(reference) {
+		if filepath.IsAbs(reference) {
+			if info, err := os.Stat(reference); err == nil && info.IsDir() {
+				return filepath.Clean(reference), nil
+			}
+			return "", fmt.Errorf("directory not found: %s", reference)
+		}
+		target := filepath.Clean(filepath.Join(module.RootDir, filepath.FromSlash(reference)))
+		if info, err := os.Stat(target); err == nil && info.IsDir() {
+			return target, nil
+		}
+		return "", fmt.Errorf("directory not found: %s", target)
+	}
+
+	if target, err := module.ResolvePackagePath(module.RootDir, reference); err == nil {
+		return target, nil
+	}
+
+	modulePath := findToolModulePrefix(module, reference)
+	if modulePath == "" {
+		return "", fmt.Errorf("module prefix for %q was not found", reference)
+	}
+	version := module.Requires[modulePath]
+	if version == "" {
+		version = "latest"
+	}
+	if err := fetchModule(module, modulePath, version, false); err != nil {
+		return "", err
+	}
+	return module.ResolvePackagePath(module.RootDir, reference)
+}
+
+func findToolModulePrefix(module *mod.Module, reference string) string {
+	best := ""
+	consider := func(candidate string) {
+		if candidate == "" || (candidate != reference && !strings.HasPrefix(reference, candidate+"/")) {
+			return
+		}
+		depMod := filepath.Join(module.RootDir, ".hike", "deps", filepath.FromSlash(candidate), "hike.mod")
+		if _, err := os.Stat(depMod); err == nil && len(candidate) > len(best) {
+			best = candidate
+		}
+	}
+	for candidate := range module.Requires {
+		consider(candidate)
+	}
+	for candidate := range module.Replaces {
+		consider(candidate)
+	}
+	if best != "" {
+		return best
+	}
+
+	parts := strings.Split(reference, "/")
+	if len(parts) >= 3 && parts[0] == "github.com" {
+		return strings.Join(parts[:3], "/")
+	}
+	return ""
 }
 
 func splitModuleVersion(arg string) (string, string) {
