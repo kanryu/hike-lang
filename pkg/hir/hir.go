@@ -88,6 +88,7 @@ type GlobalVar struct {
 	Typ         sema.Type
 	MemoryClass GlobalMemoryClass
 	MemorySize  int64
+	MemoryPath  string
 }
 
 type GlobalMemoryClass int
@@ -96,6 +97,7 @@ const (
 	GlobalMemoryNormal GlobalMemoryClass = iota
 	GlobalMemoryThreadable
 	GlobalMemoryConcurrent
+	GlobalMemoryMapped
 )
 
 func (g *GlobalVar) Type() sema.Type { return g.Typ }

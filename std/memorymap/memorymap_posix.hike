@@ -1,0 +1,40 @@
+//hike:build linux || darwin
+
+package memorymap
+
+cfunc memoryOpen(path cstring, mode cstring) *byte = fopen
+cfunc memoryClose(stream *byte) int = fclose
+cfunc memoryWrite(data *byte, size int, count int, stream *byte) int = fwrite
+
+const mapPrivate int = 2
+const mapReadWrite int = 3
+const openReadWrite int = 2
+const openCreateTruncate int = 578
+
+cfunc memoryMapOpen(path cstring, flags int, mode int) int = open
+cfunc memoryMapResize(fd int, size int) int = ftruncate
+cfunc memoryMapView(address *byte, size int, prot int, flags int, fd int, offset int) *byte = mmap
+cfunc memoryMapClose(fd int) int = close
+cfunc memoryMapUnmap(address *byte, size int) int = munmap
+cfunc memoryMapSync(address *byte, size int, flags int) int = msync
+
+const mapShared int = 1
+const syncSync int = 4
+
+func nativeMap(path cstring, size int, create int, shared int) *byte {
+    flags := openReadWrite
+    mode := 0
+    if create != 0 { flags = openCreateTruncate; mode = 438 }
+    fd := memoryMapOpen(path, flags, mode)
+    if fd < 0 { return nil }
+    if create != 0 && memoryMapResize(fd, size) != 0 { memoryMapClose(fd); return nil }
+	flags := mapPrivate
+	if shared != 0 { flags = mapShared }
+	result := memoryMapView(nil, size, mapReadWrite, flags, fd, 0)
+    memoryMapClose(fd)
+    return result
+}
+
+func nativeUnmap(address *byte, size int) int { return memoryMapUnmap(address, size) }
+func nativeFlush(address *byte, size int) int { return memoryMapSync(address, size, syncSync) }
+func nativeMapError() uint32 { return 0 }

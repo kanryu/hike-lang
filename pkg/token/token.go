@@ -105,6 +105,7 @@ const (
 	AREA        = "AREA"
 	THREADABLE  = "THREADABLE"
 	CONCURRENT  = "CONCURRENT"
+	MAPPED      = "MAPPED"
 	NIL         = "NIL"
 	VAR         = "VAR"
 
@@ -124,7 +125,7 @@ var GoHikeConstantNames = []string{
 	"PACKAGE", "IMPORT", "FUNC", "CFUNC", "EXTERN", "JFUNC", "INLINEASM",
 	"PASSTHROUGH", "MAP", "HASHMAP", "STABLE", "CHAN", "ASYNC", "RETURN", "TYPE", "STRUCT",
 	"INTERFACE", "CONST", "IOTA", "RANGE", "BREAK", "CONTINUE", "IF", "ELSE",
-	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "LOCK", "AREA", "THREADABLE", "CONCURRENT", "NIL", "VAR", "IMPLICIT_CAST",
+	"FOR", "SWITCH", "CASE", "DEFAULT", "DEFER", "LOCK", "AREA", "THREADABLE", "CONCURRENT", "MAPPED", "NIL", "VAR", "IMPLICIT_CAST",
 }
 
 var keywords = map[string]TokenType{

@@ -504,6 +504,7 @@ func (t *StructType) LLVMType() string {
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
 func StructType_TypeName(t *StructType) string { return t.Name }
+
 // StructType_LLVMType is the Go-Hike-visible helper for the concrete
 // StructType implementation. Keep the body concrete: calling t.LLVMType()
 // here is lowered by the self-hosted compiler back to this helper and recurses.
@@ -514,7 +515,7 @@ func StructType_LLVMType(t *StructType) string {
 	}
 	return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
 }
-func (t *StructType) IsGeneric() bool          { return len(t.TypeParams) > 0 && !t.IsSpecialized }
+func (t *StructType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
 func (t *StructType) Align() int {
 	maxAlign := 1
@@ -1696,6 +1697,9 @@ func registerMemoryBlockTypes(decl *ast.MemoryBlockDecl, ctx *Context) {
 		name := variable.Name.Value
 		ctx.GlobalMemoryBlocks[name] = decl.Kind
 		ctx.GlobalMemorySizes[name] = size
+		if lit, ok := decl.Path.(*ast.StringLiteral); ok {
+			ctx.GlobalMemoryPaths[name] = lit.Value
+		}
 	}
 }
 

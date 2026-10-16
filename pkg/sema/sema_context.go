@@ -23,6 +23,7 @@ type Context struct {
 	StableMapKeys      map[string]map[string]int
 	GlobalMemoryBlocks map[string]ast.MemoryBlockKind
 	GlobalMemorySizes  map[string]int64
+	GlobalMemoryPaths  map[string]string
 	Constants          map[string]int64
 	StringConstants    map[string]string
 	FloatConstants     map[string]float64
@@ -73,6 +74,7 @@ func NewContext() *Context {
 		StableMapKeys:      make(map[string]map[string]int),
 		GlobalMemoryBlocks: make(map[string]ast.MemoryBlockKind),
 		GlobalMemorySizes:  make(map[string]int64),
+		GlobalMemoryPaths:  make(map[string]string),
 		Constants:          make(map[string]int64),
 		StringConstants:    make(map[string]string),
 		FloatConstants:     make(map[string]float64),

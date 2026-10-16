@@ -245,6 +245,13 @@ func (e *Emitter) emitGlobals() {
 		if g.MemoryClass == hir.GlobalMemoryThreadable {
 			storage = "thread_local global"
 		}
+		if g.MemoryClass == hir.GlobalMemoryMapped {
+			// The runtime replaces this zero-initialized private buffer with a
+			// private (copy-on-write) mapping during module initialization. Keeping
+			// a normal backing object makes the declaration valid on targets that do
+			// not provide mmap (notably wasm).
+			storage = "private global"
+		}
 		e.b.WriteString(fmt.Sprintf("@%s = %s %s zeroinitializer, align %d\n", g.Name, storage, g.Typ.LLVMType(), align))
 		if g.MemoryClass == hir.GlobalMemoryConcurrent && llvmAtomicGlobalType(g.Typ) {
 			e.b.WriteString(fmt.Sprintf("; concurrent global: %s (atomic accesses)\n", g.Name))

@@ -1,0 +1,66 @@
+//hike:build windows
+
+package memorymap
+
+const genericRead uint32 = 2147483648
+const genericWrite uint32 = 1073741824
+const fileShareReadWrite uint32 = 3
+const openExisting uint32 = 3
+const createAlways uint32 = 2
+const normalAttribute uint32 = 128
+// PAGE_READWRITE creates a writable section; FILE_MAP_COPY below selects a
+// private copy-on-write view, so writes still never reach the source file.
+const pageReadWrite uint32 = 4
+const fileMapCopy uint32 = 1
+const fileMapWrite uint32 = 2
+const fileMapRead uint32 = 4
+const fileAttributeNormal uint32 = 128
+
+extern func CreateFileA(path cstring, access uint32, share uint32, security *byte, creation uint32, flags uint32, template *byte) *byte
+extern func WriteFile(file *byte, data *byte, length uint32, written *uint32, overlapped *byte) int
+extern func CloseHandle(handle *byte) int
+extern func GetLastError() uint32
+
+var lastNativeMapError uint32
+
+extern func SetFilePointerEx(file *byte, distance int64, result *int64, method uint32) int
+extern func SetEndOfFile(file *byte) int
+extern func CreateFileMappingA(file *byte, security *byte, protect uint32, high uint32, low uint32, name cstring) *byte
+extern func MapViewOfFile(mapping *byte, access uint32, high uint32, low uint32, size int) *byte
+extern func UnmapViewOfFile(address *byte) int
+extern func FlushViewOfFile(address *byte, size int) int
+
+func memoryOpen(path cstring, mode cstring) *byte {
+    return CreateFileA(path, genericRead | genericWrite, fileShareReadWrite, nil, createAlways, fileAttributeNormal, nil)
+}
+func memoryClose(stream *byte) int { return CloseHandle(stream) }
+func memoryWrite(data *byte, size int, count int, stream *byte) int {
+    var written uint32
+    if WriteFile(stream, data, uint32(size * count), &written, nil) == 0 { return 0 }
+    if size == 0 { return 0 }
+    return int(written) / size
+}
+func nativeMapError() uint32 { return lastNativeMapError }
+
+func nativeMap(path cstring, size int, create int, shared int) *byte {
+    creation := openExisting
+    if create != 0 { creation = createAlways }
+    file := CreateFileA(path, genericRead | genericWrite, fileShareReadWrite, nil, creation, normalAttribute, nil)
+    if file == nil { lastNativeMapError = GetLastError(); return nil }
+    if create != 0 {
+        var position int64
+        if SetFilePointerEx(file, int64(size), &position, 0) == 0 || SetEndOfFile(file) == 0 { CloseHandle(file); return nil }
+    }
+    mapping := CreateFileMappingA(file, nil, pageReadWrite, 0, 0, nil)
+    CloseHandle(file)
+    if mapping == nil { lastNativeMapError = GetLastError(); return nil }
+	access := fileMapCopy
+	if shared != 0 { access = fileMapRead | fileMapWrite }
+	view := MapViewOfFile(mapping, access, 0, 0, size)
+    CloseHandle(mapping)
+    if view == nil { lastNativeMapError = GetLastError() }
+    return view
+}
+
+func nativeUnmap(address *byte, size int) int { return UnmapViewOfFile(address) }
+func nativeFlush(address *byte, size int) int { return FlushViewOfFile(address, 0) }

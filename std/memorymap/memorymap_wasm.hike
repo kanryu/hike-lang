@@ -1,0 +1,12 @@
+//hike:build wasm
+
+package memorymap
+
+func memoryOpen(path cstring, mode cstring) *byte { return nil }
+func memoryClose(stream *byte) int { return -1 }
+func memoryWrite(data *byte, size int, count int, stream *byte) int { return 0 }
+
+func nativeMap(path cstring, size int, create int, shared int) *byte { return nil }
+func nativeUnmap(address *byte, size int) int { return -1 }
+func nativeFlush(address *byte, size int) int { return -1 }
+func nativeMapError() uint32 { return 0 }

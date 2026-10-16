@@ -294,11 +294,14 @@ func (l *Lowerer) Lower() *hir.Program {
 				memoryClass = hir.GlobalMemoryThreadable
 			case ast.ConcurrentMemoryBlock:
 				memoryClass = hir.GlobalMemoryConcurrent
+			case ast.MappedMemoryBlock:
+				memoryClass = hir.GlobalMemoryMapped
 			}
 		}
 		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{
 			Name: name, Typ: typ, MemoryClass: memoryClass,
 			MemorySize: l.semaCtx.GlobalMemorySizes[name],
+			MemoryPath: l.semaCtx.GlobalMemoryPaths[name],
 		})
 	}
 

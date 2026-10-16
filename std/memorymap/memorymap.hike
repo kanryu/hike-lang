@@ -1,0 +1,161 @@
+// Package memorymap provides the language-level API for persistent,
+// copy-on-write memory blocks.
+package memorymap
+
+import "std/errors"
+import "std/os"
+
+const headerSize int = 32
+const magic0 byte = 'H'
+const magic1 byte = 'M'
+const magic2 byte = 'B'
+const magic3 byte = '1'
+
+// Mapping is a view of a serialized memory block. Buffer is the public native
+// byte buffer for the payload. Private mappings never write through to the
+// source file; shared mappings do. Pointer offsets are relative to Buffer.
+type Mapping struct {
+    raw *byte
+    Buffer cbuffer
+    length int
+    fileLength int
+	shared bool
+}
+
+type Error struct { message string }
+func (e *Error) Error() string { if e == nil { return "" }; return e.message }
+
+func memoryError(message string) error { return &Error{message: message} }
+
+// Open maps a serialized block. size must be the file size in bytes; callers
+// normally obtain it with os.Stat(path).Size().
+func Open(path string, size int) (*Mapping, error) {
+    if size < headerSize { return nil, memoryError("memorymap: file is too small") }
+	raw := nativeMap(cstring(path), size, 0, 0)
+    if raw == nil { return nil, memoryError("memorymap: map failed") }
+    header := make([]byte, headerSize)
+    copyBytes(header, raw, headerSize)
+    if header[0] != magic0 || header[1] != magic1 || header[2] != magic2 || header[3] != magic3 || readUint32At(header, 4) != 1 {
+        nativeUnmap(raw, size)
+        return nil, memoryError("memorymap: invalid serialized block")
+    }
+    payloadSize := int(readUint64At(header, 8))
+    relocationCount := int(readUint64At(header, 16))
+    if payloadSize < 0 || headerSize + payloadSize + relocationCount * 8 != size {
+        nativeUnmap(raw, size)
+        return nil, memoryError("memorymap: invalid serialized block size")
+    }
+    data := cbuffer(raw + headerSize, payloadSize, func() { nativeUnmap(raw, size) })
+    return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size}, nil
+}
+
+// Map is the descriptive alias for Open and mirrors the language-level
+// memory block operation.
+func Map(path string, size int) (*Mapping, error) { return Open(path, size) }
+
+func OpenShared(path string, size int) (*Mapping, error) {
+	if size < headerSize { return nil, memoryError("memorymap: file is too small") }
+	raw := nativeMap(cstring(path), size, 0, 1)
+	if raw == nil { return nil, memoryError("memorymap: map failed") }
+	header := make([]byte, headerSize); copyBytes(header, raw, headerSize)
+	if header[0] != magic0 || header[1] != magic1 || header[2] != magic2 || header[3] != magic3 || readUint32At(header, 4) != 1 {
+		nativeUnmap(raw, size); return nil, memoryError("memorymap: invalid serialized block")
+	}
+	payloadSize := int(readUint64At(header, 8))
+	relocationCount := int(readUint64At(header, 16))
+	if payloadSize < 0 || headerSize + payloadSize + relocationCount * 8 != size {
+		nativeUnmap(raw, size); return nil, memoryError("memorymap: invalid serialized block size")
+	}
+	data := cbuffer(raw + headerSize, payloadSize, func() { nativeUnmap(raw, size) })
+	return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size, shared: true}, nil
+}
+
+func MapShared(path string, size int) (*Mapping, error) { return OpenShared(path, size) }
+
+// LastMapError exposes the Win32 error code from the most recent native map
+// attempt. It is primarily useful for diagnosing platform-specific failures.
+func LastMapError() uint32 { return nativeMapError() }
+
+func (m *Mapping) Data() cbuffer { if m == nil { return cbuffer(nil, 0, nil) }; return m.Buffer }
+func (m *Mapping) Size() int { if m == nil { return 0 }; return m.length }
+func (m *Mapping) Pointer(offset int) *byte {
+    if m == nil || offset < 0 || offset >= m.length { return nil }
+    return m.Buffer.Ptr() + offset
+}
+func (m *Mapping) Close() error {
+    if m == nil || m.raw == nil { return nil }
+    m.Buffer.Close()
+    m.raw = nil; m.Buffer = cbuffer(nil, 0, nil); m.length = 0
+    return nil
+}
+
+func (m *Mapping) Flush() error {
+	if m == nil || m.raw == nil || !m.shared { return nil }
+	if nativeFlush(m.raw, m.fileLength) != 0 { return errors.New("memorymap: flush failed") }
+	return nil
+}
+
+func (m *Mapping) Unmap() error { return m.Close() }
+
+// RestorePointers converts serialized payload-relative offsets to addresses.
+func (m *Mapping) RestorePointers(offsets []int) []*byte {
+    result := make([]*byte, len(offsets))
+    for i := 0; i < len(offsets); i++ { result[i] = m.Pointer(offsets[i]) }
+    return result
+}
+
+// Serialize writes the same HMB1 format consumed by Open. pointers are byte
+// offsets from the first byte of data, never absolute process addresses.
+func Serialize(path string, data []byte, pointers []int) error {
+    header := make([]byte, headerSize)
+    header[0] = magic0; header[1] = magic1; header[2] = magic2; header[3] = magic3
+    putUint32At(header, 4, 1)
+    putUint64At(header, 8, uint64(len(data)))
+    putUint64At(header, 16, uint64(len(pointers)))
+    file := make([]byte, headerSize + len(data) + len(pointers) * 8)
+    copyBytesTo(&file[0], &header[0], len(header))
+    if len(data) > 0 { copyBytesTo(&file[headerSize], &data[0], len(data)) }
+    for _, pointer := range pointers {
+        if pointer < 0 || pointer >= len(data) { return memoryError("memorymap: pointer offset outside payload") }
+    }
+    for i, pointer := range pointers {
+        putUint64At(file, headerSize + len(data) + i * 8, uint64(pointer))
+    }
+    if os.WriteFile(path, file, 0600) != nil { return memoryError("memorymap: write failed") }
+    return nil
+}
+
+func copyBytes(dst []byte, src *byte, count int) {
+    for i := 0; i < count; i++ { dst[i] = *(src + i) }
+}
+
+func copyBytesTo(dst *byte, src *byte, count int) {
+    for i := 0; i < count; i++ { *(dst + i) = *(src + i) }
+}
+
+func putUint64At(dst []byte, offset int, value uint64) {
+    dst[offset] = byte(value)
+    dst[offset+1] = byte(value >> 8)
+    dst[offset+2] = byte(value >> 16)
+    dst[offset+3] = byte(value >> 24)
+    dst[offset+4] = byte(value >> 32)
+    dst[offset+5] = byte(value >> 40)
+    dst[offset+6] = byte(value >> 48)
+    dst[offset+7] = byte(value >> 56)
+}
+
+func putUint32At(dst []byte, offset int, value uint32) {
+    dst[offset] = byte(value)
+    dst[offset+1] = byte(value >> 8)
+    dst[offset+2] = byte(value >> 16)
+    dst[offset+3] = byte(value >> 24)
+}
+
+func readUint32At(src []byte, offset int) uint32 {
+    return uint32(src[offset]) | uint32(src[offset+1]) << 8 | uint32(src[offset+2]) << 16 | uint32(src[offset+3]) << 24
+}
+
+func readUint64At(src []byte, offset int) uint64 {
+    return uint64(src[offset]) | uint64(src[offset+1]) << 8 | uint64(src[offset+2]) << 16 | uint64(src[offset+3]) << 24 |
+        uint64(src[offset+4]) << 32 | uint64(src[offset+5]) << 40 | uint64(src[offset+6]) << 48 | uint64(src[offset+7]) << 56
+}

@@ -31,3 +31,14 @@ var concurrent(128) {
 		t.Fatalf("unexpected concurrent declaration: %#v", program.Decls[1])
 	}
 }
+
+func TestMappedMemoryBlockDeclaration(t *testing.T) {
+	program := New(lexer.New("package main\nvar mapped(\"state.bin\", 64) { value int }\n")).ParseProgram()
+	if len(program.Decls) != 1 {
+		t.Fatalf("expected one memory block, got %d", len(program.Decls))
+	}
+	block, ok := program.Decls[0].(*ast.MemoryBlockDecl)
+	if !ok || block.Kind != ast.MappedMemoryBlock || block.Path == nil || block.Size == nil || len(block.Vars) != 1 {
+		t.Fatalf("unexpected mapped declaration: %#v", program.Decls[0])
+	}
+}

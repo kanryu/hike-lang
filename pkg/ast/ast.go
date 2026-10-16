@@ -123,12 +123,17 @@ type MemoryBlockKind int
 const (
 	ThreadableMemoryBlock MemoryBlockKind = iota
 	ConcurrentMemoryBlock
+	// MappedMemoryBlock is backed by a private copy-on-write memory mapping of
+	// the file named by MemoryBlockDecl.Path.  Its members are laid out in one
+	// contiguous block and may be persisted with the memoryblock runtime API.
+	MappedMemoryBlock
 )
 
 type MemoryBlockDecl struct {
 	Token token.Token
 	Kind  MemoryBlockKind
 	Size  ASTExpression
+	Path  ASTExpression
 	Vars  []*VarDecl
 }
 

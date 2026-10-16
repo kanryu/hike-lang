@@ -271,7 +271,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 			}
 
 		case token.VAR:
-			if p.peekTokenIs(token.THREADABLE) || p.peekTokenIs(token.CONCURRENT) {
+			if p.peekTokenIs(token.THREADABLE) || p.peekTokenIs(token.CONCURRENT) || p.peekTokenIs(token.MAPPED) || (p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "mapped") {
 				md := p.parseMemoryBlockDecl()
 				if md != nil {
 					prog.Decls = append(prog.Decls, md)
@@ -779,8 +779,16 @@ func (p *Parser) parseMemoryBlockDecl() *ast.MemoryBlockDecl {
 		block.Kind = ast.ThreadableMemoryBlock
 	case token.CONCURRENT:
 		block.Kind = ast.ConcurrentMemoryBlock
+	case token.MAPPED:
+		block.Kind = ast.MappedMemoryBlock
+	case token.IDENT:
+		if p.curToken.Literal != "mapped" {
+			p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected threadable, concurrent, or mapped memory block", p.curToken.Line, p.curToken.Col))
+			return nil
+		}
+		block.Kind = ast.MappedMemoryBlock
 	default:
-		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected threadable or concurrent memory block", p.curToken.Line, p.curToken.Col))
+		p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected threadable, concurrent, or mapped memory block", p.curToken.Line, p.curToken.Col))
 		return nil
 	}
 	if !p.expectPeek(token.LPAREN) {
@@ -788,7 +796,26 @@ func (p *Parser) parseMemoryBlockDecl() *ast.MemoryBlockDecl {
 	}
 	if !p.peekTokenIs(token.RPAREN) {
 		p.nextToken()
-		block.Size = p.parseExpression(LOWEST)
+		first := p.parseExpression(LOWEST)
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			second := p.parseExpression(LOWEST)
+			// mapped accepts mapped(size, "file") and mapped("file", size).
+			if _, ok := first.(*ast.StringLiteral); ok {
+				block.Path, block.Size = first, second
+			} else {
+				block.Size, block.Path = first, second
+			}
+		} else if block.Kind == ast.MappedMemoryBlock {
+			if _, ok := first.(*ast.StringLiteral); ok {
+				block.Path = first
+			} else {
+				block.Size = first
+			}
+		} else {
+			block.Size = first
+		}
 	}
 	if !p.expectPeek(token.RPAREN) || !p.expectPeek(token.LBRACE) {
 		return nil

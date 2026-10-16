@@ -683,6 +683,17 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 			leftType = leftVal.Type()
 		}
 
+		if leftType == sema.TypeCBuffer {
+			bufferPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeCBuffer})
+			e.root.emit(&hir.InstrAlloca{Dst: bufferPtr, AllocType: sema.TypeCBuffer})
+			e.root.emit(&hir.InstrStore{Val: leftVal, Ptr: bufferPtr})
+			dataPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrCallStatic{Dst: dataPtr, CalleeName: e.root.BuiltinName("__hike_cbuffer_data"), Args: []hir.Value{bufferPtr}})
+			elemPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+			e.root.emit(&hir.InstrGetElemPtr{Dst: elemPtr, BasePtr: dataPtr, Index: idxVal})
+			return elemPtr
+		}
+
 		if slType, ok := leftType.(*sema.SliceType); ok {
 			elemPtrType := &sema.PointerType{Base: slType.Elem}
 			rawPtr := e.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
