@@ -801,11 +801,25 @@ func (p *Parser) parseMemoryBlockDecl() *ast.MemoryBlockDecl {
 			p.nextToken()
 			p.nextToken()
 			second := p.parseExpression(LOWEST)
-			// mapped accepts mapped(size, "file") and mapped("file", size).
-			if _, ok := first.(*ast.StringLiteral); ok {
-				block.Path, block.Size = first, second
+			if call, ok := second.(*ast.CallExpr); ok && len(call.Args) == 1 {
+				fn, named := call.Function.(*ast.Identifier)
+				if named && fn.Value == "mapped" {
+					block.Size = first
+					block.MapName = call.Args[0]
+				} else {
+					p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected mapped(name) as the second memory block argument", p.curToken.Line, p.curToken.Col))
+					block.Size = first
+				}
+			} else if block.Kind == ast.MappedMemoryBlock {
+				// mapped accepts mapped(size, "file") and mapped("file", size).
+				if _, ok := first.(*ast.StringLiteral); ok {
+					block.Path, block.Size = first, second
+				} else {
+					block.Size, block.Path = first, second
+				}
 			} else {
-				block.Size, block.Path = first, second
+				p.errors = append(p.errors, fmt.Sprintf("[%d:%d] expected mapped(name) as the second memory block argument", p.curToken.Line, p.curToken.Col))
+				block.Size = first
 			}
 		} else if block.Kind == ast.MappedMemoryBlock {
 			if _, ok := first.(*ast.StringLiteral); ok {

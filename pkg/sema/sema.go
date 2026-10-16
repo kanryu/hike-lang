@@ -1700,6 +1700,9 @@ func registerMemoryBlockTypes(decl *ast.MemoryBlockDecl, ctx *Context) {
 		if lit, ok := decl.Path.(*ast.StringLiteral); ok {
 			ctx.GlobalMemoryPaths[name] = lit.Value
 		}
+		if mapped, ok := decl.MapName.(*ast.Identifier); ok {
+			ctx.GlobalMemoryMapNames[name] = mapped.Value
+		}
 	}
 }
 

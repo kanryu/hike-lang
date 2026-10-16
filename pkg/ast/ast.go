@@ -134,7 +134,10 @@ type MemoryBlockDecl struct {
 	Kind  MemoryBlockKind
 	Size  ASTExpression
 	Path  ASTExpression
-	Vars  []*VarDecl
+	// MapName identifies the block variable exposed to the mapped serializer.
+	// It is set by threadable/concurrent(size, mapped(name)).
+	MapName ASTExpression
+	Vars    []*VarDecl
 }
 
 func (md *MemoryBlockDecl) declNode()            {}

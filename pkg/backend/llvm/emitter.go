@@ -260,6 +260,52 @@ func (e *Emitter) emitGlobals() {
 	if len(e.prog.Globals) > 0 {
 		e.b.WriteString("\n")
 	}
+	e.emitMemoryMapMetadata()
+}
+
+func (e *Emitter) emitMemoryMapMetadata() {
+	for _, mapping := range e.prog.MemoryMaps {
+		if mapping == nil {
+			continue
+		}
+		name := llvmMemoryMapSymbol(mapping.Name)
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_size = private constant i64 %d, align 8\n", name, mapping.Size))
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_schema_hash = private constant i64 %d, align 8\n", name, mapping.SchemaHash))
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_offsets = private constant [%d x i64] [", name, len(mapping.Fields)))
+		for i, field := range mapping.Fields {
+			if i > 0 {
+				e.b.WriteString(", ")
+			}
+			e.b.WriteString(fmt.Sprintf("i64 %d", field.Offset))
+		}
+		e.b.WriteString("], align 8\n")
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_kinds = private constant [%d x i32] [", name, len(mapping.Fields)))
+		for i, field := range mapping.Fields {
+			if i > 0 {
+				e.b.WriteString(", ")
+			}
+			e.b.WriteString(fmt.Sprintf("i32 %d", field.Kind))
+		}
+		e.b.WriteString("], align 4\n")
+	}
+	if len(e.prog.MemoryMaps) > 0 {
+		e.b.WriteString("\n")
+	}
+}
+
+func llvmMemoryMapSymbol(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "anonymous"
+	}
+	return b.String()
 }
 
 func llvmAtomicGlobalType(t sema.Type) bool {
@@ -1242,7 +1288,9 @@ func (e *Emitter) emitGetElemPtr(i *hir.InstrGetElemPtr, intLLVM string) {
 	if pt, ok := baseType.(*sema.PointerType); ok {
 		if ar, okArr := pt.Base.(*sema.ArrayType); okArr {
 			indexType := "i64"
-			if e.pointerBits == 32 { indexType = "i32" }
+			if e.pointerBits == 32 {
+				indexType = "i32"
+			}
 			e.b.WriteString(fmt.Sprintf("  %s = getelementptr inbounds %s, %s %s, i32 0, %s %s\n",
 				i.Dst, ar.LLVMType(), baseType.LLVMType(), e.formatVal(i.BasePtr), indexType, idxVal))
 			return

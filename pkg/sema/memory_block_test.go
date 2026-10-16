@@ -24,3 +24,16 @@ var concurrent(128) { total int }
 		t.Fatalf("unexpected concurrent metadata: class=%v size=%d", ctx.GlobalMemoryBlocks["total"], ctx.GlobalMemorySizes["total"])
 	}
 }
+
+func TestMappedMemoryBlockModifierMetadata(t *testing.T) {
+	program := parser.New(lexer.New(`package main
+var concurrent(64, mapped(state)) { value int }
+`)).ParseProgram()
+	ctx, err := Analyze(program)
+	if err != nil {
+		t.Fatalf("mapped memory block analysis failed: %v", err)
+	}
+	if ctx.GlobalMemoryMapNames["value"] != "state" {
+		t.Fatalf("unexpected mapped variable name: %q", ctx.GlobalMemoryMapNames["value"])
+	}
+}

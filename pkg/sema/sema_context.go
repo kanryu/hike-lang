@@ -18,29 +18,30 @@ type Context struct {
 	// Methods is indexed by the complete receiver type and method name.  Method
 	// lookup must not use a suffix scan of Functions: two packages can legally
 	// define the same method for different receiver types.
-	Methods            map[string]*FuncType
-	Globals            map[string]Type
-	StableMapKeys      map[string]map[string]int
-	GlobalMemoryBlocks map[string]ast.MemoryBlockKind
-	GlobalMemorySizes  map[string]int64
-	GlobalMemoryPaths  map[string]string
-	Constants          map[string]int64
-	StringConstants    map[string]string
-	FloatConstants     map[string]float64
-	Aliases            map[string]Type
-	GenericTypes       map[string]*ast.TypeDecl
-	GenericFuncs       map[string]*ast.FuncDecl
-	PackageAliases     map[string]string
-	TypeParams         map[string]*TypeParamType
-	typeIDs            map[string]int64
-	moduleTypeBases    map[string]int64
-	moduleTypeSlots    map[string]int64
-	nextModuleTypeBase int64
-	nextTypeID         int64
-	HasMapImport       bool
-	GoHikeMode         bool
-	RegionModeEnabled  bool
-	diagnosticPackages map[string]bool
+	Methods              map[string]*FuncType
+	Globals              map[string]Type
+	StableMapKeys        map[string]map[string]int
+	GlobalMemoryBlocks   map[string]ast.MemoryBlockKind
+	GlobalMemorySizes    map[string]int64
+	GlobalMemoryPaths    map[string]string
+	GlobalMemoryMapNames map[string]string
+	Constants            map[string]int64
+	StringConstants      map[string]string
+	FloatConstants       map[string]float64
+	Aliases              map[string]Type
+	GenericTypes         map[string]*ast.TypeDecl
+	GenericFuncs         map[string]*ast.FuncDecl
+	PackageAliases       map[string]string
+	TypeParams           map[string]*TypeParamType
+	typeIDs              map[string]int64
+	moduleTypeBases      map[string]int64
+	moduleTypeSlots      map[string]int64
+	nextModuleTypeBase   int64
+	nextTypeID           int64
+	HasMapImport         bool
+	GoHikeMode           bool
+	RegionModeEnabled    bool
+	diagnosticPackages   map[string]bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
@@ -66,29 +67,30 @@ func astIdentifierValue(id *ast.Identifier) string {
 
 func NewContext() *Context {
 	ctx := &Context{
-		Structs:            make(map[string]*StructType),
-		Interfaces:         make(map[string]*InterfaceType),
-		Functions:          make(map[string]*FuncType),
-		Methods:            make(map[string]*FuncType),
-		Globals:            make(map[string]Type),
-		StableMapKeys:      make(map[string]map[string]int),
-		GlobalMemoryBlocks: make(map[string]ast.MemoryBlockKind),
-		GlobalMemorySizes:  make(map[string]int64),
-		GlobalMemoryPaths:  make(map[string]string),
-		Constants:          make(map[string]int64),
-		StringConstants:    make(map[string]string),
-		FloatConstants:     make(map[string]float64),
-		Aliases:            make(map[string]Type),
-		GenericTypes:       make(map[string]*ast.TypeDecl),
-		GenericFuncs:       make(map[string]*ast.FuncDecl),
-		PackageAliases:     make(map[string]string),
-		TypeParams:         make(map[string]*TypeParamType),
-		typeIDs:            make(map[string]int64),
-		moduleTypeBases:    make(map[string]int64),
-		moduleTypeSlots:    make(map[string]int64),
-		nextModuleTypeBase: 100,
-		nextTypeID:         1,
-		ResolvedCalls:      make(map[*ast.CallExpr]*FuncType),
+		Structs:              make(map[string]*StructType),
+		Interfaces:           make(map[string]*InterfaceType),
+		Functions:            make(map[string]*FuncType),
+		Methods:              make(map[string]*FuncType),
+		Globals:              make(map[string]Type),
+		StableMapKeys:        make(map[string]map[string]int),
+		GlobalMemoryBlocks:   make(map[string]ast.MemoryBlockKind),
+		GlobalMemorySizes:    make(map[string]int64),
+		GlobalMemoryPaths:    make(map[string]string),
+		GlobalMemoryMapNames: make(map[string]string),
+		Constants:            make(map[string]int64),
+		StringConstants:      make(map[string]string),
+		FloatConstants:       make(map[string]float64),
+		Aliases:              make(map[string]Type),
+		GenericTypes:         make(map[string]*ast.TypeDecl),
+		GenericFuncs:         make(map[string]*ast.FuncDecl),
+		PackageAliases:       make(map[string]string),
+		TypeParams:           make(map[string]*TypeParamType),
+		typeIDs:              make(map[string]int64),
+		moduleTypeBases:      make(map[string]int64),
+		moduleTypeSlots:      make(map[string]int64),
+		nextModuleTypeBase:   100,
+		nextTypeID:           1,
+		ResolvedCalls:        make(map[*ast.CallExpr]*FuncType),
 	}
 	ctx.typeIDs["int"] = 1
 	ctx.typeIDs["byte"] = 2

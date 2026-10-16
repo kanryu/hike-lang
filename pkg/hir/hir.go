@@ -84,11 +84,12 @@ func (c *ConstNil) Type() sema.Type { return c.Typ }
 func (c *ConstNil) String() string  { return "nil" }
 
 type GlobalVar struct {
-	Name        string
-	Typ         sema.Type
-	MemoryClass GlobalMemoryClass
-	MemorySize  int64
-	MemoryPath  string
+	Name          string
+	Typ           sema.Type
+	MemoryClass   GlobalMemoryClass
+	MemorySize    int64
+	MemoryPath    string
+	MemoryMapName string
 }
 
 type GlobalMemoryClass int
@@ -102,6 +103,30 @@ const (
 
 func (g *GlobalVar) Type() sema.Type { return g.Typ }
 func (g *GlobalVar) String() string  { return fmt.Sprintf("@%s", g.Name) }
+
+type MemoryMapFieldKind int
+
+const (
+	MemoryMapScalar MemoryMapFieldKind = iota
+	MemoryMapStruct
+	MemoryMapArray
+	MemoryMapString
+	MemoryMapByteSlice
+)
+
+type MemoryMapField struct {
+	Name   string
+	Offset int
+	Size   int
+	Kind   MemoryMapFieldKind
+}
+
+type MemoryMapDecl struct {
+	Name       string
+	Fields     []MemoryMapField
+	Size       int
+	SchemaHash uint64
+}
 
 type Opcode int
 
@@ -862,6 +887,7 @@ type Program struct {
 	// read-only table so literal map lookups can skip runtime hashing.
 	InternHashes         []uint64
 	Globals              []*GlobalVar
+	MemoryMaps           []*MemoryMapDecl
 	Itabs                []*ItabDef
 	Functions            []*Function
 	InstructionLocations map[string]SourceLocation

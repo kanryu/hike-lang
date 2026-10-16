@@ -6,6 +6,7 @@ import (
 
 	"hikec-go/pkg/ast"
 	"hikec-go/pkg/hir"
+	"hikec-go/pkg/memoryblock"
 	"hikec-go/pkg/sema"
 	"hikec-go/pkg/token"
 )
@@ -300,9 +301,49 @@ func (l *Lowerer) Lower() *hir.Program {
 		}
 		l.hirProg.Globals = append(l.hirProg.Globals, &hir.GlobalVar{
 			Name: name, Typ: typ, MemoryClass: memoryClass,
-			MemorySize: l.semaCtx.GlobalMemorySizes[name],
-			MemoryPath: l.semaCtx.GlobalMemoryPaths[name],
+			MemorySize:    l.semaCtx.GlobalMemorySizes[name],
+			MemoryPath:    l.semaCtx.GlobalMemoryPaths[name],
+			MemoryMapName: l.semaCtx.GlobalMemoryMapNames[name],
 		})
+	}
+	for _, decl := range l.prog.Decls {
+		block, ok := decl.(*ast.MemoryBlockDecl)
+		if !ok || block.MapName == nil {
+			continue
+		}
+		mapID, ok := block.MapName.(*ast.Identifier)
+		if !ok {
+			continue
+		}
+		layout := &hir.MemoryMapDecl{Name: mapID.Value}
+		offset := 0
+		for _, variable := range block.Vars {
+			typ := l.semaCtx.Globals[variable.Name.Value]
+			if typ == nil {
+				continue
+			}
+			align := sema.PointerSize
+			if size := sema.SizeOf(typ); size < align {
+				align = size
+			}
+			if align > 1 {
+				offset = (offset + align - 1) / align * align
+			}
+			layout.Fields = append(layout.Fields, hir.MemoryMapField{
+				Name: variable.Name.Value, Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
+			})
+			offset += sema.SizeOf(typ)
+		}
+		layout.Size = offset
+		schemaFields := make([]memoryblock.SchemaField, 0, len(layout.Fields))
+		for _, field := range layout.Fields {
+			typ := l.semaCtx.Globals[field.Name]
+			schemaFields = append(schemaFields, memoryblock.SchemaField{
+				Name: field.Name, Type: typ.TypeName(), Kind: uint32(field.Kind), Size: field.Size,
+			})
+		}
+		layout.SchemaHash = memoryblock.SchemaHash(layout.Name, schemaFields)
+		l.hirProg.MemoryMaps = append(l.hirProg.MemoryMaps, layout)
 	}
 
 	// グローバル変数の初期化式（var x = expr）を代入文として収集
@@ -392,6 +433,21 @@ func (l *Lowerer) Lower() *hir.Program {
 	}
 
 	return l.hirProg
+}
+
+func memoryMapFieldKind(typ sema.Type) hir.MemoryMapFieldKind {
+	switch typ.(type) {
+	case *sema.StructType:
+		return hir.MemoryMapStruct
+	case *sema.ArrayType:
+		return hir.MemoryMapArray
+	case *sema.SliceType:
+		return hir.MemoryMapByteSlice
+	}
+	if typ == sema.TypeString {
+		return hir.MemoryMapString
+	}
+	return hir.MemoryMapScalar
 }
 
 // finishRegionFunction performs the conservative first region inference pass.

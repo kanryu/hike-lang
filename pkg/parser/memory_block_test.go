@@ -42,3 +42,15 @@ func TestMappedMemoryBlockDeclaration(t *testing.T) {
 		t.Fatalf("unexpected mapped declaration: %#v", program.Decls[0])
 	}
 }
+
+func TestMappedMemoryBlockModifierOnConcurrentBlock(t *testing.T) {
+	p := New(lexer.New("package main\nvar concurrent(64, mapped(state)) { value int }\n"))
+	program := p.ParseProgram()
+	if len(p.Errors()) != 0 || len(program.Decls) != 1 {
+		t.Fatalf("unexpected mapped concurrent declaration: %#v errors=%v", program.Decls, p.Errors())
+	}
+	block, ok := program.Decls[0].(*ast.MemoryBlockDecl)
+	if !ok || block.Kind != ast.ConcurrentMemoryBlock || block.MapName == nil || len(block.Vars) != 1 {
+		t.Fatalf("unexpected mapped concurrent declaration: %#v", program.Decls[0])
+	}
+}

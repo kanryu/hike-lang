@@ -33,13 +33,27 @@ func main() int {
     first := byte(0)
     restored := byte(0)
     isolated := false
+	var data cbuffer
     if view != nil {
-		data := view.Data()
+		data = view.Data()
 		first = data[0]
         restored = *view.Pointer(2)
 		data[0] = 99
         isolated = true
     }
+	apiPath := "std-memorymap-api.hmb"
+	apiSerializeErr := memorymap.MappedSerialize(view, apiPath)
+	if view != nil {
+		data = view.Data()
+		data[0] = 201
+		data[2] = 202
+	}
+	apiDeserializeErr := memorymap.MappedDeserialize(view, apiPath)
+	restoredAfterDeserialize := false
+	if view != nil {
+		data = view.Data()
+		restoredAfterDeserialize = data[0] == 99 && data[2] == 30
+	}
     closeErr := view.Close()
     loaded, readErr := os.ReadFile(path)
     serializeSharedErr := memorymap.Serialize(path, source, []int{0, 2})
@@ -55,17 +69,23 @@ func main() int {
     }
     sharedLoaded, sharedReadErr := os.ReadFile(path)
     removeErr := os.Remove(path)
-	printf("SERIALIZE=%d,STAT=%d,MAP=%d,FIRST=%d,OFFSET=%d,PRIVATE=%d,CLOSE=%d,FILE=%d,SHARED_SERIALIZE=%d,SHARED_STAT=%d,SHARED_MAP=%d,SHARED_WRITE=%d,SHARED_CLOSE=%d,SHARED_FILE=%d,REMOVE=%d\n",
+	apiRemoveErr := os.Remove(apiPath)
+	schemaPath := "std-memorymap-schema.hmb"
+	schemaSerializeErr := memorymap.SerializeWithSchema(schemaPath, source, []int{0, 2}, 111)
+	_, schemaMismatchErr := memorymap.MapWithSchema(schemaPath, fileSize, 222)
+	schemaRemoveErr := os.Remove(schemaPath)
+	printf("SERIALIZE=%d,STAT=%d,MAP=%d,FIRST=%d,OFFSET=%d,PRIVATE=%d,API_SERIALIZE=%d,API_DESTROY=1,API_DESERIALIZE=%d,RESTORED=%d,CLOSE=%d,FILE=%d,SCHEMA_SERIALIZE=%d,SCHEMA_MISMATCH=%d,SCHEMA_REMOVE=%d,SHARED_SERIALIZE=%d,SHARED_STAT=%d,SHARED_MAP=%d,SHARED_WRITE=%d,SHARED_CLOSE=%d,SHARED_FILE=%d,REMOVE=%d,API_REMOVE=%d\n",
         serializeErr == nil, statErr == nil, mapErr == nil,
         first, restored, isolated && readErr == nil && loaded[32] == 10,
-        closeErr == nil, readErr == nil && loaded[34] == 30,
-        serializeSharedErr == nil, sharedStatErr == nil, sharedMapErr == nil,
+		apiSerializeErr == nil, apiDeserializeErr == nil, restoredAfterDeserialize, closeErr == nil, readErr == nil && loaded[34] == 30,
+		schemaSerializeErr == nil, schemaMismatchErr != nil, schemaRemoveErr == nil,
+		serializeSharedErr == nil, sharedStatErr == nil, sharedMapErr == nil,
         sharedWrite, sharedCloseErr == nil,
-        sharedReadErr == nil && sharedLoaded[32] == 77, removeErr == nil)
+		sharedReadErr == nil && sharedLoaded[32] == 77, removeErr == nil, apiRemoveErr == nil)
     return 0
 }
 `,
-		ExpectedOut:  "SERIALIZE=1,STAT=1,MAP=1,FIRST=10,OFFSET=30,PRIVATE=1,CLOSE=1,FILE=1,SHARED_SERIALIZE=1,SHARED_STAT=1,SHARED_MAP=1,SHARED_WRITE=1,SHARED_CLOSE=1,SHARED_FILE=1,REMOVE=1",
+		ExpectedOut:  "SERIALIZE=1,STAT=1,MAP=1,FIRST=10,OFFSET=30,PRIVATE=1,API_SERIALIZE=1,API_DESTROY=1,API_DESERIALIZE=1,RESTORED=1,CLOSE=1,FILE=1,SCHEMA_SERIALIZE=1,SCHEMA_MISMATCH=1,SCHEMA_REMOVE=1,SHARED_SERIALIZE=1,SHARED_STAT=1,SHARED_MAP=1,SHARED_WRITE=1,SHARED_CLOSE=1,SHARED_FILE=1,REMOVE=1,API_REMOVE=1",
 		ExpectedExit: 0,
 	})
 }

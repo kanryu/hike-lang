@@ -20,6 +20,7 @@ type Mapping struct {
     length int
     fileLength int
 	shared bool
+	SchemaHash uint64
 }
 
 type Error struct { message string }
@@ -46,7 +47,7 @@ func Open(path string, size int) (*Mapping, error) {
         return nil, memoryError("memorymap: invalid serialized block size")
     }
     data := cbuffer(raw + headerSize, payloadSize, func() { nativeUnmap(raw, size) })
-    return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size}, nil
+    return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size, SchemaHash: readUint64At(header, 24)}, nil
 }
 
 // Map is the descriptive alias for Open and mirrors the language-level
@@ -67,10 +68,32 @@ func OpenShared(path string, size int) (*Mapping, error) {
 		nativeUnmap(raw, size); return nil, memoryError("memorymap: invalid serialized block size")
 	}
 	data := cbuffer(raw + headerSize, payloadSize, func() { nativeUnmap(raw, size) })
-	return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size, shared: true}, nil
+	return &Mapping{raw: raw, Buffer: data, length: payloadSize, fileLength: size, shared: true, SchemaHash: readUint64At(header, 24)}, nil
 }
 
 func MapShared(path string, size int) (*Mapping, error) { return OpenShared(path, size) }
+
+// MapWithSchema opens a private mapping only when the serialized schema hash
+// matches the hash embedded by the compiler in the executable.
+func MapWithSchema(path string, size int, schemaHash uint64) (*Mapping, error) {
+    mapping, err := Open(path, size)
+    if err != nil { return nil, err }
+    if mapping.SchemaHash != schemaHash {
+        mapping.Close()
+        return nil, memoryError("memorymap: mapped schema hash mismatch")
+    }
+    return mapping, nil
+}
+
+func MapSharedWithSchema(path string, size int, schemaHash uint64) (*Mapping, error) {
+    mapping, err := OpenShared(path, size)
+    if err != nil { return nil, err }
+    if mapping.SchemaHash != schemaHash {
+        mapping.Close()
+        return nil, memoryError("memorymap: mapped schema hash mismatch")
+    }
+    return mapping, nil
+}
 
 // LastMapError exposes the Win32 error code from the most recent native map
 // attempt. It is primarily useful for diagnosing platform-specific failures.
@@ -97,6 +120,35 @@ func (m *Mapping) Flush() error {
 
 func (m *Mapping) Unmap() error { return m.Close() }
 
+// MappedSerialize serializes the payload owned by mapping to path. The first
+// argument is the map variable and the second argument is the destination
+// file name. The payload is written as one opaque block; pointer relocation
+// metadata must be supplied through Serialize when it is required.
+func MappedSerialize(mapping *Mapping, path string) error {
+    if mapping == nil || mapping.raw == nil { return memoryError("memorymap: map is not open") }
+    return Serialize(path, mapping.Buffer[:], []int{})
+}
+
+// MappedDeserialize replaces mapping with the private mapping of path. The first
+// argument is updated in place, while the second argument names the source
+// file. The caller remains responsible for closing mapping.
+func MappedDeserialize(mapping *Mapping, path string) error {
+    if mapping == nil { return memoryError("memorymap: map is nil") }
+    info, statErr := os.Stat(path)
+    if statErr != nil || info == nil { return memoryError("memorymap: stat failed") }
+    replacement, mapErr := Map(path, int(info.Size()))
+    if mapErr != nil { return mapErr }
+    if mapping.raw != nil { mapping.Close() }
+    mapping.raw = replacement.raw
+    mapping.Buffer = replacement.Buffer
+    mapping.length = replacement.length
+    mapping.fileLength = replacement.fileLength
+    mapping.shared = replacement.shared
+    replacement.raw = nil
+    replacement.Buffer = cbuffer(nil, 0, nil)
+    return nil
+}
+
 // RestorePointers converts serialized payload-relative offsets to addresses.
 func (m *Mapping) RestorePointers(offsets []int) []*byte {
     result := make([]*byte, len(offsets))
@@ -107,11 +159,16 @@ func (m *Mapping) RestorePointers(offsets []int) []*byte {
 // Serialize writes the same HMB1 format consumed by Open. pointers are byte
 // offsets from the first byte of data, never absolute process addresses.
 func Serialize(path string, data []byte, pointers []int) error {
+    return SerializeWithSchema(path, data, pointers, 0)
+}
+
+func SerializeWithSchema(path string, data []byte, pointers []int, schemaHash uint64) error {
     header := make([]byte, headerSize)
     header[0] = magic0; header[1] = magic1; header[2] = magic2; header[3] = magic3
     putUint32At(header, 4, 1)
     putUint64At(header, 8, uint64(len(data)))
     putUint64At(header, 16, uint64(len(pointers)))
+    putUint64At(header, 24, schemaHash)
     file := make([]byte, headerSize + len(data) + len(pointers) * 8)
     copyBytesTo(&file[0], &header[0], len(header))
     if len(data) > 0 { copyBytesTo(&file[headerSize], &data[0], len(data)) }
