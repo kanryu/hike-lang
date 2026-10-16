@@ -6,7 +6,7 @@ import (
 )
 
 // SchemaField is the stable description used to detect incompatible mapped
-// variable declarations before applying serialized bytes.
+// variable declarations before serialized bytes are applied.
 type SchemaField struct {
 	Name string
 	Type string
@@ -29,7 +29,7 @@ func SchemaHash(name string, fields []SchemaField) uint64 {
 }
 
 // ValidateSchemaHash rejects a file produced from a different mapped
-// declaration before any pointer fixups or variable writes are performed.
+// declaration before any serialized bytes are applied.
 func ValidateSchemaHash(expected, actual uint64) error {
 	if expected != actual {
 		return fmt.Errorf("memorymap: mapped schema hash mismatch (expected %016x, got %016x)", expected, actual)
