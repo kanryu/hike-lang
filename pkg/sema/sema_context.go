@@ -43,6 +43,17 @@ type Context struct {
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
+
+	// moduleFunctionIndex is built once after pass 1 has registered all
+	// module-level functions. Each lookup key keeps every matching canonical
+	// function name so ambiguous qualified lookups remain deterministic.
+	moduleFunctionIndex      map[string][]functionLookupCandidate
+	moduleFunctionIndexBuilt bool
+}
+
+type functionLookupCandidate struct {
+	name string
+	fn   *FuncType
 }
 
 func astIdentifierValue(id *ast.Identifier) string {
@@ -307,6 +318,32 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 	if fn, ok := c.Functions[name]; ok {
 		return fn, name
 	}
+	if c.moduleFunctionIndexBuilt && name != "" {
+		var indexed *functionLookupCandidate
+		if candidates := c.moduleFunctionIndex[name]; len(candidates) > 0 {
+			candidate := candidates[0]
+			indexed = &candidate
+		}
+		if indexed == nil {
+			// Preserve the old reverse compatibility case where a longer query
+			// ends in an exact, shorter function key (for example pkg_Foo -> Foo).
+			for separator := strings.LastIndexByte(name, '_'); separator >= 0; separator = strings.LastIndexByte(name[:separator], '_') {
+				if fn, ok := c.Functions[name[separator+1:]]; ok {
+					candidate := functionLookupCandidate{name: name[separator+1:], fn: fn}
+					indexed = &candidate
+					break
+				}
+			}
+		}
+		if indexed != nil {
+			return indexed.fn, indexed.name
+		}
+		return nil, ""
+	}
+
+	// Contexts assembled directly by tests and tooling may not have gone
+	// through AnalyzeMode. Keep their historical behavior until the index is
+	// explicitly built for the module.
 	keys := make([]string, 0, len(c.Functions))
 	for k := range c.Functions {
 		keys = append(keys, k)
@@ -324,6 +361,15 @@ func (c *Context) LookupFunction(name string) (*FuncType, string) {
 				return v, k
 			}
 		}
+	}
+	return nil, ""
+}
+
+// LookupFunctionExact performs only an exact symbol lookup. It is used after
+// the caller has already established the package or receiver qualification.
+func (c *Context) LookupFunctionExact(name string) (*FuncType, string) {
+	if fn, ok := c.Functions[name]; ok {
+		return fn, name
 	}
 	return nil, ""
 }
@@ -350,6 +396,18 @@ func (c *Context) LookupQualifiedFunction(name string) (*FuncType, string) {
 	// import alias from the merged import list. Only accept an unambiguous
 	// canonical suffix; never choose arbitrarily among same-named functions.
 	short := name[sep+1:]
+	if c.moduleFunctionIndexBuilt {
+		var candidates []functionLookupCandidate
+		for _, candidate := range c.moduleFunctionIndex[short] {
+			if strings.HasSuffix(candidate.name, "_"+short) {
+				candidates = append(candidates, candidate)
+			}
+		}
+		if len(candidates) == 1 {
+			return candidates[0].fn, candidates[0].name
+		}
+		return nil, ""
+	}
 	var candidate *FuncType
 	candidateName := ""
 	for key, fn := range c.Functions {
@@ -365,6 +423,125 @@ func (c *Context) LookupQualifiedFunction(name string) (*FuncType, string) {
 		return candidate, candidateName
 	}
 	return nil, ""
+}
+
+// LookupPackageFunction resolves a source-level package member strictly. The
+// package qualifier and function name are both part of the lookup key; it
+// never searches receiver-method or suffix aliases. This is the appropriate
+// lookup for expressions such as filepath.Glob, while err.Error and f.Write
+// must be resolved through LookupMethod with the receiver type.
+func (c *Context) LookupPackageFunction(packageName, functionName string) (*FuncType, string) {
+	if packageName == "" || functionName == "" {
+		return nil, ""
+	}
+	candidates := []string{packageName + "_" + functionName}
+	if pkg, ok := c.PackageAliases[packageName]; ok && pkg != "" {
+		candidates = append(candidates, pkg+"_"+functionName)
+	}
+	for _, name := range candidates {
+		if fn, ok := c.Functions[name]; ok && fn != nil && !fn.IsMethod {
+			return fn, name
+		}
+	}
+	if c.moduleFunctionIndexBuilt {
+		for _, name := range candidates {
+			indexed := c.moduleFunctionIndex[name]
+			if len(indexed) == 1 {
+				return indexed[0].fn, indexed[0].name
+			}
+			if len(indexed) > 1 {
+				return nil, ""
+			}
+		}
+	}
+	return nil, ""
+}
+
+// LookupReceiverFunction resolves the receiver-qualified compatibility name
+// without consulting any suffix index. The receiver type and method name are
+// both required to identify the candidate.
+func (c *Context) LookupReceiverFunction(receiverTypeName, methodName string) (*FuncType, string) {
+	for _, candidate := range receiverTypeCandidates(receiverTypeName) {
+		raw := strings.TrimPrefix(candidate, "*")
+		key := CanonicalMethodName(raw, methodName)
+		if fn, ok := c.Functions[key]; ok && fn != nil {
+			return fn, key
+		}
+	}
+	return nil, ""
+}
+
+// BuildModuleFunctionIndex creates the immutable lookup index for the current
+// module. It is intentionally separate from Context construction: the first
+// semantic pass is the point at which all module functions and receiver
+// methods are known. Local function scopes, if introduced later, should keep
+// their small ordered slices instead of entering this module-wide index.
+func (c *Context) BuildModuleFunctionIndex() {
+	index := make(map[string][]functionLookupCandidate)
+	keys := make([]string, 0, len(c.Functions))
+	for key := range c.Functions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		fn := c.Functions[name]
+		// Receiver methods use compiler-generated names such as
+		// os_File_Write. They belong to Methods and must not participate in
+		// the source-level module-function mapping; otherwise f.Write can be
+		// mistaken for a package-qualified function named f_Write.
+		if fn == nil || fn.IsMethod {
+			continue
+		}
+		for _, lookupKey := range functionLookupKeys(name) {
+			candidates := index[lookupKey]
+			duplicate := false
+			for _, candidate := range candidates {
+				if candidate.name == name {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				index[lookupKey] = append(candidates, functionLookupCandidate{name: name, fn: fn})
+			}
+		}
+	}
+	c.moduleFunctionIndex = index
+	c.moduleFunctionIndexBuilt = true
+}
+
+func functionLookupKeys(name string) []string {
+	keys := []string{name}
+	add := func(key string) {
+		if key == "" {
+			return
+		}
+		for _, existing := range keys {
+			if existing == key {
+				return
+			}
+		}
+		keys = append(keys, key)
+	}
+	for separator := strings.IndexByte(name, '_'); separator >= 0 && separator+1 < len(name); {
+		add(name[separator+1:])
+		next := strings.IndexByte(name[separator+1:], '_')
+		if next < 0 {
+			break
+		}
+		separator += next + 1
+	}
+	if at := strings.IndexByte(name, '@'); at >= 0 {
+		fnPart := name[:at]
+		add(fnPart)
+		if separator := strings.LastIndexByte(fnPart, '/'); separator >= 0 {
+			add(fnPart[separator+1:])
+		}
+		if separator := strings.LastIndexByte(fnPart, '.'); separator >= 0 {
+			add(fnPart[separator+1:])
+		}
+	}
+	return keys
 }
 
 func (c *Context) LookupAlias(name string) (Type, string) {
@@ -1447,7 +1624,7 @@ func (c *Context) inferMemberExprType(e *ast.MemberExpr, locals map[string]Type)
 		if _, ok := c.LookupFloatConstant(qualified); ok {
 			return TypeFloat64
 		}
-		if fn, _ := c.LookupQualifiedFunction(qualified); fn != nil {
+		if fn, _ := c.LookupPackageFunction(pkgId.Value, e.Field.Value); fn != nil {
 			return fn
 		}
 	}
@@ -1567,8 +1744,7 @@ func (c *Context) inferCallExprType(e *ast.CallExpr, locals map[string]Type) Typ
 
 	if mem, ok := e.Function.(*ast.MemberExpr); ok {
 		if pkgId, okPkg := mem.Object.(*ast.Identifier); okPkg {
-			targetName := pkgId.Value + "_" + mem.Field.Value
-			if fn, _ := c.LookupQualifiedFunction(targetName); fn != nil {
+			if fn, _ := c.LookupPackageFunction(pkgId.Value, mem.Field.Value); fn != nil {
 				c.ResolvedCalls[e] = fn
 			}
 		} else {

@@ -1179,6 +1179,10 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 			return nil, err
 		}
 	}
+	// All module-level functions and receiver methods are known after pass 1.
+	// Build the suffix index once here so every later lookup avoids rebuilding
+	// and sorting the complete Functions map.
+	ctx.BuildModuleFunctionIndex()
 
 	// Pass 1.1: 不動点反復による型パラメータ伝播
 	propagateTypeParameters(ctx)

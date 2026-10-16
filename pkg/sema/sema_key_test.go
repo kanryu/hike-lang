@@ -56,6 +56,91 @@ func TestLookupFunctionFromModuleFQDN(t *testing.T) {
 	}
 }
 
+func TestLookupFunctionUsesModuleIndex(t *testing.T) {
+	ctx := NewContext()
+	first := &FuncType{Name: "alpha_Render", InternalKey: "alpha/Render"}
+	second := &FuncType{Name: "beta_Render", InternalKey: "beta/Render"}
+	ctx.Functions[first.Name] = first
+	ctx.Functions[second.Name] = second
+	ctx.BuildModuleFunctionIndex()
+
+	got, canonical := ctx.LookupFunction("Render")
+	if got != first || canonical != first.Name {
+		t.Fatalf("LookupFunction(Render) = (%p, %q), want (%p, %q)", got, canonical, first, first.Name)
+	}
+
+	qualified := &FuncType{Name: "crypto/Sum@Digest", InternalKey: "crypto/Sum@Digest"}
+	ctx.Functions[qualified.Name] = qualified
+	// Rebuilding is explicit because the module index is intentionally a
+	// pass-level snapshot rather than a map that is maintained per lookup.
+	ctx.BuildModuleFunctionIndex()
+	got, canonical = ctx.LookupFunction("Sum")
+	if got != qualified || canonical != qualified.Name {
+		t.Fatalf("LookupFunction(Sum) = (%p, %q), want (%p, %q)", got, canonical, qualified, qualified.Name)
+	}
+}
+
+func TestLookupQualifiedFunctionRejectsAmbiguousModuleIndex(t *testing.T) {
+	ctx := NewContext()
+	ctx.Functions["alpha_Render"] = &FuncType{Name: "alpha_Render"}
+	ctx.Functions["beta_Render"] = &FuncType{Name: "beta_Render"}
+	ctx.BuildModuleFunctionIndex()
+
+	if got, canonical := ctx.LookupQualifiedFunction("pkg_Render"); got != nil || canonical != "" {
+		t.Fatalf("LookupQualifiedFunction(pkg_Render) = (%p, %q), want an ambiguous miss", got, canonical)
+	}
+}
+
+func TestModuleFunctionIndexExcludesReceiverMethods(t *testing.T) {
+	ctx := NewContext()
+	method := &FuncType{Name: "os_File_Write", IsMethod: true}
+	ctx.Functions[method.Name] = method
+	ctx.RegisterMethod("*os_File", "Write", method)
+	ctx.BuildModuleFunctionIndex()
+
+	if got, canonical := ctx.LookupFunction("f_Write"); got != nil || canonical != "" {
+		t.Fatalf("LookupFunction(f_Write) = (%p, %q), want no package-function match", got, canonical)
+	}
+	if got, canonical := ctx.LookupMethod("*os_File", "Write"); got != method || canonical != method.InternalKey {
+		t.Fatalf("LookupMethod(*os_File, Write) = (%p, %q), want (%p, %q)", got, canonical, method, method.InternalKey)
+	}
+}
+
+func TestLookupPackageFunctionRequiresExactPackageAndName(t *testing.T) {
+	ctx := NewContext()
+	ctx.PackageAliases["filepath"] = "filepath"
+	glob := &FuncType{Name: "filepath_Glob"}
+	cut := &FuncType{Name: "std_strings_Cut"}
+	method := &FuncType{Name: "os_File_Write", IsMethod: true}
+	ctx.Functions[glob.Name] = glob
+	ctx.Functions[cut.Name] = cut
+	ctx.Functions[method.Name] = method
+	ctx.BuildModuleFunctionIndex()
+
+	if got, canonical := ctx.LookupPackageFunction("filepath", "Glob"); got != glob || canonical != glob.Name {
+		t.Fatalf("LookupPackageFunction(filepath, Glob) = (%p, %q), want (%p, %q)", got, canonical, glob, glob.Name)
+	}
+	if got, canonical := ctx.LookupPackageFunction("strings", "Cut"); got != cut || canonical != cut.Name {
+		t.Fatalf("LookupPackageFunction(strings, Cut) = (%p, %q), want (%p, %q)", got, canonical, cut, cut.Name)
+	}
+	if got, canonical := ctx.LookupPackageFunction("f", "Write"); got != nil || canonical != "" {
+		t.Fatalf("LookupPackageFunction(f, Write) = (%p, %q), want no package-function match", got, canonical)
+	}
+}
+
+func TestLookupReceiverFunctionRequiresExactReceiverAndMethod(t *testing.T) {
+	ctx := NewContext()
+	fn := &FuncType{Name: "os_File_Write", IsMethod: true}
+	ctx.Functions[fn.Name] = fn
+
+	if got, canonical := ctx.LookupReceiverFunction("os_File", "Write"); got != fn || canonical != fn.Name {
+		t.Fatalf("LookupReceiverFunction(os_File, Write) = (%p, %q), want (%p, %q)", got, canonical, fn, fn.Name)
+	}
+	if got, canonical := ctx.LookupReceiverFunction("other_File", "Write"); got != nil || canonical != "" {
+		t.Fatalf("LookupReceiverFunction(other_File, Write) = (%p, %q), want no match", got, canonical)
+	}
+}
+
 func TestLookupMethodFromReceiverFQDN(t *testing.T) {
 	ctx := NewContext()
 	valueMethod := &FuncType{

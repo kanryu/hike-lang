@@ -426,7 +426,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 	}
 
 	canonicalTarget := sema.CanonicalMethodName(rawTypeName, methodName)
-	if fn, canonical := c.root.semaCtx.LookupFunction(canonicalTarget); fn != nil {
+	if fn, canonical := c.root.semaCtx.LookupReceiverFunction(rawTypeName, methodName); fn != nil {
 		// A package can also expose a free function whose name has the same
 		// receiver_method spelling as a method compatibility shim.  Do not
 		// treat that function as a method when the receiver lookup above did
@@ -455,7 +455,7 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 	}
 
 	for _, cand := range candidates {
-		if fn, canonical := c.root.semaCtx.LookupFunction(cand); fn != nil {
+		if fn, canonical := c.root.semaCtx.LookupFunctionExact(cand); fn != nil {
 			if acceptMethodCandidate(fn) {
 				return canonical, fn, curPtr, true
 			}
@@ -702,7 +702,6 @@ func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.Member
 		c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_sort_strings", Args: []hir.Value{arg}})
 		return nil
 	}
-	targetFnName := pkgIdent.Value + "_" + methodName
 	resolvedFn, resolved := c.root.semaCtx.ResolvedCalls[call]
 	var targetFn *sema.FuncType
 	var canonicalName string
@@ -717,7 +716,7 @@ func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.Member
 		canonicalName = semaFuncName(targetFn)
 	}
 	if targetFn == nil {
-		targetFn, canonicalName = c.root.semaCtx.LookupQualifiedFunction(targetFnName)
+		targetFn, canonicalName = c.root.semaCtx.LookupPackageFunction(pkgIdent.Value, methodName)
 	}
 	if targetFn == nil {
 		panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))

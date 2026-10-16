@@ -354,10 +354,6 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 func (c *CallLowerer) lowerMemberCall(call *ast.CallExpr, mem *ast.MemberExpr) hir.Value {
 	if pkgIdent, ok := mem.Object.(*ast.Identifier); ok {
 		isPackage := c.isPackageName(pkgIdent.Value)
-		if !isPackage {
-			fn, _ := c.root.semaCtx.LookupFunction(pkgIdent.Value + "_" + mem.Field.Value)
-			isPackage = fn != nil
-		}
 		if isPackage {
 			return c.lowerPackageMemberCall(call, mem, pkgIdent)
 		}
