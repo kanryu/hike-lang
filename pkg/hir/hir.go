@@ -112,6 +112,7 @@ const (
 	MemoryMapArray
 	MemoryMapString
 	MemoryMapByteSlice
+	MemoryMapMap
 )
 
 type MemoryMapField struct {

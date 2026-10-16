@@ -444,6 +444,8 @@ func memoryMapFieldKind(typ sema.Type) hir.MemoryMapFieldKind {
 		return hir.MemoryMapArray
 	case *sema.SliceType:
 		return hir.MemoryMapByteSlice
+	case *sema.MapType:
+		return hir.MemoryMapMap
 	}
 	if typ == sema.TypeString {
 		return hir.MemoryMapString
