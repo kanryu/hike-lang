@@ -1,0 +1,20 @@
+package fnv
+
+type digest64 struct {
+    hash uint64
+}
+
+func New64a() *digest64 {
+    return &digest64{hash: 14695981039346656037}
+}
+
+func (h *digest64) Write(p []byte) (int, error) {
+    for _, b := range p {
+        h.hash = (h.hash ^ uint64(b)) * 1099511628211
+    }
+    return len(p), nil
+}
+
+func (h *digest64) Sum64() uint64 {
+    return h.hash
+}

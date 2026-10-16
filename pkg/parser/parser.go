@@ -547,6 +547,45 @@ func (p *Parser) parseReturnTypeListWithNames() ([]ast.TypeExpr, []string) {
 	p.nextToken() // '('
 	p.nextToken() // first name or type
 	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
+		if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) && p.hasNamedParameterGroup() {
+			namesInGroup := []*ast.Identifier{{Token: p.curToken, Value: p.curToken.Literal}}
+			idx := p.curIdx()
+			typeIdx := -1
+			for idx+2 < len(p.tokens) && p.tokens[idx+1].Type == token.COMMA {
+				candidate := idx + 2
+				if p.tokens[candidate].Type != token.IDENT {
+					break
+				}
+				if candidate+1 < len(p.tokens) &&
+					p.tokens[candidate+1].Type != token.COMMA &&
+					p.tokens[candidate+1].Type != token.RPAREN {
+					namesInGroup = append(namesInGroup, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+					typeIdx = candidate + 1
+					break
+				}
+				namesInGroup = append(namesInGroup, &ast.Identifier{Token: p.tokens[candidate], Value: p.tokens[candidate].Literal})
+				idx = candidate
+			}
+			if typeIdx >= 0 {
+				for p.curIdx() < typeIdx {
+					p.nextToken()
+				}
+				typ := p.parseTypeExpr()
+				for range namesInGroup {
+					returns = append(returns, typ)
+					names = append(names, "")
+				}
+				if p.peekTokenIs(token.COMMA) {
+					p.nextToken()
+					if p.peekTokenIs(token.RPAREN) {
+						break
+					}
+					p.nextToken()
+					continue
+				}
+				break
+			}
+		}
 		name := ""
 		if p.curTokenIs(token.IDENT) && isTypeStartToken(p.peekToken.Type) {
 			name = p.curToken.Literal

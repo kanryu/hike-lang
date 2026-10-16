@@ -105,6 +105,20 @@ func (m *Mapping) Pointer(offset int) *byte {
     if m == nil || offset < 0 || offset >= m.length { return nil }
     return m.Buffer.Ptr() + offset
 }
+
+// PointerOffsets returns the serialized relocation offsets stored after the
+// payload. The offsets are relative to the first byte of Buffer.
+func (m *Mapping) PointerOffsets() []uint64 {
+    if m == nil || m.raw == nil { return []uint64{} }
+    count := int(readUint64At(m.raw, 16))
+    result := make([]uint64, count)
+    base := headerSize + m.length
+    for i := 0; i < count; i++ {
+        result[i] = readUint64At(m.raw, base + i*8)
+    }
+    return result
+}
+
 func (m *Mapping) Close() error {
     if m == nil || m.raw == nil { return nil }
     m.Buffer.Close()

@@ -146,6 +146,11 @@ func (l *Loader) SetCompileFork(enabled bool) { l.compileFork = enabled }
 func (l *Loader) SetGoHikeMode(enabled bool) {
 	l.goHikeMode = enabled
 	if enabled {
+		l.buildTags["go_hike"] = true
+	} else {
+		delete(l.buildTags, "go_hike")
+	}
+	if enabled {
 		LoadGoHikeBot(l)
 	}
 }
@@ -383,6 +388,9 @@ func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 			l.applyGoHikeReplacements(string(content))
 		}
 		for _, imp := range fileProg.Imports {
+			if isGoHikeBuiltinImport(imp.Path) {
+				continue
+			}
 			if l.module == nil {
 				if l.goHikeMode {
 					return nil, fmt.Errorf("cannot resolve import %q from %s: module information is unavailable", imp.Path, fileDir)
@@ -510,6 +518,9 @@ func (l *Loader) parseFilesAndStartImports(paths []string) ([]loadedFile, error)
 
 func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) error {
 	for _, imp := range imports {
+		if isGoHikeBuiltinImport(imp.Path) {
+			continue
+		}
 		if l.module == nil {
 			if l.goHikeMode {
 				return fmt.Errorf("cannot resolve import %q from %s: module information is unavailable", imp.Path, fromDir)
@@ -554,6 +565,13 @@ func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) error {
 		}()
 	}
 	return nil
+}
+
+// Go's compiler-provided packages do not have source directories to load.
+// Go-Hike compatibility mode still needs to preserve their imports in the AST,
+// but must not send them through module path resolution.
+func isGoHikeBuiltinImport(path string) bool {
+	return path == "unsafe"
 }
 
 func (l *Loader) parseFile(path string) (loadedFile, error) {

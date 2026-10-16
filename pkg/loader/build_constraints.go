@@ -81,6 +81,9 @@ func (l *Loader) SetTarget(tgt *target.Target) {
 	if tgt.Name != "" {
 		tags[strings.ToLower(tgt.Name)] = true
 	}
+	if l.goHikeMode {
+		tags["go_hike"] = true
+	}
 	l.buildTags = tags
 }
 

@@ -237,6 +237,10 @@ func validateStmt(s ast.Statement, path string) error {
 		return validateTypeCase(n, path)
 	case *ast.BreakStmt, *ast.ContinueStmt:
 		return nil
+	case *ast.TypeDecl:
+		// Local type declarations affect semantic resolution but emit no
+		// runtime instructions and therefore require no concrete validation.
+		return nil
 	default:
 		return fmt.Errorf("unsupported statement node %T at %s", s, path)
 	}
