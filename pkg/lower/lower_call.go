@@ -377,6 +377,24 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 	if recvType == nil {
 		return "", nil, nil, false
 	}
+	acceptMethodCandidate := func(fn *sema.FuncType) bool {
+		if fn == nil {
+			return false
+		}
+		if fn.IsMethod {
+			return true
+		}
+		// Some builtins are represented as free functions with the receiver
+		// as their first parameter (for example map.add). Keep supporting
+		// those, but reject same-named helpers whose first parameter is not
+		// the receiver (for example JSONValue_Set([]JSONValue, ...)).
+		if len(fn.ParamTypes) == 0 {
+			return false
+		}
+		first := strings.TrimPrefix(semaTypeName(fn.ParamTypes[0]), "*")
+		receiver := strings.TrimPrefix(semaTypeName(recvType), "*")
+		return first == receiver
+	}
 
 	rawTypeName := strings.TrimPrefix(semaTypeName(recvType), "*")
 	shortTypeName := rawTypeName
@@ -409,7 +427,14 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 
 	canonicalTarget := sema.CanonicalMethodName(rawTypeName, methodName)
 	if fn, canonical := c.root.semaCtx.LookupFunction(canonicalTarget); fn != nil {
-		return canonical, fn, curPtr, true
+		// A package can also expose a free function whose name has the same
+		// receiver_method spelling as a method compatibility shim.  Do not
+		// treat that function as a method when the receiver lookup above did
+		// not find an actual method; doing so can lower a method call to the
+		// current function and recurse at runtime.
+		if acceptMethodCandidate(fn) {
+			return canonical, fn, curPtr, true
+		}
 	}
 
 	candidates := []string{
@@ -431,12 +456,14 @@ func (c *CallLowerer) ResolveMethod(recvType sema.Type, methodName string, curPt
 
 	for _, cand := range candidates {
 		if fn, canonical := c.root.semaCtx.LookupFunction(cand); fn != nil {
-			return canonical, fn, curPtr, true
+			if acceptMethodCandidate(fn) {
+				return canonical, fn, curPtr, true
+			}
 		}
 	}
 
 	for k, fn := range c.root.semaCtx.Functions {
-		if strings.HasSuffix(k, "_"+methodName) {
+		if acceptMethodCandidate(fn) && strings.HasSuffix(k, "_"+methodName) {
 			if strings.Contains(k, rawTypeName) || strings.Contains(k, shortTypeName) {
 				return k, fn, curPtr, true
 			}

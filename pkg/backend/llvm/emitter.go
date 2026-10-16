@@ -1495,6 +1495,12 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 	case *hir.InstrBinary:
 		e.emitBinary(i)
 
+	case *hir.InstrSelect:
+		e.renderedTypes[i.Dst.String()] = i.Dst.Typ.LLVMType()
+		e.b.WriteString(fmt.Sprintf("  %s = select i1 %s, %s %s, %s %s\n",
+			i.Dst, e.formatVal(i.Cond), i.Dst.Typ.LLVMType(), e.formatVal(i.True),
+			i.Dst.Typ.LLVMType(), e.formatVal(i.False)))
+
 	case *hir.InstrUnary:
 		e.emitUnary(i)
 

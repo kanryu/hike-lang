@@ -1223,7 +1223,15 @@ func (e *ExprLowerer) lowerTypeAssertExpr(tae *ast.TypeAssertExpr, trapOnFailure
 	} else {
 		typedPtr := e.root.nextReg(&sema.PointerType{Base: targetType})
 		e.root.emit(&hir.InstrCast{Dst: typedPtr, Val: dataPtrReg, ToType: &sema.PointerType{Base: targetType}})
-		e.root.emit(&hir.InstrLoad{Dst: unpackedReg, Ptr: typedPtr})
+		// A failed assertion has a nil data pointer. Select a zero-value
+		// backing allocation before loading so the comma-ok result remains
+		// safe without forcing callers to add nil checks.
+		zeroPtr := e.root.nextReg(&sema.PointerType{Base: targetType})
+		e.root.emit(&hir.InstrAlloca{Dst: zeroPtr, AllocType: targetType})
+		e.root.emit(&hir.InstrStore{Val: e.root.defaultConstValue(targetType), Ptr: zeroPtr})
+		safePtr := e.root.nextReg(&sema.PointerType{Base: targetType})
+		e.root.emit(&hir.InstrSelect{Dst: safePtr, Cond: matchReg, True: typedPtr, False: zeroPtr})
+		e.root.emit(&hir.InstrLoad{Dst: unpackedReg, Ptr: safePtr})
 	}
 
 	tupleType := &sema.TupleType{Types: []sema.Type{targetType, sema.TypeBool}}

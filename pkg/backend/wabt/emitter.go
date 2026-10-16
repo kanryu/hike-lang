@@ -1384,6 +1384,8 @@ func (e *Emitter) emitCallStatic(x *hir.InstrCallStatic) {
 
 func (e *Emitter) instruction(in hir.Instruction) {
 	switch x := in.(type) {
+	case *hir.InstrSelect:
+		e.set(x.Dst, "(select "+e.valAs(x.True, x.Dst.Typ)+" "+e.valAs(x.False, x.Dst.Typ)+" "+e.valAs(x.Cond, sema.TypeBool)+")")
 	case *hir.InstrBinary:
 		op := map[hir.Opcode]string{hir.OpAdd: "add", hir.OpSub: "sub", hir.OpMul: "mul", hir.OpDiv: "div_s", hir.OpRem: "rem_s", hir.OpAnd: "and", hir.OpOr: "or", hir.OpXor: "xor", hir.OpShl: "shl", hir.OpShr: "shr_s", hir.OpEq: "eq", hir.OpNeq: "ne", hir.OpLt: "lt_s", hir.OpLe: "le_s", hir.OpGt: "gt_s", hir.OpGe: "ge_s"}[x.Op]
 		if unsignedInteger(x.L.Type()) || x.LogicalShift {

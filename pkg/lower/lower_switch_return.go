@@ -264,9 +264,9 @@ func (s *StmtLowerer) LowerTypeSwitchStmt(tss *ast.TypeSwitchStmt) {
 		e := s.root
 		e.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 0})
 		e.emit(&hir.InstrExtractValue{Dst: itabRawReg, Agg: exprVal, Index: 1})
-		typeIDPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeInt32})
-		e.emit(&hir.InstrCast{Dst: typeIDPtr, Val: itabRawReg, ToType: &sema.PointerType{Base: sema.TypeInt32}})
-		e.emit(&hir.InstrLoad{Dst: actualTypeIDReg, Ptr: typeIDPtr})
+		// A nil interface has no itab.  Use the null-safe runtime helper
+		// instead of casting the itab to an integer pointer and loading it.
+		e.emit(&hir.InstrCallStatic{Dst: actualTypeIDReg, CalleeName: "__hike_iface_typeid", Args: []hir.Value{itabRawReg}})
 	} else {
 		s.root.emit(&hir.InstrExtractValue{Dst: dataPtrReg, Agg: exprVal, Index: 1})
 		s.root.emit(&hir.InstrExtractValue{Dst: actualTypeIDReg, Agg: exprVal, Index: 0})

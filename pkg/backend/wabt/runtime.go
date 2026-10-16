@@ -27,6 +27,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_map_delete":    true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_append": true,
 	"__hike_string_start":     true,
+	"__hike_iface_typeid":     true,
 	"__hike_slice_to_str":     true,
 	"__hike_utf8_decode_rune": true, "__hike_utf8_rune_size": true,
 	"__hike_utf8_rune_to_string": true,
@@ -633,6 +634,9 @@ var wasmRuntime = map[string]runtimeFunc{
     (local $sign i32)
     (local.set $sign (i32.shr_s (local.get $encoded_offset) (i32.const 31)))
     (i32.add (local.get $base) (i32.xor (local.get $encoded_offset) (local.get $sign))))`},
+	"__hike_iface_typeid": runtimeFunc{body: `(func $__hike_iface_typeid (param $itab i32) (result i32)
+    (if (i32.eqz (local.get $itab)) (then (return (i32.const 0))))
+    (i32.load (local.get $itab)))`},
 	"__hike_map_delete_str": runtimeFunc{deps: []string{"__hike_slice_to_str", "__hike_map_delete", "free"}, body: `(func $__hike_map_delete_str (param $m i32) (param $ptr i32) (param $len i32)
     (local $key i32)
     (local.set $key (call $__hike_slice_to_str (local.get $ptr) (local.get $len)))
@@ -714,7 +718,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_cbuffer_new", "__hike_cbuffer_close", "__hike_cbuffer_length", "__hike_cbuffer_data", "__hike_cbuffer_slice", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_iface_typeid", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_cbuffer_new", "__hike_cbuffer_close", "__hike_cbuffer_length", "__hike_cbuffer_data", "__hike_cbuffer_slice", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

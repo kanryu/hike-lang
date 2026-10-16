@@ -335,6 +335,21 @@ func (i *InstrBinary) String() string {
 	return fmt.Sprintf("  %s = %s %s, %s", i.Dst, i.Op, i.L, i.R)
 }
 
+// InstrSelect chooses one value without evaluating either value's memory
+// effects.  It is used by type assertions to avoid loading from a nil data
+// pointer when the assertion fails.
+type InstrSelect struct {
+	Dst   *Reg
+	Cond  Value
+	True  Value
+	False Value
+}
+
+func (i *InstrSelect) Result() *Reg { return i.Dst }
+func (i *InstrSelect) String() string {
+	return fmt.Sprintf("  %s = select %s, %s, %s", i.Dst, i.Cond, i.True, i.False)
+}
+
 type InstrUnary struct {
 	Dst *Reg
 	Op  Opcode
