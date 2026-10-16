@@ -18,6 +18,7 @@ func TestEmitMemoryMapMetadataIsRetainedInLLVMUsed(t *testing.T) {
 				{Name: "count", Type: "int", TypeID: 1, Offset: 0, Size: 8, Kind: hir.MemoryMapScalar},
 				{Name: "name", Type: "string", TypeID: 2, Offset: 8, Size: 16, Kind: hir.MemoryMapString},
 			},
+			HeapSlots: []hir.MemoryMapHeapSlot{{FieldOffset: 24, HeapIndex: 0}},
 		}},
 	}
 	emitter := NewEmitter(program, nil, "x86_64-w64-windows-gnu", "", false)
@@ -27,10 +28,9 @@ func TestEmitMemoryMapMetadataIsRetainedInLLVMUsed(t *testing.T) {
 		"@__hike_mmap_state_size = private constant i64 48",
 		"@__hike_mmap_state_schema_hash = private constant i64 1234",
 		"@__hike_mmap_state_offsets = private constant [2 x i64] [i64 0, i64 8]",
-		"@__hike_mmap_state_sizes = private constant [2 x i64] [i64 8, i64 16]",
-		"@__hike_mmap_state_type_ids = private constant [2 x i64] [i64 1, i64 2]",
-		"@__hike_mmap_state_names = private constant [9 x i8] c\"countname\"",
-		"@llvm.used = appending global [9 x i8*]",
+		"@__hike_mmap_state_heap_offsets = private constant [1 x i64] [i64 24]",
+		"@__hike_mmap_state_heap_indices = private constant [1 x i64] [i64 0]",
+		"@llvm.used = appending global [5 x i8*]",
 	} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("memory-map metadata missing %q:\n%s", want, ir)

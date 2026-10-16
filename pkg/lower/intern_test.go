@@ -26,3 +26,20 @@ func TestStringConstantsReceiveStableInternIDsAndHashes(t *testing.T) {
 		t.Fatal("different literals unexpectedly received the same hash")
 	}
 }
+
+func TestMemoryMapOffsetsUseEightByteAlignment(t *testing.T) {
+	for _, test := range []struct {
+		in  int
+		out int
+	}{
+		{in: 0, out: 0},
+		{in: 1, out: 8},
+		{in: 4, out: 8},
+		{in: 8, out: 8},
+		{in: 15, out: 16},
+	} {
+		if got := alignMemoryMapOffset(test.in); got != test.out {
+			t.Fatalf("alignMemoryMapOffset(%d) = %d, want %d", test.in, got, test.out)
+		}
+	}
+}

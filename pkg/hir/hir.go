@@ -124,9 +124,19 @@ type MemoryMapField struct {
 	Kind   MemoryMapFieldKind
 }
 
+// MemoryMapHeapSlot is the type-independent relocation table entry for a
+// heap-backed value. FieldOffset points at the fixed image word that stores
+// the relative heap-buffer position; HeapIndex identifies that payload in
+// serialization order.
+type MemoryMapHeapSlot struct {
+	FieldOffset int
+	HeapIndex   int
+}
+
 type MemoryMapDecl struct {
 	Name       string
 	Fields     []MemoryMapField
+	HeapSlots  []MemoryMapHeapSlot
 	Size       int
 	SchemaHash uint64
 }

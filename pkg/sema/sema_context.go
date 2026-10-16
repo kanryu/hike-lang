@@ -2642,6 +2642,9 @@ func (c *Context) ResolveSliceExprType(leftType Type, low, high ast.Expression) 
 
 func (c *Context) inferIdentifierTypeWithDiag(e *ast.Identifier, locals map[string]Type, reporter *diag.Reporter, filename string) Type {
 	name := astIdentifierValue(e)
+	if t, ok := c.MappedHandleType(name); ok {
+		return t
+	}
 	if t, ok := locals[name]; ok {
 		return t
 	}

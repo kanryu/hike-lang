@@ -12,9 +12,14 @@ declare i8* @fopen(i8*, i8*)
 declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i32 @fclose(i8*)
+declare i64 @fseek(i8*, i64, i64)
+declare i64 @_ftelli64(i8*)
 
 @__hike_mapped_write_mode = private unnamed_addr constant [3 x i8] c"wb\00"
 @__hike_mapped_read_mode = private unnamed_addr constant [3 x i8] c"rb\00"
+@__hike_mapped_append_mode = private unnamed_addr constant [3 x i8] c"ab\00"
+@__hike_mapped_update_mode = private unnamed_addr constant [4 x i8] c"rb+\00"
+@__hike_mapped_magic = private unnamed_addr constant [4 x i8] c"HMB3"
 
 define internal i32 @__hike_mapped_save(i8* %path_ptr, i8* %data, i64 %size) {
 entry:
@@ -50,6 +55,234 @@ read:
   ret i32 %result32
 fail:
   ret i32 0
+}
+
+define internal i32 @__hike_mapped_graph_save(i8* %path_ptr, i8* %data, i64 %size, i8* %relocations, i64 %relocation_count, i64 %schema_hash) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_write_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %write
+write:
+  %header = alloca [64 x i8], align 8
+  %header_bytes = bitcast [64 x i8]* %header to i8*
+  %magic = getelementptr inbounds [4 x i8], [4 x i8]* @__hike_mapped_magic, i32 0, i32 0
+  call i8* @memcpy(i8* %header_bytes, i8* %magic, i64 4)
+  %version_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 4
+  %version = bitcast i8* %version_ptr to i32*
+  store i32 3, i32* %version, align 1
+  %root_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 8
+  %root = bitcast i8* %root_ptr to i64*
+  store i64 %size, i64* %root, align 1
+  %schema_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 40
+  %schema = bitcast i8* %schema_ptr to i64*
+  store i64 %schema_hash, i64* %schema, align 1
+  %written_header = call i64 @fwrite(i8* %header_bytes, i64 1, i64 64, i8* %file)
+  %written_data = call i64 @fwrite(i8* %data, i64 1, i64 %size, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %header_ok = icmp eq i64 %written_header, 64
+  %data_ok = icmp eq i64 %written_data, %size
+  %close_ok = icmp eq i32 %closed, 0
+  %ok0 = and i1 %header_ok, %data_ok
+  %ok = and i1 %ok0, %close_ok
+  %result = zext i1 %ok to i32
+  ret i32 %result
+fail:
+  ret i32 0
+}
+
+define internal i32 @__hike_mapped_graph_finalize(i8* %path_ptr, i64 %root_size, i64 %schema_hash) {
+entry:
+  %mode_ptr = getelementptr inbounds [4 x i8], [4 x i8]* @__hike_mapped_update_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %measure
+measure:
+  %end_result = call i64 @fseek(i8* %file, i64 0, i64 2)
+  %file_size = call i64 @_ftelli64(i8* %file)
+  %payload_start = add i64 %root_size, 64
+  %payload_size = sub i64 %file_size, %payload_start
+  %header = alloca [64 x i8], align 8
+  %header_bytes = bitcast [64 x i8]* %header to i8*
+  %magic = getelementptr inbounds [4 x i8], [4 x i8]* @__hike_mapped_magic, i32 0, i32 0
+  call i8* @memcpy(i8* %header_bytes, i8* %magic, i64 4)
+  %version_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 4
+  %version = bitcast i8* %version_ptr to i32*
+  store i32 3, i32* %version, align 1
+  %root_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 8
+  %root = bitcast i8* %root_ptr to i64*
+  store i64 %root_size, i64* %root, align 1
+  %heap_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 16
+  %heap = bitcast i8* %heap_ptr to i64*
+  store i64 %payload_size, i64* %heap, align 1
+  %payload_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 32
+  %payload = bitcast i8* %payload_ptr to i64*
+  store i64 %payload_size, i64* %payload, align 1
+  %schema_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 40
+  %schema = bitcast i8* %schema_ptr to i64*
+  store i64 %schema_hash, i64* %schema, align 1
+  %relocation_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 48
+  %relocation = bitcast i8* %relocation_ptr to i64*
+  store i64 %file_size, i64* %relocation, align 1
+  %relocation_bytes_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 56
+  %relocation_bytes = bitcast i8* %relocation_bytes_ptr to i64*
+  store i64 0, i64* %relocation_bytes, align 1
+  %rewrite = call i64 @fseek(i8* %file, i64 0, i64 0)
+  %written = call i64 @fwrite(i8* %header_bytes, i64 1, i64 64, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %write_ok = icmp eq i64 %written, 64
+  %close_ok = icmp eq i32 %closed, 0
+  %ok = and i1 %write_ok, %close_ok
+  %result = zext i1 %ok to i32
+  ret i32 %result
+fail:
+  ret i32 0
+}
+
+define internal i32 @__hike_mapped_graph_load(i8* %path_ptr, i8* %data, i64 %size, i8* %relocations, i64 %relocation_count, i64 %schema_hash) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_read_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %read_header
+read_header:
+  %header = alloca [64 x i8], align 8
+  %header_bytes = bitcast [64 x i8]* %header to i8*
+  %read_header_bytes = call i64 @fread(i8* %header_bytes, i64 1, i64 64, i8* %file)
+  %magic = getelementptr inbounds [4 x i8], [4 x i8]* @__hike_mapped_magic, i32 0, i32 0
+  %magic_cmp = call i32 @memcmp(i8* %header_bytes, i8* %magic, i64 4)
+  %magic_ok = icmp eq i32 %magic_cmp, 0
+  %version_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 4
+  %version = bitcast i8* %version_ptr to i32*
+  %version_value = load i32, i32* %version, align 1
+  %version_ok = icmp eq i32 %version_value, 3
+  %root_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 8
+  %root = bitcast i8* %root_ptr to i64*
+  %root_value = load i64, i64* %root, align 1
+  %root_ok = icmp eq i64 %root_value, %size
+  %schema_ptr = getelementptr inbounds i8, i8* %header_bytes, i64 40
+  %schema = bitcast i8* %schema_ptr to i64*
+  %schema_value = load i64, i64* %schema, align 1
+  %schema_ok = icmp eq i64 %schema_value, %schema_hash
+  %header_ok0 = icmp eq i64 %read_header_bytes, 64
+  %header_ok1 = and i1 %header_ok0, %magic_ok
+  %header_ok2 = and i1 %header_ok1, %version_ok
+  %header_ok3 = and i1 %header_ok2, %root_ok
+  %header_ok = and i1 %header_ok3, %schema_ok
+  br i1 %header_ok, label %read_data, label %close_fail
+read_data:
+  %read = call i64 @fread(i8* %data, i64 1, i64 %size, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %read_ok = icmp eq i64 %read, %size
+  %close_ok = icmp eq i32 %closed, 0
+  %ok = and i1 %read_ok, %close_ok
+  %result = zext i1 %ok to i32
+  ret i32 %result
+close_fail:
+  call i32 @fclose(i8* %file)
+  br label %fail
+fail:
+  ret i32 0
+}
+
+; Mapped strings and slices are stored as payload bytes after the fixed image.
+; The fixed image keeps the payload offset and length, never a process-local
+; pointer or reference counter.
+define internal i32 @__hike_mapped_string_append(i8* %path_ptr, i8* %data, i32 %len) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_append_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %write
+write:
+  %len64 = zext i32 %len to i64
+  %written = call i64 @fwrite(i8* %data, i64 1, i64 %len64, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %ok = icmp eq i64 %written, %len64
+  %ok2 = icmp eq i32 %closed, 0
+  %result = and i1 %ok, %ok2
+  %result32 = zext i1 %result to i32
+  ret i32 %result32
+fail:
+  ret i32 0
+}
+
+define internal { i8*, i32, i32 } @__hike_mapped_string_load(i8* %path_ptr, i32 %file_offset, i32 %len) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_read_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %seek
+seek:
+  %file_offset64 = sext i32 %file_offset to i64
+  %mapped_offset = add i64 %file_offset64, 64
+  %seek_result = call i64 @fseek(i8* %file, i64 %mapped_offset, i64 0)
+  %seek_failed = icmp ne i64 %seek_result, 0
+  br i1 %seek_failed, label %close_fail, label %allocate
+allocate:
+  %len64 = zext i32 %len to i64
+  %alloc_size = add i64 %len64, 9
+  %raw = call i8* @malloc(i64 %alloc_size)
+  %cap_ptr = bitcast i8* %raw to i32*
+  store i32 %len, i32* %cap_ptr
+  %ref_ptr = getelementptr inbounds i8, i8* %raw, i64 4
+  %ref32 = bitcast i8* %ref_ptr to i32*
+  store i32 1, i32* %ref32
+  %data = getelementptr inbounds i8, i8* %raw, i64 8
+  %read = call i64 @fread(i8* %data, i64 1, i64 %len64, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %read_ok = icmp eq i64 %read, %len64
+  %close_ok = icmp eq i32 %closed, 0
+  %ok = and i1 %read_ok, %close_ok
+  br i1 %ok, label %success, label %free_fail
+success:
+  %value0 = insertvalue { i8*, i32, i32 } undef, i8* %data, 0
+  %value1 = insertvalue { i8*, i32, i32 } %value0, i32 0, 1
+  %value2 = insertvalue { i8*, i32, i32 } %value1, i32 %len, 2
+  ret { i8*, i32, i32 } %value2
+free_fail:
+  call void @free(i8* %raw)
+  ret { i8*, i32, i32 } zeroinitializer
+close_fail:
+  call i32 @fclose(i8* %file)
+  br label %fail
+fail:
+  ret { i8*, i32, i32 } zeroinitializer
+}
+
+define internal i8* @__hike_mapped_slice_load(i8* %path_ptr, i32 %file_offset, i32 %len, i64 %elem_size) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_read_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %seek
+seek:
+  %file_offset64 = sext i32 %file_offset to i64
+  %mapped_offset = add i64 %file_offset64, 64
+  %seek_result = call i64 @fseek(i8* %file, i64 %mapped_offset, i64 0)
+  %seek_failed = icmp ne i64 %seek_result, 0
+  br i1 %seek_failed, label %close_fail, label %allocate
+allocate:
+  %len64 = zext i32 %len to i64
+  %bytes = mul i64 %len64, %elem_size
+  %owner = call i8* @__hike_slice_alloc(i64 %bytes, i64 %len64)
+  %read = call i64 @fread(i8* %owner, i64 1, i64 %bytes, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %read_ok = icmp eq i64 %read, %bytes
+  %close_ok = icmp eq i32 %closed, 0
+  %ok = and i1 %read_ok, %close_ok
+  br i1 %ok, label %success, label %free_fail
+success:
+  ret i8* %owner
+free_fail:
+  %raw = getelementptr inbounds i8, i8* %owner, i64 -16
+  call void @free(i8* %raw)
+  ret i8* null
+close_fail:
+  call i32 @fclose(i8* %file)
+  br label %fail
+fail:
+  ret i8* null
 }
 
 ; cbuffer is an explicitly-owned foreign buffer. It has no Hike-side
@@ -1467,6 +1700,91 @@ entry:
   ret %struct.__hike_map* %m
 }
 
+; mapped persistence keeps a private in-process snapshot of a map.  The map
+; entries are copied so updates to the live map after serialization do not
+; mutate the saved snapshot.  Boxed values remain owned by their existing
+; heap objects and are restored together with the cloned entry table.
+define internal %struct.__hike_map* @__hike_mapped_map_clone(%struct.__hike_map* %src) {
+entry:
+  %is_null = icmp eq %struct.__hike_map* %src, null
+  br i1 %is_null, label %null_ret, label %alloc_map
+null_ret:
+  ret %struct.__hike_map* null
+alloc_map:
+  %raw = call i8* @malloc(i64 32)
+  %dst = bitcast i8* %raw to %struct.__hike_map*
+  %src_b_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %src, i32 0, i32 0
+  %src_b = load %struct.__hike_map_entry**, %struct.__hike_map_entry*** %src_b_p
+  %src_nb_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %src, i32 0, i32 1
+  %src_nb = load i64, i64* %src_nb_p
+  %src_len_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %src, i32 0, i32 2
+  %src_len = load i64, i64* %src_len_p
+  %src_str_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %src, i32 0, i32 3
+  %src_str = load i64, i64* %src_str_p
+  %dst_b_raw = call i8* @calloc(i64 %src_nb, i64 8)
+  %dst_b = bitcast i8* %dst_b_raw to %struct.__hike_map_entry**
+  %dst_b_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %dst, i32 0, i32 0
+  store %struct.__hike_map_entry** %dst_b, %struct.__hike_map_entry*** %dst_b_p
+  %dst_nb_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %dst, i32 0, i32 1
+  store i64 %src_nb, i64* %dst_nb_p
+  %dst_len_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %dst, i32 0, i32 2
+  store i64 %src_len, i64* %dst_len_p
+  %dst_str_p = getelementptr inbounds %struct.__hike_map, %struct.__hike_map* %dst, i32 0, i32 3
+  store i64 %src_str, i64* %dst_str_p
+  br label %bucket_cond
+bucket_cond:
+  %bucket = phi i64 [ 0, %alloc_map ], [ %bucket_next, %bucket_next_block ]
+  %bucket_done = icmp uge i64 %bucket, %src_nb
+  br i1 %bucket_done, label %done, label %bucket_body
+bucket_body:
+  %src_head_p = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %src_b, i64 %bucket
+  %src_head = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %src_head_p
+  %dst_head_p = getelementptr inbounds %struct.__hike_map_entry*, %struct.__hike_map_entry** %dst_b, i64 %bucket
+  br label %entry_cond
+entry_cond:
+  %cur = phi %struct.__hike_map_entry* [ %src_head, %bucket_body ], [ %src_next, %entry_next ]
+  %dst_prev = phi %struct.__hike_map_entry* [ null, %bucket_body ], [ %copy, %entry_next ]
+  %has_cur = icmp ne %struct.__hike_map_entry* %cur, null
+  br i1 %has_cur, label %entry_copy, label %entry_done
+entry_copy:
+  %raw_entry = call i8* @malloc(i64 32)
+  %copy = bitcast i8* %raw_entry to %struct.__hike_map_entry*
+  %cur_hash_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 0
+  %cur_hash = load i64, i64* %cur_hash_p
+  %copy_hash_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %copy, i32 0, i32 0
+  store i64 %cur_hash, i64* %copy_hash_p
+  %cur_key_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 1
+  %cur_key = load i64, i64* %cur_key_p
+  %copy_key_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %copy, i32 0, i32 1
+  store i64 %cur_key, i64* %copy_key_p
+  %cur_val_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 2
+  %cur_val = load i64, i64* %cur_val_p
+  %copy_val_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %copy, i32 0, i32 2
+  store i64 %cur_val, i64* %copy_val_p
+  %copy_next_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %copy, i32 0, i32 3
+  store %struct.__hike_map_entry* null, %struct.__hike_map_entry** %copy_next_p
+  %has_prev = icmp ne %struct.__hike_map_entry* %dst_prev, null
+  br i1 %has_prev, label %link_prev, label %link_head
+link_prev:
+  %prev_next_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %dst_prev, i32 0, i32 3
+  store %struct.__hike_map_entry* %copy, %struct.__hike_map_entry** %prev_next_p
+  br label %entry_next
+link_head:
+  store %struct.__hike_map_entry* %copy, %struct.__hike_map_entry** %dst_head_p
+  br label %entry_next
+entry_next:
+  %src_next_p = getelementptr inbounds %struct.__hike_map_entry, %struct.__hike_map_entry* %cur, i32 0, i32 3
+  %src_next = load %struct.__hike_map_entry*, %struct.__hike_map_entry** %src_next_p
+  br label %entry_cond
+entry_done:
+  br label %bucket_next_block
+bucket_next_block:
+  %bucket_next = add i64 %bucket, 1
+  br label %bucket_cond
+done:
+  ret %struct.__hike_map* %dst
+}
+
 ; マップバケットの拡張と再ハッシュ
 define internal void @__hike_map_grow(%struct.__hike_map* %m) {
 entry:
@@ -2128,6 +2446,49 @@ store_map:
   %p_entry_cap = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %map, i32 0, i32 6
   store i64 %cap, i64* %p_entry_cap
   ret %struct.__hike_compact_map* %map
+}
+
+; Clone the compact map backing a source-level map value. The public map
+; pointer is the legacy-compatible address 32 bytes before the compact state.
+define internal %struct.__hike_map* @__hike_mapped_compact_map_clone(%struct.__hike_map* %src) {
+entry:
+  %is_null = icmp eq %struct.__hike_map* %src, null
+  br i1 %is_null, label %null_ret, label %load_src
+null_ret:
+  ret %struct.__hike_map* null
+load_src:
+  %src_raw = bitcast %struct.__hike_map* %src to i8*
+  %src_state_raw = getelementptr i8, i8* %src_raw, i64 32
+  %src_state = bitcast i8* %src_state_raw to %struct.__hike_compact_map*
+  %src_cap_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %src_state, i32 0, i32 2
+  %src_cap = load i64, i64* %src_cap_p
+  %src_entry_cap_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %src_state, i32 0, i32 6
+  %src_entry_cap = load i64, i64* %src_entry_cap_p
+  %map_raw = call i8* @malloc(i64 88)
+  %dst_raw = getelementptr i8, i8* %map_raw, i64 32
+  %dst_state = bitcast i8* %dst_raw to %struct.__hike_compact_map*
+  %state_bytes = mul i64 7, 8
+  %state_copy = call i8* @memcpy(i8* %dst_raw, i8* %src_state_raw, i64 %state_bytes)
+  %index_bytes = mul i64 %src_cap, 8
+  %src_indices_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %src_state, i32 0, i32 0
+  %src_indices = load i64*, i64** %src_indices_p
+  %index_raw = call i8* @malloc(i64 %index_bytes)
+  %dst_indices = bitcast i8* %index_raw to i64*
+  %src_indices_bytes = bitcast i64* %src_indices to i8*
+  %index_copy = call i8* @memcpy(i8* %index_raw, i8* %src_indices_bytes, i64 %index_bytes)
+  %dst_indices_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %dst_state, i32 0, i32 0
+  store i64* %dst_indices, i64** %dst_indices_p
+  %entry_bytes = mul i64 %src_entry_cap, 40
+  %src_entries_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %src_state, i32 0, i32 1
+  %src_entries = load %struct.__hike_compact_map_entry*, %struct.__hike_compact_map_entry** %src_entries_p
+  %entry_raw = call i8* @malloc(i64 %entry_bytes)
+  %dst_entries = bitcast i8* %entry_raw to %struct.__hike_compact_map_entry*
+  %src_entries_bytes = bitcast %struct.__hike_compact_map_entry* %src_entries to i8*
+  %entry_copy = call i8* @memcpy(i8* %entry_raw, i8* %src_entries_bytes, i64 %entry_bytes)
+  %dst_entries_p = getelementptr %struct.__hike_compact_map, %struct.__hike_compact_map* %dst_state, i32 0, i32 1
+  store %struct.__hike_compact_map_entry* %dst_entries, %struct.__hike_compact_map_entry** %dst_entries_p
+  %result = bitcast i8* %map_raw to %struct.__hike_map*
+  ret %struct.__hike_map* %result
 }
 
 define internal i1 @__hike_compact_map_get(%struct.__hike_compact_map* %m, i64 %key, i64 %hash, i64* %out) {

@@ -103,7 +103,7 @@ func NewEmitter(prog *hir.Program, semaCtx *sema.Context, targetTriple, sourcePa
 	// memory-map persistence helpers.  Mark them as emitted so a source-level
 	// extern declaration from std/os does not duplicate the LLVM declaration.
 	if !e.isWasmTarget() {
-		for _, sym := range []string{"fopen", "fwrite", "fread", "fclose"} {
+		for _, sym := range []string{"fopen", "fwrite", "fread", "fclose", "fseek"} {
 			e.declaredSymbols[sym] = true
 		}
 	}
@@ -272,7 +272,7 @@ func (e *Emitter) emitGlobals() {
 }
 
 func (e *Emitter) emitMemoryMapMetadata() {
-	usedDecls := make([]string, 0, len(e.prog.MemoryMaps)*9)
+	usedDecls := make([]string, 0, len(e.prog.MemoryMaps)*4)
 	for _, mapping := range e.prog.MemoryMaps {
 		if mapping == nil {
 			continue
@@ -282,18 +282,8 @@ func (e *Emitter) emitMemoryMapMetadata() {
 			fmt.Sprintf("i8* bitcast (i64* @__hike_mmap_%s_size to i8*)", name),
 			fmt.Sprintf("i8* bitcast (i64* @__hike_mmap_%s_schema_hash to i8*)", name),
 			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_offsets to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i32]* @__hike_mmap_%s_kinds to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_type_ids to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_sizes to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_name_offsets to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_name_lengths to i8*)", len(mapping.Fields), name),
-			fmt.Sprintf("i8* bitcast ([%d x i8]* @__hike_mmap_%s_names to i8*)", len([]byte(strings.Join(func() []string {
-				names := make([]string, len(mapping.Fields))
-				for i, field := range mapping.Fields {
-					names[i] = field.Name
-				}
-				return names
-			}(), ""))), name))
+			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_heap_offsets to i8*)", len(mapping.HeapSlots), name),
+			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_heap_indices to i8*)", len(mapping.HeapSlots), name))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_size = private constant i64 %d, align 8\n", name, mapping.Size))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_schema_hash = private constant i64 %d, align 8\n", name, mapping.SchemaHash))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_offsets = private constant [%d x i64] [", name, len(mapping.Fields)))
@@ -304,63 +294,22 @@ func (e *Emitter) emitMemoryMapMetadata() {
 			e.b.WriteString(fmt.Sprintf("i64 %d", field.Offset))
 		}
 		e.b.WriteString("], align 8\n")
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_kinds = private constant [%d x i32] [", name, len(mapping.Fields)))
-		for i, field := range mapping.Fields {
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_heap_offsets = private constant [%d x i64] [", name, len(mapping.HeapSlots)))
+		for i, slot := range mapping.HeapSlots {
 			if i > 0 {
 				e.b.WriteString(", ")
 			}
-			e.b.WriteString(fmt.Sprintf("i32 %d", field.Kind))
-		}
-		e.b.WriteString("], align 4\n")
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_type_ids = private constant [%d x i64] [", name, len(mapping.Fields)))
-		for i, field := range mapping.Fields {
-			if i > 0 {
-				e.b.WriteString(", ")
-			}
-			e.b.WriteString(fmt.Sprintf("i64 %d", field.TypeID))
+			e.b.WriteString(fmt.Sprintf("i64 %d", slot.FieldOffset))
 		}
 		e.b.WriteString("], align 8\n")
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_sizes = private constant [%d x i64] [", name, len(mapping.Fields)))
-		for i, field := range mapping.Fields {
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_heap_indices = private constant [%d x i64] [", name, len(mapping.HeapSlots)))
+		for i, slot := range mapping.HeapSlots {
 			if i > 0 {
 				e.b.WriteString(", ")
 			}
-			e.b.WriteString(fmt.Sprintf("i64 %d", field.Size))
+			e.b.WriteString(fmt.Sprintf("i64 %d", slot.HeapIndex))
 		}
 		e.b.WriteString("], align 8\n")
-		nameBytes := []byte{}
-		nameOffsets := make([]int, len(mapping.Fields))
-		nameLengths := make([]int, len(mapping.Fields))
-		for i, field := range mapping.Fields {
-			nameOffsets[i] = len(nameBytes)
-			nameBytes = append(nameBytes, []byte(field.Name)...)
-			nameLengths[i] = len(field.Name)
-		}
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_name_offsets = private constant [%d x i64] [", name, len(nameOffsets)))
-		for i, value := range nameOffsets {
-			if i > 0 {
-				e.b.WriteString(", ")
-			}
-			e.b.WriteString(fmt.Sprintf("i64 %d", value))
-		}
-		e.b.WriteString("], align 8\n")
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_name_lengths = private constant [%d x i64] [", name, len(nameLengths)))
-		for i, value := range nameLengths {
-			if i > 0 {
-				e.b.WriteString(", ")
-			}
-			e.b.WriteString(fmt.Sprintf("i64 %d", value))
-		}
-		e.b.WriteString("], align 8\n")
-		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_names = private constant [%d x i8] c\"", name, len(nameBytes)))
-		for _, value := range nameBytes {
-			if value >= 32 && value <= 126 && value != '\\' && value != '"' {
-				e.b.WriteByte(value)
-			} else {
-				e.b.WriteString(fmt.Sprintf("\\%02X", value))
-			}
-		}
-		e.b.WriteString("\"\n")
 	}
 	if len(usedDecls) > 0 {
 		e.b.WriteString(fmt.Sprintf("@llvm.used = appending global [%d x i8*] [", len(usedDecls)))

@@ -11,6 +11,15 @@ import (
 	"hikec-go/pkg/token"
 )
 
+const memoryMapAlignment = 8
+
+func alignMemoryMapOffset(offset int) int {
+	if offset%memoryMapAlignment == 0 {
+		return offset
+	}
+	return (offset + memoryMapAlignment - 1) / memoryMapAlignment * memoryMapAlignment
+}
+
 // basicBlock is the temporary, lowering-only block representation used while
 // translating AST statements. Structured HIR is assembled separately and
 // backends derive their own CFG when needed.
@@ -317,24 +326,25 @@ func (l *Lowerer) Lower() *hir.Program {
 		}
 		layout := &hir.MemoryMapDecl{Name: mapID.Value}
 		offset := 0
+		heapIndex := 0
 		for _, variable := range block.Vars {
 			typ := l.semaCtx.Globals[variable.Name.Value]
 			if typ == nil {
 				continue
 			}
-			align := sema.PointerSize
-			if size := sema.SizeOf(typ); size < align {
-				align = size
-			}
-			if align > 1 {
-				offset = (offset + align - 1) / align * align
-			}
-			layout.Fields = append(layout.Fields, hir.MemoryMapField{
+			// Every mapped field starts on an 8-byte boundary.  Besides keeping
+			// pointer/reference-count words naturally aligned, this makes the
+			// serialized image portable across x86 and ARM64 access rules.
+			offset = alignMemoryMapOffset(offset)
+			field := hir.MemoryMapField{
 				Name: variable.Name.Value, Type: typ.TypeName(), TypeID: typ.TypeID(l.semaCtx),
 				Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
-			})
+			}
+			layout.Fields = append(layout.Fields, field)
+			appendMemoryMapHeapSlots(layout, typ, offset, &heapIndex)
 			offset += sema.SizeOf(typ)
 		}
+		offset = alignMemoryMapOffset(offset)
 		layout.Size = offset
 		schemaFields := make([]memoryblock.SchemaField, 0, len(layout.Fields))
 		for _, field := range layout.Fields {
@@ -451,6 +461,59 @@ func memoryMapFieldKind(typ sema.Type) hir.MemoryMapFieldKind {
 		return hir.MemoryMapString
 	}
 	return hir.MemoryMapScalar
+}
+
+func appendMemoryMapHeapSlots(layout *hir.MemoryMapDecl, typ sema.Type, baseOffset int, nextBuffer *int) {
+	if typ == nil {
+		return
+	}
+	dynamicOffset := func() int {
+		if typ == sema.TypeString || typ.TypeName() == "string" || isMemoryMapSlice(typ) {
+			return baseOffset + sema.PointerSize
+		}
+		return baseOffset
+	}
+	switch t := typ.(type) {
+	case *sema.MapType:
+		target := *nextBuffer
+		(*nextBuffer)++
+		layout.HeapSlots = append(layout.HeapSlots, hir.MemoryMapHeapSlot{FieldOffset: dynamicOffset(), HeapIndex: target})
+	case *sema.SliceType:
+		target := *nextBuffer
+		(*nextBuffer)++
+		layout.HeapSlots = append(layout.HeapSlots, hir.MemoryMapHeapSlot{FieldOffset: dynamicOffset(), HeapIndex: target})
+		appendMemoryMapHeapSlots(layout, t.Elem, 0, nextBuffer)
+	case *sema.StructType:
+		offset := 0
+		for _, field := range t.Fields {
+			fieldSize := sema.SizeOf(field.Type)
+			if fieldSize <= 0 {
+				fieldSize = sema.PointerSize
+			}
+			align := fieldSize
+			if align > sema.PointerSize {
+				align = sema.PointerSize
+			}
+			offset = (offset + align - 1) &^ (align - 1)
+			appendMemoryMapHeapSlots(layout, field.Type, baseOffset+offset, nextBuffer)
+			offset += fieldSize
+		}
+	case *sema.ArrayType:
+		for i := 0; i < t.Len; i++ {
+			appendMemoryMapHeapSlots(layout, t.Elem, baseOffset+i*sema.SizeOf(t.Elem), nextBuffer)
+		}
+	default:
+		if typ == sema.TypeString || typ.TypeName() == "string" {
+			target := *nextBuffer
+			(*nextBuffer)++
+			layout.HeapSlots = append(layout.HeapSlots, hir.MemoryMapHeapSlot{FieldOffset: dynamicOffset(), HeapIndex: target})
+		}
+	}
+}
+
+func isMemoryMapSlice(typ sema.Type) bool {
+	_, ok := typ.(*sema.SliceType)
+	return ok
 }
 
 // finishRegionFunction performs the conservative first region inference pass.

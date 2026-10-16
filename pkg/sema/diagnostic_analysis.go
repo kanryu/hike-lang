@@ -554,6 +554,12 @@ func expressionContainsCall(expr ast.Expression) bool {
 	}
 	switch e := expr.(type) {
 	case *ast.CallExpr:
+		// Persistence of a mapped variable is deliberately permitted while the
+		// owning concurrent block is locked.  Other calls remain prohibited so
+		// that lock bodies cannot invoke arbitrary code while holding the lock.
+		if isMappedPersistenceCall(e) {
+			return expressionsContainCall(e.Args)
+		}
 		return true
 	case *ast.PrefixExpr:
 		return expressionContainsCall(e.Right)
@@ -593,6 +599,21 @@ func expressionContainsCall(expr ast.Expression) bool {
 		return statementContainsCall(e.Body)
 	}
 	return false
+}
+
+func isMappedPersistenceCall(call *ast.CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Function.(*ast.MemberExpr)
+	if !ok || member.Field == nil {
+		return false
+	}
+	packageIdent, ok := member.Object.(*ast.Identifier)
+	if !ok || packageIdent.Value != "memorymap" {
+		return false
+	}
+	return member.Field.Value == "MappedSerialize" || member.Field.Value == "MappedDeserialize"
 }
 
 // checkTupleAssignment verifies the exact value sequence produced by a

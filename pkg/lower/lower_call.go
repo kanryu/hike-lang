@@ -802,9 +802,20 @@ func (c *CallLowerer) lowerMappedPersistence(call *ast.CallExpr, method, owner s
 	c.root.emit(&hir.InstrAllocaDynamic{Dst: buffer, Size: size, AllocType: sema.TypeByte})
 	callee := "__hike_mapped_save"
 	if method == "MappedDeserialize" {
-		callee = "__hike_mapped_load"
-		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size}})
+		callee = "__hike_mapped_graph_load"
+		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(layout.SchemaHash), Typ: sema.TypeInt}}})
+	} else {
+		callee = "__hike_mapped_graph_save"
 	}
+	type mappedPayload struct {
+		data hir.Value
+		len  hir.Value
+		off  hir.Value
+	}
+	var payloads []mappedPayload
+	// Payload offsets are relative to the fixed image. The runtime adds the
+	// graph header size when it seeks into the file.
+	payloadOffset := hir.Value(&hir.ConstInt{Val: int64(layout.Size), Typ: sema.TypeInt})
 	for _, field := range layout.Fields {
 		typ := c.root.semaCtx.Globals[field.Name]
 		if typ == nil {
@@ -813,14 +824,89 @@ func (c *CallLowerer) lowerMappedPersistence(call *ast.CallExpr, method, owner s
 		global := &hir.GlobalVar{Name: field.Name, Typ: &sema.PointerType{Base: typ}}
 		at := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.field")
 		c.root.emit(&hir.InstrGetElemPtr{Dst: at, BasePtr: buffer, Index: &hir.ConstInt{Val: int64(field.Offset), Typ: sema.TypeInt}})
-		if method == "MappedSerialize" {
-			c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{at, global, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
+		isString := typ == sema.TypeString || typ.TypeName() == "string"
+		sliceType, isSlice := typ.(*sema.SliceType)
+		if isString || isSlice {
+			if method == "MappedSerialize" {
+				value := c.root.nextReg(typ, "mapped.string.value")
+				c.root.emit(&hir.InstrLoad{Dst: value, Ptr: global})
+				var data, length hir.Value
+				var payloadBytes hir.Value
+				if isString {
+					data, length = c.root.stringParts(value)
+					payloadBytes = c.root.asInt(length)
+				} else {
+					owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.slice.owner")
+					offset := c.root.nextReg(sema.TypeInt32, "mapped.slice.offset")
+					lengthReg := c.root.nextReg(sema.TypeInt32, "mapped.slice.length")
+					length = lengthReg
+					c.root.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
+					c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+					c.root.emit(&hir.InstrExtractValue{Dst: lengthReg, Agg: value, Index: 2})
+					elemPtr := c.root.nextReg(&sema.PointerType{Base: sliceType.Elem}, "mapped.slice.elem")
+					c.root.emit(&hir.InstrCast{Dst: elemPtr, Val: owner, ToType: elemPtr.Type()})
+					dataPtr := c.root.nextReg(&sema.PointerType{Base: sliceType.Elem}, "mapped.slice.data")
+					c.root.emit(&hir.InstrGetElemPtr{Dst: dataPtr, BasePtr: elemPtr, Index: c.root.asInt(c.root.decodeViewOffset(offset))})
+					dataReg := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.slice.bytes")
+					data = dataReg
+					c.root.emit(&hir.InstrCast{Dst: dataReg, Val: dataPtr, ToType: dataReg.Type()})
+					bytesReg := c.root.nextReg(sema.TypeInt, "mapped.slice.bytes_len")
+					payloadBytes = bytesReg
+					c.root.emit(&hir.InstrBinary{Dst: bytesReg, Op: hir.OpMul, L: c.root.asInt(length), R: &hir.ConstInt{Val: int64(sema.SizeOf(sliceType.Elem)), Typ: sema.TypeInt}})
+				}
+				offsetSlot := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.string.offset")
+				lengthSlot := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.string.length")
+				c.root.emit(&hir.InstrGetElemPtr{Dst: offsetSlot, BasePtr: at, Index: &hir.ConstInt{Val: int64(sema.PointerSize), Typ: sema.TypeInt}})
+				c.root.emit(&hir.InstrGetElemPtr{Dst: lengthSlot, BasePtr: at, Index: &hir.ConstInt{Val: 12, Typ: sema.TypeInt}})
+				c.root.emit(&hir.InstrStore{Val: c.root.asInt32(payloadOffset), Ptr: offsetSlot})
+				c.root.emit(&hir.InstrStore{Val: c.root.asInt32(length), Ptr: lengthSlot})
+				payloads = append(payloads, mappedPayload{data: data, len: c.root.asInt32(payloadBytes), off: payloadOffset})
+				nextOffset := c.root.nextReg(sema.TypeInt, "mapped.string.next")
+				c.root.emit(&hir.InstrBinary{Dst: nextOffset, Op: hir.OpAdd, L: payloadOffset, R: payloadBytes})
+				payloadOffset = nextOffset
+			} else {
+				offsetSlot := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.string.offset")
+				lengthSlot := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.string.length")
+				c.root.emit(&hir.InstrGetElemPtr{Dst: offsetSlot, BasePtr: at, Index: &hir.ConstInt{Val: int64(sema.PointerSize), Typ: sema.TypeInt}})
+				c.root.emit(&hir.InstrGetElemPtr{Dst: lengthSlot, BasePtr: at, Index: &hir.ConstInt{Val: 12, Typ: sema.TypeInt}})
+				fileOffset := c.root.nextReg(sema.TypeInt32, "mapped.string.file_offset")
+				length := c.root.nextReg(sema.TypeInt32, "mapped.string.length")
+				c.root.emit(&hir.InstrLoad{Dst: fileOffset, Ptr: offsetSlot})
+				c.root.emit(&hir.InstrLoad{Dst: length, Ptr: lengthSlot})
+				if isString {
+					value := c.root.nextReg(sema.TypeString, "mapped.string.loaded")
+					c.root.emit(&hir.InstrCallStatic{Dst: value, CalleeName: "__hike_mapped_string_load", Args: []hir.Value{path, fileOffset, length}})
+					c.root.emit(&hir.InstrStore{Val: value, Ptr: global})
+				} else {
+					owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.slice.loaded")
+					c.root.emit(&hir.InstrCallStatic{Dst: owner, CalleeName: "__hike_mapped_slice_load", Args: []hir.Value{path, fileOffset, length, &hir.ConstInt{Val: int64(sema.SizeOf(sliceType.Elem)), Typ: sema.TypeInt}}})
+					loaded := c.root.makeSliceView(sliceType, owner, &hir.ConstInt{Val: 0, Typ: sema.TypeInt32}, length)
+					c.root.emit(&hir.InstrStore{Val: loaded, Ptr: global})
+				}
+			}
+		} else if method == "MappedSerialize" {
+			if mapType, ok := typ.(*sema.MapType); ok {
+				value := c.root.nextReg(typ, "mapped.map.value")
+				c.root.emit(&hir.InstrLoad{Dst: value, Ptr: global})
+				clone := c.root.nextReg(typ, "mapped.map.clone")
+				c.root.emit(&hir.InstrCallStatic{Dst: clone, CalleeName: "__hike_mapped_compact_map_clone", Args: []hir.Value{value}})
+				slot := c.root.nextReg(&sema.PointerType{Base: typ}, "mapped.map.slot")
+				c.root.emit(&hir.InstrAlloca{Dst: slot, AllocType: mapType})
+				c.root.emit(&hir.InstrStore{Val: clone, Ptr: slot})
+				c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{at, slot, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
+			} else {
+				c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{at, global, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
+			}
 		} else {
 			c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{global, at, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
 		}
 	}
 	if method == "MappedSerialize" {
-		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size}})
+		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(layout.SchemaHash), Typ: sema.TypeInt}}})
+		for _, payload := range payloads {
+			c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_mapped_string_append", Args: []hir.Value{path, payload.data, payload.len}})
+		}
+		c.root.emit(&hir.InstrCallStatic{CalleeName: "__hike_mapped_graph_finalize", Args: []hir.Value{path, size, &hir.ConstInt{Val: int64(layout.SchemaHash), Typ: sema.TypeInt}}})
 	}
 	if len(fn.ReturnTypes) == 1 {
 		return c.root.defaultConstValue(fn.ReturnTypes[0])

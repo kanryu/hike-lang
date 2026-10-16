@@ -68,7 +68,15 @@ func buildWasm(t *testing.T, source, mode string) string {
 		t.Skip("Clang is required for the WebAssembly E2E test")
 	}
 	root := wasmProjectRoot(t)
-	tmp := t.TempDir()
+	// On Windows, t.TempDir may be under the Go test runner's AppContainer
+	// directory.  clang/wasm-ld is a child process and cannot always create
+	// its output there, even though the test process itself can.  Keep the
+	// compiler input and output on the repository volume instead.
+	tmp, err := os.MkdirTemp(root, ".wasm-case-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
 	src := filepath.Join(tmp, "main.hike")
 	if err := os.WriteFile(src, []byte(source), 0644); err != nil {
 		t.Fatal(err)

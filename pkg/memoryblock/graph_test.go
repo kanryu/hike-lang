@@ -2,6 +2,7 @@ package memoryblock
 
 import (
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -34,6 +35,44 @@ func TestSerializeGraphPreservesRootHeapRelocations(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint64(payload[:8]); got != 0x1008 {
 		t.Fatalf("restored pointer = %#x, want %#x", got, 0x1008)
+	}
+}
+
+func TestSerializeGraphPlacesDynamicRelocationsAfterPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ordered.hmb")
+	graph := Graph{
+		Root: make([]byte, 16),
+		Heap: []GraphObject{{Data: []byte{5, 6}}, {Data: []byte{7, 8, 9}}},
+		Relocations: []GraphRelocation{
+			{Source: 0, Target: 16},
+			{Source: 8, Target: 18},
+		},
+	}
+	if err := SerializeGraph(path, graph); err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadEnd := graphHeaderBytes + len(graph.Root) + 2 + 3
+	if len(image) != payloadEnd+len(graph.Relocations)*16 {
+		t.Fatalf("image length = %d, want %d", len(image), payloadEnd+len(graph.Relocations)*16)
+	}
+	if got := binary.LittleEndian.Uint64(image[24:32]); got != uint64(len(graph.Relocations)) {
+		t.Fatalf("relocation count = %d, want %d", got, len(graph.Relocations))
+	}
+	if got := binary.LittleEndian.Uint64(image[48:56]); got != uint64(payloadEnd) {
+		t.Fatalf("relocation offset = %d, want %d", got, payloadEnd)
+	}
+	if got := binary.LittleEndian.Uint64(image[56:64]); got != uint64(len(graph.Relocations)*16) {
+		t.Fatalf("relocation bytes = %d, want %d", got, len(graph.Relocations)*16)
+	}
+	if got := binary.LittleEndian.Uint64(image[payloadEnd : payloadEnd+8]); got != 0 {
+		t.Fatalf("first relocation source = %d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(image[payloadEnd+8 : payloadEnd+16]); got != 16 {
+		t.Fatalf("first relocation target = %d, want 16", got)
 	}
 }
 

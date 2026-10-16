@@ -68,6 +68,122 @@ func main() int {
 	})
 }
 
+// TestE2EStdMemoryMapMappedConcurrentSerializeDeserializeInsideLock verifies
+// that mapped persistence is available while the concurrent block is locked.
+// Ordinary function calls remain rejected inside lock bodies.
+func TestE2EStdMemoryMapMappedConcurrentSerializeDeserializeInsideLock(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "windows" {
+		t.Skip("mapped-variable memorymap A2A test requires Windows Win32 APIs")
+	}
+
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/memorymap"
+
+func printf(format string, ...) int
+
+var concurrent(64, mapped(state)) {
+    count int
+}
+
+func main() int {
+    path := "std-memorymap-mapped-concurrent-lock.hmb"
+    serializeOK := false
+    deserializeOK := false
+
+    count = 42
+    lock {
+        serializeErr := memorymap.MappedSerialize(state, path)
+        serializeOK = serializeErr == nil
+        count = -1
+        deserializeErr := memorymap.MappedDeserialize(state, path)
+        deserializeOK = deserializeErr == nil
+    }
+
+    printf("IN-LOCK-SERIALIZE=%d,IN-LOCK-DESERIALIZE=%d\n",
+        serializeOK, deserializeOK)
+    printf("VALUE=%d\n", count)
+    return 0
+}
+`,
+		ExpectedOut:  "IN-LOCK-SERIALIZE=1,IN-LOCK-DESERIALIZE=1\nVALUE=42",
+		ExpectedExit: 0,
+	})
+}
+
+func TestE2EStdMemoryMapMappedConcurrentComplexValuesInsideLock(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "windows" {
+		t.Skip("mapped-variable memorymap A2A test requires Windows Win32 APIs")
+	}
+
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/maps"
+import "std/memorymap"
+
+func printf(format string, ...) int
+
+type Entry struct {
+    Code int
+    Label string
+}
+
+type Snapshot struct {
+    ID int
+    Entries []Entry
+}
+
+var concurrent(128, mapped(state)) {
+    values map[string]int
+    snapshots []Snapshot
+}
+
+func main() int {
+    path := "std-memorymap-mapped-concurrent-complex-lock.hmb"
+    serializeOK := false
+    deserializeOK := false
+
+    values = make(map[string]int)
+    values["answer"] = 42
+    snapshots = []Snapshot{
+        Snapshot{ID: 10, Entries: []Entry{
+            Entry{Code: 101, Label: "first"},
+            Entry{Code: 102, Label: "second"},
+        }},
+    }
+
+    lock {
+        serializeErr := memorymap.MappedSerialize(state, path)
+        serializeOK = serializeErr == nil
+        values["answer"] = -1
+        snapshots = []Snapshot{
+            Snapshot{ID: -1, Entries: []Entry{Entry{Code: -1, Label: "destroyed"}}},
+        }
+        deserializeErr := memorymap.MappedDeserialize(state, path)
+        deserializeOK = deserializeErr == nil
+    }
+
+    printf("SERIALIZE=%d,DESERIALIZE=%d,ANSWER=%d,ID=%d,COUNT=%d,CODE0=%d,LABEL0=%s,CODE1=%d,LABEL1=%s\n",
+        serializeOK, deserializeOK, values["answer"], snapshots[0].ID,
+        len(snapshots[0].Entries), snapshots[0].Entries[0].Code,
+        snapshots[0].Entries[0].Label, snapshots[0].Entries[1].Code,
+        snapshots[0].Entries[1].Label)
+    return 0
+}
+`,
+		ExpectedOut:  "SERIALIZE=1,DESERIALIZE=1,ANSWER=42,ID=10,COUNT=2,CODE0=101,LABEL0=first,CODE1=102,LABEL1=second",
+		ExpectedExit: 0,
+	})
+}
+
 // TestE2EStdMemoryMapMappedMapSerializeDeserialize covers map-valued mapped
 // state separately from the ordinary memorymap.Mapping API.
 func TestE2EStdMemoryMapMappedMapSerializeDeserialize(t *testing.T) {
@@ -229,6 +345,47 @@ func main() int {
 }
 `,
 		ExpectedOut:  "SERIALIZE=1,DESERIALIZE=1,OUTER=2,ID0=10,INNER0=2,CODE0=101,LABEL0=first,CODE1=102,LABEL1=second,ID1=20,INNER1=1",
+		ExpectedExit: 0,
+	})
+}
+
+func TestE2EStdMemoryMapMappedSliceWriteAndAppend(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "windows" {
+		t.Skip("mapped-variable memorymap A2A test requires Windows Win32 APIs")
+	}
+
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/memorymap"
+
+func printf(format string, ...) int
+
+var concurrent(64, mapped(state)) {
+    values []int
+}
+
+func main() int {
+    path := "std-memorymap-mapped-slice-write-append.hmb"
+
+    values = []int{1, 2}
+    serializeErr := memorymap.MappedSerialize(state, path)
+
+    values = []int{0}
+    deserializeErr := memorymap.MappedDeserialize(state, path)
+    values[0] = 10
+    values = append(values, 3)
+
+    printf("SERIALIZE=%d,DESERIALIZE=%d,LEN=%d,CAP=%d,VALUES=%d,%d,%d\n",
+        serializeErr == nil, deserializeErr == nil, len(values), cap(values),
+        values[0], values[1], values[2])
+    return 0
+}
+`,
+		ExpectedOut:  "SERIALIZE=1,DESERIALIZE=1,LEN=3,CAP=7,VALUES=10,2,3",
 		ExpectedExit: 0,
 	})
 }

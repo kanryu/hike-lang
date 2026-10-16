@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-const graphHeaderBytes = 48
+const graphHeaderBytes = 64
 
 // GraphRelocation identifies a pointer-sized slot in the combined root and
 // heap payload and the payload-relative address it must contain after restore.
@@ -35,7 +35,9 @@ type Graph struct {
 
 // SerializeGraph writes a versioned root-plus-heap image. Pointer slots are
 // rewritten to payload-relative offsets and relocation records preserve the
-// slots that must be fixed up after mapping.
+// slots that must be fixed up after mapping. The relocation table is appended
+// after the payload, then its absolute file offset and byte length are patched
+// into the header after all variable-length data has been written.
 func SerializeGraph(path string, graph Graph) error {
 	heapBytes := 0
 	for _, object := range graph.Heap {
@@ -59,33 +61,51 @@ func SerializeGraph(path string, graph Graph) error {
 		binary.LittleEndian.PutUint64(payload[relocation.Source:relocation.Source+8], relocation.Target)
 	}
 	header := make([]byte, graphHeaderBytes)
-	copy(header[:4], "HMB2")
-	binary.LittleEndian.PutUint32(header[4:8], 2)
+	copy(header[:4], "HMB3")
+	binary.LittleEndian.PutUint32(header[4:8], 3)
 	binary.LittleEndian.PutUint64(header[8:16], uint64(len(graph.Root)))
 	binary.LittleEndian.PutUint64(header[16:24], uint64(heapBytes))
-	binary.LittleEndian.PutUint64(header[24:32], uint64(len(graph.Relocations)))
 	binary.LittleEndian.PutUint64(header[32:40], uint64(payloadBytes))
 	binary.LittleEndian.PutUint64(header[40:48], graph.SchemaHash)
+	// [48:64] is patched after the payload and dynamic relocation table are
+	// written: absolute relocation-table offset and byte length.
 	relocs := make([]byte, len(graph.Relocations)*16)
 	for i, relocation := range graph.Relocations {
 		binary.LittleEndian.PutUint64(relocs[i*16:i*16+8], relocation.Source)
 		binary.LittleEndian.PutUint64(relocs[i*16+8:i*16+16], relocation.Target)
 	}
+	relocationOffset := uint64(graphHeaderBytes + len(payload))
+	relocationBytes := uint64(len(relocs))
 	image := make([]byte, 0, len(header)+len(payload)+len(relocs))
 	image = append(image, header...)
 	image = append(image, payload...)
 	image = append(image, relocs...)
-	return os.WriteFile(path, image, 0o600)
+	if err := os.WriteFile(path, image, 0o600); err != nil {
+		return err
+	}
+	patchedHeader := append([]byte(nil), header...)
+	binary.LittleEndian.PutUint64(patchedHeader[24:32], uint64(len(graph.Relocations)))
+	binary.LittleEndian.PutUint64(patchedHeader[48:56], relocationOffset)
+	binary.LittleEndian.PutUint64(patchedHeader[56:64], relocationBytes)
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.WriteAt(patchedHeader, 0); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
-// ReadGraph validates and reads an HMB2 image without applying process
+// ReadGraph validates and reads an HMB3 image without applying process
 // addresses. The returned payload is ready for private mapping or copying.
 func ReadGraph(path string) (root, heap, payload []byte, relocations []GraphRelocation, schemaHash uint64, err error) {
 	image, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, nil, nil, 0, err
 	}
-	if len(image) < graphHeaderBytes || string(image[:4]) != "HMB2" || binary.LittleEndian.Uint32(image[4:8]) != 2 {
+	if len(image) < graphHeaderBytes || string(image[:4]) != "HMB3" || binary.LittleEndian.Uint32(image[4:8]) != 3 {
 		return nil, nil, nil, nil, 0, errors.New("memoryblock: invalid graph header")
 	}
 	rootBytes := binary.LittleEndian.Uint64(image[8:16])
@@ -93,12 +113,14 @@ func ReadGraph(path string) (root, heap, payload []byte, relocations []GraphRelo
 	count := binary.LittleEndian.Uint64(image[24:32])
 	payloadBytes := binary.LittleEndian.Uint64(image[32:40])
 	schemaHash = binary.LittleEndian.Uint64(image[40:48])
-	if payloadBytes != rootBytes+heapBytes || payloadBytes > uint64(len(image)-graphHeaderBytes) || count > uint64((len(image)-graphHeaderBytes-int(payloadBytes))/16) || graphHeaderBytes+int(payloadBytes)+int(count)*16 != len(image) {
+	relocationOffset := binary.LittleEndian.Uint64(image[48:56])
+	relocationBytes := binary.LittleEndian.Uint64(image[56:64])
+	if payloadBytes != rootBytes+heapBytes || relocationBytes != count*16 || relocationOffset != uint64(graphHeaderBytes)+payloadBytes || relocationOffset > uint64(len(image)) || relocationBytes > uint64(len(image))-relocationOffset || relocationOffset+relocationBytes != uint64(len(image)) {
 		return nil, nil, nil, nil, 0, errors.New("memoryblock: invalid graph size")
 	}
-	payload = append([]byte(nil), image[graphHeaderBytes:graphHeaderBytes+int(payloadBytes)]...)
+	payload = append([]byte(nil), image[graphHeaderBytes:int(relocationOffset)]...)
 	relocations = make([]GraphRelocation, int(count))
-	pos := graphHeaderBytes + int(payloadBytes)
+	pos := int(relocationOffset)
 	for i := range relocations {
 		relocations[i] = GraphRelocation{
 			Source: binary.LittleEndian.Uint64(image[pos+i*16 : pos+i*16+8]),
