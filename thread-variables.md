@@ -75,6 +75,55 @@ threadable data is placed in a worker-local region, while concurrent data is
 placed in shared memory and accessed using the required synchronization
 operations.
 
+## The `mapped` modifier
+
+`threadable` and `concurrent` blocks may declare a mapped-variable handle by
+adding `mapped(name)` to the declaration. The handle is a compiler-managed
+name for the variable group and is reserved for mapped persistence operations:
+
+```hike
+var concurrent(64, mapped(state)) {
+    count int
+    ratio float64
+    text string
+    payload []byte
+}
+```
+
+Mapped state is serialized and deserialized through the standard
+`std/memorymap` API:
+
+```hike
+import "std/memorymap"
+
+serializeError := memorymap.MappedSerialize(state, "state.hmb")
+deserializeError := memorymap.MappedDeserialize(state, "state.hmb")
+```
+
+The mapped handle is not a general value. It may only appear as the first
+argument of `MappedSerialize` or `MappedDeserialize`; assigning it, printing
+it, passing it to another function, or using it in an expression is a compile
+error.
+
+The native implementation uses memory-mapped persistence data. The fixed
+variable image is followed by the variable payload buffers, and the file
+terminates with a relocation recipe describing pointer corrections. During
+deserialization, the image is loaded as one contiguous region and the
+relocation recipe restores pointers relative to the new base address. This
+avoids type-by-type reconstruction and keeps large structures containing maps,
+slices, strings, and nested values fast to initialize.
+
+Mapped variables remain writable after they have been mapped. For a mapped
+`concurrent` block, serialization and deserialization may be called inside the
+block's `lock` scope. These operations are compiler-recognized persistence
+operations and are the only permitted use of the mapped handle in that scope;
+ordinary function calls remain forbidden inside a lock block.
+
+The native mapped implementation is target-specific. WebAssembly has no OS
+memory-mapping facility, so the mapped modifier and mapped persistence API are
+not available for WebAssembly targets. Use explicit serialization through the
+host environment when a WebAssembly program needs durable data.
+
 ## Naming rule
 
 Every variable declared inside a `threadable` or `concurrent` block must begin
