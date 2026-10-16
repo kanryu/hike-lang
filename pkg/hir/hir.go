@@ -116,6 +116,8 @@ const (
 
 type MemoryMapField struct {
 	Name   string
+	Type   string
+	TypeID int64
 	Offset int
 	Size   int
 	Kind   MemoryMapFieldKind

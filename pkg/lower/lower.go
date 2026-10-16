@@ -330,7 +330,8 @@ func (l *Lowerer) Lower() *hir.Program {
 				offset = (offset + align - 1) / align * align
 			}
 			layout.Fields = append(layout.Fields, hir.MemoryMapField{
-				Name: variable.Name.Value, Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
+				Name: variable.Name.Value, Type: typ.TypeName(), TypeID: typ.TypeID(l.semaCtx),
+				Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
 			})
 			offset += sema.SizeOf(typ)
 		}

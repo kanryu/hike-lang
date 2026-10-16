@@ -25,23 +25,28 @@ type Context struct {
 	GlobalMemorySizes    map[string]int64
 	GlobalMemoryPaths    map[string]string
 	GlobalMemoryMapNames map[string]string
-	Constants            map[string]int64
-	StringConstants      map[string]string
-	FloatConstants       map[string]float64
-	Aliases              map[string]Type
-	GenericTypes         map[string]*ast.TypeDecl
-	GenericFuncs         map[string]*ast.FuncDecl
-	PackageAliases       map[string]string
-	TypeParams           map[string]*TypeParamType
-	typeIDs              map[string]int64
-	moduleTypeBases      map[string]int64
-	moduleTypeSlots      map[string]int64
-	nextModuleTypeBase   int64
-	nextTypeID           int64
-	HasMapImport         bool
-	GoHikeMode           bool
-	RegionModeEnabled    bool
-	diagnosticPackages   map[string]bool
+	// MappedHandles contains the synthetic names introduced by
+	// mapped(name). They are not value variables: the compiler may consume
+	// them only as the first argument of the mapped serialization intrinsics.
+	MappedHandles      map[string]string
+	MappedHandleTypes  map[string]*MappedHandleType
+	Constants          map[string]int64
+	StringConstants    map[string]string
+	FloatConstants     map[string]float64
+	Aliases            map[string]Type
+	GenericTypes       map[string]*ast.TypeDecl
+	GenericFuncs       map[string]*ast.FuncDecl
+	PackageAliases     map[string]string
+	TypeParams         map[string]*TypeParamType
+	typeIDs            map[string]int64
+	moduleTypeBases    map[string]int64
+	moduleTypeSlots    map[string]int64
+	nextModuleTypeBase int64
+	nextTypeID         int64
+	HasMapImport       bool
+	GoHikeMode         bool
+	RegionModeEnabled  bool
+	diagnosticPackages map[string]bool
 
 	// 呼び出し解決結果キャッシュ: 各 CallExpr がどの確定 FuncType を呼び出すかを 1 対 1 で保持
 	ResolvedCalls map[*ast.CallExpr]*FuncType
@@ -77,6 +82,8 @@ func NewContext() *Context {
 		GlobalMemorySizes:    make(map[string]int64),
 		GlobalMemoryPaths:    make(map[string]string),
 		GlobalMemoryMapNames: make(map[string]string),
+		MappedHandles:        make(map[string]string),
+		MappedHandleTypes:    make(map[string]*MappedHandleType),
 		Constants:            make(map[string]int64),
 		StringConstants:      make(map[string]string),
 		FloatConstants:       make(map[string]float64),
@@ -149,6 +156,18 @@ func NewContext() *Context {
 	ctx.Aliases["error"] = errorIface
 
 	return ctx
+}
+
+// MappedHandleOwner reports whether name is a mapped serialization handle and
+// returns the backing memory-block variable that owns it.
+func (c *Context) MappedHandleOwner(name string) (string, bool) {
+	owner, ok := c.MappedHandles[name]
+	return owner, ok
+}
+
+func (c *Context) MappedHandleType(name string) (*MappedHandleType, bool) {
+	t, ok := c.MappedHandleTypes[name]
+	return t, ok
 }
 
 func (c *Context) GetTypeID(t Type) int64 {
@@ -1812,6 +1831,9 @@ func (c *Context) InferExprType(expr ast.Expression, locals map[string]Type) Typ
 		switch astIdentifierValue(e) {
 		case "true", "false":
 			return TypeBool
+		}
+		if t, ok := c.MappedHandleType(astIdentifierValue(e)); ok {
+			return t
 		}
 		if t, ok := locals[astIdentifierValue(e)]; ok {
 			return t

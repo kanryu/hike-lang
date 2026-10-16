@@ -19,6 +19,19 @@ type Type interface {
 	TypeID(*Context) int64
 }
 
+// MappedHandleType is the compiler-only type introduced for mapped(name).
+// Values of this type are opaque serialization handles; they are not runtime
+// values and can only be consumed by the mapped serialization intrinsics.
+type MappedHandleType struct {
+	Name  string
+	Owner string
+}
+
+func (t *MappedHandleType) TypeName() string          { return "mapped<" + t.Name + ">" }
+func (t *MappedHandleType) LLVMType() string          { return "i8*" }
+func (t *MappedHandleType) Size() int                 { return PointerSize }
+func (t *MappedHandleType) TypeID(ctx *Context) int64 { return typeIDOf(ctx, t) }
+
 // Keep the semantic type names distinct in source-level type switches. The
 // self-hosting compiler also sees ast types such as ast.StructType and
 // ast.MapType; using package-local aliases here prevents those names from
@@ -55,6 +68,8 @@ func typeNameOf(typ Type) string {
 		return t.Name
 	case *semanticTypeParamType:
 		return t.Name
+	case *MappedHandleType:
+		return t.TypeName()
 	case *semanticConstValueType:
 		return fmt.Sprintf("const<%d>", t.Value)
 	case *semanticPointerType:
@@ -106,6 +121,8 @@ func SizeOf(typ Type) int {
 	case *semanticBasicType:
 		return t.ByteSize
 	case *semanticTypeParamType:
+		return PointerSize
+	case *MappedHandleType:
 		return PointerSize
 	case *semanticConstValueType:
 		return 8
@@ -177,6 +194,8 @@ func typeLLVMOf(typ Type) string {
 	case *semanticBasicType:
 		return t.LLVM
 	case *semanticTypeParamType:
+		return "i8*"
+	case *MappedHandleType:
 		return "i8*"
 	case *semanticConstValueType:
 		return "i64"
@@ -1702,6 +1721,8 @@ func registerMemoryBlockTypes(decl *ast.MemoryBlockDecl, ctx *Context) {
 		}
 		if mapped, ok := decl.MapName.(*ast.Identifier); ok {
 			ctx.GlobalMemoryMapNames[name] = mapped.Value
+			ctx.MappedHandles[mapped.Value] = name
+			ctx.MappedHandleTypes[mapped.Value] = &MappedHandleType{Name: mapped.Value, Owner: name}
 		}
 	}
 }

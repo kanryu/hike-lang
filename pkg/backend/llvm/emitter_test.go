@@ -8,6 +8,36 @@ import (
 	"hikec-go/pkg/sema"
 )
 
+func TestEmitMemoryMapMetadataIsRetainedInLLVMUsed(t *testing.T) {
+	program := &hir.Program{
+		MemoryMaps: []*hir.MemoryMapDecl{{
+			Name:       "state",
+			Size:       48,
+			SchemaHash: 1234,
+			Fields: []hir.MemoryMapField{
+				{Name: "count", Type: "int", TypeID: 1, Offset: 0, Size: 8, Kind: hir.MemoryMapScalar},
+				{Name: "name", Type: "string", TypeID: 2, Offset: 8, Size: 16, Kind: hir.MemoryMapString},
+			},
+		}},
+	}
+	emitter := NewEmitter(program, nil, "x86_64-w64-windows-gnu", "", false)
+	emitter.emitMemoryMapMetadata()
+	ir := emitter.b.String()
+	for _, want := range []string{
+		"@__hike_mmap_state_size = private constant i64 48",
+		"@__hike_mmap_state_schema_hash = private constant i64 1234",
+		"@__hike_mmap_state_offsets = private constant [2 x i64] [i64 0, i64 8]",
+		"@__hike_mmap_state_sizes = private constant [2 x i64] [i64 8, i64 16]",
+		"@__hike_mmap_state_type_ids = private constant [2 x i64] [i64 1, i64 2]",
+		"@__hike_mmap_state_names = private constant [9 x i8] c\"countname\"",
+		"@llvm.used = appending global [9 x i8*]",
+	} {
+		if !strings.Contains(ir, want) {
+			t.Fatalf("memory-map metadata missing %q:\n%s", want, ir)
+		}
+	}
+}
+
 func TestEmitCastRebuildsFunctionValueFromCodePointer(t *testing.T) {
 	functionType := &sema.FuncType{}
 	emitter := &Emitter{renderedTypes: make(map[string]string)}

@@ -36,4 +36,11 @@ var concurrent(64, mapped(state)) { value int }
 	if ctx.GlobalMemoryMapNames["value"] != "state" {
 		t.Fatalf("unexpected mapped variable name: %q", ctx.GlobalMemoryMapNames["value"])
 	}
+	if owner, ok := ctx.MappedHandleOwner("state"); !ok || owner != "value" {
+		t.Fatalf("unexpected mapped handle owner: %q, %v", owner, ok)
+	}
+	handleType, ok := ctx.MappedHandleType("state")
+	if !ok || handleType.TypeName() != "mapped<state>" || handleType.Owner != "value" {
+		t.Fatalf("unexpected mapped handle type: %#v, %v", handleType, ok)
+	}
 }

@@ -3,11 +3,54 @@
 ; ==============================================================================
 
 ; ------------------------------------------------------------------------------
-; External C Standard Library Declarations (Allocators Only)
+; External C Standard Library Declarations
 ; ------------------------------------------------------------------------------
 declare noalias i8* @malloc(i64)
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)
+declare i8* @fopen(i8*, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i32 @fclose(i8*)
+
+@__hike_mapped_write_mode = private unnamed_addr constant [3 x i8] c"wb\00"
+@__hike_mapped_read_mode = private unnamed_addr constant [3 x i8] c"rb\00"
+
+define internal i32 @__hike_mapped_save(i8* %path_ptr, i8* %data, i64 %size) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_write_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %write
+write:
+  %written = call i64 @fwrite(i8* %data, i64 1, i64 %size, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %ok = icmp eq i64 %written, %size
+  %ok2 = icmp eq i32 %closed, 0
+  %result = and i1 %ok, %ok2
+  %result32 = zext i1 %result to i32
+  ret i32 %result32
+fail:
+  ret i32 0
+}
+
+define internal i32 @__hike_mapped_load(i8* %path_ptr, i8* %data, i64 %size) {
+entry:
+  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_read_mode, i32 0, i32 0
+  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
+  %missing = icmp eq i8* %file, null
+  br i1 %missing, label %fail, label %read
+read:
+  %bytes_read = call i64 @fread(i8* %data, i64 1, i64 %size, i8* %file)
+  %closed = call i32 @fclose(i8* %file)
+  %ok = icmp eq i64 %bytes_read, %size
+  %ok2 = icmp eq i32 %closed, 0
+  %result = and i1 %ok, %ok2
+  %result32 = zext i1 %result to i32
+  ret i32 %result32
+fail:
+  ret i32 0
+}
 
 ; cbuffer is an explicitly-owned foreign buffer. It has no Hike-side
 ; reference count: {data, length, hike_func_value, closed}.

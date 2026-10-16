@@ -445,7 +445,10 @@ func (e *ExprLowerer) lowerSliceExpr(node *ast.SliceExpr) hir.Value {
 		e.root.emit(&hir.InstrAlloca{Dst: bufferPtr, AllocType: sema.TypeCBuffer})
 		e.root.emit(&hir.InstrStore{Val: baseVal, Ptr: bufferPtr})
 		low := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
-		if node.Low != nil { low = e.LowerExpr(node.Low); low = e.root.emitValueCoerce(low, sema.TypeInt) }
+		if node.Low != nil {
+			low = e.LowerExpr(node.Low)
+			low = e.root.emitValueCoerce(low, sema.TypeInt)
+		}
 		high := hir.Value(nil)
 		if node.High != nil {
 			high = e.LowerExpr(node.High)
@@ -828,6 +831,9 @@ func (e *ExprLowerer) lowerSliceLiteral(node *ast.SliceLiteral) hir.Value {
 
 func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {
 	name := astIDValue(node)
+	if _, ok := e.root.semaCtx.MappedHandleOwner(name); ok {
+		panic(fmt.Sprintf("[Lower Error] mapped variable handle %q may only be used as the first argument of memorymap.MappedSerialize or memorymap.MappedDeserialize", name))
+	}
 	if name == "true" {
 		return &hir.ConstBool{Val: true, Typ: sema.TypeBool}
 	}

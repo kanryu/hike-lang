@@ -138,6 +138,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 
 	// 純粋メモリ & 文字列操作内部実装 (64-bit) (define internal)
 	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
+	"__hike_mapped_save": true, "__hike_mapped_load": true,
 
 	// 純粋メモリ & 文字列操作内部実装 (32-bit / wasm32) (define internal)
 	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
@@ -187,14 +188,14 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_streq_len":       true,
 	"hike_strcmp_len":      true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_writable": true, "__hike_string_append": true,
-	"__hike_sort_strings": true,
-	"hike_substr":         true,
-	"hike_strcat":         true,
-	"hike_strcat_len":     true,
-	"__hike_slice_to_str": true,
+	"__hike_sort_strings":     true,
+	"hike_substr":             true,
+	"hike_strcat":             true,
+	"hike_strcat_len":         true,
+	"__hike_slice_to_str":     true,
 	"__hike_utf8_decode_rune": true, "__hike_utf8_rune_size": true,
 	"__hike_utf8_rune_to_string": true,
-	"__hike_slice_alloc":  true, "__hike_slice_cap": true,
+	"__hike_slice_alloc":         true, "__hike_slice_cap": true,
 	"__hike_slice_retain": true, "__hike_slice_release": true,
 	"__hike_cbuffer_new": true, "__hike_cbuffer_close": true,
 	"__hike_cbuffer_length": true, "__hike_cbuffer_data": true,
@@ -208,13 +209,13 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"hike_streq_len32":       true,
 	"hike_strcmp_len32":      true,
 	"__hike_string_retain32": true, "__hike_string_release32": true, "__hike_string_writable32": true, "__hike_string_append32": true,
-	"hike_substr32":         true,
-	"hike_strcat32":         true,
-	"hike_strcat_len32":     true,
-	"__hike_slice_to_str32": true,
+	"hike_substr32":             true,
+	"hike_strcat32":             true,
+	"hike_strcat_len32":         true,
+	"__hike_slice_to_str32":     true,
 	"__hike_utf8_decode_rune32": true, "__hike_utf8_rune_size32": true,
 	"__hike_utf8_rune_to_string32": true,
-	"__hike_slice_alloc32":  true, "__hike_slice_cap32": true,
+	"__hike_slice_alloc32":         true, "__hike_slice_cap32": true,
 	"__hike_slice_retain32": true, "__hike_slice_release32": true,
 
 	// マップランタイム (define internal)

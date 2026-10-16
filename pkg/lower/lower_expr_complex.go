@@ -614,6 +614,9 @@ func (e *ExprLowerer) LowerStructPtr(expr ast.Expression) hir.Value {
 func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 	switch node := expr.(type) {
 	case *ast.Identifier:
+		if _, ok := e.root.semaCtx.MappedHandleOwner(astIDValue(node)); ok {
+			panic(fmt.Sprintf("[Lower Error] mapped variable handle %q may only be used as the first argument of memorymap.MappedSerialize or memorymap.MappedDeserialize", astIDValue(node)))
+		}
 		if ptr, ok := e.root.symbols[astIDValue(node)]; ok {
 			return ptr
 		}

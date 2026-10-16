@@ -721,6 +721,11 @@ func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.Member
 	if targetFn == nil {
 		panic(fmt.Sprintf("[Lower Error] undefined function: %s.%s", pkgIdent.Value, methodName))
 	}
+	if pkgIdent.Value == "memorymap" && (methodName == "MappedSerialize" || methodName == "MappedDeserialize") && len(call.Args) > 0 {
+		if owner, _, ok := mappedHandleArgument(call.Args[0], c.root.semaCtx); ok {
+			return c.lowerMappedPersistence(call, methodName, owner, targetFn)
+		}
+	}
 
 	params := c.getFuncParams(targetFn, canonicalName)
 	callArgs := c.fillDefaultArgs(call.Args, params)
@@ -762,6 +767,92 @@ func (c *CallLowerer) lowerPackageMemberCall(call *ast.CallExpr, mem *ast.Member
 	}
 	c.root.emit(&hir.InstrCallStatic{Dst: dst, CalleeName: callee, Args: args})
 	return dst
+}
+
+func mappedHandleArgument(expr ast.Expression, ctx *sema.Context) (string, token.Token, bool) {
+	switch node := expr.(type) {
+	case *ast.Identifier:
+		_, ok := ctx.MappedHandleOwner(node.Value)
+		return node.Value, node.Token, ok
+	case *ast.ImplicitCastExpr:
+		return mappedHandleArgument(node.Expr, ctx)
+	default:
+		return "", token.Token{}, false
+	}
+}
+
+func (c *CallLowerer) lowerMappedPersistence(call *ast.CallExpr, method, owner string, fn *sema.FuncType) hir.Value {
+	if len(call.Args) != 2 {
+		panic(fmt.Sprintf("[Lower Error] memorymap.%s expects mapped handle and path", method))
+	}
+	var layout *hir.MemoryMapDecl
+	for _, candidate := range c.root.hirProg.MemoryMaps {
+		if candidate != nil && candidate.Name == owner {
+			layout = candidate
+			break
+		}
+	}
+	if layout == nil {
+		panic(fmt.Sprintf("[Lower Error] mapped metadata not found for %s", owner))
+	}
+	path := c.root.Expr.LowerExpr(call.Args[1])
+	path = c.lowerStringToCString(path)
+	size := &hir.ConstInt{Val: int64(layout.Size), Typ: sema.TypeInt}
+	buffer := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.image")
+	c.root.emit(&hir.InstrAllocaDynamic{Dst: buffer, Size: size, AllocType: sema.TypeByte})
+	callee := "__hike_mapped_save"
+	if method == "MappedDeserialize" {
+		callee = "__hike_mapped_load"
+		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size}})
+	}
+	for _, field := range layout.Fields {
+		typ := c.root.semaCtx.Globals[field.Name]
+		if typ == nil {
+			continue
+		}
+		global := &hir.GlobalVar{Name: field.Name, Typ: &sema.PointerType{Base: typ}}
+		at := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.field")
+		c.root.emit(&hir.InstrGetElemPtr{Dst: at, BasePtr: buffer, Index: &hir.ConstInt{Val: int64(field.Offset), Typ: sema.TypeInt}})
+		if method == "MappedSerialize" {
+			c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{at, global, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
+		} else {
+			c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("memcpy"), Args: []hir.Value{global, at, &hir.ConstInt{Val: int64(field.Size), Typ: sema.TypeInt}}})
+		}
+	}
+	if method == "MappedSerialize" {
+		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size}})
+	}
+	if len(fn.ReturnTypes) == 1 {
+		return c.root.defaultConstValue(fn.ReturnTypes[0])
+	}
+	return nil
+}
+
+func (c *CallLowerer) retainMappedValue(ptr hir.Value, typ sema.Type) {
+	switch t := typ.(type) {
+	case *sema.BasicType:
+		if t != sema.TypeString {
+			return
+		}
+		value := c.root.nextReg(typ, "mapped.string")
+		c.root.emit(&hir.InstrLoad{Dst: value, Ptr: ptr})
+		base, offset, _ := c.root.stringViewRawParts(value)
+		c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("__hike_string_retain"), Args: []hir.Value{base, offset}})
+	case *sema.SliceType:
+		value := c.root.nextReg(typ, "mapped.slice")
+		c.root.emit(&hir.InstrLoad{Dst: value, Ptr: ptr})
+		owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.slice.owner")
+		offset := c.root.nextReg(sema.TypeInt32, "mapped.slice.offset")
+		c.root.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
+		c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+		c.root.emit(&hir.InstrCallStatic{CalleeName: c.root.BuiltinName("__hike_slice_retain"), Args: []hir.Value{owner, offset}})
+	case *sema.StructType:
+		for index, field := range t.Fields {
+			fieldPtr := c.root.nextReg(&sema.PointerType{Base: field.Type}, "mapped.struct.field")
+			c.root.emit(&hir.InstrGetFieldPtr{Dst: fieldPtr, BasePtr: ptr, FieldIndex: index, FieldName: field.Name})
+			c.retainMappedValue(fieldPtr, field.Type)
+		}
+	}
 }
 
 func (c *CallLowerer) lowerCStringBuiltin(call *ast.CallExpr) (hir.Value, bool) {
