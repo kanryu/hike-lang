@@ -4,6 +4,7 @@ import "testing"
 
 // 初期化リストから固定長配列の要素数を推論する構文を検証する。
 func TestE2E_Array_InferredLength(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main

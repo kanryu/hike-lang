@@ -4,6 +4,7 @@ import "testing"
 
 // slices の独立した操作を一つのプログラムでまとめて確認する。
 func TestStd_Slices_Batch(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main

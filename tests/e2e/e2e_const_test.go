@@ -2,7 +2,7 @@ package e2e_test
 
 import "testing"
 
-func TestParser_Const_SingleIota(t *testing.T) {
+func TestParser_Const_Batch(t *testing.T) {
 	t.Parallel()
 
 	RunHikeCase(t, HikeTestCase{
@@ -13,25 +13,6 @@ func printf(format string, ...) int
 
 const First = iota
 
-func main() int {
-    printf("FIRST=%d\n", First)
-    return 0
-}
-`,
-		ExpectedOut:  "FIRST=0",
-		ExpectedExit: 0,
-	})
-}
-
-func TestParser_Const_GroupIotaInheritance(t *testing.T) {
-	t.Parallel()
-
-	RunHikeCase(t, HikeTestCase{
-		Source: `
-package main
-
-func printf(format string, ...) int
-
 const (
     Zero = iota
     One
@@ -39,64 +20,29 @@ const (
     Next
 )
 
-func main() int {
-    printf("IOTA=%d,%d,%d,%d\n", Zero, One, Offset, Next)
-    return 0
-}
-`,
-		ExpectedOut:  "IOTA=0,1,12,13",
-		ExpectedExit: 0,
-	})
-}
-
-func TestParser_Const_RepeatedIotaReferences(t *testing.T) {
-	t.Parallel()
-
-	RunHikeCase(t, HikeTestCase{
-		Source: `
-package main
-
-func printf(format string, ...) int
-
 const (
-    First = iota
-    Second = iota
+    RepeatedFirst = iota
+    RepeatedSecond = iota
     Double = iota + 10
     Inherited
 )
 
-func main() int {
-    printf("IOTA_REPEAT=%d,%d,%d,%d\n", First, Second, Double, Inherited)
-    return 0
-}
-`,
-		ExpectedOut:  "IOTA_REPEAT=0,1,12,13",
-		ExpectedExit: 0,
-	})
-}
-
-func TestParser_Const_IotaOffsetMatchingNames(t *testing.T) {
-	t.Parallel()
-
-	RunHikeCase(t, HikeTestCase{
-		Source: `
-package main
-
-func printf(format string, ...) int
-
 const (
-    Zero = iota
-    One
+    OffsetZero = iota
+    OffsetOne
     Eleven = iota + 9
     Twelve
 )
 
 func main() int {
-    printf("IOTA_OFFSET=%d,%d,%d,%d\n", Zero, One, Eleven, Twelve)
+    printf("FIRST=%d\n", First)
+    printf("IOTA=%d,%d,%d,%d\n", Zero, One, Offset, Next)
+    printf("IOTA_REPEAT=%d,%d,%d,%d\n", RepeatedFirst, RepeatedSecond, Double, Inherited)
+    printf("IOTA_OFFSET=%d,%d,%d,%d\n", OffsetZero, OffsetOne, Eleven, Twelve)
     return 0
 }
 `,
-		ExpectedOut:  "IOTA_OFFSET=0,1,11,12",
+		ExpectedOut:  "FIRST=0\nIOTA=0,1,12,13\nIOTA_REPEAT=0,1,12,13\nIOTA_OFFSET=0,1,11,12",
 		ExpectedExit: 0,
 	})
 }

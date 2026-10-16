@@ -6,6 +6,7 @@ import (
 )
 
 func TestE2EStdPromotedValueLibraries(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -39,6 +40,7 @@ func main() int {
 // filepath.Join は Go 互換 API として可変個の要素を受け取る必要がある。
 // 3引数呼び出しで全要素が結果に含まれることを検証する回帰テスト。
 func TestE2EStdFilepathJoinThreeArguments(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -60,6 +62,7 @@ func main() int {
 }
 
 func TestE2EStdPromotedRegexp(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -81,6 +84,7 @@ func main() int {
 }
 
 func TestE2EStdPromotedReaderLibraries(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -126,6 +130,7 @@ func main() int {
 
 // 追加された標準配置の互換APIが解決・呼び出し可能であることを検証する。
 func TestE2EStdPromotedCompatibilitySurface(t *testing.T) {
+	t.Parallel()
 	expectedRuntime := "unknown/unknown"
 	switch runtime.GOOS {
 	case "windows":
@@ -165,6 +170,7 @@ func main() int {
 }
 
 func TestE2EStdEncodingBase32(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -188,6 +194,7 @@ func main() int {
 }
 
 func TestE2EStdEncodingBase64(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -214,6 +221,7 @@ func main() int {
 }
 
 func TestE2EStdJSONSet(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -238,6 +246,7 @@ func main() int {
 }
 
 func TestE2EStdMathRand(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -264,6 +273,7 @@ func main() int {
 }
 
 func TestE2EStdURLPathUnescape(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -286,6 +296,7 @@ func main() int {
 }
 
 func TestE2EStdURLMultibyteEscaping(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -309,6 +320,7 @@ func main() int {
 }
 
 func TestE2EStdNetParsing(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -336,6 +348,7 @@ func main() int {
 }
 
 func TestE2EStdFmtPrintFloat(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `

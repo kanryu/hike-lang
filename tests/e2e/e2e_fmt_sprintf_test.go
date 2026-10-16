@@ -3,6 +3,7 @@ package e2e_test
 import "testing"
 
 func TestFmt_Sprintf_Batch(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main

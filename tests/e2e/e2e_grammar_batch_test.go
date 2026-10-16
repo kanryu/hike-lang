@@ -4,6 +4,7 @@ import "testing"
 
 // 文法・制御構文・型・構造体の独立した検証を一つのHikeC実行にまとめる。
 func TestGrammar_Batch(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main

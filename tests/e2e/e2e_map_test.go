@@ -201,6 +201,7 @@ func runMapValueCase(t *testing.T, source, output string) {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: source, GoHike: goHike,
 				ExpectedOut: output, ExpectedExit: 0,
@@ -210,6 +211,7 @@ func runMapValueCase(t *testing.T, source, output string) {
 }
 
 func TestE2EMapCompositeValues(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"
@@ -276,12 +278,14 @@ func main() int {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{Source: source, GoHike: goHike, ExpectedOut: output, ExpectedExit: 0})
 		})
 	}
 }
 
 func TestE2EMapStringKeyViews(t *testing.T) {
+	t.Parallel()
 	const output = "MAP_STRING_KEY_VIEW=42\n"
 	for _, goHike := range []bool{false, true} {
 		name := "go"
@@ -289,6 +293,7 @@ func TestE2EMapStringKeyViews(t *testing.T) {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: mapStringKeyViewE2ESource, GoHike: goHike,
 				ExpectedOut: output, ExpectedExit: 0,
@@ -298,6 +303,7 @@ func TestE2EMapStringKeyViews(t *testing.T) {
 }
 
 func TestE2EMapStringRangePreservesKeysAndValues(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"
@@ -327,6 +333,7 @@ func main() int {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: source, GoHike: goHike,
 				ExpectedOut: "MAP_STRING_RANGE=2\n", ExpectedExit: 0,
@@ -336,6 +343,7 @@ func main() int {
 }
 
 func TestE2EMapDeleteAndLen(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"
@@ -360,6 +368,7 @@ func main() int {
 }
 
 func TestE2EMapLiteralInitialization(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"
@@ -380,6 +389,7 @@ func main() int {
 }
 
 func TestE2EMapStringRangePreservesInsertionOrder(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"
@@ -401,6 +411,7 @@ func main() int {
 }
 
 func TestE2EGlobalMapLiteralIncrement(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/maps"

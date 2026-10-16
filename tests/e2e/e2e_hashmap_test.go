@@ -179,6 +179,7 @@ func runHashMapValueCase(t *testing.T, source, output string) {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: source, GoHike: goHike,
 				ExpectedOut: output, ExpectedExit: 0,
@@ -188,6 +189,7 @@ func runHashMapValueCase(t *testing.T, source, output string) {
 }
 
 func TestE2EHashMapCompositeValues(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 type Config struct { Bits int; Name string }
@@ -252,12 +254,14 @@ func main() int {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{Source: source, GoHike: goHike, ExpectedOut: output, ExpectedExit: 0})
 		})
 	}
 }
 
 func TestE2EHashMapStringKeyViews(t *testing.T) {
+	t.Parallel()
 	const output = "MAP_STRING_KEY_VIEW=42\n"
 	for _, goHike := range []bool{false, true} {
 		name := "go"
@@ -265,6 +269,7 @@ func TestE2EHashMapStringKeyViews(t *testing.T) {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: hashmapStringKeyViewE2ESource, GoHike: goHike,
 				ExpectedOut: output, ExpectedExit: 0,
@@ -274,6 +279,7 @@ func TestE2EHashMapStringKeyViews(t *testing.T) {
 }
 
 func TestE2EHashMapStringRangePreservesKeysAndValues(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 func printf(format string, ...)
@@ -301,6 +307,7 @@ func main() int {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source: source, GoHike: goHike,
 				ExpectedOut: "MAP_STRING_RANGE=2\n", ExpectedExit: 0,
@@ -310,6 +317,7 @@ func main() int {
 }
 
 func TestE2EHashMapDeleteAndLen(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 func printf(format string, ...) int
@@ -332,6 +340,7 @@ func main() int {
 }
 
 func TestE2EHashMapLiteralInitialization(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 func printf(format string, ...) int
@@ -349,6 +358,7 @@ func main() int {
 }
 
 func TestE2EHashMapStringRangeContainsAllEntries(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 func main() int {

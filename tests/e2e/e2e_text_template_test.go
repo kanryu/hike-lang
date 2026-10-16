@@ -16,12 +16,14 @@ func main() int {
 `
 
 func TestE2EStdTextTemplate(t *testing.T) {
+	t.Parallel()
 	for _, goHike := range []bool{false, true} {
 		name := "go"
 		if goHike {
 			name = "go-hike"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			RunHikeCase(t, HikeTestCase{
 				Source:       textTemplateE2ESource,
 				GoHike:       goHike,

@@ -5,6 +5,7 @@ import "testing"
 // 基本的な文字列操作を一つのHikeC実行にまとめる。各CASEマーカーにより
 // 個別テストと同じく、どの操作が失敗したかを出力から特定できる。
 func TestStrings_Primitive_Batch(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main
@@ -46,6 +47,7 @@ func main() int {
 // views must preserve their explicit lengths instead of deriving the result
 // length with strlen.
 func TestStrings_Primitive_SubstringConcatPreservesLength(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		Source: `
 package main

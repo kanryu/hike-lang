@@ -7,6 +7,7 @@ import (
 
 // std/os の正式APIを通じたファイル作成・書き込み・読み込み・削除を検証する。
 func TestE2EStdOS_ReadWriteFile(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -36,6 +37,7 @@ func main() int {
 
 // os.File のオープン、Write、Read、Close を検証する。
 func TestE2EStdOS_FileLifecycle(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -72,6 +74,7 @@ func main() int {
 // os.Stat がファイルとディレクトリを正しく区別することを検証する。
 // ネイティブ版では、この判定に失敗するとモジュールルート探索も壊れる。
 func TestE2EStdOS_StatFileAndDirectory(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -97,6 +100,7 @@ func main() int {
 }
 
 func TestE2EStdOS_ReadDirReturnsTrimmedNames(t *testing.T) {
+	t.Parallel()
 	const source = `package main
 
 import "std/os"
@@ -122,6 +126,7 @@ func main() int {
 
 // os.File の位置操作、ReadAt、Stat、および Rename をネイティブ実装で検証する。
 func TestE2EStdOS_FilePositionAndMetadata(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -162,6 +167,7 @@ func main() int {
 
 // ネイティブCランタイムに接続された環境情報とプロセス情報を検証する。
 func TestE2EStdOS_NativeEnvironment(t *testing.T) {
+	t.Parallel()
 	RunHikeCase(t, HikeTestCase{
 		GoHike: true,
 		Source: `
@@ -189,6 +195,7 @@ func main() int {
 
 // Linux/POSIXのディレクトリ作成、列挙、エントリ属性、再帰削除を検証する。
 func TestE2EStdOS_LinuxDirectoryOperations(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux/POSIX directory APIs are only available on Linux")
 	}
@@ -231,6 +238,7 @@ func main() int {
 
 // Windows では FindFirstFileA/FindNextFileA による一階層列挙を実機検証する。
 func TestE2EStdOS_WindowsFindFiles(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "windows" {
 		t.Skip("Win32 file enumeration is only available on Windows")
 	}
@@ -260,6 +268,7 @@ func main() int {
 
 // Win32のディレクトリ、パス、環境変数、改名・削除APIをまとめて検証する。
 func TestE2EStdOS_WindowsNativeFileAndEnvironment(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "windows" {
 		t.Skip("Win32 APIs are only available on Windows")
 	}
