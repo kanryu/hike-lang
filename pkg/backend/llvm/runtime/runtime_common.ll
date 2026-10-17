@@ -21,42 +21,6 @@ declare i64 @_ftelli64(i8*)
 @__hike_mapped_update_mode = private unnamed_addr constant [4 x i8] c"rb+\00"
 @__hike_mapped_magic = private unnamed_addr constant [4 x i8] c"HMB3"
 
-define internal i32 @__hike_mapped_save(i8* %path_ptr, i8* %data, i64 %size) {
-entry:
-  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_write_mode, i32 0, i32 0
-  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
-  %missing = icmp eq i8* %file, null
-  br i1 %missing, label %fail, label %write
-write:
-  %written = call i64 @fwrite(i8* %data, i64 1, i64 %size, i8* %file)
-  %closed = call i32 @fclose(i8* %file)
-  %ok = icmp eq i64 %written, %size
-  %ok2 = icmp eq i32 %closed, 0
-  %result = and i1 %ok, %ok2
-  %result32 = zext i1 %result to i32
-  ret i32 %result32
-fail:
-  ret i32 0
-}
-
-define internal i32 @__hike_mapped_load(i8* %path_ptr, i8* %data, i64 %size) {
-entry:
-  %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_read_mode, i32 0, i32 0
-  %file = call i8* @fopen(i8* %path_ptr, i8* %mode_ptr)
-  %missing = icmp eq i8* %file, null
-  br i1 %missing, label %fail, label %read
-read:
-  %bytes_read = call i64 @fread(i8* %data, i64 1, i64 %size, i8* %file)
-  %closed = call i32 @fclose(i8* %file)
-  %ok = icmp eq i64 %bytes_read, %size
-  %ok2 = icmp eq i32 %closed, 0
-  %result = and i1 %ok, %ok2
-  %result32 = zext i1 %result to i32
-  ret i32 %result32
-fail:
-  ret i32 0
-}
-
 define internal i32 @__hike_mapped_graph_save(i8* %path_ptr, i8* %data, i64 %size, i8* %relocations, i64 %relocation_count, i64 %schema_hash) {
 entry:
   %mode_ptr = getelementptr inbounds [3 x i8], [3 x i8]* @__hike_mapped_write_mode, i32 0, i32 0

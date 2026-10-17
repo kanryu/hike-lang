@@ -133,10 +133,43 @@ type MemoryMapHeapSlot struct {
 	HeapIndex   int
 }
 
+// MemoryMapMetaKind identifies one row in the compiler-emitted mapped graph
+// table. IDs are intentionally separated into readable ranges so the table
+// can be inspected without a parallel type table.
+type MemoryMapMetaKind int
+
+const (
+	MemoryMapMetaRoot MemoryMapMetaKind = iota
+	MemoryMapMetaMapHeader
+	MemoryMapMetaMapEntries
+	MemoryMapMetaPayload
+	MemoryMapMetaPointer
+)
+
+const (
+	MemoryMapMetaMapHeaderBase  = 0x1000
+	MemoryMapMetaMapEntriesBase = 0x2000
+	MemoryMapMetaPayloadBase    = 0x3000
+	MemoryMapMetaPointerBase    = 0x4000
+)
+
+// MemoryMapMetaEntry is a compact, type-independent traversal recipe. Pos is
+// the first slot relative to the parent buffer; ChunkSize is the stride for
+// subsequent slots. Buffer lengths are read from the runtime representation
+// selected by Kind.
+type MemoryMapMetaEntry struct {
+	ID        int
+	ParentID  int
+	Pos       int
+	ChunkSize int
+	Kind      MemoryMapMetaKind
+}
+
 type MemoryMapDecl struct {
 	Name       string
 	Fields     []MemoryMapField
 	HeapSlots  []MemoryMapHeapSlot
+	Meta       []MemoryMapMetaEntry
 	Size       int
 	SchemaHash uint64
 }

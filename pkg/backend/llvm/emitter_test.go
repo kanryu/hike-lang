@@ -30,7 +30,8 @@ func TestEmitMemoryMapMetadataIsRetainedInLLVMUsed(t *testing.T) {
 		"@__hike_mmap_state_offsets = private constant [2 x i64] [i64 0, i64 8]",
 		"@__hike_mmap_state_heap_offsets = private constant [1 x i64] [i64 24]",
 		"@__hike_mmap_state_heap_indices = private constant [1 x i64] [i64 0]",
-		"@llvm.used = appending global [5 x i8*]",
+		"@__hike_mmap_state_meta = private constant [0 x i64] []",
+		"@llvm.used = appending global [6 x i8*]",
 	} {
 		if !strings.Contains(ir, want) {
 			t.Fatalf("memory-map metadata missing %q:\n%s", want, ir)

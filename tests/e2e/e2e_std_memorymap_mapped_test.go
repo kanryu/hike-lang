@@ -349,6 +349,94 @@ func main() int {
 	})
 }
 
+// TestE2EStdMemoryMapMappedDeepCompositeValues exercises several dynamic
+// buffers at once: maps with composite values, maps whose values are slices,
+// nested struct slices, nested slices, and strings at multiple levels.
+func TestE2EStdMemoryMapMappedDeepCompositeValues(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "windows" {
+		t.Skip("mapped-variable memorymap A2A test requires Windows Win32 APIs")
+	}
+
+	RunHikeCase(t, HikeTestCase{
+		GoHike: true,
+		Source: `
+package main
+
+import "std/memorymap"
+
+func printf(format string, ...) int
+
+type Leaf struct {
+    Name string
+    Scores []int
+}
+
+type Branch struct {
+    Title string
+    Tags []string
+    Leaves []Leaf
+    Rows [][]int
+}
+
+var concurrent(256, mapped(state)) {
+    catalog map[string]Branch
+    groups map[string][]Branch
+    labels []string
+    matrix [][]int
+}
+
+func main() int {
+    path := "std-memorymap-mapped-deep-composite.hmb"
+
+    catalog = make(map[string]Branch)
+    catalog["alpha"] = Branch{
+        Title: "first",
+        Tags: []string{"red", "green"},
+        Leaves: []Leaf{
+            Leaf{Name: "a-1", Scores: []int{11, 12, 13}},
+            Leaf{Name: "a-2", Scores: []int{21, 22}},
+        },
+        Rows: [][]int{[]int{101, 102}, []int{201, 202, 203}},
+    }
+    catalog["beta"] = Branch{
+        Title: "second",
+        Tags: []string{"blue"},
+        Leaves: []Leaf{Leaf{Name: "b-1", Scores: []int{31, 32, 33}}},
+        Rows: [][]int{[]int{301, 302}},
+    }
+    groups = make(map[string][]Branch)
+    groups["main"] = []Branch{catalog["alpha"], catalog["beta"]}
+    labels = []string{"one", "two", "three"}
+    matrix = [][]int{[]int{7, 8, 9}, []int{17, 18, 19}}
+    serializeErr := memorymap.MappedSerialize(state, path)
+
+    catalog = make(map[string]Branch)
+    catalog["alpha"] = Branch{Title: "destroyed", Tags: []string{"x"}, Leaves: []Leaf{Leaf{Name: "bad", Scores: []int{0}}}, Rows: [][]int{[]int{0}}}
+    groups = make(map[string][]Branch)
+    groups["main"] = []Branch{Branch{Title: "destroyed"}}
+    labels = []string{"destroyed"}
+    matrix = [][]int{[]int{0}}
+    deserializeErr := memorymap.MappedDeserialize(state, path)
+
+    alpha := catalog["alpha"]
+    mainGroup := groups["main"]
+    printf("SERIALIZE=%d,DESERIALIZE=%d,CATALOG=%d,TITLE=%s,TAGS=%d,%s,%s,LEAVES=%d,%s,%d,%d,ROWS=%d,%d,%d,GROUPS=%d,%s,%s,LABELS=%d,%s,%s,%s,MATRIX=%d,%d,%d,%d,%d,%d\n",
+        serializeErr == nil, deserializeErr == nil, len(catalog), alpha.Title,
+        len(alpha.Tags), alpha.Tags[0], alpha.Tags[1], len(alpha.Leaves),
+        alpha.Leaves[0].Name, alpha.Leaves[0].Scores[0], alpha.Leaves[1].Scores[1],
+        len(alpha.Rows), alpha.Rows[0][1], alpha.Rows[1][2], len(mainGroup),
+        mainGroup[0].Title, mainGroup[1].Leaves[0].Name, len(labels), labels[0],
+        labels[1], labels[2], len(matrix), matrix[0][2], matrix[1][0],
+        matrix[1][2], matrix[0][0], matrix[0][1])
+    return 0
+}
+`,
+		ExpectedOut:  "SERIALIZE=1,DESERIALIZE=1,CATALOG=2,TITLE=first,TAGS=2,red,green,LEAVES=2,a-1,11,22,ROWS=2,102,203,GROUPS=2,first,b-1,LABELS=3,one,two,three,MATRIX=2,9,17,19,7,8",
+		ExpectedExit: 0,
+	})
+}
+
 func TestE2EStdMemoryMapMappedSliceWriteAndAppend(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "windows" {

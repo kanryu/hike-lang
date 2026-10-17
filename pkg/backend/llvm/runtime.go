@@ -138,7 +138,6 @@ var RuntimeLLVMSymbols = map[string]bool{
 
 	// 純粋メモリ & 文字列操作内部実装 (64-bit) (define internal)
 	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
-	"__hike_mapped_save": true, "__hike_mapped_load": true,
 	"__hike_mapped_graph_save": true, "__hike_mapped_graph_load": true,
 	"__hike_mapped_graph_finalize": true,
 	"__hike_mapped_string_append":  true, "__hike_mapped_string_load": true,

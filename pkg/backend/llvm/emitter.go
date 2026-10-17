@@ -283,7 +283,8 @@ func (e *Emitter) emitMemoryMapMetadata() {
 			fmt.Sprintf("i8* bitcast (i64* @__hike_mmap_%s_schema_hash to i8*)", name),
 			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_offsets to i8*)", len(mapping.Fields), name),
 			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_heap_offsets to i8*)", len(mapping.HeapSlots), name),
-			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_heap_indices to i8*)", len(mapping.HeapSlots), name))
+			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_heap_indices to i8*)", len(mapping.HeapSlots), name),
+			fmt.Sprintf("i8* bitcast ([%d x i64]* @__hike_mmap_%s_meta to i8*)", len(mapping.Meta)*4, name))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_size = private constant i64 %d, align 8\n", name, mapping.Size))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_schema_hash = private constant i64 %d, align 8\n", name, mapping.SchemaHash))
 		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_offsets = private constant [%d x i64] [", name, len(mapping.Fields)))
@@ -308,6 +309,17 @@ func (e *Emitter) emitMemoryMapMetadata() {
 				e.b.WriteString(", ")
 			}
 			e.b.WriteString(fmt.Sprintf("i64 %d", slot.HeapIndex))
+		}
+		e.b.WriteString("], align 8\n")
+		e.b.WriteString(fmt.Sprintf("@__hike_mmap_%s_meta = private constant [%d x i64] [", name, len(mapping.Meta)*4))
+		for i, entry := range mapping.Meta {
+			values := []int{entry.ID, entry.ParentID, entry.Pos, entry.ChunkSize}
+			for j, value := range values {
+				if i != 0 || j != 0 {
+					e.b.WriteString(", ")
+				}
+				e.b.WriteString(fmt.Sprintf("i64 %d", value))
+			}
 		}
 		e.b.WriteString("], align 8\n")
 	}

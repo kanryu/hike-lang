@@ -44,3 +44,21 @@ var concurrent(64, mapped(state)) { value int }
 		t.Fatalf("unexpected mapped handle type: %#v, %v", handleType, ok)
 	}
 }
+
+func TestMappedMemoryBlockRejectsLegacyHashMap(t *testing.T) {
+	program := parser.New(lexer.New(`package main
+var concurrent(64, mapped(state)) { values hashmap[string]int }
+`)).ParseProgram()
+	if _, err := Analyze(program); err == nil || err.Error() != "mapped variable \"values\" cannot contain legacy hashmap; use map (compact dict) instead" {
+		t.Fatalf("unexpected mapped hashmap diagnostic: %v", err)
+	}
+}
+
+func TestMappedMemoryBlockAllowsCompactMap(t *testing.T) {
+	program := parser.New(lexer.New(`package main
+var concurrent(64, mapped(state)) { values map[string]int }
+`)).ParseProgram()
+	if _, err := Analyze(program); err != nil {
+		t.Fatalf("compact map should be allowed in mapped state: %v", err)
+	}
+}

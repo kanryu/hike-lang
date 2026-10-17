@@ -800,7 +800,7 @@ func (c *CallLowerer) lowerMappedPersistence(call *ast.CallExpr, method, owner s
 	size := &hir.ConstInt{Val: int64(layout.Size), Typ: sema.TypeInt}
 	buffer := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}, "mapped.image")
 	c.root.emit(&hir.InstrAllocaDynamic{Dst: buffer, Size: size, AllocType: sema.TypeByte})
-	callee := "__hike_mapped_save"
+	callee := "__hike_mapped_graph_save"
 	if method == "MappedDeserialize" {
 		callee = "__hike_mapped_graph_load"
 		c.root.emit(&hir.InstrCallStatic{CalleeName: callee, Args: []hir.Value{path, buffer, size, &hir.ConstNil{Typ: &sema.PointerType{Base: sema.TypeByte}}, &hir.ConstInt{Val: 0, Typ: sema.TypeInt}, &hir.ConstInt{Val: int64(layout.SchemaHash), Typ: sema.TypeInt}}})

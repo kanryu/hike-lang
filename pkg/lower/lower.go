@@ -315,48 +315,10 @@ func (l *Lowerer) Lower() *hir.Program {
 			MemoryMapName: l.semaCtx.GlobalMemoryMapNames[name],
 		})
 	}
-	for _, decl := range l.prog.Decls {
-		block, ok := decl.(*ast.MemoryBlockDecl)
-		if !ok || block.MapName == nil {
-			continue
-		}
-		mapID, ok := block.MapName.(*ast.Identifier)
-		if !ok {
-			continue
-		}
-		layout := &hir.MemoryMapDecl{Name: mapID.Value}
-		offset := 0
-		heapIndex := 0
-		for _, variable := range block.Vars {
-			typ := l.semaCtx.Globals[variable.Name.Value]
-			if typ == nil {
-				continue
-			}
-			// Every mapped field starts on an 8-byte boundary.  Besides keeping
-			// pointer/reference-count words naturally aligned, this makes the
-			// serialized image portable across x86 and ARM64 access rules.
-			offset = alignMemoryMapOffset(offset)
-			field := hir.MemoryMapField{
-				Name: variable.Name.Value, Type: typ.TypeName(), TypeID: typ.TypeID(l.semaCtx),
-				Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
-			}
-			layout.Fields = append(layout.Fields, field)
-			appendMemoryMapHeapSlots(layout, typ, offset, &heapIndex)
-			offset += sema.SizeOf(typ)
-		}
-		offset = alignMemoryMapOffset(offset)
-		layout.Size = offset
-		schemaFields := make([]memoryblock.SchemaField, 0, len(layout.Fields))
-		for _, field := range layout.Fields {
-			typ := l.semaCtx.Globals[field.Name]
-			schemaFields = append(schemaFields, memoryblock.SchemaField{
-				Name: field.Name, Type: typ.TypeName(), Kind: uint32(field.Kind), Size: field.Size,
-			})
-		}
-		layout.SchemaHash = memoryblock.SchemaHash(layout.Name, schemaFields)
-		l.hirProg.MemoryMaps = append(l.hirProg.MemoryMaps, layout)
-	}
-
+	// Mapped persistence calls are lowered while functions are visited. Keep
+	// their fixed field layout available, but defer the metadata table itself
+	// until the complete lowering pass has finished.
+	l.collectMemoryMapLayouts()
 	// グローバル変数の初期化式（var x = expr）を代入文として収集
 	var globalInits []ast.Statement
 	for _, decl := range l.prog.Decls {
@@ -443,7 +405,111 @@ func (l *Lowerer) Lower() *hir.Program {
 		}
 	}
 
+	// すべてのトップレベル宣言と関数のLowerが完了した後に、解析済みAST
+	// を走査してメモリマップのレイアウトとシリアライズ用メタデータを作る。
+	// メタデータ生成を途中のLower処理から分離することで、HIRへ渡す内容を
+	// 最終的なAST/意味解析結果に基づく一貫したスナップショットにする。
+	l.buildMemoryMapMetadata()
+
 	return l.hirProg
+}
+
+// buildMemoryMapMetadata builds the HIR memory-map layouts after the complete
+// lowering pass. The source AST is already semantically resolved at this point,
+// so the metadata can be generated from the final declarations and their types.
+func (l *Lowerer) buildMemoryMapMetadata() {
+	// Lower may be called only once today, but clearing this collection keeps the
+	// phase idempotent and prevents duplicate layouts if that ever changes.
+	l.hirProg.MemoryMaps = nil
+	for _, decl := range l.prog.Decls {
+		block, ok := decl.(*ast.MemoryBlockDecl)
+		if !ok || block.MapName == nil {
+			continue
+		}
+		mapID, ok := block.MapName.(*ast.Identifier)
+		if !ok {
+			continue
+		}
+		layout := l.buildMemoryMapLayout(block, true)
+		if layout == nil {
+			continue
+		}
+		layout.Name = mapID.Value
+		l.hirProg.MemoryMaps = append(l.hirProg.MemoryMaps, layout)
+	}
+}
+
+// collectMemoryMapLayouts makes fixed layouts available while function calls
+// are lowered. It intentionally does not generate the dynamic metadata table.
+func (l *Lowerer) collectMemoryMapLayouts() {
+	l.hirProg.MemoryMaps = nil
+	for _, decl := range l.prog.Decls {
+		block, ok := decl.(*ast.MemoryBlockDecl)
+		if !ok || block.MapName == nil {
+			continue
+		}
+		mapID, ok := block.MapName.(*ast.Identifier)
+		if !ok {
+			continue
+		}
+		layout := l.buildMemoryMapLayout(block, false)
+		if layout == nil {
+			continue
+		}
+		layout.Name = mapID.Value
+		l.hirProg.MemoryMaps = append(l.hirProg.MemoryMaps, layout)
+	}
+}
+
+// buildMemoryMapLayout builds the fixed field layout. When withMetadata is
+// true, it also walks nested types and emits the final metadata table.
+func (l *Lowerer) buildMemoryMapLayout(block *ast.MemoryBlockDecl, withMetadata bool) *hir.MemoryMapDecl {
+	if block == nil || block.MapName == nil {
+		return nil
+	}
+	mapID, ok := block.MapName.(*ast.Identifier)
+	if !ok {
+		return nil
+	}
+	layout := &hir.MemoryMapDecl{Name: mapID.Value}
+	var meta *memoryMapMetaBuilder
+	if withMetadata {
+		meta = newMemoryMapMetaBuilder(layout)
+		meta.add(hir.MemoryMapMetaEntry{ID: 0, ParentID: 0, Kind: hir.MemoryMapMetaRoot})
+	}
+	offset := 0
+	heapIndex := 0
+	for _, variable := range block.Vars {
+		typ := l.semaCtx.Globals[variable.Name.Value]
+		if typ == nil {
+			continue
+		}
+		// Every mapped field starts on an 8-byte boundary. Besides keeping
+		// pointer/reference-count words naturally aligned, this makes the
+		// serialized image portable across x86 and ARM64 access rules.
+		offset = alignMemoryMapOffset(offset)
+		field := hir.MemoryMapField{
+			Name: variable.Name.Value, Type: typ.TypeName(), TypeID: typ.TypeID(l.semaCtx),
+			Offset: offset, Size: sema.SizeOf(typ), Kind: memoryMapFieldKind(typ),
+		}
+		layout.Fields = append(layout.Fields, field)
+		appendMemoryMapHeapSlots(layout, typ, offset, &heapIndex)
+		if meta != nil {
+			meta.walk(typ, 0, offset, 0)
+		}
+		offset += sema.SizeOf(typ)
+	}
+	offset = alignMemoryMapOffset(offset)
+	layout.Size = offset
+	schemaFields := make([]memoryblock.SchemaField, 0, len(layout.Fields))
+	for _, field := range layout.Fields {
+		typ := l.semaCtx.Globals[field.Name]
+		schemaFields = append(schemaFields, memoryblock.SchemaField{
+			Name: field.Name, Type: typ.TypeName(), Kind: uint32(field.Kind), Size: field.Size,
+		})
+	}
+	layout.SchemaHash = memoryblock.SchemaHash(layout.Name, schemaFields)
+	return layout
 }
 
 func memoryMapFieldKind(typ sema.Type) hir.MemoryMapFieldKind {
@@ -508,6 +574,90 @@ func appendMemoryMapHeapSlots(layout *hir.MemoryMapDecl, typ sema.Type, baseOffs
 			(*nextBuffer)++
 			layout.HeapSlots = append(layout.HeapSlots, hir.MemoryMapHeapSlot{FieldOffset: dynamicOffset(), HeapIndex: target})
 		}
+	}
+}
+
+const compactMapEntrySize = 40
+
+type memoryMapMetaBuilder struct {
+	layout       *hir.MemoryMapDecl
+	nextMapHead  int
+	nextMapEntry int
+	nextPayload  int
+	nextPointer  int
+}
+
+func newMemoryMapMetaBuilder(layout *hir.MemoryMapDecl) *memoryMapMetaBuilder {
+	return &memoryMapMetaBuilder{layout: layout}
+}
+
+func (b *memoryMapMetaBuilder) add(entry hir.MemoryMapMetaEntry) {
+	b.layout.Meta = append(b.layout.Meta, entry)
+}
+
+func (b *memoryMapMetaBuilder) pointer(parent, pos, chunk int) int {
+	id := hir.MemoryMapMetaPointerBase + b.nextPointer
+	b.nextPointer++
+	b.add(hir.MemoryMapMetaEntry{ID: id, ParentID: parent, Pos: pos, ChunkSize: chunk, Kind: hir.MemoryMapMetaPointer})
+	return id
+}
+
+func (b *memoryMapMetaBuilder) buffer(kind hir.MemoryMapMetaKind, parent, pos, chunk int) int {
+	var id int
+	switch kind {
+	case hir.MemoryMapMetaMapHeader:
+		id = hir.MemoryMapMetaMapHeaderBase + b.nextMapHead
+		b.nextMapHead++
+	case hir.MemoryMapMetaMapEntries:
+		id = hir.MemoryMapMetaMapEntriesBase + b.nextMapEntry
+		b.nextMapEntry++
+	default:
+		id = hir.MemoryMapMetaPayloadBase + b.nextPayload
+		b.nextPayload++
+	}
+	b.add(hir.MemoryMapMetaEntry{ID: id, ParentID: parent, Pos: pos, ChunkSize: chunk, Kind: kind})
+	return id
+}
+
+func (b *memoryMapMetaBuilder) walk(typ sema.Type, parent, base, chunk int) {
+	if typ == nil {
+		return
+	}
+	if typ == sema.TypeString || typ.TypeName() == "string" {
+		pointer := b.pointer(parent, base, chunk)
+		b.buffer(hir.MemoryMapMetaPayload, pointer, 0, 0)
+		return
+	}
+	switch t := typ.(type) {
+	case *sema.SliceType:
+		pointer := b.pointer(parent, base, chunk)
+		payload := b.buffer(hir.MemoryMapMetaPayload, pointer, 0, sema.SizeOf(t.Elem))
+		b.walk(t.Elem, payload, 0, sema.SizeOf(t.Elem))
+	case *sema.MapType:
+		pointer := b.pointer(parent, base, chunk)
+		header := b.buffer(hir.MemoryMapMetaMapHeader, pointer, 0, 0)
+		entriesPointer := b.pointer(header, 0, 0)
+		entries := b.buffer(hir.MemoryMapMetaMapEntries, entriesPointer, 0, compactMapEntrySize)
+		// Compact Dict values occupy a fixed entry slot. Keys are scalar or
+		// string tokens; only the value graph needs recursive tracing here.
+		b.walk(t.Value, entries, 3*sema.PointerSize, compactMapEntrySize)
+	case *sema.StructType:
+		offset := 0
+		for _, field := range t.Fields {
+			fieldSize := sema.SizeOf(field.Type)
+			if fieldSize <= 0 {
+				fieldSize = sema.PointerSize
+			}
+			align := fieldSize
+			if align > sema.PointerSize {
+				align = sema.PointerSize
+			}
+			offset = (offset + align - 1) &^ (align - 1)
+			b.walk(field.Type, parent, base+offset, chunk)
+			offset += fieldSize
+		}
+	case *sema.ArrayType:
+		b.walk(t.Elem, parent, base, sema.SizeOf(t.Elem))
 	}
 }
 

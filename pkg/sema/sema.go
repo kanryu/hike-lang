@@ -1212,6 +1212,9 @@ func AnalyzeMode(prog *ast.Program, goHikeMode bool) (*Context, error) {
 
 	// Pass 2: 定数、グローバル変数、非ジェネリック関数の確定
 	resolveDeclarationTypes(prog, ctx)
+	if err := validateMappedMemoryBlocks(prog, ctx); err != nil {
+		return nil, err
+	}
 	if err := validateStableMaps(prog, ctx); err != nil {
 		return nil, err
 	}
