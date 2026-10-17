@@ -17,10 +17,16 @@ func TestGoHikeNamedGroupedReturns(t *testing.T) {
 	source := `package main
 
 func decode(b []byte) (payload, relocs []byte, count int, err error) {
-    return nil, nil, 0, nil
+    payload = b
+    relocs = b
+    count = len(b)
+    err = nil
+    return payload, relocs, count, err
 }
 
 func main() int {
+    payload, relocs, count, err := decode([]byte{1, 2, 3})
+    if err != nil || len(payload) != 3 || len(relocs) != 3 || count != 3 { return 1 }
     return 0
 }
 `

@@ -840,9 +840,17 @@ func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {
 	if name == "false" {
 		return &hir.ConstBool{Val: false, Typ: sema.TypeBool}
 	}
+	// Lexical bindings must shadow package globals and constants. In
+	// particular, a parameter named `version` must not resolve to an
+	// unrelated package constant with the same name.
+	if ptr, ok := e.root.symbols[name]; ok {
+		ptrType := ptr.Type().(*sema.PointerType)
+		dst := e.root.nextReg(ptrType.Base)
+		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
+		return dst
+	}
 	// Semantic globals such as TypeBool and TypeString may share names with
-	// Go-Hike's type-ID constants. Resolve the runtime global first so values
-	// returned through sema.Type keep their object pointer and itab.
+	// Go-Hike's type-ID constants. Resolve them only after lexical bindings.
 	if gName, g, ok := e.lookupGlobal(name); ok {
 		dst := e.root.nextReg(g)
 		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: &hir.GlobalVar{Name: gName, Typ: &sema.PointerType{Base: g}}})
@@ -856,12 +864,6 @@ func (e *ExprLowerer) lowerIdentifier(node *ast.Identifier) hir.Value {
 	}
 	if c, ok := e.root.semaCtx.LookupFloatConstant(name); ok {
 		return &hir.ConstFloat{Val: c, Typ: sema.TypeFloat64}
-	}
-	if ptr, ok := e.root.symbols[name]; ok {
-		ptrType := ptr.Type().(*sema.PointerType)
-		dst := e.root.nextReg(ptrType.Base)
-		e.root.emit(&hir.InstrLoad{Dst: dst, Ptr: ptr})
-		return dst
 	}
 	lookupFn := func(name string) (*sema.FuncType, string) {
 		if fn, ok := e.root.semaCtx.Functions[name]; ok {

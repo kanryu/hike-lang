@@ -20,4 +20,10 @@ func TestNamedGroupedReturnTypes(t *testing.T) {
 		}
 		t.Fatalf("return types = %d, want 4: %#v", got, literals)
 	}
+	wantNames := []string{"payload", "relocs", "count", "err"}
+	for i, want := range wantNames {
+		if fn.ReturnNames[i] != want {
+			t.Fatalf("return name[%d] = %q, want %q", i, fn.ReturnNames[i], want)
+		}
+	}
 }

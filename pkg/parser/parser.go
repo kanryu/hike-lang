@@ -548,7 +548,10 @@ func (p *Parser) parseReturnTypeListWithNames() ([]ast.TypeExpr, []string) {
 	p.nextToken() // first name or type
 	for !p.curTokenIs(token.RPAREN) && !p.curTokenIs(token.EOF) {
 		if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) && p.hasNamedParameterGroup() {
-			namesInGroup := []*ast.Identifier{{Token: p.curToken, Value: p.curToken.Literal}}
+			// Build the first identifier through the parser helper. The Hike
+			// frontend does not yet lower nested pointer composite literals in
+			// this form, while parseIdentifier produces the same AST node.
+			namesInGroup := []*ast.Identifier{p.parseIdentifier()}
 			idx := p.curIdx()
 			typeIdx := -1
 			for idx+2 < len(p.tokens) && p.tokens[idx+1].Type == token.COMMA {
@@ -571,9 +574,9 @@ func (p *Parser) parseReturnTypeListWithNames() ([]ast.TypeExpr, []string) {
 					p.nextToken()
 				}
 				typ := p.parseTypeExpr()
-				for range namesInGroup {
+				for _, named := range namesInGroup {
 					returns = append(returns, typ)
-					names = append(names, "")
+					names = append(names, named.Value)
 				}
 				if p.peekTokenIs(token.COMMA) {
 					p.nextToken()

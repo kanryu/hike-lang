@@ -128,8 +128,15 @@ func Create(path string) (*File, error) {
 }
 
 func OpenFile(path string, flag int, perm FileMode) (*File, error) {
-	if (flag & O_CREATE) != 0 { return Create(path) }
-	return Open(path)
+	mode := "rb"
+	if (flag & O_TRUNC) != 0 || (flag & O_CREATE) != 0 {
+		mode = "wb+"
+	} else if (flag & O_WRONLY) != 0 || (flag & O_RDWR) != 0 {
+		mode = "rb+"
+	}
+	h := fopen(cstring(path), cstring(mode))
+	if h == nil { return nil, &PathError{Op: "open", Path: path, Err: ErrNotExist} }
+	return &File{handle: h, path: path}, nil
 }
 
 func (f *File) Name() string { if f == nil { return "" }; return f.path }
@@ -154,6 +161,19 @@ func (f *File) ReadAt(data []byte, offset int64) (int, error) {
 	fseek(f.handle, current, 0)
 	if n == 0 { return 0, io.EOF }
 	if n < len(data) { return n, io.EOF }
+	return n, nil
+}
+
+func (f *File) WriteAt(data []byte, offset int64) (int, error) {
+	if f == nil || f.handle == nil { return 0, errors.New("file not open") }
+	if len(data) == 0 { return 0, nil }
+	current := ftell(f.handle)
+	if current < 0 || fseek(f.handle, offset, 0) != 0 {
+		return 0, errors.New("seek failed")
+	}
+	n := fwrite(&data[0], 1, len(data), f.handle)
+	fseek(f.handle, current, 0)
+	if n < len(data) { return n, errors.New("short write") }
 	return n, nil
 }
 

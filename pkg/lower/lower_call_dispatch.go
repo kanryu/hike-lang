@@ -8,7 +8,7 @@ import (
 	"hikec-go/pkg/hir"
 	"hikec-go/pkg/logger"
 	"hikec-go/pkg/sema"
-	statictemplate "hikec-go/pkg/template"
+	compiletemplate "hikec-go/pkg/template"
 )
 
 // CallLowerer は関数呼び出し、メソッド解決、型キャスト判定、引数パッキングを担当する
@@ -164,7 +164,7 @@ func (c *CallLowerer) lowerTemplateRender(call *ast.CallExpr) (hir.Value, bool) 
 		}
 		fields[field.Name.Value] = value
 	}
-	rendered, err := statictemplate.RenderLiteral(source.Value, func(field string) (any, bool) {
+				rendered, err := compiletemplate.RenderLiteral(source.Value, func(field string) (any, bool) {
 		value, ok := fields[field]
 		return value, ok
 	})

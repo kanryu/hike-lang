@@ -38,26 +38,26 @@ func runGet(args []string) {
 		// Modules constructed programmatically or older callers may not have
 		// RequireOrder populated; retain deterministic fallback behavior.
 		if len(order) == 0 {
-			for path, version := range module.Requires {
-				requests[path] = version
+			for path, requiredVersion := range module.Requires {
+				requests[path] = requiredVersion
 				order = append(order, path)
 			}
 			sort.Strings(order)
 		}
 	} else {
 		for _, arg := range args {
-			path, version := splitModuleVersion(arg)
+			path, requestedVersion := splitModuleVersion(arg)
 			if path == "" {
 				fmt.Fprintln(os.Stderr, "Error: get requires a module path")
 				os.Exit(1)
 			}
-			if version == "" {
-				version = module.Requires[path]
-				if version == "" {
-					version = "latest"
+			if requestedVersion == "" {
+				requestedVersion = module.Requires[path]
+				if requestedVersion == "" {
+					requestedVersion = "latest"
 				}
 			}
-			requests[path] = version
+			requests[path] = requestedVersion
 			order = append(order, path)
 		}
 	}
@@ -159,11 +159,11 @@ func resolveToolReference(module *mod.Module, reference string) (string, error) 
 	if modulePath == "" {
 		return "", fmt.Errorf("module prefix for %q was not found", reference)
 	}
-	version := module.Requires[modulePath]
-	if version == "" {
-		version = "latest"
+	requiredVersion := module.Requires[modulePath]
+	if requiredVersion == "" {
+		requiredVersion = "latest"
 	}
-	if err := fetchModule(module, modulePath, version, false); err != nil {
+	if err := fetchModule(module, modulePath, requiredVersion, false); err != nil {
 		return "", err
 	}
 	return module.ResolvePackagePath(module.RootDir, reference)
@@ -204,7 +204,7 @@ func splitModuleVersion(arg string) (string, string) {
 	return arg, ""
 }
 
-func fetchModule(module *mod.Module, modulePath, version string, replaceExisting bool) error {
+func fetchModule(module *mod.Module, modulePath, moduleVersion string, replaceExisting bool) error {
 	if filepath.IsAbs(modulePath) || filepath.Clean(filepath.FromSlash(modulePath)) != filepath.FromSlash(modulePath) || strings.HasPrefix(modulePath, "../") {
 		return fmt.Errorf("invalid module path %q", modulePath)
 	}
@@ -221,8 +221,8 @@ func fetchModule(module *mod.Module, modulePath, version string, replaceExisting
 		return err
 	}
 
-	if version != "" && version != "latest" {
-		return downloadModuleArchive(module.RootDir, destination, modulePath, version)
+	if moduleVersion != "latest" {
+		return downloadModuleArchive(module.RootDir, destination, modulePath, moduleVersion)
 	}
 
 	if replaceExisting {
@@ -247,7 +247,7 @@ func fetchModule(module *mod.Module, modulePath, version string, replaceExisting
 		}
 	}
 
-	fmt.Printf("Downloaded %s@%s -> %s\n", modulePath, version, destination)
+	fmt.Printf("Downloaded %s@%s -> %s\n", modulePath, moduleVersion, destination)
 	return nil
 }
 

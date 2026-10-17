@@ -36,6 +36,15 @@ func Index(s string, substr string) int {
 	return -1
 }
 
+// Cut slices s around the first occurrence of sep.
+func Cut(s string, sep string) (before, after string, found bool) {
+	idx := Index(s, sep)
+	if idx < 0 {
+		return s, "", false
+	}
+	return s[:idx], s[idx+len(sep):], true
+}
+
 func IndexByte(s string, c byte) int {
 	for i := 0; i < len(s); i++ {
 		if s[i] == c {
@@ -47,21 +56,27 @@ func IndexByte(s string, c byte) int {
 
 func LastIndexByte(s string, c byte) int {
 	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c { return i }
+		if s[i] == c {
+			return i
+		}
 	}
 	return -1
 }
 
 func IndexAny(s string, chars string) int {
 	for i := 0; i < len(s); i++ {
-		if IndexByte(chars, s[i]) >= 0 { return i }
+		if IndexByte(chars, s[i]) >= 0 {
+			return i
+		}
 	}
 	return -1
 }
 
 func LastIndexAny(s string, chars string) int {
 	for i := len(s) - 1; i >= 0; i-- {
-		if IndexByte(chars, s[i]) >= 0 { return i }
+		if IndexByte(chars, s[i]) >= 0 {
+			return i
+		}
 	}
 	return -1
 }
@@ -75,7 +90,7 @@ func TrimPrefix(s string, prefix string) string {
 
 func TrimSuffix(s string, suffix string) string {
 	if HasSuffix(s, suffix) {
-		return s[0:len(s)-len(suffix)]
+		return s[0 : len(s)-len(suffix)]
 	}
 	return s
 }
@@ -83,32 +98,38 @@ func TrimSuffix(s string, suffix string) string {
 func Trim(s string, cutset string) string {
 	start := 0
 	end := len(s)
-	for start < end && Index(cutset, s[start:start+1]) >= 0 { start++ }
-	for end > start && Index(cutset, s[end-1:end]) >= 0 { end-- }
+	for start < end && Index(cutset, s[start:start+1]) >= 0 {
+		start++
+	}
+	for end > start && Index(cutset, s[end-1:end]) >= 0 {
+		end--
+	}
 	return s[start:end]
 }
 
 func TrimRight(s string, cutset string) string {
 	end := len(s)
-	for end > 0 && Index(cutset, s[end-1:end]) >= 0 { end-- }
+	for end > 0 && Index(cutset, s[end-1:end]) >= 0 {
+		end--
+	}
 	return s[:end]
 }
 
 func LastIndex(s string, substr string) int {
-    lenS := len(s)
-    lenSub := len(substr)
-    if lenSub == 0 {
-        return lenS
-    }
-    if lenSub > lenS {
-        return -1
-    }
-    for i := lenS - lenSub; i >= 0; i-- {
-        if s[i:i+lenSub] == substr {
-            return i
-        }
-    }
-    return -1
+	lenS := len(s)
+	lenSub := len(substr)
+	if lenSub == 0 {
+		return lenS
+	}
+	if lenSub > lenS {
+		return -1
+	}
+	for i := lenS - lenSub; i >= 0; i-- {
+		if s[i:i+lenSub] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 func Contains(s string, substr string) bool {
@@ -127,13 +148,21 @@ func ContainsRune(s string, r rune) bool {
 // case-insensitive path and keyword checks used by the esbuild compatibility
 // layer; full Unicode folding can be added when std/unicode is expanded.
 func EqualFold(a string, b string) bool {
-	if len(a) != len(b) { return false }
+	if len(a) != len(b) {
+		return false
+	}
 	for i := 0; i < len(a); i++ {
 		ca := a[i]
 		cb := b[i]
-		if ca >= 65 && ca <= 90 { ca = ca + 32 }
-		if cb >= 65 && cb <= 90 { cb = cb + 32 }
-		if ca != cb { return false }
+		if ca >= 65 && ca <= 90 {
+			ca = ca + 32
+		}
+		if cb >= 65 && cb <= 90 {
+			cb = cb + 32
+		}
+		if ca != cb {
+			return false
+		}
 	}
 	return true
 }
@@ -207,13 +236,21 @@ func Split(s string, sep string) []string {
 }
 
 func SplitN(s string, sep string, n int) []string {
-	if n <= 0 { return make([]string, 0) }
+	if n <= 0 {
+		return make([]string, 0)
+	}
 	parts := Split(s, sep)
-	if len(parts) <= n { return parts }
+	if len(parts) <= n {
+		return parts
+	}
 	result := make([]string, 0, n)
-	for i := 0; i < n-1; i++ { result = append(result, parts[i]) }
+	for i := 0; i < n-1; i++ {
+		result = append(result, parts[i])
+	}
 	last := parts[n-1]
-	for i := n; i < len(parts); i++ { last = last + sep + parts[i] }
+	for i := n; i < len(parts); i++ {
+		last = last + sep + parts[i]
+	}
 	result = append(result, last)
 	return result
 }
@@ -241,7 +278,7 @@ func ToUpper(s string) string {
 	lenS := len(s)
 	// Keep one zero byte after the view for runtimes that use C-style
 	// comparisons on strings returned from this helper.
-	buf := make([]byte, lenS + 1)
+	buf := make([]byte, lenS+1)
 	for i := 0; i < lenS; i++ {
 		c := s[i]
 		if c >= 97 && c <= 122 {
@@ -255,7 +292,7 @@ func ToUpper(s string) string {
 
 func ToLower(s string) string {
 	lenS := len(s)
-	buf := make([]byte, lenS + 1)
+	buf := make([]byte, lenS+1)
 	for i := 0; i < lenS; i++ {
 		c := s[i]
 		if c >= 65 && c <= 90 {
@@ -268,7 +305,9 @@ func ToLower(s string) string {
 }
 
 func Title(s string) string {
-	if len(s) == 0 { return s }
+	if len(s) == 0 {
+		return s
+	}
 	return ToUpper(s[:1]) + s[1:]
 }
 
