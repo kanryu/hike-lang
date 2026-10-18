@@ -276,3 +276,179 @@ go run main.go
 Functions compiled into `.syso` cannot reference standard C library symbols (e.g., `printf`, `malloc`). Memory buffers must be allocated in Go and passed down as slices or pointers.
 2. **Stack Budget for `passthrough cfunc**`
 Functions marked with `passthrough` execute directly on Goroutine stacks (~2 KB). Allocating large local arrays (such as `[4096]byte`) or executing unbounded recursion will trigger silent stack corruption or immediate segmentation faults. Keep stack frames minimal.
+
+---
+
+## 7. Bundling a Rust Static Library with `hikepack`
+
+A practical integration consists of two native components:
+
+1. the C-ABI wrapper generated from Hike source; and
+2. the original static library built by Rust, such as `libslint_cflat.a`.
+
+The Rust archive must be kept intact. Do not extract its members and rebuild it
+with `llvm-ar -x`, `llvm-ar -r`, or an equivalent flattening step. Rust static
+libraries may contain their own runtime objects and archive metadata. Flattening
+can corrupt the symbol table or introduce duplicate definitions.
+
+`hikepack` copies the external archive byte-for-byte to a Go-linkable `.syso`
+file and keeps it separate from the Hike-generated wrapper.
+
+The public Go API remains free of handwritten cgo calls. The generated native
+linker helper uses a small `import "C"` package only to carry system-library
+flags to the external linker, so this bundled configuration requires a cgo-
+enabled Go toolchain. Applications that must use `CGO_ENABLED=0` must provide
+the equivalent system-library flags through their final application build
+configuration instead.
+
+### 7.1 Recommended package layout
+
+```text
+slint/
+├── hike.mod
+├── deps/
+│   └── slint-cflat-windows/
+│       └── libslint_cflat.a              # Built by Cargo
+├── internal/
+│   ├── cflat/
+│   │   ├── cflat.go.hike                 # Hike C-ABI declarations
+│   │   ├── cflat.go                      # Generated Go declarations
+│   │   ├── stub_windows_amd64.s          # Generated ABI trampoline
+│   │   └── hikepack_archive_windows.go   # Imports the native package
+│   └── cflat_native/
+│       ├── cflat_windows_amd64_archive_windows_amd64_0.syso
+│       └── link_windows_amd64.go          # Native linker flags
+└── examples/
+    └── hello/
+        └── main.go
+```
+
+The `cflat_native` package is intentionally separate from the Hike wrapper.
+The wrapper contains Go assembly, while the native package contains the cgo
+linker metadata and the external `.syso` archive. Keeping them separate avoids
+the Go toolchain restriction against combining `import "C"` and Go assembly in
+one package.
+
+### 7.2 `hike.mod`
+
+Declare the Rust archive and the required system libraries in the native
+package configuration:
+
+```text
+module github.com/example/slint
+
+hike 1.0
+
+package ./internal/cflat {
+    target windows {
+        hike-object: "none"
+        link: "deps/slint-cflat-windows/libslint_cflat.a"
+        link: "-lgdi32"
+        link: "-lopengl32"
+        link: "-limm32"
+        link: "-lws2_32"
+        link: "-luser32"
+        link: "-lkernel32"
+        link: "-lole32"
+        link: "-loleaut32"
+    }
+}
+```
+
+`hike-object: "none"` means that the Hike wrapper is compiled as Go assembly
+and the Rust archive is packaged separately. This is the safe mode when the
+wrapper's ABI trampolines are generated in `stub_windows_amd64.s`.
+
+### 7.3 Build the native package
+
+Build `hikepack` once from the Hike compiler repository:
+
+```powershell
+go build -o bin/hikepack.exe ./cmd/hikepack
+```
+
+Then run it against the Slint module:
+
+```powershell
+.\bin\hikepack.exe syso -v -target windows .\slint
+```
+
+This command performs the following operations:
+
+1. reads `slint/hike.mod`;
+2. generates `cflat.go` and the Go ABI stubs from `cflat.go.hike`;
+3. creates the native linker package;
+4. copies `libslint_cflat.a` without modifying its contents; and
+5. places the resulting `.syso` beside the generated native linker metadata.
+
+The SHA-256 hash of the copied `.syso` should match the original Rust archive:
+
+```powershell
+Get-FileHash `
+  .\slint\internal\cflat_native\cflat_windows_amd64_archive_windows_amd64_0.syso, `
+  .\slint\deps\slint-cflat-windows\libslint_cflat.a `
+  -Algorithm SHA256
+```
+
+### 7.4 Build the Go application
+
+Once the generated files are committed or distributed with the package, the
+application user does not need Hike, `hikepack`, Cargo, or the Rust source.
+The user builds the application with the ordinary Go command:
+
+```powershell
+go build -o hello.exe .\examples\hello
+```
+
+For a Windows GUI executable without a console window:
+
+```powershell
+go build -ldflags=-H=windowsgui -o hello.exe .\examples\hello
+```
+
+The `-H=windowsgui` option belongs to the final application and is therefore
+normally selected by the application build configuration rather than by the
+library package.
+
+### 7.5 Event-loop and thread rules
+
+The Rust library owns the Slint UI thread, while the Go host polls and
+dispatches events through the C ABI. A real application should keep its host
+event loop on one operating-system thread:
+
+```go
+runtime.LockOSThread()
+
+for app.IsRunning() {
+    for {
+        event, ok, err := app.PollEvent()
+        if err != nil {
+            panic(err)
+        }
+        if !ok {
+            break
+        }
+        if err := app.DispatchEvent(event); err != nil {
+            panic(err)
+        }
+    }
+    time.Sleep(10 * time.Millisecond)
+}
+```
+
+This is especially important when callbacks or native window events cross the
+Rust/Go boundary. The Go scheduler must not move the host event-pump function
+between OS threads while it is handling native events.
+
+### 7.6 Verification example
+
+The repository's Slint examples provide a complete verification path:
+
+```powershell
+go build -a -o .\examples\hello\hello.exe .\examples\hello
+go build -a -o .\examples\mvc-router\mvc-router.exe .\examples\mvc-router
+```
+
+The `hello` example verifies creation, property updates, event pumping, and
+shutdown. The `mvc-router` example additionally verifies page navigation and
+button-driven route changes through the Rust-backed Slint library.
