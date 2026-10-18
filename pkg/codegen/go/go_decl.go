@@ -52,6 +52,18 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	if needsUnsafe {
 		buf.WriteString("import \"unsafe\"\n\n")
 	}
+	buf.WriteString(`func hikeCStringToString(ptr *byte) string {
+	if ptr == nil {
+		return ""
+	}
+	n := 0
+	for *(*byte)(unsafe.Add(unsafe.Pointer(ptr), uintptr(n))) != 0 {
+		n++
+	}
+	return string(unsafe.Slice(ptr, n))
+}
+
+`)
 
 	// ラッパー関数群の出力
 	for _, w := range wrapperFuncs {
@@ -76,82 +88,61 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 // generateWrapperFunc は CFuncDecl から Go フレンドリーなラッパー関数を合成します。
 func generateWrapperFunc(cfn *ast.CFuncDecl) string {
 	fnName := cfn.Name.Value
-	hasCStringRet := len(cfn.ReturnTypes) == 1 && isCStringType(cfn.ReturnTypes[0])
-	hasOutLen := false
+	var params []string
+	var callArgs []string
+	var conversions []string
 	for _, p := range cfn.Params {
-		if p.Name.Value == "outLen" || (isPointerType(p.Type) && strings.Contains(p.Name.Value, "Len")) {
-			hasOutLen = true
-			break
+		name := p.Name.Value
+		if isCStringType(p.Type) {
+			params = append(params, name+" string")
+			bufName := name + "Bytes"
+			conversions = append(conversions,
+				fmt.Sprintf("%s := append([]byte(%s), 0)", bufName, name),
+			)
+			callArgs = append(callArgs, "&"+bufName+"[0]")
+			if isCStringLengthPair(cfn.Params, name) {
+				callArgs = append(callArgs, "len("+bufName+")-1")
+			}
+			continue
 		}
-	}
-
-	hasBuf := false
-	hasSize := false
-	for _, p := range cfn.Params {
-		if p.Name.Value == "buf" && isPointerType(p.Type) {
-			hasBuf = true
+		if isHiddenCStringLength(cfn.Params, p) {
+			continue
 		}
-		if strings.Contains(strings.ToLower(p.Name.Value), "size") && isIntType(p.Type) {
-			hasSize = true
+		goType, _ := typeExprToGoType(p.Type, false)
+		params = append(params, name+" "+goType)
+		callArgs = append(callArgs, name)
+	}
+
+	returnType := ""
+	if len(cfn.ReturnTypes) == 1 {
+		if isCStringType(cfn.ReturnTypes[0]) {
+			returnType = " string"
+		} else {
+			goType, _ := typeExprToGoType(cfn.ReturnTypes[0], true)
+			returnType = " " + goType
 		}
+	} else if len(cfn.ReturnTypes) > 1 {
+		var returns []string
+		for _, rt := range cfn.ReturnTypes {
+			goType, _ := typeExprToGoType(rt, true)
+			returns = append(returns, goType)
+		}
+		returnType = " (" + strings.Join(returns, ", ") + ")"
 	}
 
-	// パターン 1: 動的文字列返却（GetMetaData 等）
-	if hasCStringRet && hasOutLen {
-		return fmt.Sprintf(`// %s: Cで動的確保された文字列をGo文字列として取得
-func %s(filename string) string {
-	var cLen int
-	cPtr := _hike_%s(filename, &cLen)
-	if cPtr == nil || cLen == 0 {
-		return ""
+	call := fmt.Sprintf("_hike_%s(%s)", fnName, strings.Join(callArgs, ", "))
+	var body []string
+	body = append(body, conversions...)
+	if len(cfn.ReturnTypes) == 1 && isCStringType(cfn.ReturnTypes[0]) {
+		body = append(body, "return hikeCStringToString("+call+")")
+	} else if len(cfn.ReturnTypes) > 0 {
+		body = append(body, "return "+call)
+	} else {
+		body = append(body, call)
 	}
 
-	temp := unsafe.String((*byte)(cPtr), cLen)
-	res := string(temp)
-	_hike_free(cPtr)
-
-	return res
-}
-`, fnName, fnName, fnName)
-	}
-
-	// パターン 2: スライスバッファ書き込み（ReadFizzFile 等）
-	if hasBuf && hasSize {
-		return fmt.Sprintf(`// %s: バッファへの書き込み（ジャストサイズスライス返却）
-func %s(filename string, readSize int, buf []byte) []byte {
-	if len(buf) == 0 || readSize <= 0 {
-		return buf[:0]
-	}
-
-	targetSize := readSize
-	if targetSize > len(buf) {
-		targetSize = len(buf)
-	}
-
-	// unsafe.SliceData でバッファ先頭アドレスを渡し、書き込みサイズを受け取る
-	written := _hike_%s(filename, targetSize, unsafe.SliceData(buf))
-	if written < 0 {
-		return buf[:0]
-	}
-	if written > len(buf) {
-		written = len(buf)
-	}
-
-	return buf[:written]
-}
-`, fnName, fnName, fnName)
-	}
-
-	// パターン 3: 通常呼出（GetFizzFileSize 等）
-	comment := "ファイルサイズ取得"
-	if fnName != "GetFizzFileSize" {
-		comment = "ネイティブ関数呼出"
-	}
-	return fmt.Sprintf(`// %s: %s
-func %s(filename string) int {
-	return _hike_%s(filename)
-}
-`, fnName, comment, fnName, fnName)
+	return fmt.Sprintf("// %s: generated from the Hike cfunc signature\nfunc %s(%s)%s {\n\t%s\n}\n",
+		fnName, fnName, strings.Join(params, ", "), returnType, strings.Join(body, "\n\t"))
 }
 
 // generateNativeDecl は stub.s 接続用の _hike_xxx 宣言を合成します。
@@ -162,26 +153,12 @@ func generateNativeDecl(cfn *ast.CFuncDecl) string {
 	for i := 0; i < len(cfn.Params); i++ {
 		p := cfn.Params[i]
 
-		// (cstring, int) ペアは Go 側で string 1 つとして宣言
-		if isCStringType(p.Type) && i+1 < len(cfn.Params) && isIntType(cfn.Params[i+1].Type) {
-			paramName := strings.TrimSuffix(p.Name.Value, "_ptr")
-			if paramName == "fn" {
-				paramName = "filename"
-			}
-			params = append(params, fmt.Sprintf("%s string", paramName))
-			i++
+		if isCStringType(p.Type) {
+			params = append(params, fmt.Sprintf("%s *byte", p.Name.Value))
 			continue
 		}
-
-		if p.Name.Value == "buf" && isPointerType(p.Type) {
-			params = append(params, "bufPtr *byte")
-			continue
-		}
-
-		if fnName == "free" && isPointerType(p.Type) {
-			params = append(params, "ptr unsafe.Pointer")
-			continue
-		}
+		// The length remains part of the native ABI. It is hidden only by
+		// the public wrapper for the conventional cstring/length pair.
 
 		goType, _ := typeExprToGoType(p.Type, false)
 		params = append(params, fmt.Sprintf("%s %s", p.Name.Value, goType))
@@ -189,18 +166,51 @@ func generateNativeDecl(cfn *ast.CFuncDecl) string {
 
 	resStr := ""
 	if len(cfn.ReturnTypes) == 1 {
-		goRet, _ := typeExprToGoType(cfn.ReturnTypes[0], true)
+		goRet, _ := typeExprToNativeGoType(cfn.ReturnTypes[0])
 		resStr = " " + goRet
 	} else if len(cfn.ReturnTypes) > 1 {
 		var rets []string
 		for _, rt := range cfn.ReturnTypes {
-			t, _ := typeExprToGoType(rt, true)
+			t, _ := typeExprToNativeGoType(rt)
 			rets = append(rets, t)
 		}
 		resStr = " (" + strings.Join(rets, ", ") + ")"
 	}
 
 	return fmt.Sprintf("func _hike_%s(%s)%s", fnName, strings.Join(params, ", "), resStr)
+}
+
+func isCStringLengthPair(params []*ast.ParamDecl, cstringName string) bool {
+	for i, p := range params {
+		if p.Name.Value != cstringName || i+1 >= len(params) {
+			continue
+		}
+		next := params[i+1]
+		if !isIntType(next.Type) {
+			return false
+		}
+		base := strings.TrimSuffix(cstringName, "_ptr")
+		return next.Name.Value == "len" || next.Name.Value == "length" || next.Name.Value == base+"_len"
+	}
+	return false
+}
+
+func isHiddenCStringLength(params []*ast.ParamDecl, p *ast.ParamDecl) bool {
+	for i, candidate := range params {
+		if candidate != p || i == 0 {
+			continue
+		}
+		prev := params[i-1]
+		return isIntType(p.Type) && isCStringType(prev.Type) && isCStringLengthPair(params, prev.Name.Value)
+	}
+	return false
+}
+
+func typeExprToNativeGoType(te ast.TypeExpr) (string, bool) {
+	if isCStringType(te) {
+		return "*byte", false
+	}
+	return typeExprToGoType(te, true)
 }
 
 func isExported(name string) bool {

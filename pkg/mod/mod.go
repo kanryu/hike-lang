@@ -21,8 +21,9 @@ type Module struct {
 }
 
 type NativeTarget struct {
-	Links  []string
-	Assets []string
+	Links      []string
+	Assets     []string
+	HikeObject bool
 }
 
 type NativeDependency struct {
@@ -184,7 +185,7 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 			targetName = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "target ")), "{")
 			targetName = strings.TrimSpace(targetName)
 			if _, ok := mod.NativePackages[packagePath][targetName]; !ok {
-				mod.NativePackages[packagePath][targetName] = NativeTarget{}
+				mod.NativePackages[packagePath][targetName] = NativeTarget{HikeObject: true}
 			}
 			continue
 		}
@@ -199,6 +200,13 @@ func parseModFile(modPath string, rootDir string) (*Module, error) {
 				}
 				mod.NativePackages[packagePath][targetName] = config
 			}
+			continue
+		}
+		if targetName != "" && strings.HasPrefix(line, "hike-object:") {
+			value := quotedModuleValue(line)
+			config := mod.NativePackages[packagePath][targetName]
+			config.HikeObject = value != "none" && value != "false"
+			mod.NativePackages[packagePath][targetName] = config
 			continue
 		}
 		if line == "}" {

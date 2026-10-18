@@ -3,21 +3,53 @@ package main
 import (
 	"examples_gohike/fizzlib"
 	"fmt"
+	"unsafe"
 )
 
 func main() {
-	fileName := "sample_target.txt"
+	const fileName = "サンプル.txt"
 
-	// 1. ファイルサイズの取得
+	// 1. Go string -> *byte + length の変換と整数戻り値を検証する。
 	fileSize := fizzlib.GetFizzFileSize(fileName)
-	fmt.Printf("[1] 取得サイズ: %d bytes\n", fileSize)
+	if fileSize != len(fileName)+100 {
+		panic(fmt.Sprintf("GetFizzFileSize: got %d, want %d", fileSize, len(fileName)+100))
+	}
+	fmt.Printf("[1] file size: %d bytes\n", fileSize)
 
-	// 2. バッファをGo側で確保して読み込み
+	// C string引数がGo string APIとして公開され、C側でNUL終端まで
+	// 正しく走査されたことを検証する（lenはUTF-8のバイト長）。
+	if got := fizzlib.StringLength(fileName); got != len(fileName) {
+		panic(fmt.Sprintf("StringLength: got %d, want %d", got, len(fileName)))
+	}
+	fmt.Printf("[1b] C string length: %d bytes\n", len(fileName))
+
+	// C側でcharポインターを直接返し、Go側でstringへ戻せることを検証する。
+	if echoed := fizzlib.EchoString(fileName); echoed != fileName {
+		panic(fmt.Sprintf("EchoString: got %q, want %q", echoed, fileName))
+	}
+	fmt.Printf("[1c] direct char pointer: %q\n", fileName)
+
+	// C側で受け取ったcharポインターが標準出力へ出力されることを検証する。
+	if printed := fizzlib.PrintString(fileName); printed != len(fileName) {
+		panic(fmt.Sprintf("PrintString: got %d, want %d", printed, len(fileName)))
+	}
+	fmt.Printf("[1d] C stdout length: %d bytes\n", len(fileName))
+
+	// 2. ポインター引数、複数の整数引数、整数戻り値を検証する。
 	buf := make([]byte, 32)
-	data := fizzlib.ReadFizzFile(fileName, fileSize, buf)
-	fmt.Printf("[2] 読み込み結果 (len=%d): %s\n", len(data), string(data))
+	want := 12
+	written := fizzlib.ReadFizzFile(fileName, want, unsafe.SliceData(buf))
+	if written != want || string(buf[:written]) != "ABCDEFGHIJKL" {
+		panic(fmt.Sprintf("ReadFizzFile: got %d/%q", written, string(buf[:written])))
+	}
+	fmt.Printf("[2] read: %q\n", string(buf[:written]))
 
-	// 3. C側でmallocされたメタデータを安全に取得（freeは自動完了）
-	meta := fizzlib.GetMetaData(fileName)
-	fmt.Printf("[3] メタデータ: %s\n", meta)
+	// 3. *byte戻り値 -> Go string変換と out length 書き戻しを検証する。
+	var metaLen int
+	meta := fizzlib.GetMetaData(fileName, &metaLen)
+	if meta != "fizzbuzz" || metaLen != len(meta) {
+		panic(fmt.Sprintf("GetMetaData: got %q/%d", meta, metaLen))
+	}
+	fmt.Printf("[3] metadata: %q (len=%d)\n", meta, metaLen)
+	fmt.Println("gohike validation: PASS")
 }

@@ -19,11 +19,29 @@ type GoBuildOptions struct {
 	Dir        string // 対象ディレクトリ（省略時はカレントディレクトリ）
 	OutputFile string // 出力 .syso ファイルパス（省略時は自動決定）
 	TargetName string // ターゲットOS/ARCH
+	EmitSyso   bool   // Hike側のLLVMオブジェクトも生成する（hikepackから指定）
 	Verbose    bool   // 詳細ログ出力
 }
 
-// BuildGoPackage は指定ディレクトリ内の全 *.go.hike ファイルを探索し、
-// 単一の .syso オブジェクトファイルへとコンパイルします。
+// OutputSysoPath returns the Go linker-compatible Hike object path for a
+// package directory and target.  Packaging tools use this to place additional
+// native objects next to the object generated from Hike source.
+func OutputSysoPath(dir, targetName string) (string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve directory path: %w", err)
+	}
+	tgt, err := target.ParseTarget(targetName)
+	if err != nil {
+		return "", fmt.Errorf("target error: %w", err)
+	}
+	goos, goarch := resolveGoEnv(tgt)
+	return filepath.Join(absDir, fmt.Sprintf("%s_%s_%s.syso", filepath.Base(absDir), goos, goarch)), nil
+}
+
+// BuildGoPackage は指定ディレクトリ内の全 *.go.hike ファイルから、Go
+// ラッパー、アセンブリ・スタブ、LLVM IRを生成します。EmitSyso が指定
+// された場合だけ、Hike側の .syso も生成します。
 func BuildGoPackage(opts GoBuildOptions) error {
 	targetDir := opts.Dir
 	if targetDir == "" {
@@ -90,6 +108,10 @@ func BuildGoPackage(opts GoBuildOptions) error {
 			return fmt.Errorf("failed to generate go declarations: %w", err)
 		}
 	}
+	if !opts.EmitSyso {
+		fmt.Printf("[hikec go] Successfully generated Go bindings in: %s\n", absDir)
+		return nil
+	}
 	llPath := filepath.Join(absDir, dirName+".ll")
 	if err := os.WriteFile(llPath, []byte(llvmIR), 0644); err != nil {
 		return fmt.Errorf("failed to write LLVM IR: %w", err)
@@ -102,7 +124,7 @@ func BuildGoPackage(opts GoBuildOptions) error {
 		outputSyso = filepath.Join(absDir, fmt.Sprintf("%s_%s_%s.syso", dirName, goos, goarch))
 	}
 
-	// 6. Clang を呼び出して .syso（オブジェクトファイル）を出力
+	// 6. Hike 側のオブジェクトを生成する。
 	clangArgs := []string{
 		"-c",
 		"-O2",                  // 未使用の internal 関数・未解決 C シンボル参照を完全除去

@@ -1,0 +1,11 @@
+package fizzlib
+
+cfunc GetFizzFileSize(fn_ptr cstring, fn_len int) int = fizz_get_file_size
+cfunc StringLength(value cstring) int = fizz_string_length
+cfunc EchoString(value cstring) cstring = fizz_echo_string
+cfunc PrintString(value cstring) int = fizz_print_string
+cfunc MathScore(value int) int = fizz_math_score
+cfunc UrlHost(value cstring) cstring = fizz_url_host
+cfunc UrlPort(value cstring) int = fizz_url_port
+cfunc ReadFizzFile(fn_ptr cstring, readSize int, buf *byte) int = fizz_read_file
+passthrough cfunc GetMetaData(fn_ptr cstring, fn_len int, outLen *int) cstring = fizz_get_metadata

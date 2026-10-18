@@ -3,53 +3,59 @@ package fizzlib
 
 import "unsafe"
 
-// GetFizzFileSize: ファイルサイズ取得
-func GetFizzFileSize(filename string) int {
-	return _hike_GetFizzFileSize(filename)
-}
-
-// ReadFizzFile: バッファへの書き込み（ジャストサイズスライス返却）
-func ReadFizzFile(filename string, readSize int, buf []byte) []byte {
-	if len(buf) == 0 || readSize <= 0 {
-		return buf[:0]
-	}
-
-	targetSize := readSize
-	if targetSize > len(buf) {
-		targetSize = len(buf)
-	}
-
-	// unsafe.SliceData でバッファ先頭アドレスを渡し、書き込みサイズを受け取る
-	written := _hike_ReadFizzFile(filename, targetSize, unsafe.SliceData(buf))
-	if written < 0 {
-		return buf[:0]
-	}
-	if written > len(buf) {
-		written = len(buf)
-	}
-
-	return buf[:written]
-}
-
-// GetMetaData: Cで動的確保された文字列をGo文字列として取得
-func GetMetaData(filename string) string {
-	var cLen int
-	cPtr := _hike_GetMetaData(filename, &cLen)
-	if cPtr == nil || cLen == 0 {
+func hikeCStringToString(ptr *byte) string {
+	if ptr == nil {
 		return ""
 	}
+	n := 0
+	for *(*byte)(unsafe.Add(unsafe.Pointer(ptr), uintptr(n))) != 0 {
+		n++
+	}
+	return string(unsafe.Slice(ptr, n))
+}
 
-	temp := unsafe.String((*byte)(cPtr), cLen)
-	res := string(temp)
-	_hike_free(cPtr)
+// GetFizzFileSize: generated from the Hike cfunc signature
+func GetFizzFileSize(fn_ptr string) int {
+	fn_ptrBytes := append([]byte(fn_ptr), 0)
+	return _hike_GetFizzFileSize(&fn_ptrBytes[0], len(fn_ptrBytes)-1)
+}
 
-	return res
+// StringLength: generated from the Hike cfunc signature
+func StringLength(value string) int {
+	valueBytes := append([]byte(value), 0)
+	return _hike_StringLength(&valueBytes[0])
+}
+
+// EchoString: generated from the Hike cfunc signature
+func EchoString(value string) string {
+	valueBytes := append([]byte(value), 0)
+	return hikeCStringToString(_hike_EchoString(&valueBytes[0]))
+}
+
+// PrintString: generated from the Hike cfunc signature
+func PrintString(value string) int {
+	valueBytes := append([]byte(value), 0)
+	return _hike_PrintString(&valueBytes[0])
+}
+
+// ReadFizzFile: generated from the Hike cfunc signature
+func ReadFizzFile(fn_ptr string, readSize int, buf *byte) int {
+	fn_ptrBytes := append([]byte(fn_ptr), 0)
+	return _hike_ReadFizzFile(&fn_ptrBytes[0], readSize, buf)
+}
+
+// GetMetaData: generated from the Hike cfunc signature
+func GetMetaData(fn_ptr string, outLen *int) string {
+	fn_ptrBytes := append([]byte(fn_ptr), 0)
+	return hikeCStringToString(_hike_GetMetaData(&fn_ptrBytes[0], len(fn_ptrBytes)-1, outLen))
 }
 
 // -----------------------------------------------------------------------------
 // ネイティブリンク宣言（stub.s のアセンブリを経由して .syso と結合）
 // -----------------------------------------------------------------------------
-func _hike_GetFizzFileSize(filename string) int
-func _hike_ReadFizzFile(filename string, readSize int, bufPtr *byte) int
-func _hike_GetMetaData(filename string, outLen *int) unsafe.Pointer
-func _hike_free(ptr unsafe.Pointer)
+func _hike_GetFizzFileSize(fn_ptr *byte, fn_len int) int
+func _hike_StringLength(value *byte) int
+func _hike_EchoString(value *byte) *byte
+func _hike_PrintString(value *byte) int
+func _hike_ReadFizzFile(fn_ptr *byte, readSize int, buf *byte) int
+func _hike_GetMetaData(fn_ptr *byte, fn_len int, outLen *int) *byte

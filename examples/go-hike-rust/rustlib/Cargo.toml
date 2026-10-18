@@ -1,0 +1,15 @@
+[package]
+name = "fizzrust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+core_maths = { version = "0.1.1", default-features = false }
+libc = { version = "0.2.189", default-features = false }
+url = { version = "2.5.8", default-features = false }
+
+[profile.release]
+panic = "abort"

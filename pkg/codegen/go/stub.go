@@ -67,10 +67,16 @@ func GenerateGoStubs(targetDir string, pkgName string, decls []ast.Decl, verbose
 			}
 		}
 
-		// Windows シャドウスペース確保 & 呼び出し
-		sBuilder.WriteString("    SUBQ $32, SP\n")
+		// Windows x64 ABI requires 32 bytes of shadow space and the native
+		// callee must enter with RSP+8 aligned to 16 bytes.  The Go asm
+		// wrapper's entry SP is already affected by its generated frame, so
+		// reserve one additional eight-byte slot for every external call.
+		// This must be constant across signatures: using 32 for a one-argument
+		// void function leaves movaps in the Rust prologue misaligned.
+		stackAdjust := 40
+		sBuilder.WriteString(fmt.Sprintf("    SUBQ $%d, SP\n", stackAdjust))
 		sBuilder.WriteString(fmt.Sprintf("    CALL %s(SB)\n", targetCName))
-		sBuilder.WriteString("    ADDQ $32, SP\n")
+		sBuilder.WriteString(fmt.Sprintf("    ADDQ $%d, SP\n", stackAdjust))
 
 		// 戻り値の退避 (RAX -> Go FP)
 		if len(fn.ReturnTypes) > 0 {

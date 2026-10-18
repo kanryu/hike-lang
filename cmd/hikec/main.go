@@ -35,7 +35,7 @@ func getDefaultTargetName() string {
 func printUsage() {
 	fmt.Println("Usage: hikec <command> [options] <source.hike... | directory>")
 	fmt.Println("\nCommands:")
-	fmt.Println("  go          Compile all .go.hike files in directory into a single .syso object")
+	fmt.Println("  go          Generate Go bindings, assembly stubs, and LLVM IR from .go.hike files")
 	fmt.Println("  emit-ir     Generate LLVM IR or Wabt WAT from Hike source (default)")
 	fmt.Println("  emit-js     Generate the WebAssembly JavaScript runtime")
 	fmt.Println("  build       Compile Hike source into a native/Wasm binary (Wabt uses wat2wasm)")
@@ -44,7 +44,6 @@ func printUsage() {
 	fmt.Println("  get         Download modules listed in hike.mod into .hike/deps")
 	fmt.Println("              use `get -tool <package>` to build a declared tool into .hike/bin")
 	fmt.Println("\nOptions for go:")
-	fmt.Println("  -o <path>        Output .syso file path")
 	fmt.Println("  -target <name>   Target platform (windows, windows-msvc, linux, darwin, wasm32, wabt)")
 	fmt.Println("  -v               Enable verbose logging")
 	fmt.Println("  -vv              Enable detailed (instruction-level) verbose logging")
@@ -147,12 +146,7 @@ func runGo(args []string) {
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-o" && i+1 < len(args) {
-			opts.OutputFile = args[i+1]
-			i++
-		} else if strings.HasPrefix(arg, "-o=") {
-			opts.OutputFile = strings.TrimPrefix(arg, "-o=")
-		} else if (arg == "-target" || arg == "--target") && i+1 < len(args) {
+		if (arg == "-target" || arg == "--target") && i+1 < len(args) {
 			opts.TargetName = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "-target=") || strings.HasPrefix(arg, "--target=") {

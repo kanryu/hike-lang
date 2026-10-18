@@ -1,29 +1,28 @@
 package fizzlib
 
-// 1. GetFizzFileSize: 通常 cfunc
+// 外部C実装(c_fizzlib.c)の宣言からGoラッパーとWindows ABIスタブを生成する。
+
+// 1. GetFizzFileSize: 文字列引数と整数戻り値
 cfunc GetFizzFileSize(fn_ptr cstring, fn_len int) int {
-    return 15
+    return fn_len + 100
 }
 
-// 2. ReadFizzFile: 通常 cfunc
-cfunc ReadFizzFile(fn_ptr cstring, fn_len int, readSize int, buf *byte) int {
-    if readSize <= 0 {
-        return 0
-    }
+// 1b. C側がNUL終端されたC stringを実際に走査する
+cfunc StringLength(value cstring) int = c_StringLength
 
-    for i := 0; i < readSize; i++ {
-        buf[i] = byte(65 + (i % 26))
-    }
+// 1c. C側でcharポインターを加工せず、そのまま返す
+cfunc EchoString(value cstring) cstring = c_EchoString
 
+// 1d. C側でcharポインターを標準出力へ直接出力する
+cfunc PrintString(value cstring) int = c_PrintString
+
+// 2. ReadFizzFile: 文字列、整数、ポインター引数
+cfunc ReadFizzFile(fn_ptr cstring, readSize int, buf *byte) int {
     return readSize
 }
 
-// 3. GetMetaData: passthrough cfunc（Goroutine スタックで直接超高速実行）
+// 3. GetMetaData: C文字列ポインター戻り値と out parameter
 passthrough cfunc GetMetaData(fn_ptr cstring, fn_len int, outLen *int) cstring {
-    *outLen = 4
-    return "fizz"
-}
-
-// 4. free: 通常 cfunc
-cfunc free(ptr *byte) {
+    *outLen = 8
+    return cstring("fizzbuzz")
 }
