@@ -75,7 +75,55 @@ func Fprintln(w any, s string) int {
 // the Hike error interface is important when Go-Hike sources are compiled:
 // callers commonly return fmt.Errorf directly from an error-bearing function.
 func Errorf(format string, args ...any) error {
-	return errors.New(Sprintf(format, args...))
+	// %w is specific to Errorf. Normalize it before delegating to Sprintf,
+	// which intentionally does not interpret the error-wrapping verb.
+	normalized := ""
+	normalizedArgs := make([]any, 0)
+	argIndex := 0
+	i := 0
+	for i < len(format) {
+		if format[i] != byte(37) {
+			normalized = normalized + format[i:i+1]
+			i = i + 1
+		} else {
+			normalized = normalized + "%"
+			i = i + 1
+			if i >= len(format) {
+				break
+			}
+			if format[i] == byte(37) {
+				normalized = normalized + "%"
+				i = i + 1
+			} else {
+				for i < len(format) && (format[i] == byte(43) || format[i] == byte(45) || format[i] == byte(35) || format[i] == byte(32) || format[i] == byte(48) || (format[i] >= byte(48) && format[i] <= byte(57)) || format[i] == byte(46)) {
+					normalized = normalized + format[i:i+1]
+					i = i + 1
+				}
+				if i >= len(format) {
+					break
+				}
+				verb := format[i]
+				if verb == byte(119) {
+					normalized = normalized + "s"
+					if argIndex < len(args) {
+						if err, ok := args[argIndex].(error); ok {
+							normalizedArgs = append(normalizedArgs, err.Error())
+						} else {
+							normalizedArgs = append(normalizedArgs, args[argIndex])
+						}
+					}
+				} else {
+					normalized = normalized + format[i:i+1]
+					if argIndex < len(args) {
+						normalizedArgs = append(normalizedArgs, args[argIndex])
+					}
+				}
+				argIndex = argIndex + 1
+				i = i + 1
+			}
+		}
+	}
+	return errors.New(Sprintf(normalized, normalizedArgs...))
 }
 
 // Printf は Sprintf で文字列を組み立てた後に標準出力へ出力します
