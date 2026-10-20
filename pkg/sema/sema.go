@@ -1928,15 +1928,118 @@ func resolveConcreteTypes(prog *ast.Program, ctx *Context, typeDecls []*ast.Type
 }
 
 // tryResolveType lets the fixed-point alias pass defer an alias whose
-// dependency has not been registered yet. ResolveType historically reports
-// that condition by panicking, so keep the recovery narrowly scoped here.
-func tryResolveType(ctx *Context, expr ast.TypeExpr) (resolved Type) {
-	defer func() {
-		if recover() != nil {
-			resolved = nil
-		}
-	}()
+// dependency has not been registered yet. ResolveType reports an unknown
+// dependency by panicking, so check the dependency graph before calling it.
+// This keeps the fixed-point pass deterministic in both the Go and Hike
+// implementations without relying on deferred recovery during compilation.
+func tryResolveType(ctx *Context, expr ast.TypeExpr) Type {
+	if !typeExprDependenciesReady(ctx, expr) {
+		return nil
+	}
 	return ctx.ResolveType(expr)
+}
+
+func typeExprDependenciesReady(ctx *Context, expr ast.TypeExpr) bool {
+	if expr == nil {
+		return true
+	}
+	switch t := expr.(type) {
+	case *ast.NamedType:
+		name := astIdentifierValue(t.Name)
+		if t.Package != nil {
+			name = astIdentifierValue(t.Package) + "_" + name
+		}
+		if len(t.TypeArgs) > 0 {
+			for _, arg := range t.TypeArgs {
+				if !typeExprDependenciesReady(ctx, arg) {
+					return false
+				}
+			}
+		}
+		if _, ok := ctx.TypeParams[name]; ok {
+			return true
+		}
+		if t.Package == nil {
+			if _, ok := ctx.TypeParams[astIdentifierValue(t.Name)]; ok {
+				return true
+			}
+		}
+		if _, ok := LookupBuiltinType(name); ok {
+			return true
+		}
+		if name == "any" || name == "interface" || name == "error" || (name == "path" && ctx.GoHikeMode) {
+			return true
+		}
+		if st, _ := ctx.LookupStruct(name); st != nil {
+			return true
+		}
+		if iface, _ := ctx.LookupInterface(name); iface != nil {
+			return true
+		}
+		if alias, _ := ctx.LookupAlias(name); alias != nil {
+			return true
+		}
+		return false
+	case *ast.PointerType:
+		return typeExprDependenciesReady(ctx, t.Base)
+	case *ast.SliceType:
+		return typeExprDependenciesReady(ctx, t.Elem)
+	case *ast.EllipsisType:
+		return typeExprDependenciesReady(ctx, t.Elem)
+	case *ast.ArrayType:
+		return typeExprDependenciesReady(ctx, t.Elem)
+	case *ast.MapType:
+		return typeExprDependenciesReady(ctx, t.Key) && typeExprDependenciesReady(ctx, t.Value)
+	case *ast.ChanType:
+		return typeExprDependenciesReady(ctx, t.Elem)
+	case *ast.FutureType:
+		for _, ret := range t.ReturnTypes {
+			if !typeExprDependenciesReady(ctx, ret) {
+				return false
+			}
+		}
+		return true
+	case *ast.StructType:
+		for _, field := range t.Fields {
+			if !typeExprDependenciesReady(ctx, field.Type) {
+				return false
+			}
+		}
+		return true
+	case *ast.InterfaceType:
+		for _, embedded := range t.Embedded {
+			if !typeExprDependenciesReady(ctx, embedded) {
+				return false
+			}
+		}
+		for _, method := range t.Methods {
+			for _, param := range method.ParamTypes {
+				if !typeExprDependenciesReady(ctx, param) {
+					return false
+				}
+			}
+			for _, ret := range method.ReturnTypes {
+				if !typeExprDependenciesReady(ctx, ret) {
+					return false
+				}
+			}
+		}
+		return true
+	case *ast.FuncType:
+		for _, param := range t.ParamTypes {
+			if !typeExprDependenciesReady(ctx, param) {
+				return false
+			}
+		}
+		for _, ret := range t.ReturnTypes {
+			if !typeExprDependenciesReady(ctx, ret) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 
 func resolveInterfaceMethods(it *ast.InterfaceType, typeName, pkg string, ctx *Context) []Method {
