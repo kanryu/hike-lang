@@ -312,6 +312,7 @@ func Sprintf(format string, args ...any) string {
 		val := args[argIdx]
 		argIdx = argIdx + 1
 		formatted := make([]byte, 0)
+		unsupportedVerb := false
 
 		switch verb {
 		case 100: // 'd'
@@ -521,10 +522,12 @@ func Sprintf(format string, args ...any) string {
 		default:
 			buf = append(buf, byte(37)) // '%'
 			buf = append(buf, byte(verb))
-			continue
+			unsupportedVerb = true
 		}
 
-		buf = padBuffer(buf, formatted, flags)
+		if !unsupportedVerb {
+			buf = padBuffer(buf, formatted, flags)
+		}
 	}
 
 	return string(buf)
