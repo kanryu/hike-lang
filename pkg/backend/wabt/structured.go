@@ -21,6 +21,7 @@ func canEmitStructuredBody(body hir.ControlBody, visible map[int]bool) bool {
 				return false
 			}
 		case *hir.BlockNode:
+			// Blocks are emitted directly only when their body is itself safe.
 			nested := copyVisible(visible)
 			nested[n.ID] = true
 			if !canEmitStructuredBody(n.Body, nested) {
@@ -33,25 +34,26 @@ func canEmitStructuredBody(body hir.ControlBody, visible map[int]bool) bool {
 				nested[n.Continuation.ID] = true
 			}
 			if !canEmitStructuredBody(n.Init, copyVisible(visible)) ||
+				!canEmitStructuredBody(n.Body, nested) ||
 				!canEmitStructuredBody(n.Post, nested) {
 				return false
 			}
-			if !canEmitStructuredBody(n.Body, nested) {
+			// The canonical loop body contains one branch to the loop's
+			// continuation for the condition-false path. A source continue is a
+			// branch to the loop ID and is kept on the CFG path until its direct
+			// lowering is made safe for every nested shape.
+			if hasBranchTarget(n.Body, n.ID) {
 				return false
 			}
 		case *hir.IfNode:
-			if n.Cond == nil || !canEmitStructuredBody(n.Then, copyVisible(visible)) || !canEmitStructuredBody(n.Else, copyVisible(visible)) {
+			if n.Cond == nil || hasStructuredTerminator(n.Then) || hasStructuredTerminator(n.Else) ||
+				!canEmitStructuredBody(n.Then, copyVisible(visible)) || !canEmitStructuredBody(n.Else, copyVisible(visible)) {
 				return false
 			}
 		case *hir.TableNode:
-			for _, c := range n.Cases {
-				if !canEmitStructuredBody(c.Body, copyVisible(visible)) {
-					return false
-				}
-			}
-			if !canEmitStructuredBody(n.Default, copyVisible(visible)) {
-				return false
-			}
+			// Switch/table lowering has the same restriction as loops: use the
+			// compatibility CFG until all fallthrough shapes are direct-safe.
+			return false
 		case *hir.BrNode:
 			if n.TargetID < 0 || !visible[n.TargetID] {
 				return false
@@ -60,11 +62,63 @@ func canEmitStructuredBody(body hir.ControlBody, visible map[int]bool) bool {
 			if n.Cond == nil || n.TargetID < 0 || !visible[n.TargetID] {
 				return false
 			}
+		case *hir.ReturnNode, *hir.UnreachableNode, *hir.PanicNode:
+			// Structured terminators do not require a CFG dispatcher.
 		default:
 			return false
 		}
 	}
 	return true
+}
+
+func hasStructuredTerminator(body hir.ControlBody) bool {
+	for _, node := range body {
+		switch n := node.(type) {
+		case *hir.ReturnNode, *hir.UnreachableNode, *hir.PanicNode:
+			return true
+		case *hir.BlockNode:
+			if hasStructuredTerminator(n.Body) {
+				return true
+			}
+		case *hir.LoopNode:
+			if hasStructuredTerminator(n.Init) || hasStructuredTerminator(n.Body) || hasStructuredTerminator(n.Post) {
+				return true
+			}
+		case *hir.IfNode:
+			if hasStructuredTerminator(n.Then) || hasStructuredTerminator(n.Else) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasBranchTarget(body hir.ControlBody, target int) bool {
+	for _, node := range body {
+		switch n := node.(type) {
+		case *hir.BrNode:
+			if n.TargetID == target {
+				return true
+			}
+		case *hir.BrIfNode:
+			if n.TargetID == target {
+				return true
+			}
+		case *hir.BlockNode:
+			if hasBranchTarget(n.Body, target) {
+				return true
+			}
+		case *hir.LoopNode:
+			if hasBranchTarget(n.Init, target) || hasBranchTarget(n.Body, target) || hasBranchTarget(n.Post, target) {
+				return true
+			}
+		case *hir.IfNode:
+			if hasBranchTarget(n.Then, target) || hasBranchTarget(n.Else, target) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func copyVisible(src map[int]bool) map[int]bool {
@@ -145,6 +199,12 @@ func (e *Emitter) emitStructuredBody(body hir.ControlBody, indent string, labels
 			e.b.WriteString(indent + "(br " + resolveStructuredLabel(labels, n.TargetID) + ")\n")
 		case *hir.BrIfNode:
 			e.b.WriteString(indent + "(br_if " + resolveStructuredLabel(labels, n.TargetID) + " " + e.val(n.Cond) + ")\n")
+		case *hir.ReturnNode:
+			e.cfgTerminator(&hir.InstrReturn{Vals: n.Values}, e.currentFunction, nil)
+		case *hir.UnreachableNode:
+			e.cfgTerminator(&hir.InstrUnreachable{}, e.currentFunction, nil)
+		case *hir.PanicNode:
+			e.cfgTerminator(&hir.InstrPanic{Value: n.Value, Cause: n.Cause, SiteID: n.SiteID}, e.currentFunction, nil)
 		}
 	}
 }
@@ -209,10 +269,10 @@ func (e *Emitter) emitStructuredLoop(n *hir.LoopNode, indent string, parent map[
 	bodyLabels[n.ID] = postLabel
 
 	e.b.WriteString(indent + "(block " + exitLabel + "\n")
-	e.b.WriteString(indent + "  (loop " + loopLabel + "\n")
 	if len(n.Init) > 0 {
 		e.emitStructuredBody(n.Init, indent+"    ", parent)
 	}
+	e.b.WriteString(indent + "  (loop " + loopLabel + "\n")
 	// The canonical body already contains the condition IfNode. Keeping the
 	// condition in the body avoids evaluating it twice.
 	e.b.WriteString(indent + "    (block " + postLabel + "\n")

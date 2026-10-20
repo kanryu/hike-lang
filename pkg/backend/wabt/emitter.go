@@ -36,6 +36,7 @@ type Emitter struct {
 	lineTablesOnly   bool
 	compileFork      bool
 	runtimeFunctions int
+	currentFunction  *hir.Function
 }
 
 type taskCallSignature struct {
@@ -781,6 +782,8 @@ func (e *Emitter) function(fn *hir.Function) {
 		return
 	}
 	structured := canEmitStructuredSubset(fn.StructuredBody)
+	e.currentFunction = fn
+	defer func() { e.currentFunction = nil }()
 	var blocks []*structuredcfg.BasicBlock
 	if !structured {
 		fmt.Fprintf(os.Stderr, "[wabt] structured HIR fallback to CFG: function=%s\n", fn.Name)
@@ -816,7 +819,9 @@ func (e *Emitter) function(fn *hir.Function) {
 			}
 		}
 	}
-	fmt.Fprintf(&e.b, " (local $pc i32)")
+	if !structured {
+		fmt.Fprintf(&e.b, " (local $pc i32)")
+	}
 	fmt.Fprintf(&e.b, " (local $frame_sp i32)")
 	if len(fn.ReturnTypes) > 1 {
 		fmt.Fprintf(&e.b, " (local $__ret_multi i32)")
