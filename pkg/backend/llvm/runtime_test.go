@@ -40,3 +40,24 @@ func TestRuntimeTemplateRendering(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactMapReadWrappersHandleNilMaps(t *testing.T) {
+	ir := GetRuntimeIR("x86_64-w64-windows-gnu", 64)
+	for _, name := range []string{
+		"__hike_cdict_get",
+		"__hike_cdict_get_str",
+	} {
+		start := strings.Index(ir, "define internal i1 @"+name)
+		if start < 0 {
+			t.Fatalf("runtime is missing %s", name)
+		}
+		end := strings.Index(ir[start:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("runtime function %s has no closing brace", name)
+		}
+		body := ir[start : start+end]
+		if !strings.Contains(body, "icmp eq %struct.__hike_map* %m, null") {
+			t.Errorf("%s does not preserve nil-map lookup semantics", name)
+		}
+	}
+}

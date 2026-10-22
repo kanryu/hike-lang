@@ -2141,9 +2141,15 @@ entry:
 
 define internal i1 @__hike_cdict_get(%struct.__hike_map* %m, i64 %key, i64* %out) {
 entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %not_found, label %lookup
+lookup:
   %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
   %found = call i1 @__hike_compact_map_get(%struct.__hike_compact_map* %compact, i64 %key, i64 %key, i64* %out)
   ret i1 %found
+not_found:
+  store i64 0, i64* %out
+  ret i1 false
 }
 
 define internal void @__hike_cdict_set_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64 %value) {
@@ -2166,6 +2172,9 @@ entry:
 
 define internal i1 @__hike_cdict_get_str(%struct.__hike_map* %m, i8* %ptr, i64 %len, i64* %out) {
 entry:
+  %null_m = icmp eq %struct.__hike_map* %m, null
+  br i1 %null_m, label %not_found, label %lookup
+lookup:
   %key = alloca %struct.__hike_string_key
   %p_ptr = getelementptr %struct.__hike_string_key, %struct.__hike_string_key* %key, i32 0, i32 0
   store i8* %ptr, i8** %p_ptr
@@ -2176,6 +2185,9 @@ entry:
   %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
   %found = call i1 @__hike_compact_map_get(%struct.__hike_compact_map* %compact, i64 %token, i64 %hash, i64* %out)
   ret i1 %found
+not_found:
+  store i64 0, i64* %out
+  ret i1 false
 }
 
 %struct.__hike_compact_map_entry = type { i64, i64, i64, i64, i64 }

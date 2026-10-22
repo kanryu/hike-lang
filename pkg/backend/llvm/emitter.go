@@ -1390,11 +1390,12 @@ func (e *Emitter) inferRenderedValueType(v hir.Value) string {
 	if v == nil {
 		return ""
 	}
-	if actual := e.renderedTypes[v.String()]; actual != "" {
+	key := v.String()
+	if actual := e.renderedTypes[key]; actual != "" {
 		return actual
 	}
 	text := e.b.String()
-	needle := "  " + v.String() + " = "
+	needle := "  " + key + " = "
 	pos := strings.LastIndex(text, needle)
 	if pos < 0 {
 		return ""
@@ -1419,12 +1420,12 @@ func (e *Emitter) inferRenderedValueType(v hir.Value) string {
 					end++
 				}
 				t := strings.TrimSpace(loadType[:end])
-				return t
+				return e.rememberRenderedValueType(key, t)
 			}
 		}
-		return strings.TrimSuffix(fields[1], ",")
+		return e.rememberRenderedValueType(key, strings.TrimSuffix(fields[1], ","))
 	case "zext", "sext", "trunc", "add", "sub", "mul", "sdiv", "srem", "and", "or", "xor", "shl", "lshr", "ashr":
-		return strings.TrimSuffix(fields[1], ",")
+		return e.rememberRenderedValueType(key, strings.TrimSuffix(fields[1], ","))
 	case "extractvalue":
 		open, close := strings.IndexByte(rhs, '{'), strings.IndexByte(rhs, '}')
 		if open < 0 || close <= open {
@@ -1445,9 +1446,20 @@ func (e *Emitter) inferRenderedValueType(v hir.Value) string {
 		if n < 0 || n >= len(parts) {
 			return ""
 		}
-		return strings.TrimSpace(parts[n])
+		return e.rememberRenderedValueType(key, strings.TrimSpace(parts[n]))
 	}
 	return ""
+}
+
+func (e *Emitter) rememberRenderedValueType(key, actual string) string {
+	if actual == "" {
+		return actual
+	}
+	if e.renderedTypes == nil {
+		e.renderedTypes = make(map[string]string)
+	}
+	e.renderedTypes[key] = actual
+	return actual
 }
 
 func (e *Emitter) emitInstructionBody(inst hir.Instruction) {

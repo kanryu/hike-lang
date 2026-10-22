@@ -746,3 +746,18 @@ func TestHikeVariadicFunctionsUseTypedSliceABI(t *testing.T) {
 		t.Fatalf("external variadic signature was not preserved: isVar=%v sig=%q", isVar, sig)
 	}
 }
+
+func TestInferRenderedValueTypeCachesIRScanResult(t *testing.T) {
+	reg := &hir.Reg{ID: 7, Typ: sema.TypeInt}
+	emitter := &Emitter{
+		renderedTypes: make(map[string]string),
+	}
+	emitter.b.WriteString("  %v7 = add i64 %lhs, %rhs\n")
+
+	if got := emitter.inferRenderedValueType(reg); got != "i64" {
+		t.Fatalf("inferRenderedValueType returned %q, want i64", got)
+	}
+	if got := emitter.renderedTypes[reg.String()]; got != "i64" {
+		t.Fatalf("inferred type was not cached: got %q", got)
+	}
+}
