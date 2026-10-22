@@ -167,38 +167,6 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 
 ---
 
-## Inline Assembly
-
-Hike supports function-level LLVM inline assembly through the `__asm__ { ... }`
-construct. The first line inside the block declares the operand mapping. The
-following entries are the assembly template, output constraints, input
-constraints, and clobber constraints:
-
-```go
-func encryptBlockFast(roundKeys *byte, dst *byte, src *byte) {
-    __asm__{
-        params: roundKeys, dst, src
-        "movups (%2), %xmm0\n",
-        "movups (%0), %xmm1\n",
-        "pxor %xmm1, %xmm0\n",
-        "movups %xmm0, (%1)\n",
-        "",
-        "r,r,r",
-        "~{xmm0},~{xmm1},~{memory}"
-    }
-}
-```
-
-`%0`, `%1`, and `%2` refer to the operands listed after `params:`. They are
-translated to LLVM inline-assembly operand references; other assembly text is
-preserved. Register names such as `%xmm0` remain hardware register names.
-Clobbers must declare registers and memory modified by the assembly. Native
-instructions must be protected with build constraints such as `amd64`; a
-portable implementation should be provided for targets such as wasm32.
-
-The complete build-constraint and assembly rules are documented in
-[`build-constraints-and-assembly.md`](build-constraints-and-assembly.md).
-
 ---
 
 ## Architecture
@@ -641,7 +609,7 @@ func DemoMapBehavior() {
 
 ---
 
-### 10. Concurrency, Channels & Streaming
+### 9. Concurrency, Channels & Streaming
 
 `Async` schedules a closure for asynchronous execution and returns a typed one-shot task handle. The receive operator `<-` waits for completion and unpacks the return value or values.
 
@@ -699,7 +667,7 @@ variables provide synchronized shared state.
 
 ---
 
-### 11. First-Class Functions, Closures & Escape Analysis
+### 10. First-Class Functions, Closures & Escape Analysis
 
 Functions can be passed as values, returned from factories, or defined inline as closures.
 
@@ -747,6 +715,40 @@ func main() int {
 }
 
 ```
+
+---
+
+## Inline Assembly
+
+Hike supports function-level LLVM inline assembly through the `__asm__ { ... }`
+construct. The first line inside the block declares the operand mapping. The
+following entries are the assembly template, output constraints, input
+constraints, and clobber constraints:
+
+```go
+func encryptBlockFast(roundKeys *byte, dst *byte, src *byte) {
+    __asm__{
+        params: roundKeys, dst, src
+        "movups (%2), %xmm0\n",
+        "movups (%0), %xmm1\n",
+        "pxor %xmm1, %xmm0\n",
+        "movups %xmm0, (%1)\n",
+        "",
+        "r,r,r",
+        "~{xmm0},~{xmm1},~{memory}"
+    }
+}
+```
+
+`%0`, `%1`, and `%2` refer to the operands listed after `params:`. They are
+translated to LLVM inline-assembly operand references; other assembly text is
+preserved. Register names such as `%xmm0` remain hardware register names.
+Clobbers must declare registers and memory modified by the assembly. Native
+instructions must be protected with build constraints such as `amd64`; a
+portable implementation should be provided for targets such as wasm32.
+
+The complete build-constraint and assembly rules are documented in
+[`build-constraints-and-assembly.md`](build-constraints-and-assembly.md).
 
 ---
 
@@ -1108,16 +1110,12 @@ pipeline.
 
 Both backends emit the internal runtime support needed by the program and can
 generate the JavaScript runtime for the selected host mode. The generated
-Wasm modules are intended to run across WebAssembly hosts including browsers,
-Node.js, and other runtimes that provide the standard WebAssembly JavaScript
-API.
-
-The generated WASM modules are intended to run across WebAssembly host
-environments, including web browsers, Node.js, and other WASM runtimes that
-provide the standard WebAssembly JavaScript API. In a web browser, a module
-can be used immediately by referencing the generated `runtime.js` and the
-`.wasm` binary from an HTML page; the runtime handles instantiation and exposes
-the Hike exports to the page's JavaScript.
+Wasm modules are intended to run across WebAssembly host environments,
+including web browsers, Node.js, and other runtimes that provide the standard
+WebAssembly JavaScript API. In a web browser, a module can be used immediately
+by referencing the generated `runtime.js` and the `.wasm` binary from an HTML
+page; the runtime handles instantiation and exposes the Hike exports to the
+page's JavaScript.
 
 ### Build and run
 
