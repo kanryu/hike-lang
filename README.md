@@ -167,8 +167,6 @@ The compiler builds standalone executables, C-compatible shared libraries (`.dll
 
 ---
 
----
-
 ## Architecture
 
 ```text
@@ -245,285 +243,146 @@ functions, and fixed receivers use package-qualified names.
 
 ## Language Tour & Syntax Reference
 
-### 1. Variables, Types & Constants
+### Go-Compatible Syntax at a Glance
 
-Hike supports explicit type declarations and local type inference via `:=`. Primitive types map to fixed-width representations: `int` (`i64`), `float64` (`double`), `byte` (`u8`), and `bool` (`i1`). The native `string` type is a length-aware fat value: `{ i8*, i32, i32 }`, occupying 16 bytes on 64-bit targets and 12 bytes on wasm32.
-
-```go
-package main
-
-var globalCounter int = 0
-const MaxLimit int = 1024
-
-func DemoVariables() {
-    var a int = 42
-    var b float64 = 3.14159
-    var isEnabled bool = true
-    var msg string = "Hello, Hike!"
-
-    // Type inference
-    count := 100
-    ratio := 0.75
-}
-
-```
-
----
-
-### 2. Pointers & Structs
-
-Structs follow C memory layouts without hidden metadata or GC headers. Raw pointer operations do not incur runtime tracking.
+If you already know Go, the core surface syntax is intentionally familiar:
+variables, structs, slices, multiple returns, `:=`, `if`, `for`, `for-range`,
+and `switch` work in the expected style. The important differences begin at
+the memory, ABI, and compilation boundaries.
 
 ```go
 package main
 
-type Point struct {
-    X float64
-    Y float64
-}
+type Point struct { X, Y float64 }
 
-type Rectangle struct {
-    TopLeft     Point
-    BottomRight Point
-}
-
-func CreatePoint(x float64, y float64) Point {
-    return Point{X: x, Y: y}
-}
-
-// Pass by pointer to avoid copying
-func OffsetPoint(p *Point, dx float64, dy float64) {
-    p.X = p.X + dx
-    p.Y = p.Y + dy
-}
-
-```
-
----
-
-### 3. Functions & Multiple Return Values
-
-Functions are first-class constructs and support multiple return values.
-
-```go
-package main
-
-func SafeDivide(a int, b int) (int, bool) {
-    if b == 0 {
-        return 0, false
-    }
+func Divide(a, b int) (int, bool) {
+    if b == 0 { return 0, false }
     return a / b, true
 }
 
-func DemoFunctions() {
-    result, ok := SafeDivide(10, 2)
-    if ok {
-        // Use result
-    }
-}
-
-```
-
----
-
-### 4. Control Flow
-
-Hike supports `if` statements with short variable declarations, standard 3-clause `for` loops, `for-range` iterations, and `switch` statements.
-
-```go
-package main
-
-func DemoControlFlow(values [5]int) int {
-    sum := 0
-
-    // 1. If with initializer
-    if n := len(values); n > 0 {
-        sum = sum + 1
-    }
-
-    // 2. 3-clause for loop
-    for i := 0; i < 5; i = i + 1 {
-        sum = sum + values[i]
-    }
-
-    // 3. for-range loop over fixed arrays
-    for idx, val := range values {
-        if val < 0 {
-            continue
-        }
-        sum = sum + val
-    }
-
-    // 4. Switch statement
-    status := 200
-    switch status {
-    case 200:
-        sum = sum + 10
-    case 404, 500:
-        sum = sum - 1
-    default:
-        sum = 0
-    }
-
-    return sum
-}
-
-```
-
----
-
-### 5. Arrays & Slices
-
-Fixed-size arrays allocate contiguous memory inline. Slices provide dynamic views backed by a three-word header: pointer, length, and capacity.
-
-```go
-package main
-
-func DemoArrays() {
-    // Fixed-size array
-    var arr [4]int
-    arr[0] = 10
-    arr[1] = 20
-
-    primes := [3]int{2, 3, 5}
-
-    // Slice expression
-    sub := primes[1:3]
-}
-
-```
-
----
-
-### 6. Zero-Cost Monomorphized Generics
-
-Generic functions and struct definitions are specialized into concrete implementations at compile time, eliminating runtime dispatch overhead.
-
-```go
-package main
-
-// Generic function with type union constraint
-func Min[T int | float64](a T, b T) T {
-    if a < b {
-        return a
-    }
-    return b
-}
-
-// Generic struct
-type Pair[K, V] struct {
-    Key   K
-    Value V
-}
-
-func DemoGenerics() {
-    minInt := Min(10, 20)           // Specializes Min__int
-    minFloat := Min(3.14, 2.71)     // Specializes Min__float64
-
-    p := Pair[string, int]{Key: "hike", Value: 1}
-}
-
-```
-
-#### ConstGenerics
-
-Hike also supports compile-time value parameters for generic types. A const
-generic declaration must contain at least one type parameter, and const
-parameters must appear after all type parameters. Const arguments are limited
-to immediate primitive values or other const-generic parameters; ordinary
-variables and expressions involving runtime values are rejected.
-
-```go
-type Matrix[T, Rows uint, Cols uint] struct {
-    data [Rows * Cols]T
-}
-
-func MatrixValue() int {
-    var m Matrix[int, 8, 8]
-    return 8 * 8
-}
-```
-
-`Matrix[int, 8, 8]` is materialized as a concrete compile-time
-specialization. The dimensions are available to layout and indexing code, so
-the resulting fixed-size matrix has no runtime dimension metadata.
-
-```go
-const Rows uint = 8
-const Cols uint = 8
-var m Matrix[int, Rows, Cols]
-```
-
-See the generic transformation and interface tests for additional examples of
-type and const-parameter specialization.
-
----
-
-### 7. Hash Maps & Indexing Sugar
-
-Hike provides two built-in map types. `map[K]V` uses the compact-dict runtime,
-while `hashmap[K]V` uses the conventional chained-bucket hash-map runtime.
-The `std/maps` import remains required for `map[K]V` syntax for compatibility.
-
-```go
-package main
-
-import "std/maps"
-
-func printf(format string, ...) int
-
 func main() int {
-    // Initialize a legacy bucketed hash map with initial capacity
-    hmap := make(hashmap[string, int], 8)
+    pt := Point{X: 1.0, Y: 2.0}
+    vals := []int{10, 20, 30}
+    total := 0
 
-    // Subscript assignment sugar
-    hmap["Tokyo"] = 1400
-    hmap["Osaka"] = 880
-    hmap["Nagoya"] = 230
-
-    // Comma-ok lookup idiom
-    if val, ok := hmap["Osaka"]; ok {
-        printf("Osaka population: %d\n", val)
+    for idx, v := range vals {
+        total = total + idx + v
     }
 
-    // for-range traversal (stack-allocated iterator)
-    for city, population := range hmap {
-        printf("  - %s: %d\n", city, population)
-    }
-
-    // Removal and length query
-    delete(hmap, "Nagoya")
-    printf("Remaining entries: %d\n", len(hmap))
-
+    _, _ = pt, total
     return 0
 }
-
 ```
 
----
+The rest of this section focuses on the parts that make Hike different from
+Go: predictable memory ownership, compile-time specialization, direct C ABI
+boundaries, and backend-level observability.
 
-### 8. Custom Subscripting & 2-Pass Stack Iterator Protocol
+### Hike-Specific Systems Features
 
-Any user-defined struct can implement the **Map Behavior** protocol to enable indexing syntax (`obj[k]`, `obj[k] = v`, `len(obj)`, `delete(obj, k)`) and `for-range` loops.
+#### `cbuffer`: Owned Native Buffers with Explicit Release
 
-To eliminate heap allocations during `for-range` iterations over custom containers, Hike uses a 2-pass protocol:
+`cbuffer` is a built-in type for a native byte buffer returned by C libraries
+and other foreign-function interfaces. It combines the native data pointer
+and byte length with a release callback, without converting the allocation into
+an ordinary Hike `[]byte` or guessing which allocator should free it.
 
-1. **Pass 1 (Size Probe)**: `InitIterator(nil)` returns the state buffer byte size.
+```hike
+extern func native_alloc(size int) *byte
+extern func native_free(memory *byte)
 
+memory := native_alloc(size)
+release := func() { native_free(memory) }
+buffer := cbuffer(memory, size, release)
+defer buffer.Close()
 
-2. **Stack Allocation**: The compiler issues an `alloca` instruction on the caller's stack frame.
+first := buffer[0]
+nativePointer := buffer.Ptr()
+length := buffer.Len()
+```
 
+`cbuffer` does not copy the data and does not participate in Hike slice
+reference counting. The owner must call `Close`; closing is idempotent and
+invokes the stored allocator-specific release callback exactly once. A range
+expression such as `buffer[1:3]` creates an independent Hike-owned `[]byte`
+copy. Never pass a borrowed native pointer to `cbuffer` unless the release
+callback and lifetime are genuinely owned by the resulting value.
 
-3. **Pass 2 (Initialization)**: `InitIterator(buf)` initializes the allocated state buffer in-place.
+The complete ownership, callback, slicing, and SQLite examples are documented
+in [`cbuffer.md`](cbuffer.md).
 
+#### C Strings as a Built-in Type
 
-4. **Iteration**: `Next(buf)` runs on each step, returning pointers to the current key/value and a continuation flag.
-
-
+`cstring` is a separate built-in type for a C `char*`: a pointer to a
+NUL-terminated byte sequence. A C `char*` parameter or variable can therefore
+be represented directly as `cstring`, while Hike's ordinary `string` remains a
+length-aware UTF-8 value. C-string values can use the built-in `len` function,
+and can be converted to or from Hike strings at an explicit boundary.
 
 ```go
-package main
+func printf(format cstring, ...) int
 
+func PrintCString(p *byte) int {
+    text := cstring(p)
+    return len(text)
+}
+```
+
+For a non-NUL-terminated buffer, keep the value as `*byte` plus a length or
+construct a `cstring` with an explicit length-aware conversion. See
+[`encoding.md`](encoding.md) for the exact representation and conversion
+rules.
+
+#### Area and Region Allocation
+
+Use `area(...) { ... }` for scoped storage with bulk release, or
+`--alloc=region` for eligible function-local allocations grouped into a
+region and released at the region boundary. Values that must survive the
+area must be copied explicitly with `deepcopy`.
+
+```hike
+func ExtractTail(input []byte) []byte {
+    var result []byte
+
+    area(64) {
+        // A large working byte slice is allocated inside the area.
+        working := make([]byte, 48*1024)
+        copy(working, input)
+
+        // Keep only the tail after the area by making an explicit deep copy.
+        tail := working[len(working)-1024:]
+        result = deepcopy(tail)
+    }
+
+    // All allocations made in the area, including the large working buffer,
+    // have already been released together when the area ended; only result
+    // remains valid here.
+    return result
+}
+```
+
+See [`area-allocation.md`](area-allocation.md) and
+[`alloc-region.md`](alloc-region.md).
+
+#### Two-Pass Stack Iterators
+
+Custom containers can implement a size-probe plus initialization protocol.
+Hike then reserves the iterator state with `alloca`, keeping `for-range`
+traversal off the heap. The iterator protocol and examples are documented in
+[`area-allocation.md`](area-allocation.md) and the compiler tests.
+
+The same custom container can implement the Map Behavior methods `Set`, `Get`,
+`Len`, and `Delete` to enable indexing syntax such as `dict[key]`,
+`dict[key] = value`, `len(dict)`, `delete(dict, key)`, and `for-range` traversal.
+
+The protocol has two passes:
+
+1. `InitIterator(nil)` returns the number of bytes required for iterator state.
+2. The caller allocates that state on its stack with `alloca`.
+3. `InitIterator(buf)` initializes the state buffer in place.
+4. `Next(buf)` returns pointers to the current key and value plus a continuation flag.
+
+```hike
 type Entry[K, V] struct {
     Key   K
     Value V
@@ -532,42 +391,6 @@ type Entry[K, V] struct {
 type CustomDictionary[K, V] struct {
     Entries []Entry[K, V]
 }
-
-func (d *CustomDictionary[K, V]) Set(key K, val V) {
-    for i := 0; i < len(d.Entries); i = i + 1 {
-        if d.Entries[i].Key == key {
-            d.Entries[i].Value = val
-            return
-        }
-    }
-    d.Entries = append(d.Entries, Entry[K, V]{Key: key, Value: val})
-}
-
-func (d *CustomDictionary[K, V]) Get(key K) (V, bool) {
-    for i := 0; i < len(d.Entries); i = i + 1 {
-        if d.Entries[i].Key == key {
-            return d.Entries[i].Value, true
-        }
-    }
-    var zero V
-    return zero, false
-}
-
-func (d *CustomDictionary[K, V]) Len() int {
-    return len(d.Entries)
-}
-
-func (d *CustomDictionary[K, V]) Delete(key K) {
-    for i := 0; i < len(d.Entries); i = i + 1 {
-        if d.Entries[i].Key == key {
-            d.Entries[i] = d.Entries[len(d.Entries)-1]
-            d.Entries = d.Entries[:len(d.Entries)-1]
-            return
-        }
-    }
-}
-
-// --- 2-Pass Iterator Methods ---
 
 type DictIterator struct {
     Index int
@@ -592,24 +415,48 @@ func (d *CustomDictionary[K, V]) Next(buf *byte) (*K, *V, bool) {
     return &entry.Key, &entry.Value, true
 }
 
-func DemoMapBehavior() {
-    var dict CustomDictionary[string, int]
-
-    // Uses indexing sugar
-    dict["itemA"] = 100
-    dict["itemB"] = 200
-
-    // Traverses with zero heap allocation
-    for k, v := range dict {
-        // ...
+func SumValues(dict *CustomDictionary[string, int]) int {
+    total := 0
+    for _, value := range dict {
+        total = total + value
     }
+    return total
+}
+```
+
+The iterator state is temporary caller-owned storage. The iteration itself
+does not allocate a heap object for the iterator, while the container's own
+entries retain their normal lifetime and ownership rules.
+
+#### Const Generics and Monomorphization
+
+Value parameters such as `Rows` and `Cols` can participate in compile-time
+type specialization. The resulting layout and indexing operations carry no
+runtime dimension metadata when the values are compile-time constants.
+
+```go
+type Matrix[T, Rows uint, Cols uint] struct {
+    data [Rows * Cols]T
 }
 
+var m Matrix[int, 8, 8]
 ```
+
+#### Direct C Declarations
+
+A function declaration without a body is emitted as an external C-ABI symbol;
+cgo is not required for a direct declaration such as:
+
+```go
+func printf(format string, ...) int
+```
+
+See [`Direct C Interoperability`](README.md#direct-c-interoperability-zero-overhead-c-abi)
+for linking and ownership rules.
 
 ---
 
-### 9. Concurrency, Channels & Streaming
+### Concurrency, Channels & Streaming
 
 `Async` schedules a closure for asynchronous execution and returns a typed one-shot task handle. The receive operator `<-` waits for completion and unpacks the return value or values.
 
@@ -667,7 +514,7 @@ variables provide synchronized shared state.
 
 ---
 
-### 10. First-Class Functions, Closures & Escape Analysis
+### First-Class Functions, Closures & Escape Analysis
 
 Functions can be passed as values, returned from factories, or defined inline as closures.
 
