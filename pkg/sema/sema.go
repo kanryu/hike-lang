@@ -208,7 +208,7 @@ func typeLLVMOf(typ Type) string {
 	case *semanticArrayType:
 		return fmt.Sprintf("[%d x %s]", t.Len, typeLLVMOf(t.Elem))
 	case *semanticStructType:
-		return t.LLVMType()
+		return StructType_LLVMType(t)
 	case *semanticInterfaceType:
 		if t.IsAny() {
 			// any values use a target-independent 32-bit runtime type ID.
@@ -500,10 +500,14 @@ type StructType struct {
 	BuiltinCapabilities map[string]*FuncType
 }
 
-func structSize(t *StructType) int { return t.Size() }
+func structSize(t *StructType) int { return structTypeSize(t) }
 
 func (t *StructType) TypeName() string { return t.Name }
 func (t *StructType) LLVMType() string {
+	return structLLVMType(t)
+}
+
+func structLLVMType(t *StructType) string {
 	if t.Name != "" {
 		return "%struct." + t.Name
 	}
@@ -528,11 +532,7 @@ func StructType_TypeName(t *StructType) string { return t.Name }
 // StructType implementation. Keep the body concrete: calling t.LLVMType()
 // here is lowered by the self-hosted compiler back to this helper and recurses.
 func StructType_LLVMType(t *StructType) string {
-	parts := make([]string, 0, len(t.Fields))
-	for _, f := range t.Fields {
-		parts = append(parts, typeLLVMOf(f.Type))
-	}
-	return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
+	return structLLVMType(t)
 }
 func (t *StructType) IsGeneric() bool { return len(t.TypeParams) > 0 && !t.IsSpecialized }
 
@@ -551,6 +551,10 @@ func (t *StructType) Align() int {
 }
 
 func (t *StructType) Size() int {
+	return structTypeSize(t)
+}
+
+func structTypeSize(t *StructType) int {
 	offset := 0
 	maxAlign := 1
 	for _, f := range t.Fields {
@@ -577,7 +581,7 @@ func (t *StructType) Size() int {
 }
 
 func StructType_Size(t *StructType) int {
-	return structSize(t)
+	return structTypeSize(t)
 }
 
 func (t *StructType) TypeID(ctx *Context) int64           { return typeIDOf(ctx, t) }

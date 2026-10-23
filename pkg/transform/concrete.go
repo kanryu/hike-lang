@@ -425,8 +425,26 @@ func validateExpr(e ast.Expression, path string) error {
 		return validateBlock(n.Body, path+".body")
 	case *ast.NamedType:
 		return validateType(n, path)
-	case *ast.PointerType, *ast.SliceType, *ast.EllipsisType, *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FutureType, *ast.InterfaceType, *ast.FuncType, *ast.ConstArg:
-		return validateType(n.(ast.TypeExpr), path)
+	case *ast.PointerType:
+		return validateType(n, path)
+	case *ast.SliceType:
+		return validateType(n, path)
+	case *ast.EllipsisType:
+		return validateType(n, path)
+	case *ast.ArrayType:
+		return validateType(n, path)
+	case *ast.MapType:
+		return validateType(n, path)
+	case *ast.ChanType:
+		return validateType(n, path)
+	case *ast.FutureType:
+		return validateType(n, path)
+	case *ast.InterfaceType:
+		return validateType(n, path)
+	case *ast.FuncType:
+		return validateType(n, path)
+	case *ast.ConstArg:
+		return validateType(n, path)
 	case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.CharLiteral, *ast.StringLiteral, *ast.NilLiteral, *ast.IotaExpr:
 		return nil
 	default:
