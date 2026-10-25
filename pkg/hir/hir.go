@@ -245,6 +245,16 @@ type Instruction interface {
 	Result() *Reg
 }
 
+func typedValueString(v Value) string {
+	if v == nil {
+		return "<nil>"
+	}
+	if typ := v.Type(); typ != nil {
+		return fmt.Sprintf("%s %s", typ.TypeName(), v)
+	}
+	return fmt.Sprintf("<nil-type> %s", v)
+}
+
 // InstructionKey returns a scalar key for debug metadata.  Keeping interface
 // values out of map keys is important for the self-hosted wasm32 compiler:
 // interface hashing is not part of the HIR data model and is needlessly
@@ -405,7 +415,19 @@ type InstrBinary struct {
 
 func (i *InstrBinary) Result() *Reg { return i.Dst }
 func (i *InstrBinary) String() string {
-	return fmt.Sprintf("  %s = %s %s, %s", i.Dst, i.Op, i.L, i.R)
+	dst := "<nil>"
+	if i.Dst != nil {
+		dst = i.Dst.String()
+	}
+	lhs := "<nil>"
+	if i.L != nil {
+		lhs = i.L.String()
+	}
+	rhs := "<nil>"
+	if i.R != nil {
+		rhs = i.R.String()
+	}
+	return fmt.Sprintf("  %s = %s %s, %s", dst, i.Op, lhs, rhs)
 }
 
 // InstrSelect chooses one value without evaluating either value's memory
@@ -520,7 +542,7 @@ func (i *InstrCallStatic) Result() *Reg { return i.Dst }
 func (i *InstrCallStatic) String() string {
 	args := make([]string, len(i.Args))
 	for idx, a := range i.Args {
-		args[idx] = fmt.Sprintf("%s %s", a.Type().TypeName(), a)
+		args[idx] = typedValueString(a)
 	}
 	if i.Dst != nil {
 		return fmt.Sprintf("  %s = call @%s(%s)", i.Dst, i.CalleeName, strings.Join(args, ", "))
@@ -539,7 +561,7 @@ func (i *InstrCallIndirect) Result() *Reg { return i.Dst }
 func (i *InstrCallIndirect) String() string {
 	args := make([]string, len(i.Args))
 	for idx, a := range i.Args {
-		args[idx] = fmt.Sprintf("%s %s", a.Type().TypeName(), a)
+		args[idx] = typedValueString(a)
 	}
 	envStr := "nil"
 	if i.EnvPtr != nil {
@@ -563,7 +585,7 @@ func (i *InstrCallIface) Result() *Reg { return i.Dst }
 func (i *InstrCallIface) String() string {
 	args := make([]string, len(i.Args))
 	for idx, a := range i.Args {
-		args[idx] = fmt.Sprintf("%s %s", a.Type().TypeName(), a)
+		args[idx] = typedValueString(a)
 	}
 	if i.Dst != nil {
 		return fmt.Sprintf("  %s = call_iface %s.#%d (%s), (%s)", i.Dst, i.IfaceVal, i.MethodIndex, i.MethodName, strings.Join(args, ", "))
