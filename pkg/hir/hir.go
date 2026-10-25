@@ -263,12 +263,15 @@ func InstructionKey(instr Instruction) string {
 	if instr == nil {
 		return ""
 	}
-	// Do not format the interface-held pointer with %p.  The self-hosted Hike
-	// formatter handles integer pointers only, so that representation traps
-	// while lowering imported packages.  Instruction strings include result
-	// registers for value-producing instructions and are sufficient for the
-	// source-location metadata map without depending on interface identity.
-	return fmt.Sprintf("%T@%s", instr, instr.String())
+	// Do not stringify the whole instruction here. Operand formatting is a
+	// diagnostic concern and may recursively dispatch through partially built
+	// interface values while the HIR is being lowered. A result register is a
+	// stable key for value-producing instructions and does not inspect their
+	// operands; side-effect-only instructions are keyed by instruction type.
+	if result := instr.Result(); result != nil {
+		return fmt.Sprintf("%T@%d", instr, result.ID)
+	}
+	return fmt.Sprintf("%T", instr)
 }
 
 // SourceLocation identifies the Hike source location associated with a HIR

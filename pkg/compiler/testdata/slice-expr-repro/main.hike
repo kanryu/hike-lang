@@ -1,0 +1,10 @@
+package main
+
+func consume(values ...string) {}
+
+func main() int {
+    values := []string{"a", "b"}
+    view := values[0:1]
+	consume(view...)
+    return 0
+}
