@@ -86,6 +86,10 @@ type Lowerer struct {
 	managedParams       []hir.Value
 	managedParamEscapes map[string]bool
 	managedScopes       []managedScope
+	// tailCallCleanupPending is set while lowering a direct call returned from
+	// a return statement. The final user-function call consumes it in emit so
+	// managed cleanup is emitted immediately before that call.
+	tailCallCleanupPending bool
 
 	// 分割されたサブローワー
 	Stmt *StmtLowerer
@@ -762,6 +766,11 @@ func (l *Lowerer) setBlock(bb *basicBlock) {
 }
 
 func (l *Lowerer) emit(instr hir.Instruction) {
+	if l.tailCallCleanupPending {
+		if call, ok := instr.(*hir.InstrCallStatic); ok && l.isTailCallTarget(call.CalleeName) {
+			l.prepareTailCallCleanup()
+		}
+	}
 	if l.inLoop() {
 		switch alloc := instr.(type) {
 		case *hir.InstrAlloca:
@@ -802,6 +811,40 @@ func (l *Lowerer) emit(instr hir.Instruction) {
 			*current = append(*current, &hir.InstructionNode{Instruction: instr})
 		}
 	}
+}
+
+func (l *Lowerer) isTailCallTarget(name string) bool {
+	if l.curFunc == nil || name != l.curFunc.Name {
+		return false
+	}
+	fn, ok := l.semaCtx.Functions[name]
+	if !ok || fn == nil {
+		return true
+	}
+	return !fn.IsExtern && !fn.IsCFunc && !fn.IsGeneric()
+}
+
+// prepareTailCallCleanup transfers control only after releasing the current
+// activation's owned values. The call itself is emitted afterwards, so a
+// backend can safely lower the marked call as a machine tail call.
+func (l *Lowerer) prepareTailCallCleanup() {
+	if !l.tailCallCleanupPending {
+		return
+	}
+	l.tailCallCleanupPending = false
+	for i := len(l.deferStack) - 1; i >= 0; i-- {
+		l.Call.LowerCall(l.deferStack[i])
+	}
+	l.deferStack = nil
+	for _, param := range l.managedParams {
+		l.releaseManagedValueNamed(param, ownershipTargetName(param))
+	}
+	l.managedParams = nil
+	l.cleanupManagedScopes()
+	for i := len(l.areaStack) - 1; i >= 0; i-- {
+		l.emit(&hir.InstrAreaEnd{Area: l.areaStack[i]})
+	}
+	l.areaStack = nil
 }
 
 // inLoop reports whether lowering is currently inside an actual loop. The
@@ -860,17 +903,7 @@ func (l *Lowerer) isAreaHeapValue(t sema.Type) bool {
 
 func (l *Lowerer) terminate(term hir.Terminator) {
 	if _, isReturn := term.(*hir.InstrReturn); isReturn {
-		// A returned managed value must acquire its caller-owned reference
-		// before the callee releases its parameter references.
-		if len(l.managedParams) > 0 {
-			for _, value := range term.(*hir.InstrReturn).Vals {
-				l.retainManagedValueNamed(value, "<return>")
-			}
-		}
-		for _, param := range l.managedParams {
-			l.releaseManagedValueNamed(param, ownershipTargetName(param))
-		}
-		l.cleanupManagedScopes()
+		l.releaseManagedReturnState(term.(*hir.InstrReturn).Vals)
 	}
 	if (isAreaExitTerminator(term)) && len(l.areaStack) > 0 {
 		for i := len(l.areaStack) - 1; i >= 0; i-- {
@@ -895,6 +928,54 @@ func (l *Lowerer) terminate(term hir.Terminator) {
 			*current = append(*current, &hir.PanicNode{Value: t.Value, Cause: t.Cause, SiteID: t.SiteID})
 		}
 	}
+}
+
+// releaseManagedReturnState releases the current function's managed values at
+// a return boundary. It is kept separate from terminate so a future tail-call
+// lowering path can run the same cleanup before transferring control. A tail
+// call must not invoke this blindly: arguments that alias managed parameters
+// require an explicit ownership-transfer protocol first.
+func (l *Lowerer) releaseManagedReturnState(returnValues []hir.Value) {
+	// A returned managed value must acquire its caller-owned reference before
+	// the callee releases its parameter references.
+	if len(l.managedParams) > 0 {
+		for _, value := range returnValues {
+			l.retainManagedValueNamed(value, "<return>")
+		}
+	}
+	for _, param := range l.managedParams {
+		l.releaseManagedValueNamed(param, ownershipTargetName(param))
+	}
+	l.cleanupManagedScopes()
+}
+
+// canMarkTailCall reports whether returning from the current function would
+// require any language-level cleanup after the call. A backend must not turn a
+// marked call into a machine tail call while any of these actions are pending.
+func (l *Lowerer) canMarkTailCall() bool {
+	if len(l.deferStack) != 0 || len(l.managedParams) != 0 || len(l.areaStack) != 0 {
+		return false
+	}
+	for _, scope := range l.managedScopes {
+		if len(scope.slots) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// markLastStaticCallTail marks the call that produced value as a semantic
+// tail call. Emitters may still emit an ordinary call until they implement a
+// target-specific tail-call instruction.
+func (l *Lowerer) markLastStaticCallTail(value hir.Value) {
+	if !l.canMarkTailCall() || l.curBlock == nil || len(l.curBlock.Instructions) == 0 {
+		return
+	}
+	call, ok := l.curBlock.Instructions[len(l.curBlock.Instructions)-1].(*hir.InstrCallStatic)
+	if !ok || l.curFunc == nil || call.CalleeName != l.curFunc.Name || (value != nil && call.Dst != value) {
+		return
+	}
+	call.IsTail = true
 }
 
 type managedScope struct {

@@ -427,6 +427,11 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 	}
 
 	vals := make([]hir.Value, len(rs.Values))
+	tailCallCandidate := len(rs.Values) == 1
+	if tailCallCandidate {
+		_, tailCallCandidate = rs.Values[0].(*ast.CallExpr)
+	}
+	s.root.tailCallCleanupPending = tailCallCandidate
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)
 		if val == nil || (func() bool { r, ok := val.(*hir.Reg); return ok && r == nil })() {
@@ -458,6 +463,15 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 			s.releaseReturnedStringOperands(be)
 		}
 	}
+	// Mark only after all return-value copying, coercion, and explicit operand
+	// cleanup. A future backend may replace this call with a machine tail call,
+	// so the call must still be the final instruction in the block.
+	if len(rs.Values) == 1 {
+		if _, directCall := rs.Values[0].(*ast.CallExpr); directCall {
+			s.root.markLastStaticCallTail(vals[0])
+		}
+	}
+	s.root.tailCallCleanupPending = false
 
 	s.root.terminate(&hir.InstrReturn{Vals: vals})
 }
