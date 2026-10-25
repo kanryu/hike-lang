@@ -1,6 +1,7 @@
 package hike_wabt_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,38 @@ import (
 	"strings"
 	"testing"
 )
+
+// TestHikeWabtRegexpLongTailCall exercises the WABT emitter's return_call
+// path with the same long literal-recursion case used by the native E2E
+// suite. The regexp engine performs one recursive call per input character;
+// without tail calls this overflows the Wasm stack before producing output.
+func TestHikeWabtRegexpLongTailCall(t *testing.T) {
+	source := `package main
+
+import "std/fmt/sprintf"
+import "std/regexp"
+import "std/strings"
+
+var testOutputBuffer string = ""
+
+func testOutput() string {
+    text := strings.Repeat("a", 8000)
+    re := regexp.MustCompile("(" + text + ")")
+    parts := re.FindStringSubmatch(text)
+    testOutputBuffer = sprintf.Sprintf("MATCH=%d,LENGTH=%d,FIRST=%s,LAST=%s\n",
+        len(parts) == 2, len(parts[1]), parts[1][0:3], parts[1][len(parts[1])-3:])
+    return testOutputBuffer
+}
+
+func main() int { return 0 }
+`
+	got := buildAndRunHikeWabtString(t, source, "testOutput")
+	wantPayload := "MATCH=1,LENGTH=8000,FIRST=aaa,LAST=aaa\n"
+	want := fmt.Sprintf("0,8000,%q", wantPayload)
+	if !sameStringPayload(got, want) {
+		t.Fatalf("WABT long regexp result = %q, want payload %q", got, wantPayload)
+	}
+}
 
 // TestHikeWabtIntegerCases runs programs whose main function returns int.
 func TestHikeWabtIntegerCases(t *testing.T) {

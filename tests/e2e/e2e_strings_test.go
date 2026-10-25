@@ -630,3 +630,32 @@ func main() int {
 		ExpectedExit: 0,
 	})
 }
+
+// 長文を1文字ずつ処理するキャプチャ付きリテラルの末尾再帰を検証する。
+// 括弧内の各OP_CHARは次の命令をそのままreturnするため、末尾呼び出し最適化が
+// なければ、バックトラッキングを含まない直線的な入力でもスタックを深く使う。
+func TestStrings_Regexp_LongCapturedRunDoesNotOverflowStack(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+import "std/regexp"
+import "std/strings"
+
+func printf(format string, ...) int
+
+func main() int {
+    text := strings.Repeat("a", 8000)
+    re := regexp.MustCompile("(" + text + ")")
+    parts := re.FindStringSubmatch(text)
+    printf("MATCH=%d,LENGTH=%d,FIRST=%s,LAST=%s\n",
+        len(parts) == 2, len(parts[1]), parts[1][0:3], parts[1][len(parts[1])-3:])
+    return 0
+}
+`,
+		ExpectedOut:  "MATCH=1,LENGTH=8000,FIRST=aaa,LAST=aaa",
+		ExpectedExit: 0,
+	})
+}

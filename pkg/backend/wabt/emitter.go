@@ -37,6 +37,8 @@ type Emitter struct {
 	compileFork      bool
 	runtimeFunctions int
 	currentFunction  *hir.Function
+	inCFG            bool
+	tailCallEmitted  bool
 }
 
 type taskCallSignature struct {
@@ -871,6 +873,8 @@ func (e *Emitter) emitCFG(fn *hir.Function, blocks []*structuredcfg.BasicBlock) 
 		e.b.WriteString("    (unreachable)\n")
 		return
 	}
+	e.inCFG = true
+	defer func() { e.inCFG = false }()
 	e.b.WriteString("    (block $cfg_exit\n      (loop $cfg_dispatch\n")
 	for i := len(blocks) - 1; i >= 0; i-- {
 		fmt.Fprintf(&e.b, "        (block $cfg_%d\n", i)
@@ -882,13 +886,14 @@ func (e *Emitter) emitCFG(fn *hir.Function, blocks []*structuredcfg.BasicBlock) 
 	labels[len(blocks)] = "$cfg_exit"
 	fmt.Fprintf(&e.b, "          (br_table %s (local.get $pc))\n", strings.Join(labels, " "))
 	for _, bb := range blocks {
+		e.tailCallEmitted = false
 		e.b.WriteString("        )\n")
 		fmt.Fprintf(&e.b, "        ;; %s\n", bb.Label)
 		for _, in := range bb.Instructions {
 			e.debugMarker()
 			e.instruction(in)
 		}
-		if bb.Terminator != nil {
+		if bb.Terminator != nil && !e.tailCallEmitted {
 			// CFG terminators are backend control-flow plumbing, not source
 			// statements.  Marking them makes stepping jump back to an if/for
 			// header after a real statement (for example AppendText), even
@@ -1374,6 +1379,17 @@ func (e *Emitter) emitCallStatic(x *hir.InstrCallStatic) {
 		call += " " + strings.Join(args, " ")
 	}
 	call += ")"
+	if x.IsTail && e.inCFG && !aggregateResult && (x.Dst == nil || len(e.currentFunction.ReturnTypes) == 1) {
+		e.b.WriteString("    (return_call " + e.functionSymbol(x.CalleeName))
+		if len(args) > 0 {
+			e.b.WriteString(" " + strings.Join(args, " "))
+		}
+		e.b.WriteString(")\n")
+		e.tailCallEmitted = true
+		e.callArgTotal = 0
+		e.callArgUsed = 0
+		return
+	}
 	if aggregateResult {
 		e.b.WriteString(fmt.Sprintf("    (memory.copy (local.get $%s) %s (i32.const %d))\n", reg(x.Dst), call, typeSize(x.Dst.Typ)))
 	} else if x.Dst != nil {

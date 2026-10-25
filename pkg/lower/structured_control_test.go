@@ -75,3 +75,40 @@ func TestFunctionControlLayoutKeepsExitAtRootTail(t *testing.T) {
 		t.Fatalf("placeholder replacement ID = %d, want %d", next.ReplacedByID, replacement.Index())
 	}
 }
+
+func TestTailCallMarkingRequiresCleanupFreeReturn(t *testing.T) {
+	dst := &hir.Reg{ID: 1}
+	call := &hir.InstrCallStatic{Dst: dst, CalleeName: "recurse"}
+	l := &Lowerer{curFunc: &hir.Function{Name: "recurse"}, curBlock: &basicBlock{Instructions: []hir.Instruction{call}}}
+	l.markLastStaticCallTail(dst)
+	if !call.IsTail {
+		t.Fatal("cleanup-free direct return call was not marked as tail")
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*Lowerer)
+	}{
+		{name: "defer", setup: func(l *Lowerer) {
+			l.deferStack = []*ast.CallExpr{{}}
+		}},
+		{name: "managed parameter", setup: func(l *Lowerer) {
+			l.managedParams = []hir.Value{&hir.Reg{ID: 2}}
+		}},
+		{name: "managed local", setup: func(l *Lowerer) {
+			l.managedScopes = []managedScope{{slots: []*hir.Reg{{ID: 3}}}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := &hir.Reg{ID: 1}
+			call := &hir.InstrCallStatic{Dst: dst, CalleeName: "recurse"}
+			l := &Lowerer{curFunc: &hir.Function{Name: "recurse"}, curBlock: &basicBlock{Instructions: []hir.Instruction{call}}}
+			tc.setup(l)
+			l.markLastStaticCallTail(dst)
+			if call.IsTail {
+				t.Fatal("call with pending cleanup was marked as tail")
+			}
+		})
+	}
+}

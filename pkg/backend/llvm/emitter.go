@@ -1248,6 +1248,10 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 	}
 
 	isVar, varSig := e.isVariadicFunc(i.CalleeName)
+	callOp := "call"
+	if i.IsTail && !isVar && structReturn == nil {
+		callOp = "musttail call"
+	}
 	if isVar {
 		if structReturn != nil {
 			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
@@ -1274,10 +1278,10 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 					i.Dst, structReturn.LLVMType(), structReturn.LLVMType(), structReturnTemp, align))
 			}
 		} else if i.Dst != nil {
-			e.b.WriteString(fmt.Sprintf("  %s = call %s @%s(%s)\n",
-				i.Dst, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
+			e.b.WriteString(fmt.Sprintf("  %s = %s %s @%s(%s)\n",
+				i.Dst, callOp, i.Dst.Typ.LLVMType(), calleeName, strings.Join(args, ", ")))
 		} else {
-			e.b.WriteString(fmt.Sprintf("  call void @%s(%s)\n", calleeName, strings.Join(args, ", ")))
+			e.b.WriteString(fmt.Sprintf("  %s void @%s(%s)\n", callOp, calleeName, strings.Join(args, ", ")))
 		}
 	}
 }

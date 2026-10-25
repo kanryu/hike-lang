@@ -527,9 +527,14 @@ func (i *InstrGetElemPtr) String() string {
 }
 
 type InstrCallStatic struct {
-	Dst               *Reg
-	CalleeName        string
-	Args              []Value
+	Dst        *Reg
+	CalleeName string
+	Args       []Value
+	// IsTail marks a call that is in tail position and has no pending
+	// language-level cleanup. Backends may initially lower it as an ordinary
+	// call; the flag preserves the semantic information for later tail-call
+	// lowering.
+	IsTail            bool
 	OwnershipTarget   string
 	OwnershipVariable string
 	// InternID carries compile-time string-key metadata for map runtime calls.
@@ -545,9 +550,17 @@ func (i *InstrCallStatic) String() string {
 		args[idx] = typedValueString(a)
 	}
 	if i.Dst != nil {
-		return fmt.Sprintf("  %s = call @%s(%s)", i.Dst, i.CalleeName, strings.Join(args, ", "))
+		kind := "call"
+		if i.IsTail {
+			kind = "tailcall"
+		}
+		return fmt.Sprintf("  %s = %s @%s(%s)", i.Dst, kind, i.CalleeName, strings.Join(args, ", "))
 	}
-	return fmt.Sprintf("  call @%s(%s)", i.CalleeName, strings.Join(args, ", "))
+	kind := "call"
+	if i.IsTail {
+		kind = "tailcall"
+	}
+	return fmt.Sprintf("  %s @%s(%s)", kind, i.CalleeName, strings.Join(args, ", "))
 }
 
 type InstrCallIndirect struct {
