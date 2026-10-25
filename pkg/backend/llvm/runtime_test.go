@@ -43,6 +43,17 @@ func TestRuntimeTemplateRendering(t *testing.T) {
 
 func TestCompactMapReadWrappersHandleNilMaps(t *testing.T) {
 	ir := GetRuntimeIR("x86_64-w64-windows-gnu", 64)
+	lenStart := strings.Index(ir, "define internal i64 @__hike_cdict_len")
+	if lenStart < 0 {
+		t.Fatal("runtime is missing __hike_cdict_len")
+	}
+	lenEnd := strings.Index(ir[lenStart:], "\n}\n")
+	if lenEnd < 0 {
+		t.Fatal("runtime __hike_cdict_len has no closing brace")
+	}
+	if !strings.Contains(ir[lenStart:lenStart+lenEnd], "icmp eq %struct.__hike_map* %m, null") {
+		t.Fatal("__hike_cdict_len does not preserve nil-map len semantics")
+	}
 	for _, name := range []string{
 		"__hike_cdict_get",
 		"__hike_cdict_get_str",

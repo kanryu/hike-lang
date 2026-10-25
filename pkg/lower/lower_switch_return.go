@@ -427,10 +427,7 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 	}
 
 	vals := make([]hir.Value, len(rs.Values))
-	tailCallCandidate := len(rs.Values) == 1
-	if tailCallCandidate {
-		_, tailCallCandidate = rs.Values[0].(*ast.CallExpr)
-	}
+	tailCallCandidate := len(rs.Values) == 1 && isCallExpression(rs.Values[0])
 	s.root.tailCallCleanupPending = tailCallCandidate
 	for i, v := range rs.Values {
 		val := s.root.Expr.LowerExpr(v)
@@ -467,13 +464,22 @@ func (s *StmtLowerer) LowerReturnStmt(rs *ast.ReturnStmt) {
 	// cleanup. A future backend may replace this call with a machine tail call,
 	// so the call must still be the final instruction in the block.
 	if len(rs.Values) == 1 {
-		if _, directCall := rs.Values[0].(*ast.CallExpr); directCall {
+		if isCallExpression(rs.Values[0]) {
 			s.root.markLastStaticCallTail(vals[0])
 		}
 	}
 	s.root.tailCallCleanupPending = false
 
 	s.root.terminate(&hir.InstrReturn{Vals: vals})
+}
+
+func isCallExpression(expr ast.Expression) bool {
+	switch expr.(type) {
+	case *ast.CallExpr:
+		return true
+	default:
+		return false
+	}
 }
 
 func isDirectSliceIdentifier(expr ast.Expression) bool {

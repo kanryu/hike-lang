@@ -2296,6 +2296,11 @@ entry:
 
 define internal i64 @__hike_cdict_len(%struct.__hike_map* %m) {
 entry:
+  %is_null = icmp eq %struct.__hike_map* %m, null
+  br i1 %is_null, label %empty, label %present
+empty:
+  ret i64 0
+present:
   %compact = call %struct.__hike_compact_map* @__hike_cdict_state(%struct.__hike_map* %m)
   %len = call i64 @__hike_compact_map_len(%struct.__hike_compact_map* %compact)
   ret i64 %len

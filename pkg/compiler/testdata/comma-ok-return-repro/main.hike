@@ -1,0 +1,8 @@
+package main
+
+func main() int {
+    var value any = 1
+    _, ok := value.(string)
+    if ok { return 1 }
+    return 0
+}
