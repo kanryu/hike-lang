@@ -506,6 +506,47 @@ func main() int {
 	})
 }
 
+// 文字列caseが4つ以上あるswitchは、同一FNV-1aハッシュで先に絞り込み、
+// 最終的な文字列比較で衝突と未登録文字列を正確に判定する。
+func TestGrammar_StringSwitchHashDispatch(t *testing.T) {
+	t.Parallel()
+
+	RunHikeCase(t, HikeTestCase{
+		Source: `
+package main
+
+const Alpha = "alpha"
+const Beta = "be" + "ta"
+
+func printf(format string, ...) int
+
+func classify(value string) int {
+    switch value {
+    case Alpha:
+        return 1
+    case Beta:
+        return 2
+    case "gamma":
+        return 3
+    case "delta":
+        return 4
+    default:
+        return 0
+    }
+}
+
+func main() int {
+    printf("HASH=%d,%d,%d,%d,%d\n",
+        classify("alpha"), classify("beta"), classify("gamma"),
+        classify("delta"), classify("epsilon"))
+    return 0
+}
+`,
+		ExpectedOut:  "HASH=1,2,3,4,0",
+		ExpectedExit: 0,
+	})
+}
+
 // 14. type switch 文 (型スイッチ) によるインターフェース型判定検証
 func TestGrammar_TypeSwitch(t *testing.T) {
 	t.Parallel()

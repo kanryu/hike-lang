@@ -27,6 +27,7 @@ var WabtRuntimeSymbols = map[string]bool{
 	"__hike_map_delete":    true,
 	"__hike_string_retain": true, "__hike_string_release": true, "__hike_string_append": true,
 	"__hike_string_start":     true,
+	"__hike_hash_str":         true,
 	"__hike_iface_typeid":     true,
 	"__hike_slice_to_str":     true,
 	"__hike_utf8_decode_rune": true, "__hike_utf8_rune_size": true,
@@ -82,6 +83,8 @@ func normalizeWabtRuntimeName(name string) string {
 		return "__hike_string_start"
 	case "__hike_string_key32":
 		return "__hike_string_key"
+	case "__hike_hash_str32":
+		return "__hike_hash_str"
 	case "__hike_slice_alloc32":
 		return "__hike_slice_alloc"
 	case "__hike_slice_cap32":
@@ -330,6 +333,23 @@ var wasmRuntime = map[string]runtimeFunc{
       (local.set $p (i32.add (local.get $p) (i32.const 1)))
       (br $loop)))
     (i32.sub (local.get $p) (local.get $s)))`},
+	"__hike_hash_str": runtimeFunc{body: `(func $__hike_hash_str (param $key_raw i32) (result i32)
+    ;; The argument is a temporary {data:i32,length:i32} string descriptor.
+    (local $data i32) (local $length i32) (local $hash i32) (local $i i32)
+    (if (i32.eqz (local.get $key_raw)) (then (return (i32.const 0))))
+    (local.set $data (i32.load (local.get $key_raw)))
+    (local.set $length (i32.load offset=4 (local.get $key_raw)))
+    (local.set $hash (i32.const 2166136261))
+    (block $done
+      (loop $hash_loop
+        (br_if $done (i32.ge_u (local.get $i) (local.get $length)))
+        (local.set $hash
+          (i32.xor (local.get $hash)
+                   (i32.load8_u (i32.add (local.get $data) (local.get $i)))))
+        (local.set $hash (i32.mul (local.get $hash) (i32.const 16777619)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $hash_loop)))
+    (local.get $hash))`},
 	"strcmp": runtimeFunc{deps: []string{"strlen", "memcmp"}, body: `(func $strcmp (param $a i32) (param $b i32) (result i32)
     (local $la i32) (local $lb i32) (local $n i32) (local $r i32)
     (local.set $la (call $strlen (local.get $a)))

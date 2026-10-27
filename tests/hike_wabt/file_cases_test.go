@@ -42,6 +42,84 @@ func main() int { return 0 }
 	}
 }
 
+func TestHikeWabtStringSwitchHashDispatch(t *testing.T) {
+	source := `package main
+
+import "std/fmt/sprintf"
+
+const Alpha = "alpha"
+const Beta = "be" + "ta"
+
+func classify(value string) int {
+    switch value {
+    case Alpha:
+        return 1
+    case Beta:
+        return 2
+    case "gamma":
+        return 3
+    case "delta":
+        return 4
+    default:
+        return 0
+    }
+}
+
+func testOutput() string {
+    return sprintf.Sprintf("HASH=%d,%d,%d,%d,%d\n",
+        classify("alpha"), classify("beta"), classify("gamma"),
+        classify("delta"), classify("epsilon"))
+}
+
+func main() int { return 0 }
+`
+	got := buildAndRunHikeWabtString(t, source, "testOutput")
+	wantPayload := "HASH=1,2,3,4,0\n"
+	want := fmt.Sprintf("0,15,%q", wantPayload)
+	if !sameStringPayload(got, want) {
+		t.Fatalf("WABT string switch result = %q, want payload %q", got, wantPayload)
+	}
+}
+
+// These two eight-byte strings intentionally collide under the wasm32
+// FNV-1a hash used by the string-switch dispatcher. The result must still be
+// selected by the equality chain inside the collision bucket.
+func TestHikeWabtStringSwitchHashCollision(t *testing.T) {
+	source := `package main
+
+import "std/fmt/sprintf"
+
+func classify(value string) int {
+    switch value {
+    case "9FtpAv2P":
+        return 1
+    case "L8fJSkTp":
+        return 2
+    case "gamma":
+        return 3
+    case "delta":
+        return 4
+    default:
+        return 0
+    }
+}
+
+func testOutput() string {
+    return sprintf.Sprintf("COLLISION=%d,%d,%d,%d,%d\n",
+        classify("9FtpAv2P"), classify("L8fJSkTp"),
+        classify("gamma"), classify("delta"), classify("epsilon"))
+}
+
+func main() int { return 0 }
+`
+	got := buildAndRunHikeWabtString(t, source, "testOutput")
+	wantPayload := "COLLISION=1,2,3,4,0\n"
+	want := fmt.Sprintf("0,20,%q", wantPayload)
+	if !sameStringPayload(got, want) {
+		t.Fatalf("WABT colliding string switch result = %q, want payload %q", got, wantPayload)
+	}
+}
+
 // TestHikeWabtIntegerCases runs programs whose main function returns int.
 func TestHikeWabtIntegerCases(t *testing.T) {
 	root := filepath.Join(projectRoot, "tests", "hike_wabt", "cases_int")

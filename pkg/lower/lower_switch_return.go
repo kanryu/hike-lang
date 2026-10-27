@@ -16,6 +16,16 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	switchVal := s.root.Expr.LowerExpr(ss.Value)
 	endBB := s.root.newBlock("switch.end")
 	numericValues, tableMin, tableMax, numericSwitch := numericSwitchCases(ss)
+	stringBuckets, stringHashSwitch := stringSwitchBuckets(ss, s.root.semaCtx, s.root.is32Bit, switchVal.Type())
+	if len(s.root.structuredStack) > 0 && (stringHashSwitch || numericSwitch) {
+		if stringHashSwitch {
+			s.lowerStructuredBucketSwitch(ss, switchVal, endBB, stringBuckets, true)
+		} else {
+			s.lowerStructuredBucketSwitch(ss, switchVal, endBB, nil, false)
+		}
+		s.root.setBlock(endBB)
+		return
+	}
 	var structuredBlock *hir.BlockNode
 	var structuredTable *hir.TableNode
 	var structuredContinuation *hir.BlockNode
@@ -86,7 +96,6 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 				cmpReg = s.root.nextReg(sema.TypeBool)
 				s.root.emit(&hir.InstrBinary{Dst: cmpReg, Op: hir.OpEq, L: switchVal, R: vVal})
 			}
-
 			if matchedCond == nil {
 				matchedCond = cmpReg
 			} else {
@@ -174,6 +183,279 @@ func (s *StmtLowerer) LowerSwitchStmt(ss *ast.SwitchStmt) {
 	}
 
 	s.root.setBlock(endBB)
+}
+
+// lowerStructuredBucketSwitch is shared by integer and string switches. The
+// table receives an eight-bit dispatch index; exact case predicates remain in
+// the selected table body as structured IfNodes.
+func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal hir.Value, endBB *basicBlock, buckets map[uint64][]string, stringMode bool) {
+	entriesByHash := make(map[uint64]map[int][]ast.Expression)
+	var hashOrder []uint64
+	seenHash := make(map[uint64]bool)
+	var defaultCase *ast.CaseClause
+
+	for caseIndex, cc := range ss.Cases {
+		if len(cc.Values) == 0 {
+			defaultCase = cc
+			continue
+		}
+		for _, expr := range cc.Values {
+			hash, ok := switchBucketForExpr(expr, s.root.semaCtx, s.root.is32Bit, stringMode)
+			if !ok {
+				return
+			}
+			if !seenHash[hash] {
+				seenHash[hash] = true
+				hashOrder = append(hashOrder, hash)
+			}
+			if entriesByHash[hash] == nil {
+				entriesByHash[hash] = make(map[int][]ast.Expression)
+			}
+			entriesByHash[hash][caseIndex] = append(entriesByHash[hash][caseIndex], expr)
+		}
+	}
+	if len(hashOrder) == 0 || (stringMode && len(buckets) == 0) || len(s.root.structuredStack) == 0 {
+		return
+	}
+
+	parentBody := s.root.structuredStack[len(s.root.structuredStack)-1]
+	parentDepth := len(s.root.structuredFrames)
+	structuredBlock := &hir.BlockNode{Label: endBB.Label}
+	s.root.appendStructuredNode(structuredBlock)
+	structuredContinuation := s.root.appendContinuationAfter(parentBody, structuredBlock, parentDepth)
+	structuredBlock.SetControlLinks(structuredContinuation.Index(), structuredContinuation.Index(), -1)
+	s.root.pushStructuredFrame(structuredBlock.Label)
+	s.root.pushStructuredBody(&structuredBlock.Body)
+
+	s.root.loopStack = append(s.root.loopStack, loopContext{
+		breakBlock: endBB, continueBlock: endBB,
+		structured:     true,
+		breakLabel:     structuredBlock.Label,
+		breakControlID: structuredContinuation.Index(),
+		breakTarget:    controlID(structuredContinuation),
+	})
+	defer func() {
+		s.root.loopStack = s.root.loopStack[:len(s.root.loopStack)-1]
+		s.root.popStructuredBody()
+		s.root.popStructuredFrame()
+	}()
+
+	var hashValue hir.Value
+	if stringMode {
+		hashValue = s.lowerStringSwitchHash(switchVal)
+	} else {
+		dispatch := s.root.nextReg(sema.TypeUint8)
+		hashValue = dispatch
+		s.root.emit(&hir.InstrCast{Dst: dispatch, Val: switchVal, ToType: sema.TypeUint8})
+	}
+	// Reuse the numeric structured table.  The hash has already been reduced
+	// to the uint8 dispatch index by lowerStringSwitchHash.
+	structuredTable := &hir.TableNode{
+		Label:         structuredBlock.Label + ".hash.table",
+		IndexValue:    hashValue,
+		Min:           0,
+		Targets:       make([]int, 256),
+		DefaultTarget: -1,
+	}
+	for i := range structuredTable.Targets {
+		structuredTable.Targets[i] = -1
+	}
+	s.root.appendStructuredNodeTo(&structuredBlock.Body, structuredTable)
+
+	for _, hash := range hashOrder {
+		caseIndex := len(structuredTable.Cases)
+		structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{Values: []int64{int64(hash)}})
+		structuredTable.Targets[hash] = caseIndex
+		bucketBody := s.root.newBlock("switch.hash.bucket")
+		s.root.setBlock(bucketBody)
+		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Cases[caseIndex].Body
+
+		ordered := make([]int, 0, len(entriesByHash[hash]))
+		for caseIndex := range ss.Cases {
+			if _, ok := entriesByHash[hash][caseIndex]; ok {
+				ordered = append(ordered, caseIndex)
+			}
+		}
+		for pos, sourceCaseIndex := range ordered {
+			var matchedCond hir.Value
+			for _, expr := range entriesByHash[hash][sourceCaseIndex] {
+				value := s.root.Expr.LowerExpr(expr)
+				cmp := s.root.nextReg(sema.TypeBool)
+				if stringMode {
+					leftPtr, leftLen := s.root.stringParts(switchVal)
+					rightPtr, rightLen := s.root.stringParts(value)
+					s.root.emit(&hir.InstrCallStatic{Dst: cmp, CalleeName: s.root.BuiltinName("hike_streq_len"), Args: []hir.Value{leftPtr, leftLen, rightPtr, rightLen}})
+				} else {
+					s.root.emit(&hir.InstrBinary{Dst: cmp, Op: hir.OpEq, L: switchVal, R: value})
+				}
+				if matchedCond == nil {
+					matchedCond = cmp
+				} else {
+					or := s.root.nextReg(sema.TypeBool)
+					s.root.emit(&hir.InstrBinary{Dst: or, Op: hir.OpOr, L: matchedCond, R: cmp})
+					matchedCond = or
+				}
+			}
+
+			caseBody := s.root.newBlock("switch.hash.case.body")
+			collisionNext := s.root.newBlock("switch.hash.collision.next")
+			caseIf := &hir.IfNode{Label: caseBody.Label, Cond: matchedCond}
+			s.root.appendStructuredNode(caseIf)
+			s.root.terminate(&hir.InstrBranch{Cond: matchedCond, ThenTarget: caseBody.Label, ElseTarget: collisionNext.Label})
+
+			s.root.setBlock(caseBody)
+			s.root.pushStructuredFrame(caseIf.Label)
+			s.root.pushStructuredBody(&caseIf.Then)
+			for _, stmt := range ss.Cases[sourceCaseIndex].Body {
+				s.LowerStmt(stmt)
+			}
+			s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+			s.root.popStructuredBody()
+			s.root.popStructuredFrame()
+			if s.root.curBlock.Terminator == nil {
+				s.root.terminate(&hir.InstrJump{Target: endBB.Label})
+			}
+
+			s.root.setBlock(collisionNext)
+			s.root.structuredStack[len(s.root.structuredStack)-1] = &caseIf.Else
+			if pos == len(ordered)-1 && defaultCase == nil {
+				s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+			}
+		}
+		if defaultCase != nil {
+			for _, stmt := range defaultCase.Body {
+				s.LowerStmt(stmt)
+			}
+		}
+		if s.root.curBlock.Terminator == nil {
+			s.root.terminate(&hir.InstrJump{Target: endBB.Label})
+		}
+	}
+
+	if defaultCase != nil {
+		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Default
+		for _, stmt := range defaultCase.Body {
+			s.LowerStmt(stmt)
+		}
+	} else {
+		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Default
+		s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
+	}
+	if s.root.curBlock.Terminator == nil {
+		s.root.terminate(&hir.InstrJump{Target: endBB.Label})
+	}
+}
+
+// stringSwitchBuckets returns the compile-time hash buckets for a string
+// switch.  The bucket value is a slice because distinct case strings may have
+// the same hash and must remain an equality chain inside that bucket.
+func stringSwitchBuckets(ss *ast.SwitchStmt, ctx *sema.Context, is32 bool, switchType sema.Type) (map[uint64][]string, bool) {
+	if ss == nil || ctx == nil || (switchType != sema.TypeString && semaTypeName(switchType) != "string") {
+		return nil, false
+	}
+	buckets := make(map[uint64][]string)
+	caseCount := 0
+	for _, cc := range ss.Cases {
+		if len(cc.Values) == 0 {
+			continue
+		}
+		caseCount++
+		for _, expr := range cc.Values {
+			value, ok := stringSwitchCaseValue(expr, ctx)
+			if !ok {
+				return nil, false
+			}
+			hash := stringSwitchBucket(value, is32)
+			buckets[hash] = append(buckets[hash], value)
+		}
+	}
+	if caseCount < 4 {
+		return nil, false
+	}
+	return buckets, true
+}
+
+func stringSwitchCaseValue(expr ast.Expression, ctx *sema.Context) (string, bool) {
+	if expr == nil || ctx == nil {
+		return "", false
+	}
+	switch e := expr.(type) {
+	case *ast.StringLiteral:
+		return e.Value, true
+	case *ast.Identifier:
+		return ctx.LookupStringConstant(astIDValue(e))
+	case *ast.MemberExpr:
+		if pkg, ok := e.Object.(*ast.Identifier); ok {
+			return ctx.LookupStringConstant(astIDValue(pkg) + "_" + astIDValue(e.Field))
+		}
+	case *ast.BinaryExpr:
+		if e.Operator == "+" {
+			left, leftOK := stringSwitchCaseValue(e.Left, ctx)
+			right, rightOK := stringSwitchCaseValue(e.Right, ctx)
+			if leftOK && rightOK {
+				return left + right, true
+			}
+		}
+	}
+	return "", false
+}
+
+func switchBucketForExpr(expr ast.Expression, ctx *sema.Context, is32, stringMode bool) (uint64, bool) {
+	if stringMode {
+		value, ok := stringSwitchCaseValue(expr, ctx)
+		if !ok {
+			return 0, false
+		}
+		return stringSwitchBucket(value, is32), true
+	}
+	literal, ok := expr.(*ast.IntegerLiteral)
+	if !ok || literal == nil {
+		return 0, false
+	}
+	return uint64(literal.Value) & 0xff, true
+}
+
+func stringSwitchHash(value string, is32 bool) uint64 {
+	if is32 {
+		h := uint32(2166136261)
+		for i := 0; i < len(value); i++ {
+			h ^= uint32(value[i])
+			h *= 16777619
+		}
+		return uint64(h)
+	}
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(value); i++ {
+		h ^= uint64(value[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+func stringSwitchBucket(value string, is32 bool) uint64 {
+	return stringSwitchHash(value, is32) & 0xff
+}
+
+func (s *StmtLowerer) lowerStringSwitchHash(value hir.Value) hir.Value {
+	ptr, length := s.root.stringParts(value)
+	key := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrCallStatic{Dst: key, CalleeName: s.root.BuiltinName("__hike_string_key"), Args: []hir.Value{ptr, length}})
+	keyPtr := s.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	s.root.emit(&hir.InstrCast{Dst: keyPtr, Val: key, ToType: keyPtr.Type()})
+	hash := s.root.nextReg(sema.TypeInt)
+	s.root.emit(&hir.InstrCallStatic{Dst: hash, CalleeName: s.root.BuiltinName("__hike_hash_str"), Args: []hir.Value{keyPtr}})
+	// __hike_string_key allocates only the temporary descriptor used by the
+	// hash routine.  Free it immediately after hashing; the string bytes remain
+	// owned by the switch expression.
+	s.root.emit(&hir.InstrCallStatic{CalleeName: s.root.BuiltinName("free"), Args: []hir.Value{keyPtr}})
+	// Structured switch tables use an 8-bit dispatch index.  The full hash is
+	// still used by the compile-time bucket map; collisions are resolved by the
+	// exact string predicates generated in the selected table case.
+	hash8 := s.root.nextReg(sema.TypeUint8)
+	s.root.emit(&hir.InstrCast{Dst: hash8, Val: hash, ToType: sema.TypeUint8})
+	dispatch := s.root.nextReg(sema.TypeUint8)
+	s.root.emit(&hir.InstrBinary{Dst: dispatch, Op: hir.OpAnd, L: hash8, R: &hir.ConstInt{Val: 0xff, Typ: sema.TypeUint8}})
+	return dispatch
 }
 
 func (s *StmtLowerer) setupStructuredSwitch(endBB *basicBlock, switchVal hir.Value, numericValues [][]int64, tableMin, tableMax int64, numericSwitch bool, parentBody *hir.ControlBody, parentDepth int) (*hir.BlockNode, *hir.TableNode, *hir.BlockNode, *hir.ControlBody) {
