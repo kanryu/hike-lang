@@ -12,9 +12,13 @@ import (
 // GenerateGoStubs は CFuncDecl 群から Plan 9 アセンブリスタブを自動生成します。
 func GenerateGoStubs(targetDir string, pkgName string, decls []ast.Decl, verbose bool) error {
 	var cfuncs []*ast.CFuncDecl
+	var externs []*ast.ExternFuncDecl
 	for _, d := range decls {
 		if cfd, ok := d.(*ast.CFuncDecl); ok {
 			cfuncs = append(cfuncs, cfd)
+		}
+		if efd, ok := d.(*ast.ExternFuncDecl); ok {
+			externs = append(externs, efd)
 		}
 	}
 	if len(cfuncs) == 0 {
@@ -55,28 +59,31 @@ func GenerateGoStubs(targetDir string, pkgName string, decls []ast.Decl, verbose
 		sBuilder.WriteString(fmt.Sprintf("// %s (passthrough: %v)\n", fn.Name.Value, fn.IsPassThrough))
 		sBuilder.WriteString(fmt.Sprintf("TEXT ·_hike_%s(SB), %s, $%d-%d\n", fn.Name.Value, textFlag, 32, argSize))
 
-		// 引数のロード (Go FP -> Win x64 レジスタ / スタック)
+		if callbackStart, ok := trailingCallbackRecord(fn); ok {
+			emitExpandedCallbackRecordStub(&sBuilder, fn, targetCName, callbackStart)
+			sBuilder.WriteString("\n")
+			continue
+		}
+
+		// 引数のロード (Go FP -> Win x64 レジスタ / スタック)。
+		// スタック引数は、native call areaを確保した後に書き込む。
 		for i, p := range fn.Params {
 			offset := i * 8
 			if i < len(winRegs) {
-				sBuilder.WriteString(fmt.Sprintf("    MOVQ %s+%d(FP), %s\n", p.Name.Value, offset, winRegs[i]))
-			} else {
-				stackOffset := 32 + ((i - 4) * 8)
-				sBuilder.WriteString(fmt.Sprintf("    MOVQ %s+%d(FP), AX\n", p.Name.Value, offset))
-				sBuilder.WriteString(fmt.Sprintf("    MOVQ AX, %d(SP)\n", stackOffset))
+				sBuilder.WriteString(fmt.Sprintf("    MOVQ %s+%d(FP), %s\n", asmParamName(p, i), offset, winRegs[i]))
 			}
 		}
 
-		// Windows x64 ABI requires 32 bytes of shadow space and the native
-		// callee must enter with RSP+8 aligned to 16 bytes.  The Go asm
-		// wrapper's entry SP is already affected by its generated frame, so
-		// reserve one additional eight-byte slot for every external call.
-		// This must be constant across signatures: using 32 for a one-argument
-		// void function leaves movaps in the Rust prologue misaligned.
-		stackAdjust := 40
-		sBuilder.WriteString(fmt.Sprintf("    SUBQ $%d, SP\n", stackAdjust))
+		callArea, bookkeepingOffset := nativeCallArea(fn)
+		emitDynamicCallPrologue(&sBuilder, callArea, bookkeepingOffset)
+		for i := 4; i < len(fn.Params); i++ {
+			offset := i * 8
+			stackOffset := 32 + ((i - 4) * 8)
+			sBuilder.WriteString(fmt.Sprintf("    MOVQ %s+%d(FP), AX\n", asmParamName(fn.Params[i], i), offset))
+			sBuilder.WriteString(fmt.Sprintf("    MOVQ AX, %d(SP)\n", stackOffset))
+		}
 		sBuilder.WriteString(fmt.Sprintf("    CALL %s(SB)\n", targetCName))
-		sBuilder.WriteString(fmt.Sprintf("    ADDQ $%d, SP\n", stackAdjust))
+		emitDynamicCallEpilogue(&sBuilder, callArea, bookkeepingOffset)
 
 		// 戻り値の退避 (RAX -> Go FP)
 		if len(fn.ReturnTypes) > 0 {
@@ -85,6 +92,24 @@ func GenerateGoStubs(targetDir string, pkgName string, decls []ast.Decl, verbose
 		}
 
 		sBuilder.WriteString("    RET\n\n")
+	}
+	for _, fn := range externs {
+		if target, ok := callbackPointerTarget(fn, cfuncs); ok {
+			fmt.Fprintf(&sBuilder, "// %s: address of %s\n", fn.Name.Value, target.Name.Value)
+			fmt.Fprintf(&sBuilder, "TEXT ·%s(SB), NOSPLIT, $0-8\n", fn.Name.Value)
+			fmt.Fprintf(&sBuilder, "    LEAQ %s(SB), AX\n", target.Name.Value)
+			sBuilder.WriteString("    MOVQ AX, ret+0(FP)\n    RET\n\n")
+		}
+	}
+	for _, fn := range cfuncs {
+		targetCName := "c_" + fn.Name.Value
+		if fn.TargetCName != nil {
+			targetCName = fn.TargetCName.Value
+		}
+		fmt.Fprintf(&sBuilder, "// _hike_%sPtr: address of %s\n", fn.Name.Value, targetCName)
+		fmt.Fprintf(&sBuilder, "TEXT ·_hike_%sPtr(SB), NOSPLIT, $0-8\n", fn.Name.Value)
+		fmt.Fprintf(&sBuilder, "    LEAQ %s(SB), AX\n", targetCName)
+		sBuilder.WriteString("    MOVQ AX, ret+0(FP)\n    RET\n\n")
 	}
 
 	asmPath := filepath.Join(targetDir, "stub_windows_amd64.s")
@@ -95,3 +120,112 @@ func GenerateGoStubs(targetDir string, pkgName string, decls []ast.Decl, verbose
 	fmt.Printf("[hikec go] Successfully generated: %s\n", asmPath)
 	return nil
 }
+
+func callbackPointerTarget(extern *ast.ExternFuncDecl, cfuncs []*ast.CFuncDecl) (*ast.CFuncDecl, bool) {
+	if extern == nil || extern.Name == nil || len(extern.Params) != 0 || len(extern.ReturnTypes) != 1 {
+		return nil, false
+	}
+	name := extern.Name.Value
+	if !strings.HasSuffix(name, "CallbackPtr") {
+		return nil, false
+	}
+	base := strings.TrimSuffix(name, "Ptr")
+	for _, cfn := range cfuncs {
+		if cfn != nil && cfn.Name != nil && cfn.Name.Value == "WGPUStatic"+base {
+			return cfn, true
+		}
+	}
+	return nil, false
+}
+
+const (
+	nativeCallbackInfoBytes = 80
+)
+
+func nativeCallArea(fn *ast.CFuncDecl) (int, int) {
+	stackArgs := 0
+	temporary := 0
+	if fn != nil && len(fn.Params) > 4 {
+		stackArgs = (len(fn.Params) - 4) * 8
+	}
+	if _, ok := trailingCallbackRecord(fn); ok {
+		stackArgs = 0
+		temporary = nativeCallbackInfoBytes
+	}
+	raw := 32 + stackArgs + temporary + 8
+	area := (raw + 15) &^ 15
+	return area, area - 8
+}
+
+func emitDynamicCallPrologue(b *strings.Builder, area, bookkeepingOffset int) {
+	b.WriteString("    MOVQ SP, R11\n")
+	b.WriteString("    ANDQ $15, R11\n")
+	b.WriteString("    SUBQ R11, SP\n")
+	fmt.Fprintf(b, "    SUBQ $%d, SP\n", area)
+	fmt.Fprintf(b, "    MOVQ R11, %d(SP)\n", bookkeepingOffset)
+}
+
+func emitDynamicCallEpilogue(b *strings.Builder, area, bookkeepingOffset int) {
+	fmt.Fprintf(b, "    MOVQ %d(SP), R11\n", bookkeepingOffset)
+	fmt.Fprintf(b, "    ADDQ $%d, SP\n", area)
+	b.WriteString("    ADDQ R11, SP\n")
+}
+
+func trailingCallbackRecord(fn *ast.CFuncDecl) (int, bool) {
+	if fn == nil || len(fn.Params) < nativeCallbackInfoWords {
+		return 0, false
+	}
+	start := len(fn.Params) - nativeCallbackInfoWords
+	for _, p := range fn.Params[start:] {
+		if p == nil || p.Type == nil || p.Type.TokenLiteral() != "uintptr" {
+			return 0, false
+		}
+	}
+	return start, true
+}
+
+func emitExpandedCallbackRecordStub(b *strings.Builder, fn *ast.CFuncDecl, targetCName string, callbackStart int) {
+	fmt.Fprintf(b, "// %s (Windows callback-info ABI)\n", fn.Name.Value)
+
+	// The first four native arguments are passed in registers.  The callback
+	// info itself is a five-word record whose address is passed as the final
+	// native argument; construct a private, correctly aligned copy first.
+	for i := 0; i < callbackStart; i++ {
+		p := fn.Params[i]
+		offset := i * 8
+		fmt.Fprintf(b, "    MOVQ %s+%d(FP), %s\n", asmParamName(p, i), offset, []string{"CX", "DX", "R8", "R9"}[i])
+	}
+
+	callArea, bookkeepingOffset := nativeCallArea(fn)
+	emitDynamicCallPrologue(b, callArea, bookkeepingOffset)
+	for i := 0; i < nativeCallbackInfoWords; i++ {
+		fmt.Fprintf(b, "    MOVQ %s+%d(FP), AX\n", asmParamName(fn.Params[callbackStart+i], callbackStart+i), (callbackStart+i)*8)
+		fmt.Fprintf(b, "    MOVQ AX, %d(SP)\n", nativeCallbackInfoBase+i*8)
+	}
+	fmt.Fprintf(b, "    LEAQ %d(SP), R10\n", nativeCallbackInfoBase)
+
+	if callbackStart < 4 {
+		fmt.Fprintf(b, "    MOVQ R10, %s\n", []string{"CX", "DX", "R8", "R9"}[callbackStart])
+	} else {
+		fmt.Fprintf(b, "    MOVQ R10, %d(SP)\n", nativeBufferMapCallbackArg)
+	}
+	fmt.Fprintf(b, "    CALL %s(SB)\n", targetCName)
+	emitDynamicCallEpilogue(b, callArea, bookkeepingOffset)
+	if len(fn.ReturnTypes) > 0 {
+		fmt.Fprintf(b, "    MOVQ AX, ret+%d(FP)\n", len(fn.Params)*8)
+	}
+	b.WriteString("    RET\n")
+}
+
+func asmParamName(p *ast.ParamDecl, index int) string {
+	if p != nil && p.Name != nil && p.Name.Value != "" && p.Name.Value != "_" {
+		return p.Name.Value
+	}
+	return fmt.Sprintf("arg%d", index)
+}
+
+const (
+	nativeCallbackInfoWords    = 5
+	nativeCallbackInfoBase     = 40
+	nativeBufferMapCallbackArg = 32
+)

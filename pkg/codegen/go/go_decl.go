@@ -21,12 +21,28 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	needsUnsafe := true // SliceData, String, unsafe.Pointer 等で基本的に必要
 	var wrapperFuncs []string
 	var nativeDecls []string
+	var typeDecls []string
+	var callbackPtrDecls []string
 
 	// CFuncDecl のみを抽出
 	var cfuncs []*ast.CFuncDecl
+	var externs []*ast.ExternFuncDecl
 	for _, decl := range decls {
 		if cfn, ok := decl.(*ast.CFuncDecl); ok {
 			cfuncs = append(cfuncs, cfn)
+		}
+		if td, ok := decl.(*ast.TypeDecl); ok {
+			if rendered := generateGoTypeDecl(td, pkgName); rendered != "" {
+				typeDecls = append(typeDecls, rendered)
+			}
+		}
+		if efd, ok := decl.(*ast.ExternFuncDecl); ok {
+			externs = append(externs, efd)
+		}
+	}
+	for _, efd := range externs {
+		if _, ok := callbackPointerTarget(efd, cfuncs); ok && isExported(efd.Name.Value) {
+			callbackPtrDecls = append(callbackPtrDecls, fmt.Sprintf("func %s() uintptr", efd.Name.Value))
 		}
 	}
 
@@ -47,10 +63,11 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	for _, cfn := range cfuncs {
 		nativeDecl := generateNativeDecl(cfn)
 		nativeDecls = append(nativeDecls, nativeDecl)
+		nativeDecls = append(nativeDecls, fmt.Sprintf("func _hike_%sPtr() uintptr", cfn.Name.Value))
 	}
 
 	if needsUnsafe {
-		buf.WriteString("import \"unsafe\"\n\n")
+		buf.WriteString("import (\n\t\"runtime\"\n\t\"syscall\"\n\t\"unsafe\"\n)\n\n")
 	}
 	buf.WriteString(`func hikeCStringToString(ptr *byte) string {
 	if ptr == nil {
@@ -63,11 +80,25 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	return string(unsafe.Slice(ptr, n))
 }
 
+func hikeBoolArg(v bool) uintptr {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 `)
+
+	for _, td := range typeDecls {
+		buf.WriteString(td + "\n")
+	}
 
 	// ラッパー関数群の出力
 	for _, w := range wrapperFuncs {
 		buf.WriteString(w + "\n")
+	}
+	for _, d := range callbackPtrDecls {
+		buf.WriteString(d + "\n")
 	}
 
 	// ネイティブ宣言群の出力
@@ -85,6 +116,38 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	return os.WriteFile(destGoPath, buf.Bytes(), 0644)
 }
 
+// generateGoTypeDecl emits the Go representation of a Hike type declaration.
+// GoHike packages use these declarations for ABI wire records shared by the
+// generated trampoline and the higher-level Go package.
+func generateGoTypeDecl(td *ast.TypeDecl, pkgName string) string {
+	if td == nil || td.Name == nil || td.Type == nil {
+		return ""
+	}
+	name := td.Name.Value
+	// Semantic lowering may qualify package-local type names as
+	// "package_Type".  Generated Go declarations live in that package
+	// already, so restore the source-level exported name.
+	if prefix := pkgName + "_"; strings.HasPrefix(name, prefix) {
+		name = strings.TrimPrefix(name, prefix)
+	}
+	if st, ok := td.Type.(*ast.StructType); ok {
+		var fields []string
+		for _, field := range st.Fields {
+			if field == nil || field.Name == nil || field.Type == nil {
+				continue
+			}
+			goType, _ := typeExprToGoType(field.Type, false)
+			fields = append(fields, fmt.Sprintf("\t%s %s", field.Name.Value, goType))
+		}
+		return fmt.Sprintf("type %s struct {\n%s\n}\n", name, strings.Join(fields, "\n"))
+	}
+	goType, _ := typeExprToGoType(td.Type, false)
+	if goType == "" {
+		return ""
+	}
+	return fmt.Sprintf("type %s = %s\n", name, goType)
+}
+
 // generateWrapperFunc は CFuncDecl から Go フレンドリーなラッパー関数を合成します。
 func generateWrapperFunc(cfn *ast.CFuncDecl) string {
 	fnName := cfn.Name.Value
@@ -92,7 +155,7 @@ func generateWrapperFunc(cfn *ast.CFuncDecl) string {
 	var callArgs []string
 	var conversions []string
 	for _, p := range cfn.Params {
-		name := p.Name.Value
+		name := goParamName(p, len(params))
 		if isCStringType(p.Type) {
 			params = append(params, name+" string")
 			bufName := name + "Bytes"
@@ -130,19 +193,79 @@ func generateWrapperFunc(cfn *ast.CFuncDecl) string {
 		returnType = " (" + strings.Join(returns, ", ") + ")"
 	}
 
-	call := fmt.Sprintf("_hike_%s(%s)", fnName, strings.Join(callArgs, ", "))
+	var syscallArgs []string
+	var keepAlive []string
+	for i, p := range cfn.Params {
+		if isHiddenCStringLength(cfn.Params, p) {
+			continue
+		}
+		name := goParamName(p, i)
+		if isCStringType(p.Type) {
+			name = "&" + name + "Bytes[0]"
+		}
+		syscallArgs = append(syscallArgs, syscallArgExpr(p.Type, name))
+		if isValueStructType(p.Type) {
+			keepAlive = append(keepAlive, name)
+		}
+	}
+	_ = callArgs // retained for the legacy conversion analysis above
+	call := fmt.Sprintf("syscall.SyscallN(_hike_%sPtr(), %s)", fnName, strings.Join(syscallArgs, ", "))
 	var body []string
 	body = append(body, conversions...)
-	if len(cfn.ReturnTypes) == 1 && isCStringType(cfn.ReturnTypes[0]) {
-		body = append(body, "return hikeCStringToString("+call+")")
-	} else if len(cfn.ReturnTypes) > 0 {
-		body = append(body, "return "+call)
+	if len(cfn.ReturnTypes) > 0 {
+		body = append(body, "r1, _, _ := "+call)
 	} else {
-		body = append(body, call)
+		body = append(body, "_, _, _ = "+call)
+	}
+	for _, name := range keepAlive {
+		body = append(body, "runtime.KeepAlive("+name+")")
+	}
+	if len(cfn.ReturnTypes) == 1 && isCStringType(cfn.ReturnTypes[0]) {
+		body = append(body, "return hikeCStringToString((*byte)(unsafe.Pointer(r1)))")
+	} else if len(cfn.ReturnTypes) > 0 {
+		body = append(body, "return "+syscallReturnExpr(cfn.ReturnTypes[0], "r1"))
 	}
 
 	return fmt.Sprintf("// %s: generated from the Hike cfunc signature\nfunc %s(%s)%s {\n\t%s\n}\n",
 		fnName, fnName, strings.Join(params, ", "), returnType, strings.Join(body, "\n\t"))
+}
+
+func syscallArgExpr(te ast.TypeExpr, name string) string {
+	if isPointerType(te) {
+		return "uintptr(unsafe.Pointer(" + name + "))"
+	}
+	if nt, ok := te.(*ast.NamedType); ok && nt.Name.Value == "bool" {
+		return "hikeBoolArg(" + name + ")"
+	}
+	if isValueStructType(te) {
+		return "uintptr(unsafe.Pointer(&" + name + "))"
+	}
+	return "uintptr(" + name + ")"
+}
+
+func isValueStructType(te ast.TypeExpr) bool {
+	nt, ok := te.(*ast.NamedType)
+	if !ok || nt.Name == nil {
+		return false
+	}
+	switch nt.Name.Value {
+	case "bool", "int", "uint", "uint8", "uint16", "uint32", "uint64", "int8", "int16", "int32", "int64", "uintptr", "float32", "float64":
+		return false
+	default:
+		return true
+	}
+}
+
+func syscallReturnExpr(te ast.TypeExpr, name string) string {
+	if isPointerType(te) {
+		base, _ := typeExprToGoType(te, true)
+		return "(" + base + ")(unsafe.Pointer(" + name + "))"
+	}
+	if nt, ok := te.(*ast.NamedType); ok && nt.Name.Value == "bool" {
+		return name + " != 0"
+	}
+	goType, _ := typeExprToGoType(te, true)
+	return goType + "(" + name + ")"
 }
 
 // generateNativeDecl は stub.s 接続用の _hike_xxx 宣言を合成します。
@@ -152,16 +275,17 @@ func generateNativeDecl(cfn *ast.CFuncDecl) string {
 
 	for i := 0; i < len(cfn.Params); i++ {
 		p := cfn.Params[i]
+		name := goParamName(p, i)
 
 		if isCStringType(p.Type) {
-			params = append(params, fmt.Sprintf("%s *byte", p.Name.Value))
+			params = append(params, fmt.Sprintf("%s *byte", name))
 			continue
 		}
 		// The length remains part of the native ABI. It is hidden only by
 		// the public wrapper for the conventional cstring/length pair.
 
 		goType, _ := typeExprToGoType(p.Type, false)
-		params = append(params, fmt.Sprintf("%s %s", p.Name.Value, goType))
+		params = append(params, fmt.Sprintf("%s %s", name, goType))
 	}
 
 	resStr := ""
@@ -178,6 +302,13 @@ func generateNativeDecl(cfn *ast.CFuncDecl) string {
 	}
 
 	return fmt.Sprintf("func _hike_%s(%s)%s", fnName, strings.Join(params, ", "), resStr)
+}
+
+func goParamName(p *ast.ParamDecl, index int) string {
+	if p != nil && p.Name != nil && p.Name.Value != "" && p.Name.Value != "_" {
+		return p.Name.Value
+	}
+	return fmt.Sprintf("arg%d", index)
 }
 
 func isCStringLengthPair(params []*ast.ParamDecl, cstringName string) bool {
