@@ -28,6 +28,12 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 		if targetType != nil && targetType != sema.TypeVoid {
 			if _, isFunc := targetType.(*sema.FuncType); !isFunc {
 				if cl, ok := call.Args[0].(*ast.CharLiteral); ok {
+					if targetType == sema.TypeString {
+						runeVal := &hir.ConstInt{Val: int64(cl.CodePoint), Typ: sema.TypeInt32}
+						encoded := c.root.nextReg(sema.TypeString)
+						c.root.emit(&hir.InstrCallStatic{Dst: encoded, CalleeName: c.root.BuiltinName("__hike_utf8_rune_to_string"), Args: []hir.Value{runeVal}})
+						return encoded
+					}
 					intRank := func(llvm string) int {
 						switch llvm {
 						case "i64":
@@ -58,9 +64,12 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 				}
 
 				// Go-compatible conversion from a rune (int32 alias) to a string
-				// encodes exactly one Unicode code point as UTF-8.
+				// encodes one Unicode code point as UTF-8.  byte is also allowed
+				// here: lexer.newToken uses string(ch) for punctuation.  Leaving
+				// byte-to-string to the generic aggregate cast path used to emit a
+				// zero string, which erased operators such as "*" in self-hosting.
 				if targetType == sema.TypeString && isIntegerType(argVal.Type()) &&
-					sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(sema.TypeInt32) {
+					(argVal.Type() == sema.TypeByte || sema.LLVMTypeOf(argVal.Type()) == sema.LLVMTypeOf(sema.TypeInt32)) {
 					runeVal := argVal
 					if argVal.Type() != sema.TypeInt32 {
 						runeVal = c.root.asInt32(argVal)

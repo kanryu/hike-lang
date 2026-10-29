@@ -193,14 +193,37 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 	var hashOrder []uint64
 	seenHash := make(map[uint64]bool)
 	var defaultCase *ast.CaseClause
+	entryCount := 0
 
-	for caseIndex, cc := range ss.Cases {
+	for _, cc := range ss.Cases {
 		if len(cc.Values) == 0 {
 			defaultCase = cc
 			continue
 		}
 		for _, expr := range cc.Values {
-			hash, ok := switchBucketForExpr(expr, s.root.semaCtx, s.root.is32Bit, stringMode)
+			entryCount++
+			if stringMode {
+				if _, ok := stringSwitchCaseValue(expr, s.root.semaCtx); !ok {
+					return
+				}
+			} else if _, ok := expr.(*ast.IntegerLiteral); !ok {
+				return
+			}
+		}
+	}
+	if entryCount == 0 || (stringMode && len(buckets) == 0) || len(s.root.structuredStack) == 0 {
+		return
+	}
+	tableSize := switchTableSize(entryCount)
+	entriesByHash = make(map[uint64]map[int][]ast.Expression)
+	hashOrder = nil
+	seenHash = make(map[uint64]bool)
+	for caseIndex, cc := range ss.Cases {
+		if len(cc.Values) == 0 {
+			continue
+		}
+		for _, expr := range cc.Values {
+			hash, ok := switchBucketForExpr(expr, s.root.semaCtx, s.root.is32Bit, stringMode, tableSize)
 			if !ok {
 				return
 			}
@@ -213,9 +236,6 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 			}
 			entriesByHash[hash][caseIndex] = append(entriesByHash[hash][caseIndex], expr)
 		}
-	}
-	if len(hashOrder) == 0 || (stringMode && len(buckets) == 0) || len(s.root.structuredStack) == 0 {
-		return
 	}
 
 	parentBody := s.root.structuredStack[len(s.root.structuredStack)-1]
@@ -242,11 +262,13 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 
 	var hashValue hir.Value
 	if stringMode {
-		hashValue = s.lowerStringSwitchHash(switchVal)
+		hashValue = s.lowerStringSwitchHash(switchVal, tableSize)
 	} else {
-		dispatch := s.root.nextReg(sema.TypeUint8)
+		unsigned := s.root.nextReg(sema.TypeUint)
+		s.root.emit(&hir.InstrCast{Dst: unsigned, Val: switchVal, ToType: sema.TypeUint})
+		dispatch := s.root.nextReg(sema.TypeUint)
 		hashValue = dispatch
-		s.root.emit(&hir.InstrCast{Dst: dispatch, Val: switchVal, ToType: sema.TypeUint8})
+		s.root.emit(&hir.InstrBinary{Dst: dispatch, Op: hir.OpRem, L: unsigned, R: &hir.ConstInt{Val: int64(tableSize), Typ: sema.TypeUint}})
 	}
 	// Reuse the numeric structured table.  The hash has already been reduced
 	// to the uint8 dispatch index by lowerStringSwitchHash.
@@ -254,7 +276,7 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 		Label:         structuredBlock.Label + ".hash.table",
 		IndexValue:    hashValue,
 		Min:           0,
-		Targets:       make([]int, 256),
+		Targets:       make([]int, tableSize),
 		DefaultTarget: -1,
 	}
 	for i := range structuredTable.Targets {
@@ -365,7 +387,7 @@ func stringSwitchBuckets(ss *ast.SwitchStmt, ctx *sema.Context, is32 bool, switc
 			if !ok {
 				return nil, false
 			}
-			hash := stringSwitchBucket(value, is32)
+			hash := stringSwitchHash(value, is32)
 			buckets[hash] = append(buckets[hash], value)
 		}
 	}
@@ -400,19 +422,26 @@ func stringSwitchCaseValue(expr ast.Expression, ctx *sema.Context) (string, bool
 	return "", false
 }
 
-func switchBucketForExpr(expr ast.Expression, ctx *sema.Context, is32, stringMode bool) (uint64, bool) {
+func switchBucketForExpr(expr ast.Expression, ctx *sema.Context, is32, stringMode bool, tableSize int) (uint64, bool) {
+	if tableSize <= 0 {
+		return 0, false
+	}
 	if stringMode {
 		value, ok := stringSwitchCaseValue(expr, ctx)
 		if !ok {
 			return 0, false
 		}
-		return stringSwitchBucket(value, is32), true
+		return stringSwitchHash(value, is32) % uint64(tableSize), true
 	}
 	literal, ok := expr.(*ast.IntegerLiteral)
 	if !ok || literal == nil {
 		return 0, false
 	}
-	return uint64(literal.Value) & 0xff, true
+	value := literal.Value % int64(tableSize)
+	if value < 0 {
+		value += int64(tableSize)
+	}
+	return uint64(value), true
 }
 
 func stringSwitchHash(value string, is32 bool) uint64 {
@@ -432,11 +461,11 @@ func stringSwitchHash(value string, is32 bool) uint64 {
 	return h
 }
 
-func stringSwitchBucket(value string, is32 bool) uint64 {
-	return stringSwitchHash(value, is32) & 0xff
+func stringSwitchBucket(value string, is32 bool, tableSize int) uint64 {
+	return stringSwitchHash(value, is32) % uint64(tableSize)
 }
 
-func (s *StmtLowerer) lowerStringSwitchHash(value hir.Value) hir.Value {
+func (s *StmtLowerer) lowerStringSwitchHash(value hir.Value, tableSize int) hir.Value {
 	ptr, length := s.root.stringParts(value)
 	key := s.root.nextReg(sema.TypeInt)
 	s.root.emit(&hir.InstrCallStatic{Dst: key, CalleeName: s.root.BuiltinName("__hike_string_key"), Args: []hir.Value{ptr, length}})
@@ -451,11 +480,20 @@ func (s *StmtLowerer) lowerStringSwitchHash(value hir.Value) hir.Value {
 	// Structured switch tables use an 8-bit dispatch index.  The full hash is
 	// still used by the compile-time bucket map; collisions are resolved by the
 	// exact string predicates generated in the selected table case.
-	hash8 := s.root.nextReg(sema.TypeUint8)
-	s.root.emit(&hir.InstrCast{Dst: hash8, Val: hash, ToType: sema.TypeUint8})
-	dispatch := s.root.nextReg(sema.TypeUint8)
-	s.root.emit(&hir.InstrBinary{Dst: dispatch, Op: hir.OpAnd, L: hash8, R: &hir.ConstInt{Val: 0xff, Typ: sema.TypeUint8}})
+	unsigned := s.root.nextReg(sema.TypeUint)
+	s.root.emit(&hir.InstrCast{Dst: unsigned, Val: hash, ToType: sema.TypeUint})
+	dispatch := s.root.nextReg(sema.TypeUint)
+	s.root.emit(&hir.InstrBinary{Dst: dispatch, Op: hir.OpRem, L: unsigned, R: &hir.ConstInt{Val: int64(tableSize), Typ: sema.TypeUint}})
 	return dispatch
+}
+
+func switchTableSize(entryCount int) int {
+	for _, size := range []int{17, 31, 61, 127, 251} {
+		if entryCount*5 <= size*2 {
+			return size
+		}
+	}
+	return 251
 }
 
 func (s *StmtLowerer) setupStructuredSwitch(endBB *basicBlock, switchVal hir.Value, numericValues [][]int64, tableMin, tableMax int64, numericSwitch bool, parentBody *hir.ControlBody, parentDepth int) (*hir.BlockNode, *hir.TableNode, *hir.BlockNode, *hir.ControlBody) {

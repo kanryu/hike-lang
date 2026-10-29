@@ -369,7 +369,7 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 			// an unnamed parameter instead of trying to parse it as an identifier.
 			if p.curTokenIs(token.ASTERISK) || p.curTokenIs(token.LBRACKET) ||
 				p.curTokenIs(token.MAP) || p.curTokenIs(token.HASHMAP) || p.curTokenIs(token.STABLE) || p.curTokenIs(token.CHAN) || p.curTokenIs(token.FUNC) ||
-				p.curTokenIs(token.INTERFACE) || (p.curTokenIs(token.IDENT) &&
+				p.curTokenIs(token.INTERFACE) || (p.isIdentifierToken(p.curToken) && !p.curTokenIs(token.AREA) &&
 				(p.peekTokenIs(token.RPAREN) || (p.peekTokenIs(token.COMMA) && !p.hasNamedParameterGroup()) || p.peekTokenIs(token.DOT))) {
 				pType := p.parseTypeExpr()
 				params = append(params, &ast.ParamDecl{Token: p.curToken, Name: &ast.Identifier{Token: p.curToken, Value: ""}, Type: pType})
@@ -377,7 +377,7 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 				// Go permits a shared type for a comma-separated group of names:
 				// func f(first, second string). Expand the group into ordinary Hike
 				// parameter declarations so later phases need no special case.
-				if p.curTokenIs(token.IDENT) && p.peekTokenIs(token.COMMA) {
+				if p.isIdentifierToken(p.curToken) && p.peekTokenIs(token.COMMA) {
 					names := []*ast.Identifier{p.parseIdentifier()}
 					idx := p.curIdx()
 					typeIdx := -1
@@ -495,7 +495,25 @@ func (p *Parser) parseParameterList(allowBareEllipsis bool) ([]*ast.ParamDecl, b
 }
 
 func (p *Parser) hasNamedParameterGroup() bool {
-	return p.hasNamedParameterGroupAt(p.curIdx())
+	idx := p.curIdx()
+	// Parameter parsing advances through type expressions, so the cursor
+	// index can point at the preceding token when a grouped parameter follows
+	// a pointer or composite type. Re-anchor the scan on the actual current
+	// token before looking for `name, name type`.
+	if idx < 0 || idx >= len(p.tokens) || p.tokens[idx].Line != p.curToken.Line || p.tokens[idx].Col != p.curToken.Col {
+		for i, tok := range p.tokens {
+			if tok.Line == p.curToken.Line && tok.Col == p.curToken.Col && tok.Type == p.curToken.Type {
+				idx = i
+				break
+			}
+		}
+	}
+	result := p.hasNamedParameterGroupAt(idx)
+	return result
+}
+
+func (p *Parser) isIdentifierToken(tok token.Token) bool {
+	return tok.Type == token.IDENT || (p.goHikeMode && (tok.Type == token.AREA || tok.Type == token.EXTERN))
 }
 
 func (p *Parser) hasNamedParameterGroupAt(idx int) bool {
@@ -1347,7 +1365,10 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.LOCK:
 		return p.parseLockStmt()
 	case token.AREA:
-		return p.parseAreaStmt()
+		if !p.goHikeMode || p.peekTokenIs(token.LPAREN) {
+			return p.parseAreaStmt()
+		}
+		return p.parseAssignOrExprStmt()
 	case token.BREAK:
 		return &ast.BreakStmt{Token: p.curToken}
 	case token.CONTINUE:

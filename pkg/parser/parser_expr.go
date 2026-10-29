@@ -379,7 +379,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
 
 	switch p.curToken.Type {
-	case token.IDENT:
+	case token.IDENT, token.AREA, token.EXTERN:
 		if p.curToken.Literal == "hashmap" && p.peekTokenIs(token.LBRACKET) {
 			if typeExpr, ok := p.parseTypeExpr().(ast.Expression); ok {
 				leftExp = typeExpr

@@ -69,7 +69,7 @@ func main() int {
 	})
 }
 
-// 3. 型キャスト特殊パス (string <-> cstring, []byte -> string, 文字リテラルキャスト)
+// 3. 型キャスト特殊パス (string <-> cstring, []byte -> string, rune -> string)
 func TestFuncCall_TypeCasts_StringAndNumeric(t *testing.T) {
 	t.Parallel()
 
@@ -89,15 +89,19 @@ func main() int {
     bytes := []byte{65, 66, 67}
     sFromBytes := string(bytes)
 
-    // 3. 文字リテラルの数値型キャスト
+    // 3. 文字リテラルは一旦 rune (int32) としてから UTF-8 string に変換
+    sFromASCIIChar := string('A')
+    sFromUTF8Char := string('あ')
+
+    // 4. 文字リテラルの数値型キャスト
     valA := int('A')
     valZ := int64('Z')
 
-    printf("BACK=%s,BYTES=%s,A=%d,Z=%d\n", back, sFromBytes, valA, valZ)
+    printf("BACK=%s,BYTES=%s,ASCII=%s,UTF8=%s,A=%d,Z=%d\n", back, sFromBytes, sFromASCIIChar, sFromUTF8Char, valA, valZ)
     return 0
 }
 `,
-		ExpectedOut:  "BACK=HelloHike,BYTES=ABC,A=65,Z=90",
+		ExpectedOut:  "BACK=HelloHike,BYTES=ABC,ASCII=A,UTF8=あ,A=65,Z=90",
 		ExpectedExit: 0,
 	})
 }

@@ -22,6 +22,39 @@ func TestNumericSwitchCasesBuildDenseTableMetadata(t *testing.T) {
 	}
 }
 
+func TestSwitchTableSizeUsesSmallestFortyPercentCandidate(t *testing.T) {
+	for _, tc := range []struct {
+		entries int
+		want    int
+	}{
+		{entries: 1, want: 17},
+		{entries: 6, want: 17},
+		{entries: 7, want: 31},
+		{entries: 12, want: 31},
+		{entries: 13, want: 61},
+		{entries: 24, want: 61},
+		{entries: 25, want: 127},
+		{entries: 50, want: 127},
+		{entries: 51, want: 251},
+		{entries: 101, want: 251},
+	} {
+		if got := switchTableSize(tc.entries); got != tc.want {
+			t.Fatalf("switchTableSize(%d) = %d, want %d", tc.entries, got, tc.want)
+		}
+	}
+}
+
+func TestSwitchBucketUsesSelectedTableSize(t *testing.T) {
+	if got, ok := switchBucketForExpr(&ast.IntegerLiteral{Value: -1}, nil, false, false, 17); !ok || got != 16 {
+		t.Fatalf("negative integer bucket = (%d, %v), want (16, true)", got, ok)
+	}
+	value := "compiler"
+	want := stringSwitchHash(value, false) % 31
+	if got := stringSwitchBucket(value, false, 31); got != want {
+		t.Fatalf("string bucket = %d, want %d", got, want)
+	}
+}
+
 func TestFuncLitContainsRecoverWithoutReflection(t *testing.T) {
 	fn := &ast.FuncLit{Body: &ast.BlockStmt{Statements: []ast.Statement{
 		&ast.IfStmt{Consequence: &ast.BlockStmt{Statements: []ast.Statement{

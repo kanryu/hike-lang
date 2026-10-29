@@ -142,7 +142,8 @@ func (e *ExprLowerer) LowerExpr(expr ast.Expression) hir.Value {
 	case *ast.FloatLiteral:
 		return &hir.ConstFloat{Val: node.Value, Typ: sema.TypeFloat64}
 
-	// 文字リテラルは文字列定数ではなく、byte (i8) 整数として評価する
+	// 文字リテラルは通常の式では byte として評価する。string への変換
+	// だけは LowerCall 側で CodePoint を rune として扱う。
 	case *ast.CharLiteral:
 		return &hir.ConstInt{Val: int64(node.CodePoint), Typ: sema.TypeByte}
 
