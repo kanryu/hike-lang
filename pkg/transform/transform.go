@@ -18,7 +18,12 @@ type Transformer struct {
 	emittedSpecialization map[string]bool
 	newSpecializedDecls   []ast.Decl
 	localTypes            map[string]ast.TypeExpr
-	verboseLevel          int
+	// genericTemplates indexes the short and canonical names once per
+	// transformation.  Generic call rewriting runs for every call expression;
+	// scanning the complete Functions/GenericFuncs maps there made self-hosting
+	// compilation quadratic in the number of imported functions.
+	genericTemplates map[string][]*ast.FuncDecl
+	verboseLevel     int
 }
 
 // identifierValue keeps field access on the concrete AST type.  The Go-Hike
@@ -154,13 +159,49 @@ func (t *Transformer) SetVerboseLevel(level int) {
 }
 
 func New(prog *ast.Program, semaCtx *sema.Context) *Transformer {
-	return &Transformer{
+	t := &Transformer{
 		prog:                  prog,
 		semaCtx:               semaCtx,
 		specializedQueue:      []*sema.FuncType{},
 		emittedSpecialization: make(map[string]bool),
 		newSpecializedDecls:   []ast.Decl{},
 		localTypes:            make(map[string]ast.TypeExpr),
+		genericTemplates:      make(map[string][]*ast.FuncDecl),
+	}
+	t.buildGenericTemplateIndex()
+	return t
+}
+
+func (t *Transformer) buildGenericTemplateIndex() {
+	if t.semaCtx == nil {
+		return
+	}
+	for name, tmpl := range t.semaCtx.GenericFuncs {
+		t.addGenericTemplateIndex(name, tmpl)
+	}
+	for name, fn := range t.semaCtx.Functions {
+		if fn == nil || !fn.IsGeneric() || fn.Template == nil {
+			continue
+		}
+		t.addGenericTemplateIndex(name, fn.Template)
+	}
+}
+
+func (t *Transformer) addGenericTemplateIndex(name string, tmpl *ast.FuncDecl) {
+	if name == "" || tmpl == nil {
+		return
+	}
+	add := func(key string) {
+		for _, existing := range t.genericTemplates[key] {
+			if existing == tmpl {
+				return
+			}
+		}
+		t.genericTemplates[key] = append(t.genericTemplates[key], tmpl)
+	}
+	add(name)
+	if idx := strings.LastIndexByte(name, '_'); idx >= 0 && idx+1 < len(name) {
+		add(name[idx+1:])
 	}
 }
 
@@ -1010,23 +1051,8 @@ func (t *Transformer) findGenericTemplate(name string) *ast.FuncDecl {
 		}
 	}
 
-	if tmpl, ok := t.semaCtx.GenericFuncs[name]; ok && tmpl != nil {
-		return tmpl
-	}
-	for k, v := range t.semaCtx.GenericFuncs {
-		if v != nil && (k == name || strings.HasSuffix(k, "_"+name)) {
-			return v
-		}
-	}
-	if fn, ok := t.semaCtx.Functions[name]; ok && fn != nil && funcTemplate(fn) != nil && fn.IsGeneric() {
-		return funcTemplate(fn)
-	}
-	for k, fn := range t.semaCtx.Functions {
-		if fn != nil && funcTemplate(fn) != nil && fn.IsGeneric() {
-			if k == name || strings.HasSuffix(k, "_"+name) {
-				return funcTemplate(fn)
-			}
-		}
+	if templates := t.genericTemplates[name]; len(templates) == 1 {
+		return templates[0]
 	}
 	return nil
 }
