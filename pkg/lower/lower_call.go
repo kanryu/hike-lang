@@ -364,6 +364,11 @@ func semaTypeToTypeExpr(t sema.Type) ast.TypeExpr {
 		return &ast.ArrayType{Len: int64(v.Len), Elem: semaTypeToTypeExpr(v.Elem)}
 	case *sema.MapType:
 		return &ast.MapType{Key: semaTypeToTypeExpr(v.Key), Value: semaTypeToTypeExpr(v.Value), LegacyHashMap: v.LegacyHashMap, Stable: v.Stable}
+	case *sema.StructType:
+		if v.Name == "" {
+			return &ast.StructType{}
+		}
+		return &ast.NamedType{Name: &ast.Identifier{Value: v.Name}}
 	default:
 		return &ast.NamedType{Name: &ast.Identifier{Value: semaTypeName(v)}}
 	}

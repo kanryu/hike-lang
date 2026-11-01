@@ -953,7 +953,12 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 			var typeArgs []sema.Type
 			if len(explicitTypeArgs) > 0 {
 				typeArgs = explicitTypeArgs
-			} else {
+			} else if funcName == "sort_Slice" {
+				if inferred := t.inferSliceElementTypeArg(genTemplate, call.Args); inferred != nil {
+					typeArgs = []sema.Type{inferred}
+				}
+			}
+			if len(typeArgs) == 0 {
 				for i, arg := range call.Args {
 					if i < len(genTemplate.Params) {
 						argType := t.semaCtx.InferExprType(arg, nil)
@@ -991,6 +996,37 @@ func (t *Transformer) transformCallExpr(call *ast.CallExpr) ast.Expression {
 	}
 
 	return call
+}
+
+// inferSliceElementTypeArg derives T from sort.Slice[T](items []T, ...).
+// Inferring directly from an unresolved identifier used to turn package-owned
+// slice values into sort.Slice_int_ during Go-Hike specialization.
+func (t *Transformer) inferSliceElementTypeArg(template *ast.FuncDecl, args []ast.Expression) sema.Type {
+	if template == nil || len(template.Params) == 0 || len(args) == 0 {
+		return nil
+	}
+	if _, ok := template.Params[0].Type.(*ast.SliceType); !ok {
+		return nil
+	}
+	typ := t.inferExprTypeExpr(args[0])
+	if typ == nil {
+		return nil
+	}
+	if sl, ok := typ.(*ast.SliceType); ok {
+		if elem := t.semaCtx.ResolveType(sl.Elem); elem != nil && elem != sema.TypeVoid && semaTypeName(elem) != "" {
+			return elem
+		}
+	}
+	if ar, ok := typ.(*ast.ArrayType); ok {
+		if elem := t.semaCtx.ResolveType(ar.Elem); elem != nil && elem != sema.TypeVoid && semaTypeName(elem) != "" {
+			return elem
+		}
+	}
+	resolved := t.semaCtx.ResolveType(typ)
+	if sl, ok := resolved.(*sema.SliceType); ok && sl.Elem != nil && !sema.IsBad(sl.Elem) && semaTypeName(sl.Elem) != "" {
+		return sl.Elem
+	}
+	return nil
 }
 
 func (t *Transformer) resolveTargetName(e ast.Expression) string {
