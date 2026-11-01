@@ -161,6 +161,105 @@ extern func RequestAdapterCallbackPtr() uintptr
 	}
 }
 
+func TestGenerateLinuxAMD64StubsUsesSysVAndGoLayouts(t *testing.T) {
+	source := `package native
+
+type CallbackInfo struct {
+    Next uintptr
+    Mode uintptr
+    Callback uintptr
+    Userdata1 uintptr
+    Userdata2 uintptr
+}
+
+type MixedAggregate struct {
+    Count uint32
+    Ratio float32
+}
+
+type InnerAggregate struct {
+    Ratio float32
+    Count uint32
+}
+
+type NestedAggregate struct {
+    Prefix uint32
+    Inner InnerAggregate
+}
+
+type FloatAggregate struct {
+    First float64
+    Second float64
+}
+
+cfunc LargeAggregate(instance *byte, options *byte, info CallbackInfo) uint64 = nativeLargeAggregate
+cfunc Mixed(a uint32, b float64, c int8, d uintptr, e uintptr, f uintptr, g uintptr, h float32) float32 = nativeMixed
+cfunc SmallAggregate(value MixedAggregate) uint64 = nativeSmallAggregate
+cfunc Nested(value NestedAggregate) uint64 = nativeNested
+cfunc FloatAggregateCall(value FloatAggregate) = nativeFloatAggregate
+cfunc FloatStack(a float64, b float64, c float64, d float64, e float64, f float64, g float64, h float64, i float32) uint32 = nativeFloatStack
+`
+	program := parser.New(lexer.New(source)).ParseProgram()
+	if len(program.Decls) != 11 {
+		t.Fatalf("parsed %d declarations, want 11", len(program.Decls))
+	}
+
+	dir := t.TempDir()
+	if err := GenerateGoStubs(dir, "native", program.Decls, "linux", false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "stub_linux_amd64.s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated := string(data)
+
+	for _, fragment := range []string{
+		"TEXT ·_hike_LargeAggregate(SB), 0, $64-64",
+		"ANDQ $15, R11",
+		"NEGQ R11",
+		"ADDQ R11, SP",
+		"MOVQ R11, 40(SP)",
+		"MOVQ info_Next+16(FP), AX",
+		"MOVQ AX, 0(SP)",
+		"MOVQ info_Userdata2+48(FP), AX",
+		"MOVQ AX, 32(SP)",
+		"CALL nativeLargeAggregate(SB)",
+		"SUBQ R11, SP",
+		"MOVQ AX, ret+56(FP)",
+		"TEXT ·_hike_Mixed(SB), 0, $32-64",
+		"MOVLQZX a+0(FP), DI",
+		"MOVSD b+8(FP), X0",
+		"MOVBQSX c+16(FP), SI",
+		"MOVQ d+24(FP), DX",
+		"MOVQ g+48(FP), R9",
+		"MOVSS h+56(FP), X1",
+		"MOVSS X0, ret+60(FP)",
+		"TEXT ·_hike_SmallAggregate(SB), 0, $32-16",
+		"MOVLQZX value_Count+0(FP), R10",
+		"MOVSS value_Ratio+4(FP), X15",
+		"SHLQ $32, R10",
+		"MOVQ AX, DI",
+		"TEXT ·_hike_Nested(SB), 0, $32-24",
+		"MOVSS value_Inner_Ratio+4(FP), X15",
+		"MOVLQZX value_Inner_Count+8(FP), R10",
+		"MOVQ AX, SI",
+		"TEXT ·_hike_FloatAggregateCall(SB), 0, $32-16",
+		"MOVSD value_First+0(FP), X15",
+		"MOVQ AX, X0",
+		"MOVSD value_Second+8(FP), X15",
+		"MOVQ AX, X1",
+		"TEXT ·_hike_FloatStack(SB), 0, $32-72",
+		"MOVSS i+64(FP), X15",
+		"MOVSS X15, 0(SP)",
+		"MOVL AX, ret+68(FP)",
+	} {
+		if !strings.Contains(generated, fragment) {
+			t.Errorf("generated SysV stub is missing %q:\n%s", fragment, generated)
+		}
+	}
+}
+
 func TestGenerateGoStubsSeparatesGoFrameAndNativeCallArea(t *testing.T) {
 	source := `package native
 

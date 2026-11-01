@@ -41,8 +41,13 @@ Go's internal calling convention (Go ABI) is incompatible with standard C ABIs (
 The Hike compiler generates a Plan 9 assembly bridge for Windows amd64 or Linux amd64 (`stub_<GOOS>_<GOARCH>.s`) to translate the Go ABI to the native ABI and call the native symbol (`c_<Name>`).
 
 * **Windows x64 Calling Convention**: Maps the first four arguments to `CX`, `DX`, `R8`, and `R9`, reserving 32 bytes of shadow space plus 8 bytes for call-site alignment.
-* **Linux System V AMD64 Calling Convention**: Maps the first six integer/pointer arguments to `DI`, `SI`, `DX`, `CX`, `R8`, and `R9`. The generated frame reserves outgoing stack-argument space in 16-byte multiples, keeping `RSP` aligned before every native call.
-* **Return Value Propagation**: Moves the result from `RAX` back into Go's stack frame frame pointer space (`ret+(FP)`).
+* **Linux System V AMD64 Calling Convention**: Lays out Go ABI0 parameters using their actual sizes and alignments, then classifies native arguments into the independent integer and SSE register banks. Aggregates up to 16 bytes are classified by eightbyte; memory-class aggregates and register-exhausted arguments are copied to the outgoing stack area. The generated Go frame reserves alignment slack and stack-argument space, and the outgoing `RSP` is aligned to 16 bytes before each native call.
+* **Return Value Propagation**: Copies integer results from `RAX` and floating-point results from `XMM0` to their correctly sized Go result slots.
+
+Linux amd64 generation rejects variadic functions, multiple C return values,
+aggregate return values, and array-valued parameters or fields rather than
+emitting a guessed ABI. Pointer, integer, boolean, float, and named struct
+parameters are supported.
 
 ### 2.3 LLVM / Clang Pure Machine Code Sanitization (Zero libc Dependency)
 
@@ -55,8 +60,9 @@ Go's pure linker cannot resolve symbols against the C runtime library (libc) or 
 
 Goroutines operate on dynamic, minimal initial stacks (2 KB to 4 KB).
 
-* **`passthrough cfunc`**: Emits stubs marked with `NOSPLIT`, bypassing stack-growth checks and executing native machine code directly on the calling Goroutine stack. This eliminates context-switching overhead entirely, ideal for leaf functions, pointer manipulation, and numerical compute.
-* **Standard `cfunc**`: Serves as the target path for stubs that switch to the system stack (`g0`), safely allowing deeper recursion or larger stack allocations.
+* **`passthrough cfunc`**: On Windows amd64, emits stubs marked with `NOSPLIT`, bypassing stack-growth checks and executing native machine code directly on the calling Goroutine stack.
+* **Linux amd64 `cfunc` stubs**: Retain Go stack-growth checks and reserve a bounded local frame for outgoing SysV arguments. They call native code on the current goroutine stack; they do not switch to `g0`.
+* **Standard `cfunc`**: Uses the platform's generated native-call frame and ABI rules.
 
 ---
 
