@@ -734,15 +734,16 @@ func (e *ExprLowerer) lowerStringSliceExpr(node *ast.SliceExpr, baseVal hir.Valu
 		e.root.retainString(view)
 		return view, true
 	}
-	lowVal := hir.Value(&hir.ConstInt{Val: 0, Typ: sema.TypeInt})
+	lowVal := e.root.defaultConstValue(sema.TypeInt)
 	if node.Low != nil {
 		lowVal = e.LowerExpr(node.Low)
 	}
-	highVal := hir.Value(e.root.nextReg(sema.TypeInt))
+	highReg := e.root.nextReg(sema.TypeInt)
+	var highVal hir.Value = highReg
 	if node.High != nil {
 		highVal = e.LowerExpr(node.High)
 	} else {
-		e.root.emit(&hir.InstrCallStatic{Dst: highVal.(*hir.Reg), CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
+		e.root.emit(&hir.InstrCallStatic{Dst: highReg, CalleeName: e.root.BuiltinName("strlen"), Args: []hir.Value{baseVal}})
 	}
 	length := e.root.nextReg(sema.TypeInt)
 	e.root.emit(&hir.InstrBinary{Dst: length, Op: hir.OpSub, L: highVal, R: lowVal})
