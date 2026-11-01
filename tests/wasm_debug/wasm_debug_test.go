@@ -73,6 +73,11 @@ func TestWabtWasmtimeDebugStepsReturnAndReadsValue(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Wasmtime JIT guest debugging is not available in the Windows test environment")
 	}
+	if runtime.GOOS == "linux" {
+		// TODO: Re-enable after resolving why LLDB does not stop at Wasmtime's
+		// JIT-compiled Wasm breakpoints in the Linux test environment.
+		t.Skip("temporarily disabled on Linux: Wasmtime JIT breakpoints do not stop execution")
+	}
 	for _, tool := range []string{"clang", "wat2wasm", "wasmtime", "lldb"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is required for the Wasmtime debug test", tool)

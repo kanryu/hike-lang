@@ -1,5 +1,13 @@
 ; Hike native Windows OS runtime ({{.PointerBits}}-bit, pointer={{.PointerType}})
 
+declare i64 @_ftelli64(i8*)
+
+define internal i64 @__hike_file_tell(i8* %file) {
+entry:
+  %position = call i64 @_ftelli64(i8* %file)
+  ret i64 %position
+}
+
 declare i32 @QueueUserWorkItem(i32 ({{.PointerType}})*, {{.PointerType}}, i32)
 declare {{.PointerType}} @CreateEventA({{.PointerType}}, i32, i32, {{.PointerType}})
 declare i32 @SetEvent({{.PointerType}})

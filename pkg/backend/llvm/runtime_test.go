@@ -31,13 +31,35 @@ func TestRuntimeTemplateRendering(t *testing.T) {
 					"%ts_ptr = bitcast [16 x i8]* %ts to i8*",
 					"call i32 @pthread_cond_timedwait(i8* %c, i8* %m, i8* %ts_ptr)",
 					"call i32 @clock_gettime(i32 0, i8* %ts_ptr)",
+					"declare i64 @ftello64(i8*)",
+					"call i64 @ftello64(i8* %file)",
 				} {
 					if !strings.Contains(ir, required) {
-						t.Errorf("Linux runtime is missing timeout support %q", required)
+						t.Errorf("Linux runtime is missing required support %q", required)
 					}
+				}
+				if strings.Contains(ir, "_ftelli64") {
+					t.Error("Linux runtime must not reference the Windows-only _ftelli64 API")
 				}
 			}
 		})
+	}
+	linux64 := GetRuntimeIR("x86_64-unknown-linux-gnu", 64)
+	if !strings.Contains(linux64, "call i64 @__hike_file_tell(i8* %file)") {
+		t.Error("64-bit common runtime must use the platform file-position helper")
+	}
+}
+
+func TestWindowsRuntimeUsesWindowsFileTellAPI(t *testing.T) {
+	ir := GetRuntimeIR("x86_64-w64-windows-gnu", 64)
+	for _, required := range []string{
+		"declare i64 @_ftelli64(i8*)",
+		"call i64 @_ftelli64(i8* %file)",
+		"call i64 @__hike_file_tell(i8* %file)",
+	} {
+		if !strings.Contains(ir, required) {
+			t.Errorf("Windows runtime is missing required support %q", required)
+		}
 	}
 }
 

@@ -13,7 +13,6 @@ declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fseek(i8*, i64, i64)
-declare i64 @_ftelli64(i8*)
 
 @__hike_mapped_write_mode = private unnamed_addr constant [3 x i8] c"wb\00"
 @__hike_mapped_read_mode = private unnamed_addr constant [3 x i8] c"rb\00"
@@ -63,7 +62,7 @@ entry:
   br i1 %missing, label %fail, label %measure
 measure:
   %end_result = call i64 @fseek(i8* %file, i64 0, i64 2)
-  %file_size = call i64 @_ftelli64(i8* %file)
+  %file_size = call i64 @__hike_file_tell(i8* %file)
   %payload_start = add i64 %root_size, 64
   %payload_size = sub i64 %file_size, %payload_start
   %header = alloca [64 x i8], align 8
