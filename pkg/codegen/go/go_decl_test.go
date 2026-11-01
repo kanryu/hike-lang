@@ -101,7 +101,7 @@ extern func RequestAdapterCallbackPtr() uintptr
 	if err := GenerateGoDeclarations(goPath, "native", program.Decls, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := GenerateGoStubs(dir, "native", program.Decls, false); err != nil {
+	if err := GenerateGoStubs(dir, "native", program.Decls, "windows", false); err != nil {
 		t.Fatal(err)
 	}
 	goData, err := os.ReadFile(goPath)
@@ -127,6 +127,40 @@ extern func RequestAdapterCallbackPtr() uintptr
 	}
 }
 
+func TestGenerateLinuxAMD64StubsIncludesFunctionPointers(t *testing.T) {
+	source := `package native
+
+cfunc NativeCall(a uintptr, b uintptr, c uintptr, d uintptr, e uintptr, f uintptr, g uintptr) uintptr = nativeCall
+cfunc WGPUStaticRequestAdapterCallback(status int) = wgpuCallback
+extern func RequestAdapterCallbackPtr() uintptr
+`
+	program := parser.New(lexer.New(source)).ParseProgram()
+	dir := t.TempDir()
+	if err := GenerateGoStubs(dir, "native", program.Decls, "linux", false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "stub_linux_amd64.s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated := string(data)
+	for _, fragment := range []string{
+		"MOVQ a+0(FP), DI",
+		"MOVQ f+40(FP), R9",
+		"MOVQ g+48(FP), AX",
+		"MOVQ AX, 0(SP)",
+		"CALL nativeCall(SB)",
+		"TEXT ·RequestAdapterCallbackPtr(SB), NOSPLIT, $0-8",
+		"LEAQ wgpuCallback(SB), AX",
+		"TEXT ·_hike_NativeCallPtr(SB), NOSPLIT, $0-8",
+		"LEAQ nativeCall(SB), AX",
+	} {
+		if !strings.Contains(generated, fragment) {
+			t.Errorf("generated Linux stub is missing %q:\n%s", fragment, generated)
+		}
+	}
+}
+
 func TestGenerateGoStubsSeparatesGoFrameAndNativeCallArea(t *testing.T) {
 	source := `package native
 
@@ -144,7 +178,7 @@ cfunc SurfaceConfigure(surface *byte, config *byte) = wgpuSurfaceConfigure
 	}
 
 	dir := t.TempDir()
-	if err := GenerateGoStubs(dir, "native", program.Decls, false); err != nil {
+	if err := GenerateGoStubs(dir, "native", program.Decls, "windows", false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "stub_windows_amd64.s"))

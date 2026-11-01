@@ -38,9 +38,10 @@ The Go toolchain (`cmd/link`) features a built-in mechanism: when an object file
 ### 2.2 Plan 9 Assembly ABI Bridge
 
 Go's internal calling convention (Go ABI) is incompatible with standard C ABIs (such as the Windows x64 ABI or System V AMD64 ABI).
-The Hike compiler generates a Plan 9 assembly bridge (`stub_windows_amd64.s`) to reorder argument registers, set up stack shadow space, and jump to the native symbol (`c_<Name>`).
+The Hike compiler generates a Plan 9 assembly bridge for Windows amd64 or Linux amd64 (`stub_<GOOS>_<GOARCH>.s`) to translate the Go ABI to the native ABI and call the native symbol (`c_<Name>`).
 
-* **Windows x64 Calling Convention**: Maps the first four arguments to `CX`, `DX`, `R8`, and `R9`, reserving 32 bytes of shadow space (`SUBQ $32, SP`).
+* **Windows x64 Calling Convention**: Maps the first four arguments to `CX`, `DX`, `R8`, and `R9`, reserving 32 bytes of shadow space plus 8 bytes for call-site alignment.
+* **Linux System V AMD64 Calling Convention**: Maps the first six integer/pointer arguments to `DI`, `SI`, `DX`, `CX`, `R8`, and `R9`. The generated frame reserves outgoing stack-argument space in 16-byte multiples, keeping `RSP` aligned before every native call.
 * **Return Value Propagation**: Moves the result from `RAX` back into Go's stack frame frame pointer space (`ret+(FP)`).
 
 ### 2.3 LLVM / Clang Pure Machine Code Sanitization (Zero libc Dependency)
@@ -66,7 +67,7 @@ myproject/
 ├── fizzlib/
 │   ├── fizzlib.go.hike            # Hike native implementation
 │   ├── fizzlib.go                 # Idiomatic Go public API & wrapper
-│   ├── stub_windows_amd64.s       # [Auto-generated] Plan 9 assembly stub
+│   ├── stub_<GOOS>_<GOARCH>.s     # [Auto-generated] Plan 9 assembly stub
 │   ├── fizzlib_windows_amd64.syso # [Auto-generated] Native machine code object
 │   └── fizzlib.ll                 # [Intermediate] LLVM IR
 ├── main.go                        # Application entry point

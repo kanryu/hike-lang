@@ -97,7 +97,7 @@ func BuildGoPackage(opts GoBuildOptions) error {
 	pkgName := detectPackageName(hikeFiles[0], dirName)
 
 	// 1. Plan 9 アセンブリ（stub.s）の自動生成
-	if err := GenerateGoStubs(absDir, pkgName, prog.Decls, opts.Verbose); err != nil {
+	if err := GenerateGoStubs(absDir, pkgName, prog.Decls, opts.TargetName, opts.Verbose); err != nil {
 		return fmt.Errorf("failed to generate stubs: %w", err)
 	}
 
