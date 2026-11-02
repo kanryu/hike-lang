@@ -63,6 +63,14 @@ func (c *CallLowerer) LowerCall(call *ast.CallExpr) hir.Value {
 					return c.lowerCStringToString(argVal)
 				}
 
+				// Interface conversions must use the normal boxing path. Falling
+				// through to InstrCast treats the fat-pointer interface as a generic
+				// aggregate cast and emits a zero value instead of preserving the
+				// concrete receiver.
+				if _, isInterface := targetType.(*sema.InterfaceType); isInterface {
+					return c.root.emitValueCoerce(argVal, targetType)
+				}
+
 				// Go-compatible conversion from a rune (int32 alias) to a string
 				// encodes one Unicode code point as UTF-8.  byte is also allowed
 				// here: lexer.newToken uses string(ch) for punctuation.  Leaving
@@ -377,7 +385,7 @@ func (c *CallLowerer) lowerMinMaxCall(name string, call *ast.CallExpr) hir.Value
 		}
 		c.root.emit(&hir.InstrBinary{Dst: cond, Op: op, L: result, R: candidate})
 		selected := c.root.nextReg(result.Type())
-		c.root.emit(&hir.InstrSelect{Dst: selected, Cond: cond, True: candidate, False: result})
+		c.root.emit(&hir.InstrSelect{Dst: selected, Cond: cond, True: result, False: candidate})
 		result = selected
 	}
 	return result
