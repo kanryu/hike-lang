@@ -173,7 +173,7 @@ func (c *CallLowerer) lowerTemplateRender(call *ast.CallExpr) (hir.Value, bool) 
 		}
 		fields[field.Name.Value] = value
 	}
-				rendered, err := compiletemplate.RenderLiteral(source.Value, func(field string) (any, bool) {
+	rendered, err := compiletemplate.RenderLiteral(source.Value, func(field string) (any, bool) {
 		value, ok := fields[field]
 		return value, ok
 	})
@@ -259,6 +259,9 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 
 		case "len", "cap":
 			return c.lowerLenCapCall(fnId.Value, call)
+
+		case "min", "max":
+			return c.lowerMinMaxCall(fnId.Value, call)
 
 		case "append":
 			return c.LowerAppend(call)
@@ -358,6 +361,26 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	// 5. 間接関数ポインタ / クロージャ呼び出し (例: act())
 	fnFatPtr := c.root.Expr.LowerExpr(call.Function)
 	return c.lowerIndirectCall(fnFatPtr, call.Args, call.HasEllipsis)
+}
+
+func (c *CallLowerer) lowerMinMaxCall(name string, call *ast.CallExpr) hir.Value {
+	if len(call.Args) < 1 {
+		panic(fmt.Sprintf("[Lower Error] %s expects at least one argument", name))
+	}
+	result := c.root.Expr.LowerExpr(call.Args[0])
+	for _, arg := range call.Args[1:] {
+		candidate := c.root.Expr.LowerExpr(arg)
+		cond := c.root.nextReg(sema.TypeBool)
+		op := hir.OpLt
+		if name == "max" {
+			op = hir.OpGt
+		}
+		c.root.emit(&hir.InstrBinary{Dst: cond, Op: op, L: result, R: candidate})
+		selected := c.root.nextReg(result.Type())
+		c.root.emit(&hir.InstrSelect{Dst: selected, Cond: cond, True: candidate, False: result})
+		result = selected
+	}
+	return result
 }
 
 func (c *CallLowerer) lowerMemberCall(call *ast.CallExpr, mem *ast.MemberExpr) hir.Value {

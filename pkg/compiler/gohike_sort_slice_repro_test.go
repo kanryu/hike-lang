@@ -50,12 +50,20 @@ import "sort"
 
 type Item struct { Name string }
 type Other struct { Receiver string }
+type Node struct { Value int }
+type Body []Node
 
 func Collect() {
     x := []Item{{Name: "b"}, {Name: "a"}}
     sort.Slice(x, func(i, j int) bool { return x[i].Name < x[j].Name })
     y := []Other{{Receiver: "b"}, {Receiver: "a"}}
     sort.Slice(y, func(i, j int) bool { return y[i].Receiver < y[j].Receiver })
+    body := Body{{Value: 0}}
+    Mutate(&body)
+}
+
+func Mutate(body *Body) {
+    (*body)[0] = Node{Value: 1}
 }
 `
 	if err := os.WriteFile(filepath.Join(root, "lib", "lib.go"), []byte(libSource), 0644); err != nil {

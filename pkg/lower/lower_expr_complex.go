@@ -682,6 +682,17 @@ func (e *ExprLowerer) LowerLValue(expr ast.Expression) hir.Value {
 		// Go-style `&(*slice)[i]` and `&(*array)[i]`, where lowering the
 		// dereference first can lose the named slice/array type information.
 		leftType := e.root.semaCtx.InferExprType(node.Left, e.root.symbolTypes)
+		if prefix, ok := node.Left.(*ast.PrefixExpr); ok && prefix.Operator == "*" {
+			if id, ok := prefix.Right.(*ast.Identifier); ok {
+				if boundType, found := e.root.symbolTypes[astIDValue(id)]; found {
+					if ptrType, isPtr := boundType.(*sema.PointerType); isPtr {
+						leftType = ptrType.Base
+					} else {
+						leftType = boundType
+					}
+				}
+			}
+		}
 		if leftType == nil || sema.IsBad(leftType) {
 			leftType = leftVal.Type()
 		}
