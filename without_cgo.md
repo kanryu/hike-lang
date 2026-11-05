@@ -42,6 +42,7 @@ The Hike compiler generates a Plan 9 assembly bridge for Windows amd64 or Linux 
 
 * **Windows x64 Calling Convention**: Maps the first four arguments to `CX`, `DX`, `R8`, and `R9`, reserving 32 bytes of shadow space plus 8 bytes for call-site alignment.
 * **Linux System V AMD64 Calling Convention**: Lays out Go ABI0 parameters using their actual sizes and alignments, then classifies native arguments into the independent integer and SSE register banks. Aggregates up to 16 bytes are classified by eightbyte; memory-class aggregates and register-exhausted arguments are copied to the outgoing stack area. The generated Go frame reserves alignment slack and stack-argument space, and the outgoing `RSP` is aligned to 16 bytes before each native call.
+* **Call-site stability**: Native-call stubs load Go arguments relative to the stable frame pointer while adjusting `SP`, and mark the transition as an unsafe point with Go runtime `PCDATA` until the stack is restored. This keeps Go stack metadata out of the temporary native-call frame while preserving the normal Go stack-growth check on entry.
 * **Return Value Propagation**: Copies integer results from `RAX` and floating-point results from `XMM0` to their correctly sized Go result slots.
 
 Linux amd64 generation rejects variadic functions, multiple C return values,
