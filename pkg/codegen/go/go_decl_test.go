@@ -16,10 +16,11 @@ func TestGenerateGoDeclarationsPreservesCFuncInterface(t *testing.T) {
 cfunc CreateDevice(device *byte, descriptor *byte) *byte = wgpuCreateDevice
 cfunc DevicePoll(device *byte, wait bool, submissionIndex *byte) bool = wgpuDevicePoll
 cfunc SetLogLevel(level uint32) = wgpuSetLogLevel
+cfunc EchoString(value cstring) cstring = wgpuEchoString
 `
 	program := parser.New(lexer.New(source)).ParseProgram()
-	if len(program.Decls) != 3 {
-		t.Fatalf("parsed %d declarations, want 3", len(program.Decls))
+	if len(program.Decls) != 4 {
+		t.Fatalf("parsed %d declarations, want 4", len(program.Decls))
 	}
 
 	path := filepath.Join(t.TempDir(), "native.go")
@@ -34,14 +35,19 @@ cfunc SetLogLevel(level uint32) = wgpuSetLogLevel
 
 	want := []string{
 		"func CreateDevice(device *byte, descriptor *byte) *byte {",
-		"r1, _, _ := syscall.SyscallN(_hike_CreateDevicePtr(), uintptr(unsafe.Pointer(device)), uintptr(unsafe.Pointer(descriptor)))",
+		"r1 := _hike_CreateDevice(device, descriptor)",
 		"func DevicePoll(device *byte, wait bool, submissionIndex *byte) bool {",
-		"r1, _, _ := syscall.SyscallN(_hike_DevicePollPtr(), uintptr(unsafe.Pointer(device)), hikeBoolArg(wait), uintptr(unsafe.Pointer(submissionIndex)))",
+		"r1 := _hike_DevicePoll(device, wait, submissionIndex)",
 		"func SetLogLevel(level uint32) {",
-		"_, _, _ = syscall.SyscallN(_hike_SetLogLevelPtr(), uintptr(level))",
+		"_hike_SetLogLevel(level)",
+		"func EchoString(value string) string {",
+		"valueBytes := append([]byte(value), 0)",
+		"r1 := _hike_EchoString(&valueBytes[0])",
+		"return hikeCStringToString(r1)",
 		"func _hike_CreateDevice(device *byte, descriptor *byte) *byte",
 		"func _hike_DevicePoll(device *byte, wait bool, submissionIndex *byte) bool",
 		"func _hike_SetLogLevel(level uint32)",
+		"func _hike_EchoString(value *byte) *byte",
 	}
 	for _, fragment := range want {
 		if !strings.Contains(generated, fragment) {
@@ -50,6 +56,9 @@ cfunc SetLogLevel(level uint32) = wgpuSetLogLevel
 	}
 	if strings.Contains(generated, "func CreateDevice(filename string) int") {
 		t.Fatal("generated wrapper fell back to the obsolete filename/int interface")
+	}
+	if strings.Contains(generated, "syscall.SyscallN") || strings.Contains(generated, "hikeBoolArg") {
+		t.Fatalf("generated wrappers should call typed trampoline declarations directly:\n%s", generated)
 	}
 }
 
@@ -145,9 +154,9 @@ extern func RequestAdapterCallbackPtr() uintptr
 	}
 	generated := string(data)
 	for _, fragment := range []string{
-		"MOVQ a+0(FP), DI",
-		"MOVQ f+40(FP), R9",
-		"MOVQ g+48(FP), AX",
+		"MOVQ 16(BP), DI",
+		"MOVQ 56(BP), R9",
+		"MOVQ 64(BP), AX",
 		"MOVQ AX, 0(SP)",
 		"CALL nativeCall(SB)",
 		"TEXT ·RequestAdapterCallbackPtr(SB), NOSPLIT, $0-8",
@@ -158,6 +167,46 @@ extern func RequestAdapterCallbackPtr() uintptr
 		if !strings.Contains(generated, fragment) {
 			t.Errorf("generated Linux stub is missing %q:\n%s", fragment, generated)
 		}
+	}
+}
+
+func TestGenerateLinuxAMD64StubsMatchesDirectCallTrampoline(t *testing.T) {
+	source := `package native
+
+cfunc GenerateReport(instance *byte, report *byte) = wgpuGenerateReport
+`
+	program := parser.New(lexer.New(source)).ParseProgram()
+	dir := t.TempDir()
+	if err := GenerateGoStubs(dir, "native", program.Decls, "linux", false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "stub_linux_amd64.s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `// GenerateReport (SysV AMD64)
+TEXT ·_hike_GenerateReport(SB), 0, $32-16
+    PCDATA $PCDATA_UnsafePoint, $-2
+    MOVQ SP, R11
+    ANDQ $15, R11
+    SUBQ R11, SP
+    MOVQ R11, 8(SP)
+    MOVQ 16(BP), DI
+    MOVQ 24(BP), SI
+    CALL wgpuGenerateReport(SB)
+    MOVQ 8(SP), R11
+    ADDQ R11, SP
+    PCDATA $PCDATA_UnsafePoint, $0
+    RET`
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("generated Linux trampoline does not match the direct-call assembly:\n%s", data)
+	}
+	if strings.Contains(string(data), "SYSCALL") || strings.Contains(string(data), "Syscall") {
+		t.Fatalf("generated Linux trampoline must call the native function directly:\n%s", data)
+	}
+	if !strings.Contains(string(data), "#include \"funcdata.h\"") {
+		t.Fatal("generated Linux stubs must import Go runtime PCDATA identifiers")
 	}
 }
 
@@ -217,40 +266,39 @@ cfunc FloatStack(a float64, b float64, c float64, d float64, e float64, f float6
 	for _, fragment := range []string{
 		"TEXT ·_hike_LargeAggregate(SB), 0, $64-64",
 		"ANDQ $15, R11",
-		"NEGQ R11",
-		"ADDQ R11, SP",
+		"SUBQ R11, SP",
 		"MOVQ R11, 40(SP)",
-		"MOVQ info_Next+16(FP), AX",
+		"MOVQ 32(BP), AX",
 		"MOVQ AX, 0(SP)",
-		"MOVQ info_Userdata2+48(FP), AX",
+		"MOVQ 64(BP), AX",
 		"MOVQ AX, 32(SP)",
 		"CALL nativeLargeAggregate(SB)",
-		"SUBQ R11, SP",
+		"ADDQ R11, SP",
 		"MOVQ AX, ret+56(FP)",
 		"TEXT ·_hike_Mixed(SB), 0, $32-64",
-		"MOVLQZX a+0(FP), DI",
-		"MOVSD b+8(FP), X0",
-		"MOVBQSX c+16(FP), SI",
-		"MOVQ d+24(FP), DX",
-		"MOVQ g+48(FP), R9",
-		"MOVSS h+56(FP), X1",
+		"MOVLQZX 16(BP), DI",
+		"MOVSD 24(BP), X0",
+		"MOVBQSX 32(BP), SI",
+		"MOVQ 40(BP), DX",
+		"MOVQ 64(BP), R9",
+		"MOVSS 72(BP), X1",
 		"MOVSS X0, ret+60(FP)",
 		"TEXT ·_hike_SmallAggregate(SB), 0, $32-16",
-		"MOVLQZX value_Count+0(FP), R10",
-		"MOVSS value_Ratio+4(FP), X15",
+		"MOVLQZX 16(BP), R10",
+		"MOVSS 20(BP), X15",
 		"SHLQ $32, R10",
 		"MOVQ AX, DI",
 		"TEXT ·_hike_Nested(SB), 0, $32-24",
-		"MOVSS value_Inner_Ratio+4(FP), X15",
-		"MOVLQZX value_Inner_Count+8(FP), R10",
+		"MOVSS 20(BP), X15",
+		"MOVLQZX 24(BP), R10",
 		"MOVQ AX, SI",
 		"TEXT ·_hike_FloatAggregateCall(SB), 0, $32-16",
-		"MOVSD value_First+0(FP), X15",
+		"MOVSD 16(BP), X15",
 		"MOVQ AX, X0",
-		"MOVSD value_Second+8(FP), X15",
+		"MOVSD 24(BP), X15",
 		"MOVQ AX, X1",
 		"TEXT ·_hike_FloatStack(SB), 0, $32-72",
-		"MOVSS i+64(FP), X15",
+		"MOVSS 80(BP), X15",
 		"MOVSS X15, 0(SP)",
 		"MOVL AX, ret+68(FP)",
 	} {
@@ -296,14 +344,16 @@ cfunc SurfaceConfigure(surface *byte, config *byte) = wgpuSurfaceConfigure
 	if !strings.Contains(createStub, "TEXT ·_hike_CreateInstance(SB), 0, $32-16") {
 		t.Fatalf("Go frame for CreateInstance was changed:\n%s", createStub)
 	}
-	if !strings.Contains(createStub, "ANDQ $15, R11") || !strings.Contains(createStub, "SUBQ R11, SP") ||
+	if !strings.Contains(createStub, "PCDATA $PCDATA_UnsafePoint, $-2") ||
+		!strings.Contains(createStub, "ANDQ $15, R11") || !strings.Contains(createStub, "SUBQ R11, SP") ||
 		!strings.Contains(createStub, "SUBQ $48, SP") || !strings.Contains(createStub, "ADDQ R11, SP") {
 		t.Fatalf("simple native call must dynamically normalize RSP:\n%s", createStub)
 	}
 	if !strings.Contains(adapterStub, "TEXT ·_hike_InstanceRequestAdapterABI(SB), 0, $32-64") {
 		t.Fatalf("Go frame for callback API was changed:\n%s", adapterStub)
 	}
-	if !strings.Contains(adapterStub, "ANDQ $15, R11") || !strings.Contains(adapterStub, "SUBQ R11, SP") ||
+	if !strings.Contains(adapterStub, "PCDATA $PCDATA_UnsafePoint, $-2") ||
+		!strings.Contains(adapterStub, "ANDQ $15, R11") || !strings.Contains(adapterStub, "SUBQ R11, SP") ||
 		!strings.Contains(adapterStub, "SUBQ $128, SP") || !strings.Contains(adapterStub, "ADDQ R11, SP") {
 		t.Fatalf("callback native call must dynamically normalize RSP:\n%s", adapterStub)
 	}

@@ -67,7 +67,7 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 	}
 
 	if needsUnsafe {
-		buf.WriteString("import (\n\t\"runtime\"\n\t\"syscall\"\n\t\"unsafe\"\n)\n\n")
+		buf.WriteString("import \"unsafe\"\n\n")
 	}
 	buf.WriteString(`func hikeCStringToString(ptr *byte) string {
 	if ptr == nil {
@@ -78,13 +78,6 @@ func GenerateGoDeclarations(destGoPath string, pkgName string, decls []ast.Decl,
 		n++
 	}
 	return string(unsafe.Slice(ptr, n))
-}
-
-func hikeBoolArg(v bool) uintptr {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 `)
@@ -193,79 +186,22 @@ func generateWrapperFunc(cfn *ast.CFuncDecl) string {
 		returnType = " (" + strings.Join(returns, ", ") + ")"
 	}
 
-	var syscallArgs []string
-	var keepAlive []string
-	for i, p := range cfn.Params {
-		if isHiddenCStringLength(cfn.Params, p) {
-			continue
-		}
-		name := goParamName(p, i)
-		if isCStringType(p.Type) {
-			name = "&" + name + "Bytes[0]"
-		}
-		syscallArgs = append(syscallArgs, syscallArgExpr(p.Type, name))
-		if isValueStructType(p.Type) {
-			keepAlive = append(keepAlive, name)
-		}
-	}
-	_ = callArgs // retained for the legacy conversion analysis above
-	call := fmt.Sprintf("syscall.SyscallN(_hike_%sPtr(), %s)", fnName, strings.Join(syscallArgs, ", "))
+	call := fmt.Sprintf("_hike_%s(%s)", fnName, strings.Join(callArgs, ", "))
 	var body []string
 	body = append(body, conversions...)
 	if len(cfn.ReturnTypes) > 0 {
-		body = append(body, "r1, _, _ := "+call)
+		body = append(body, "r1 := "+call)
 	} else {
-		body = append(body, "_, _, _ = "+call)
-	}
-	for _, name := range keepAlive {
-		body = append(body, "runtime.KeepAlive("+name+")")
+		body = append(body, call)
 	}
 	if len(cfn.ReturnTypes) == 1 && isCStringType(cfn.ReturnTypes[0]) {
-		body = append(body, "return hikeCStringToString((*byte)(unsafe.Pointer(r1)))")
+		body = append(body, "return hikeCStringToString(r1)")
 	} else if len(cfn.ReturnTypes) > 0 {
-		body = append(body, "return "+syscallReturnExpr(cfn.ReturnTypes[0], "r1"))
+		body = append(body, "return r1")
 	}
 
 	return fmt.Sprintf("// %s: generated from the Hike cfunc signature\nfunc %s(%s)%s {\n\t%s\n}\n",
 		fnName, fnName, strings.Join(params, ", "), returnType, strings.Join(body, "\n\t"))
-}
-
-func syscallArgExpr(te ast.TypeExpr, name string) string {
-	if isPointerType(te) {
-		return "uintptr(unsafe.Pointer(" + name + "))"
-	}
-	if nt, ok := te.(*ast.NamedType); ok && nt.Name.Value == "bool" {
-		return "hikeBoolArg(" + name + ")"
-	}
-	if isValueStructType(te) {
-		return "uintptr(unsafe.Pointer(&" + name + "))"
-	}
-	return "uintptr(" + name + ")"
-}
-
-func isValueStructType(te ast.TypeExpr) bool {
-	nt, ok := te.(*ast.NamedType)
-	if !ok || nt.Name == nil {
-		return false
-	}
-	switch nt.Name.Value {
-	case "bool", "int", "uint", "uint8", "uint16", "uint32", "uint64", "int8", "int16", "int32", "int64", "uintptr", "float32", "float64":
-		return false
-	default:
-		return true
-	}
-}
-
-func syscallReturnExpr(te ast.TypeExpr, name string) string {
-	if isPointerType(te) {
-		base, _ := typeExprToGoType(te, true)
-		return "(" + base + ")(unsafe.Pointer(" + name + "))"
-	}
-	if nt, ok := te.(*ast.NamedType); ok && nt.Name.Value == "bool" {
-		return name + " != 0"
-	}
-	goType, _ := typeExprToGoType(te, true)
-	return goType + "(" + name + ")"
 }
 
 // generateNativeDecl は stub.s 接続用の _hike_xxx 宣言を合成します。
