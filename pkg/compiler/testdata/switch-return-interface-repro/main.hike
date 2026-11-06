@@ -1,0 +1,18 @@
+package main
+
+import "hikec-go/pkg/hir"
+import "hikec-go/pkg/sema"
+
+func selectValue(n int) (hir.Value, int) {
+    switch n {
+    case 1:
+        return &hir.ConstString{Label: "one", Raw: "one", Length: 3, Typ: sema.TypeString}, 1
+    default:
+        return &hir.ConstString{Label: "two", Raw: "two", Length: 3, Typ: sema.TypeString}, 2
+    }
+}
+
+func main() int {
+    _, _ = selectValue(1)
+    return 0
+}

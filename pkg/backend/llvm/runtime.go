@@ -127,6 +127,7 @@ func IsRuntimeSymbol(name string) bool {
 var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true, "__hike_panic_fatal": true,
 	"__hike_stderr_write": true,
+	"__hike_lock": true, "__hike_unlock": true,
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,

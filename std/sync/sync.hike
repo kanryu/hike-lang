@@ -1,11 +1,59 @@
 package sync
 
+extern func __hike_lock()
+extern func __hike_unlock()
+
+// Mutex is backed by the target runtime's atomic lock.  The old bool-only
+// implementation only changed local memory and provided no synchronization
+// between the worker threads used by compile-fork.
 type Mutex struct { locked bool }
-func (m *Mutex) Lock() { if m != nil { m.locked = true } }
-func (m *Mutex) Unlock() { if m != nil { m.locked = false } }
-type Once struct { done bool }
-func (o *Once) Do(fn func()) { if o != nil && !o.done { o.done = true; fn() } }
-type WaitGroup struct { count int }
-func (w *WaitGroup) Add(delta int) { if w != nil { w.count += delta } }
-func (w *WaitGroup) Done() { if w != nil && w.count > 0 { w.count-- } }
-func (w *WaitGroup) Wait() {}
+func (m *Mutex) Lock() {
+    if m != nil {
+        __hike_lock()
+        m.locked = true
+    }
+}
+func (m *Mutex) Unlock() {
+    if m != nil {
+        m.locked = false
+        __hike_unlock()
+    }
+}
+
+type Once struct { done bool; mu Mutex }
+func (o *Once) Do(fn func()) {
+    if o == nil { return }
+    o.mu.Lock()
+    if o.done {
+        o.mu.Unlock()
+        return
+    }
+    o.done = true
+    o.mu.Unlock()
+    fn()
+}
+
+type WaitGroup struct { count int; mu Mutex }
+func (w *WaitGroup) Add(delta int) {
+    if w != nil {
+        w.mu.Lock()
+        w.count += delta
+        w.mu.Unlock()
+    }
+}
+func (w *WaitGroup) Done() {
+    if w != nil {
+        w.mu.Lock()
+        if w.count > 0 { w.count-- }
+        w.mu.Unlock()
+    }
+}
+func (w *WaitGroup) Wait() {
+    if w == nil { return }
+    for {
+        w.mu.Lock()
+        remaining := w.count
+        w.mu.Unlock()
+        if remaining == 0 { return }
+    }
+}

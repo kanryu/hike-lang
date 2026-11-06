@@ -695,6 +695,13 @@ func (e *Emitter) newForkFunctionEmitter() *Emitter {
 }
 
 func (e *Emitter) emitExternalDeclaration(fn *hir.Function) {
+	// These names are provided by the embedded runtime.  Emitting a separate
+	// LLVM declaration for them conflicts with the later internal runtime
+	// definitions when std/sync uses the same hooks.
+	if fn.Name == "__hike_lock" || fn.Name == "__hike_unlock" {
+		e.declaredSymbols[fn.Name] = true
+		return
+	}
 	e.declaredSymbols[fn.Name] = true
 	retTypeStr := "void"
 	returnStruct := ""
