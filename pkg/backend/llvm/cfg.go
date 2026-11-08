@@ -34,7 +34,12 @@ func lowerStructuredBody(fn *hir.Function) ([]*basicBlock, error) {
 			return nil, fmt.Errorf("control table entry %d has inconsistent ID", id)
 		}
 	}
-	b := &structuredLowerer{fn: fn, resolved: map[int]string{}, labels: map[string]string{}}
+	b := &structuredLowerer{
+		fn:           fn,
+		resolved:     map[int]string{},
+		labels:       map[string]string{},
+		exitRestores: map[*hir.BlockNode][]*hir.Reg{},
+	}
 	b.current = b.newBlock("entry")
 	if err := b.body(fn.StructuredBody, map[int]string{}); err != nil {
 		return nil, err
@@ -70,12 +75,20 @@ func defaultReturnValues(fn *hir.Function) []hir.Value {
 }
 
 type structuredLowerer struct {
-	fn       *hir.Function
-	blocks   []*basicBlock
-	current  *basicBlock
-	serial   int
-	resolved map[int]string
-	labels   map[string]string
+	fn                 *hir.Function
+	blocks             []*basicBlock
+	current            *basicBlock
+	serial             int
+	resolved           map[int]string
+	labels             map[string]string
+	exitRestores       map[*hir.BlockNode][]*hir.Reg
+	stackLoops         []stackLoopFrame
+	inLoopPost         bool
+	postRestoreEmitted bool
+}
+
+type stackLoopFrame struct {
+	token *hir.Reg
 }
 
 func (b *structuredLowerer) newBlock(prefix string) *basicBlock {
@@ -98,9 +111,9 @@ func cloneTargets(src map[int]string) map[int]string {
 }
 
 func (b *structuredLowerer) body(body hir.ControlBody, targets map[int]string) error {
-	for _, node := range body {
+	for index, node := range body {
 		if node == nil {
-			return fmt.Errorf("nil structured control node")
+			return fmt.Errorf("nil structured control node at index %d of %d", index, len(body))
 		}
 		switch n := node.(type) {
 		case *hir.InstructionNode:
@@ -191,6 +204,18 @@ func (b *structuredLowerer) block(n *hir.BlockNode, parent map[int]string) error
 	if err := b.body(n.Body, t); err != nil {
 		return err
 	}
+	// Multiple nested loops may share an exit block. Stack checkpoints are
+	// nested allocations, so restore them in reverse registration order; doing
+	// this in the opposite order would restore an older checkpoint first and
+	// make the remaining token invalid.
+	tokens := b.exitRestores[n]
+	for i := len(tokens) - 1; i >= 0; i-- {
+		token := tokens[i]
+		if token != nil {
+			b.ensure()
+			b.current.Instructions = append(b.current.Instructions, &hir.InstrStackRestore{Token: token})
+		}
+	}
 	if b.current != nil && b.current.Terminator == nil {
 		b.current.Terminator = &hir.InstrJump{Target: end.Label}
 	}
@@ -199,9 +224,20 @@ func (b *structuredLowerer) block(n *hir.BlockNode, parent map[int]string) error
 }
 func (b *structuredLowerer) loop(n *hir.LoopNode, parent map[int]string) error {
 	head, end := b.newBlock("loop.header"), b.newBlock("loop.end")
-	post := head
-	if len(n.Post) > 0 {
-		post = b.newBlock("loop.post")
+	// Always use a distinct post block. This gives every iteration, including
+	// loops without a source-level post statement, one place to restore the
+	// transient stack before returning to the header.
+	post := b.newBlock("loop.post")
+	var stackToken *hir.Reg
+	if structuredBodyHasStackAlloca(n.Body) || structuredBodyHasStackAlloca(n.Post) {
+		stackToken = &hir.Reg{
+			ID:   -b.serial,
+			Typ:  &sema.PointerType{Base: sema.TypeByte},
+			Name: fmt.Sprintf("stack.save.%d", b.serial),
+		}
+		if n.Exit != nil {
+			b.exitRestores[n.Exit] = append(b.exitRestores[n.Exit], stackToken)
+		}
 	}
 	b.resolved[n.ID] = post.Label
 	if n.Label != "" {
@@ -219,25 +255,65 @@ func (b *structuredLowerer) loop(n *hir.LoopNode, parent map[int]string) error {
 	t := cloneTargets(parent)
 	t[n.ID] = post.Label
 	b.current = head
+	if stackToken != nil {
+		b.current.Instructions = append(b.current.Instructions, &hir.InstrStackSave{Dst: stackToken})
+	}
+	b.stackLoops = append(b.stackLoops, stackLoopFrame{token: stackToken})
 	if err := b.body(n.Body, t); err != nil {
 		return err
 	}
-	if len(n.Post) > 0 {
-		if b.current != nil && b.current.Terminator == nil {
-			b.current.Terminator = &hir.InstrJump{Target: post.Label}
-		}
-		b.current = post
-		postTargets := cloneTargets(parent)
-		postTargets[n.ID] = head.Label
-		if err := b.body(n.Post, postTargets); err != nil {
-			return err
-		}
-	}
 	if b.current != nil && b.current.Terminator == nil {
+		b.current.Terminator = &hir.InstrJump{Target: post.Label}
+	}
+	b.current = post
+	postTargets := cloneTargets(parent)
+	postTargets[n.ID] = head.Label
+	prevPost := b.inLoopPost
+	prevRestore := b.postRestoreEmitted
+	b.inLoopPost = true
+	b.postRestoreEmitted = false
+	if err := b.body(n.Post, postTargets); err != nil {
+		return err
+	}
+	b.inLoopPost = prevPost
+	b.postRestoreEmitted = prevRestore
+	if b.current != nil && b.current.Terminator == nil {
+		if stackToken != nil && !b.postRestoreEmitted {
+			b.current.Instructions = append(b.current.Instructions, &hir.InstrStackRestore{Token: stackToken})
+		}
 		b.current.Terminator = &hir.InstrJump{Target: head.Label}
 	}
+	b.stackLoops = b.stackLoops[:len(b.stackLoops)-1]
 	b.current = end
 	return nil
+}
+
+func structuredBodyHasStackAlloca(body hir.ControlBody) bool {
+	for _, node := range body {
+		switch n := node.(type) {
+		case *hir.InstructionNode:
+			switch n.Instruction.(type) {
+			case *hir.InstrAlloca, *hir.InstrAllocaDynamic:
+				return true
+			}
+		case *hir.BlockNode:
+			if n != nil && structuredBodyHasStackAlloca(n.Body) {
+				return true
+			}
+		case *hir.LoopNode:
+			if n != nil && (structuredBodyHasStackAlloca(n.Init) ||
+				structuredBodyHasStackAlloca(n.Body) ||
+				structuredBodyHasStackAlloca(n.Post)) {
+				return true
+			}
+		case *hir.IfNode:
+			if n != nil && (structuredBodyHasStackAlloca(n.Then) ||
+				structuredBodyHasStackAlloca(n.Else)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (b *structuredLowerer) ifNode(n *hir.IfNode, parent map[int]string) error {
 	thenBB, elseBB, end := b.newBlock("if.then"), b.newBlock("if.else"), b.newBlock("if.end")
@@ -307,6 +383,13 @@ func (b *structuredLowerer) table(n *hir.TableNode, parent map[int]string) error
 }
 func (b *structuredLowerer) branch(id int, label string, t map[int]string) {
 	b.ensure()
+	if b.inLoopPost && len(b.stackLoops) > 0 {
+		frame := b.stackLoops[len(b.stackLoops)-1]
+		if frame.token != nil && !b.postRestoreEmitted {
+			b.current.Instructions = append(b.current.Instructions, &hir.InstrStackRestore{Token: frame.token})
+			b.postRestoreEmitted = true
+		}
+	}
 	if x, ok := t[id]; ok && id >= 0 {
 		b.current.Terminator = &hir.InstrJump{Target: x}
 	} else if x, ok := b.resolved[id]; ok && id >= 0 {

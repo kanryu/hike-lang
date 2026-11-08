@@ -229,11 +229,7 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 			return result
 
 		case "copy":
-			// The Go-Hike self-hosting path currently uses copy only while
-			// rearranging compiler-owned slices. Keep the intrinsic lowering
-			// side-effect free until the slice memmove ABI is available in both
-			// backends.
-			return &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+			return c.lowerCopyCall(call)
 
 		case "sizeof":
 			return c.lowerSizeofCall(call)
@@ -369,6 +365,71 @@ func (c *CallLowerer) lowerCallRemainder(call *ast.CallExpr) hir.Value {
 	// 5. 間接関数ポインタ / クロージャ呼び出し (例: act())
 	fnFatPtr := c.root.Expr.LowerExpr(call.Function)
 	return c.lowerIndirectCall(fnFatPtr, call.Args, call.HasEllipsis)
+}
+
+// lowerCopyCall implements the slice copy builtin using the runtime memmove
+// primitive. The compiler itself uses copy while inserting structured-HIR
+// nodes into a slice, so discarding the operation changes the compiler's own
+// data structure and can leave a function-exit sentinel in the middle of a
+// control body when self-hosted.
+func (c *CallLowerer) lowerCopyCall(call *ast.CallExpr) hir.Value {
+	if len(call.Args) != 2 {
+		panic(fmt.Sprintf("[Lower Error] copy expects destination and source slices, got %d arguments", len(call.Args)))
+	}
+	dst := c.root.Expr.LowerExpr(call.Args[0])
+	src := c.root.Expr.LowerExpr(call.Args[1])
+	dstType, dstOK := dst.Type().(*sema.SliceType)
+	srcType, srcOK := src.Type().(*sema.SliceType)
+	srcString := src.Type() == sema.TypeString || semaTypeName(src.Type()) == "string"
+	if !dstOK || (!srcOK && !srcString) {
+		panic(fmt.Sprintf("[Lower Error] copy requires a slice destination and slice or string source, got %s and %s", semaTypeName(dst.Type()), semaTypeName(src.Type())))
+	}
+
+	readSlice := func(value hir.Value) (hir.Value, hir.Value, hir.Value) {
+		owner := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+		offset := c.root.nextReg(sema.TypeInt32)
+		length := c.root.nextReg(sema.TypeInt32)
+		c.root.emit(&hir.InstrExtractValue{Dst: owner, Agg: value, Index: 0})
+		c.root.emit(&hir.InstrExtractValue{Dst: offset, Agg: value, Index: 1})
+		c.root.emit(&hir.InstrExtractValue{Dst: length, Agg: value, Index: 2})
+		return owner, c.root.decodeViewOffset(offset), c.root.asInt(length)
+	}
+	dstOwner, dstOffset, dstLen := readSlice(dst)
+	var srcOwner, srcOffset, srcLen hir.Value
+	if srcString {
+		srcOwner, srcLen = c.root.stringParts(src)
+		srcOffset = &hir.ConstInt{Val: 0, Typ: sema.TypeInt}
+	} else {
+		srcOwner, srcOffset, srcLen = readSlice(src)
+	}
+	elemSize := sema.SizeOf(dstType.Elem)
+	if srcString {
+		if elemSize != sema.SizeOf(sema.TypeByte) {
+			panic("[Lower Error] copy string source requires a byte slice destination")
+		}
+	} else if srcElemSize := sema.SizeOf(srcType.Elem); srcElemSize != elemSize {
+		panic("[Lower Error] copy requires equally sized slice elements")
+	}
+	if elemSize <= 0 {
+		elemSize = 1
+	}
+	dstByteOffset := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: dstByteOffset, Op: hir.OpMul, L: c.root.asInt(dstOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	srcByteOffset := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: srcByteOffset, Op: hir.OpMul, L: c.root.asInt(srcOffset), R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	dstPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrGetElemPtr{Dst: dstPtr, BasePtr: dstOwner, Index: dstByteOffset})
+	srcPtr := c.root.nextReg(&sema.PointerType{Base: sema.TypeByte})
+	c.root.emit(&hir.InstrGetElemPtr{Dst: srcPtr, BasePtr: srcOwner, Index: srcByteOffset})
+
+	count := c.root.nextReg(sema.TypeInt)
+	shorter := c.root.nextReg(sema.TypeBool)
+	c.root.emit(&hir.InstrBinary{Dst: shorter, Op: hir.OpLt, L: dstLen, R: srcLen})
+	c.root.emit(&hir.InstrSelect{Dst: count, Cond: shorter, True: dstLen, False: srcLen})
+	bytes := c.root.nextReg(sema.TypeInt)
+	c.root.emit(&hir.InstrBinary{Dst: bytes, Op: hir.OpMul, L: count, R: &hir.ConstInt{Val: int64(elemSize), Typ: sema.TypeInt}})
+	c.root.emit(&hir.InstrCallStatic{Dst: c.root.nextReg(&sema.PointerType{Base: sema.TypeByte}), CalleeName: c.root.BuiltinName("__hike_memmove"), Args: []hir.Value{dstPtr, srcPtr, bytes}})
+	return count
 }
 
 func (c *CallLowerer) lowerMinMaxCall(name string, call *ast.CallExpr) hir.Value {

@@ -18,7 +18,7 @@ type runtimeFunc struct {
 // same ownership model as the LLVM backend.
 var WabtRuntimeSymbols = map[string]bool{
 	"malloc": true, "calloc": true, "free": true,
-	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
+	"memcpy": true, "__hike_memmove": true, "memcmp": true, "strlen": true, "strcmp": true,
 	"hike_streq": true, "hike_streq_len": true, "hike_strcat_len": true,
 	"__hike_map_create": true, "__hike_map_len": true,
 	"__hike_map_set": true, "__hike_map_get": true,
@@ -61,6 +61,10 @@ func normalizeWabtRuntimeName(name string) string {
 	switch name {
 	case "memcpy32":
 		return "memcpy"
+	case "memmove32":
+		return "__hike_memmove"
+	case "__hike_memmove32":
+		return "__hike_memmove"
 	case "memcmp32":
 		return "memcmp"
 	case "strlen32":
@@ -309,6 +313,9 @@ var wasmRuntime = map[string]runtimeFunc{
     (if (i32.gt_u (local.get $copyN) (i32.sub (local.get $mem) (local.get $src)))
       (then (local.set $copyN (i32.sub (local.get $mem) (local.get $src)))))
     (memory.copy (local.get $dst) (local.get $src) (local.get $copyN))
+    (local.get $dst))`},
+	"__hike_memmove": runtimeFunc{body: `(func $__hike_memmove (param $dst i32) (param $src i32) (param $n i32) (result i32)
+    (memory.copy (local.get $dst) (local.get $src) (local.get $n))
     (local.get $dst))`},
 	"memcmp": runtimeFunc{body: `(func $memcmp (param $a i32) (param $b i32) (param $n i32) (result i32)
     (local $i i32) (local $x i32) (local $y i32)
@@ -738,7 +745,7 @@ func (e *Emitter) emitRuntime() {
 			}
 		}
 	}
-	order := []string{"malloc", "calloc", "free", "memcpy", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_iface_typeid", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_cbuffer_new", "__hike_cbuffer_close", "__hike_cbuffer_length", "__hike_cbuffer_data", "__hike_cbuffer_slice", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
+	order := []string{"malloc", "calloc", "free", "memcpy", "__hike_memmove", "memcmp", "strlen", "strcmp", "hike_streq", "hike_streq_len", "hike_strcat_len", "__hike_string_append", "__hike_string_start", "__hike_iface_typeid", "__hike_slice_alloc", "__hike_slice_cap", "__hike_slice_retain", "__hike_slice_release", "__hike_slice_to_str", "__hike_cbuffer_new", "__hike_cbuffer_close", "__hike_cbuffer_length", "__hike_cbuffer_data", "__hike_cbuffer_slice", "__hike_utf8_rune_size", "__hike_utf8_decode_rune", "__hike_utf8_rune_to_string", "__hike_map_create", "__hike_map_len", "__hike_map_set", "__hike_map_get", "__hike_map_get_boxed", "__hike_map_set_str", "__hike_map_get_str", "__hike_map_get_boxed_str", "__hike_map_get_boxed_str_ok", "__hike_map_delete", "__hike_map_delete_str", "__hike_string_retain", "__hike_string_release", "__hike_lock", "__hike_unlock", "__hike_panic_set", "__hike_panic_get", "__hike_panic_cause", "__hike_panic_site", "__hike_panic_is_active", "__hike_panic_fatal", "llvm.trap", "__hike_region_begin", "__hike_region_alloc", "__hike_region_end", "__hike_area_begin", "__hike_area_alloc", "__hike_area_end", "__hike_region_active_count", "__hike_region_begin_count", "__hike_region_end_count", "__hike_string_less", "__hike_sort_strings"}
 	for _, name := range order {
 		if needed[name] {
 			fn, ok := lookupWasmRuntime(name)

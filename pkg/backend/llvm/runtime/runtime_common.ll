@@ -13,6 +13,7 @@ declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fseek(i8*, i64, i64)
+declare void @llvm.memmove.p0i8.i64(i8*, i8*, i64, i1)
 
 @__hike_mapped_write_mode = private unnamed_addr constant [3 x i8] c"wb\00"
 @__hike_mapped_read_mode = private unnamed_addr constant [3 x i8] c"rb\00"
@@ -713,6 +714,13 @@ loop.body:
   %cont = icmp ult i64 %i.next, %n
   br i1 %cont, label %loop.body, label %exit
 exit:
+  ret i8* %dst
+}
+
+; Overlap-safe memory move used by the source-level copy builtin.
+define internal i8* @__hike_memmove(i8* %dst, i8* %src, i64 %n) #0 {
+entry:
+  call void @llvm.memmove.p0i8.i64(i8* %dst, i8* %src, i64 %n, i1 false)
   ret i8* %dst
 }
 

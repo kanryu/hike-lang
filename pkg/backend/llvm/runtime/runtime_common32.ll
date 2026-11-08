@@ -1,5 +1,6 @@
 ; ==============================================================================
 ; Hike Language Builtin Runtime (native 32-bit)
+declare void @llvm.memmove.p0i8.i32(i8*, i8*, i32, i1)
 ; ==============================================================================
 
 ; --- 32-bit Allocator Declarations ---
@@ -577,6 +578,13 @@ loop.body:
   %cont = icmp ult i32 %i.next, %n
   br i1 %cont, label %loop.body, label %exit
 exit:
+  ret i8* %dst
+}
+
+; Overlap-safe memory move used by the source-level copy builtin.
+define internal i8* @__hike_memmove32(i8* %dst, i8* %src, i32 %n) #0 {
+entry:
+  call void @llvm.memmove.p0i8.i32(i8* %dst, i8* %src, i32 %n, i1 false)
   ret i8* %dst
 }
 

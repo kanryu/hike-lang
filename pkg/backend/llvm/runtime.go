@@ -127,7 +127,7 @@ func IsRuntimeSymbol(name string) bool {
 var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_panic_set": true, "__hike_panic_get": true, "__hike_panic_cause": true, "__hike_panic_site": true, "__hike_panic_is_active": true, "__hike_panic_fatal": true,
 	"__hike_stderr_write": true,
-	"__hike_lock": true, "__hike_unlock": true,
+	"__hike_lock":         true, "__hike_unlock": true,
 	// 外部 C 標準アロケータ (declare)
 	"malloc": true, "calloc": true, "free": true,
 	"__hike_region_begin": true, "__hike_region_alloc": true, "__hike_region_end": true,
@@ -138,7 +138,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_region_allocated_bytes": true, "__hike_region_released_bytes": true,
 
 	// 純粋メモリ & 文字列操作内部実装 (64-bit) (define internal)
-	"memcpy": true, "memcmp": true, "strlen": true, "strcmp": true,
+	"memcpy": true, "__hike_memmove": true, "memcmp": true, "strlen": true, "strcmp": true,
 	"__hike_mapped_graph_save": true, "__hike_mapped_graph_load": true,
 	"__hike_mapped_graph_finalize": true,
 	"__hike_mapped_string_append":  true, "__hike_mapped_string_load": true,
@@ -147,7 +147,7 @@ var RuntimeLLVMSymbols = map[string]bool{
 	"__hike_mapped_compact_map_clone": true,
 
 	// 純粋メモリ & 文字列操作内部実装 (32-bit / wasm32) (define internal)
-	"memcpy32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
+	"memcpy32": true, "__hike_memmove32": true, "memcmp32": true, "strlen32": true, "strcmp32": true,
 
 	// --- Windows Native API (declare) ---
 	"QueueUserWorkItem":   true,

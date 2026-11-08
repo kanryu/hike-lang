@@ -1564,6 +1564,10 @@ func (e *Emitter) instruction(in hir.Instruction) {
 	case *hir.InstrAllocaDynamic:
 		e.set(x.Dst, "(global.get $__sp)")
 		e.b.WriteString("    (global.set $__sp (i32.add (global.get $__sp) " + e.val(x.Size) + "))\n")
+	case *hir.InstrStackSave:
+		e.set(x.Dst, "(global.get $__sp)")
+	case *hir.InstrStackRestore:
+		e.b.WriteString("    (global.set $__sp " + e.val(x.Token) + ")\n")
 	case *hir.InstrHeapAlloc:
 		e.set(x.Dst, "(call $malloc "+e.val(x.Size)+")")
 	case *hir.InstrRegionBegin:

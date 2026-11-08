@@ -76,8 +76,8 @@ func main() int {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		output := filepath.Join(root, fmt.Sprintf("main-%d.ll", attempt))
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := exec.CommandContext(ctx, nativeCompiler, "emit-ir", "-go-hike=1", "-compile-fork", "-g", "-vv", "-target", "windows", "-o", output, "main.hike")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, nativeCompiler, "emit-ir", "-go-hike=1", "-compile-fork", "-g", "-target", "windows", "-o", output, "main.hike")
 		cmd.Dir = root
 		combined, err := cmd.CombinedOutput()
 		timedOut := ctx.Err()

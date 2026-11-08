@@ -195,6 +195,8 @@ func (e *Emitter) emitPrologue() {
 	if e.debugMgr.Enabled() && !e.debugMgr.LineTablesOnly() {
 		e.b.WriteString("declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n")
 	}
+	e.b.WriteString("declare i8* @llvm.stacksave()\n")
+	e.b.WriteString("declare void @llvm.stackrestore(i8*)\n\n")
 	// ターゲットトリプルに応じた適切なランタイムIRを出力
 	e.b.WriteString(GetRuntimeIR(e.targetTriple, e.pointerBits))
 	e.b.WriteString("\n\n")
@@ -373,22 +375,33 @@ func (e *Emitter) concurrentGlobal(v hir.Value) (*hir.GlobalVar, bool) {
 func (e *Emitter) emitItabs() {
 	emittedTypes := make(map[string]bool)
 	intLLVM := sema.TypeInt32.LLVMType()
+	// These buffers are scratch storage for one itab or one method. Reuse them
+	// across iterations so the self-hosted compiler does not create a new
+	// stack-backed slice for every method signature.
+	methodSigs := make([]string, 0, 8)
+	fieldValues := make([]string, 0, 8)
+	types := make([]string, 0, 8)
+	paramTypes := make([]string, 0, 8)
+	rawParams := make([]string, 0, 8)
+	concreteParams := make([]string, 0, 8)
 
 	for _, itab := range e.prog.Itabs {
+		methodSigs = methodSigs[:0]
 		if !emittedTypes[itab.ItabStructName] {
-			methodSigs := []string{intLLVM}
+			methodSigs = append(methodSigs, intLLVM)
 			for _, m := range itab.Methods {
 				retTypeStr := "void"
 				if len(m.MethodType.ReturnTypes) == 1 {
 					retTypeStr = m.MethodType.ReturnTypes[0].LLVMType()
 				} else if len(m.MethodType.ReturnTypes) > 1 {
-					types := make([]string, len(m.MethodType.ReturnTypes))
-					for idx, rt := range m.MethodType.ReturnTypes {
-						types[idx] = rt.LLVMType()
+					types = types[:0]
+					for _, rt := range m.MethodType.ReturnTypes {
+						types = append(types, rt.LLVMType())
 					}
 					retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 				}
-				paramTypes := []string{"i8*"}
+				paramTypes = paramTypes[:0]
+				paramTypes = append(paramTypes, "i8*")
 				for _, pt := range m.MethodType.ParamTypes {
 					paramTypes = append(paramTypes, pt.LLVMType())
 				}
@@ -398,7 +411,7 @@ func (e *Emitter) emitItabs() {
 			emittedTypes[itab.ItabStructName] = true
 		}
 
-		fieldValues := []string{fmt.Sprintf("%s %d", sema.TypeInt32.LLVMType(), itab.TypeID)}
+		fieldValues = append(fieldValues[:0], fmt.Sprintf("%s %d", sema.TypeInt32.LLVMType(), itab.TypeID))
 		sName := strings.TrimPrefix(itab.ConcreteType.TypeName(), "*")
 
 		for _, m := range itab.Methods {
@@ -406,13 +419,14 @@ func (e *Emitter) emitItabs() {
 			if len(m.MethodType.ReturnTypes) == 1 {
 				retTypeStr = m.MethodType.ReturnTypes[0].LLVMType()
 			} else if len(m.MethodType.ReturnTypes) > 1 {
-				types := make([]string, len(m.MethodType.ReturnTypes))
-				for idx, rt := range m.MethodType.ReturnTypes {
-					types[idx] = rt.LLVMType()
+				types = types[:0]
+				for _, rt := range m.MethodType.ReturnTypes {
+					types = append(types, rt.LLVMType())
 				}
 				retTypeStr = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 			}
-			rawParams := []string{"i8*"}
+			rawParams = rawParams[:0]
+			rawParams = append(rawParams, "i8*")
 			for _, pt := range m.MethodType.ParamTypes {
 				rawParams = append(rawParams, pt.LLVMType())
 			}
@@ -428,15 +442,15 @@ func (e *Emitter) emitItabs() {
 			}
 
 			concreteRet := retTypeStr
-			var concreteParams []string
+			concreteParams = concreteParams[:0]
 
 			if targetFn != nil {
 				if len(targetFn.ReturnTypes) == 1 {
 					concreteRet = targetFn.ReturnTypes[0].LLVMType()
 				} else if len(targetFn.ReturnTypes) > 1 {
-					types := make([]string, len(targetFn.ReturnTypes))
-					for idx, rt := range targetFn.ReturnTypes {
-						types[idx] = rt.LLVMType()
+					types = types[:0]
+					for _, rt := range targetFn.ReturnTypes {
+						types = append(types, rt.LLVMType())
 					}
 					concreteRet = fmt.Sprintf("{ %s }", strings.Join(types, ", "))
 				}
@@ -740,7 +754,10 @@ func (e *Emitter) blocksForEmission(fn *hir.Function) []*basicBlock {
 	}
 	blocks, err := lowerStructuredBody(fn)
 	if err != nil {
-		logger.LogVerbose2("[Verbose2] structured HIR prepass fallback for @%s: %v\n", fn.Name, err)
+		// Hike's self-hosted formatter may render an error interface as
+		// <value>. Materialize the message before logging so structured-HIR
+		// lowering failures remain actionable in self-host diagnostics.
+		logger.LogVerbose2("[Verbose2] structured HIR prepass fallback for @%s: %s\n", fn.Name, err.Error())
 		return nil
 	}
 	return blocks
@@ -1202,7 +1219,15 @@ func (e *Emitter) emitCallStatic(i *hir.InstrCallStatic) {
 	externalFn, isExternal := e.externalFunctionForCall(i.CalleeName)
 	var structReturn *sema.StructType
 	if isExternal && len(externalFn.ReturnTypes) == 1 {
-		structReturn, _ = externalFn.ReturnTypes[0].(*sema.StructType)
+		// The semantic return type is itself interface-backed in the
+		// self-hosted compiler.  A type assertion alone can misclassify an
+		// interface value as *StructType when its dynamic type metadata is
+		// incomplete.  The ABI spelling is authoritative here: only named LLVM
+		// struct values use the sret path.
+		returnType := externalFn.ReturnTypes[0]
+		if returnType != nil && strings.HasPrefix(returnType.LLVMType(), "%struct.") {
+			structReturn, _ = returnType.(*sema.StructType)
+		}
 	}
 	var structReturnTemp string
 	if structReturn != nil {
@@ -1562,6 +1587,12 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 			i.Dst, i.AllocType.LLVMType(), sizeLLVM, e.formatVal(i.Size), sema.PointerSize))
 		e.emitLocalVariableDebug(i.Dst, i.AllocType, e.prog.InstructionLocations[hir.InstructionKey(inst)])
 
+	case *hir.InstrStackSave:
+		e.b.WriteString(fmt.Sprintf("  %s = call i8* @llvm.stacksave()\n", i.Dst))
+
+	case *hir.InstrStackRestore:
+		e.b.WriteString(fmt.Sprintf("  call void @llvm.stackrestore(i8* %s)\n", e.formatVal(i.Token)))
+
 	case *hir.InstrHeapAlloc:
 		sizeLLVM := intLLVM
 		if i.Size != nil && i.Size.Type() != nil {
@@ -1632,6 +1663,9 @@ func (e *Emitter) emitInstructionBody(inst hir.Instruction) {
 
 	case *hir.InstrBoxInterface:
 		e.emitBoxInterface(i)
+
+	case *hir.InstrUnboxInterface:
+		e.emitUnboxInterface(i)
 
 	case *hir.InstrGetFieldPtr:
 		var stName string
@@ -2486,6 +2520,33 @@ func (e *Emitter) emitBoxInterface(i *hir.InstrBoxInterface) {
 	t1 := e.nextTmp()
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } undef, i8* %s, 0\n", t1, dataPtr))
 	e.b.WriteString(fmt.Sprintf("  %s = insertvalue { i8*, i8* } %s, i8* %s, 1\n", i.Dst, t1, itabPtr))
+}
+
+// emitUnboxInterface loads the concrete value stored behind an interface.
+// BoxInterface stores pointer values directly in the data field and stores
+// scalar/aggregate values in a temporary allocation, so the inverse operation
+// must distinguish pointer targets from loadable values.
+func (e *Emitter) emitUnboxInterface(i *hir.InstrUnboxInterface) {
+	ifaceType, ok := i.IfaceVal.Type().(*sema.InterfaceType)
+	if !ok {
+		return
+	}
+	ifaceLLVM := ifaceType.LLVMType()
+	dataIndex := 0
+	if sema.InterfaceType_IsAny(ifaceType) {
+		dataIndex = 1
+	}
+	dataPtr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = extractvalue %s %s, %d\n", dataPtr, ifaceLLVM, e.formatVal(i.IfaceVal), dataIndex))
+
+	targetLLVM := i.TargetType.LLVMType()
+	if _, isPointer := i.TargetType.(*sema.PointerType); isPointer {
+		e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s\n", i.Dst, dataPtr, targetLLVM))
+		return
+	}
+	typedPtr := e.nextTmp()
+	e.b.WriteString(fmt.Sprintf("  %s = bitcast i8* %s to %s*\n", typedPtr, dataPtr, targetLLVM))
+	e.b.WriteString(fmt.Sprintf("  %s = load %s, %s* %s\n", i.Dst, targetLLVM, targetLLVM, typedPtr))
 }
 
 func intRank(llvm string) int {

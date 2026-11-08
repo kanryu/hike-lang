@@ -303,6 +303,24 @@ func (i *InstrAllocaDynamic) String() string {
 	return fmt.Sprintf("  %s = alloca_dyn %s, %s", i.Dst, i.AllocType.TypeName(), i.Size)
 }
 
+// InstrStackSave records the current transient stack position.  It is used
+// around loop-local dynamic allocations whose values do not escape the
+// iteration. Managed string/slice storage is lowered separately and must not
+// be reclaimed by this checkpoint.
+type InstrStackSave struct{ Dst *Reg }
+
+func (i *InstrStackSave) Result() *Reg { return i.Dst }
+func (i *InstrStackSave) String() string {
+	return fmt.Sprintf("  %s = stack_save", i.Dst)
+}
+
+type InstrStackRestore struct{ Token Value }
+
+func (i *InstrStackRestore) Result() *Reg { return nil }
+func (i *InstrStackRestore) String() string {
+	return fmt.Sprintf("  stack_restore %s", i.Token)
+}
+
 type InstrHeapAlloc struct {
 	Dst       *Reg
 	Size      Value
