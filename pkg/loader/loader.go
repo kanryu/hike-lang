@@ -46,6 +46,64 @@ type loadedFile struct {
 	program *ast.Program
 }
 
+// canonicalLoaderPath is the lexical identity used by the loader's visited
+// maps.
+func canonicalLoaderPath(path string) string {
+	volume := ""
+	if len(path) >= 2 && path[1] == ':' {
+		volume = path[:2]
+		path = path[2:]
+	}
+	abs := len(path) > 0 && (path[0] == '/' || path[0] == '\\')
+	parts := make([]string, 0)
+	start := 0
+	for start <= len(path) {
+		end := start
+		for end < len(path) && path[end] != '/' && path[end] != '\\' {
+			end++
+		}
+		part := path[start:end]
+		if part != "" && part != "." {
+			if part == ".." {
+				if len(parts) > 0 && parts[len(parts)-1] != ".." {
+					parts = parts[:len(parts)-1]
+				} else if !abs {
+					parts = append(parts, part)
+				}
+			} else {
+				parts = append(parts, part)
+			}
+		}
+		if end == len(path) {
+			break
+		}
+		start = end + 1
+	}
+	result := ""
+	for i := 0; i < len(parts); i++ {
+		if i > 0 {
+			result += "/"
+		}
+		result += parts[i]
+	}
+	if abs {
+		result = "/" + result
+	}
+	if volume != "" {
+		result = volume + result
+		if result == volume {
+			result += "/"
+		}
+	}
+	if result == "" {
+		if abs {
+			return "/"
+		}
+		return "."
+	}
+	return result
+}
+
 func New(rootDir string) *Loader {
 	effectiveRoot := rootDir
 	if effectiveRoot == "" {
@@ -405,6 +463,7 @@ func (l *Loader) loadSequential(entryPaths ...string) (*ast.Program, error) {
 				continue
 			}
 			l.recordNativePackage(pkgDir)
+			pkgDir = canonicalLoaderPath(pkgDir)
 			if pkgDir != "" && !l.visitedPkgs[pkgDir] {
 				l.visitedPkgs[pkgDir] = true
 				hikeFiles, err := l.findHikeFilesInDir(pkgDir)
@@ -539,7 +598,7 @@ func (l *Loader) startImports(fromDir string, imports []*ast.ImportDecl) error {
 			}
 			return fmt.Errorf("cannot resolve import %q from %s: %w", imp.Path, fromDir, err)
 		}
-		pkgDir = filepath.Clean(pkgDir)
+		pkgDir = canonicalLoaderPath(pkgDir)
 		l.recordNativePackage(pkgDir)
 		l.mu.Lock()
 		if _, exists := l.packageJobs[pkgDir]; exists {
