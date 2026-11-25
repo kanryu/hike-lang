@@ -286,11 +286,13 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 
 	for _, hash := range hashOrder {
 		caseIndex := len(structuredTable.Cases)
-		structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{Values: []int64{int64(hash)}})
-		structuredTable.Targets[hash] = caseIndex
 		bucketBody := s.root.newBlock("switch.hash.bucket")
 		s.root.setBlock(bucketBody)
-		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Cases[caseIndex].Body
+		// Build the case body independently. Do not keep a pointer into the
+		// Cases slice while lowering: self-hosted append may move its backing
+		// array, invalidating such a pointer.
+		var tableCaseBody hir.ControlBody
+		s.root.structuredStack[len(s.root.structuredStack)-1] = &tableCaseBody
 
 		ordered := make([]int, 0, len(entriesByHash[hash]))
 		for caseIndex := range ss.Cases {
@@ -352,13 +354,20 @@ func (s *StmtLowerer) lowerStructuredBucketSwitch(ss *ast.SwitchStmt, switchVal 
 		if s.root.curBlock.Terminator == nil {
 			s.root.terminate(&hir.InstrJump{Target: endBB.Label})
 		}
+		structuredTable.Cases = append(structuredTable.Cases, hir.TableCase{
+			Values: []int64{int64(hash)},
+			Body:   tableCaseBody,
+		})
+		structuredTable.Targets[hash] = caseIndex
 	}
 
 	if defaultCase != nil {
-		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Default
+		var defaultBody hir.ControlBody
+		s.root.structuredStack[len(s.root.structuredStack)-1] = &defaultBody
 		for _, stmt := range defaultCase.Body {
 			s.LowerStmt(stmt)
 		}
+		structuredTable.Default = defaultBody
 	} else {
 		s.root.structuredStack[len(s.root.structuredStack)-1] = &structuredTable.Default
 		s.root.appendStructuredNode(&hir.BrNode{Target: structuredBlock.Label, TargetID: structuredBlock.Index()})
