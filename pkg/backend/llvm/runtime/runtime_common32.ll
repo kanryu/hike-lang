@@ -1923,12 +1923,6 @@ entry:
   ret { i8*, i32, i32 } %out3
 }
 
-; Compatibility aliases used by compiler-generated aggregate copies.
-define internal i8* @memcpy(i8* %dst, i8* %src, i32 %n) #0 {
-  %r = call i8* @memcpy32(i8* %dst, i8* %src, i32 %n)
-  ret i8* %r
-}
-
 attributes #0 = { noinline nounwind "no-builtins" }
 
 ; Compatibility wrappers keep the source-level MapType pointer ABI stable while
